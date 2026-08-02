@@ -245,7 +245,7 @@ pub enum DocEditorMessage {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PenpotMessage {
     OpenAssistant,
@@ -256,6 +256,11 @@ pub enum PenpotMessage {
         #[serde(rename = "surfaceId")]
         surface_id: Uuid,
     },
+    ExportFinished {
+        success: bool,
+        #[serde(rename = "fileName")]
+        file_name: String,
+    },
 }
 
 fn penpot_message_matches_surface(
@@ -264,7 +269,9 @@ fn penpot_message_matches_surface(
 ) -> bool {
     match message {
         PenpotMessage::McpStatus { surface_id, .. } => Some(*surface_id) == active_surface_id,
-        PenpotMessage::OpenAssistant => active_surface_id.is_some(),
+        PenpotMessage::OpenAssistant | PenpotMessage::ExportFinished { .. } => {
+            active_surface_id.is_some()
+        }
     }
 }
 
@@ -1907,6 +1914,55 @@ mod imp {
         }
     }
 
+    fn design_export_file_name(path: &Path) -> String {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| "design-export".to_string())
+    }
+
+    fn design_download_destination(suggested_path: &Path) -> io::Result<PathBuf> {
+        let directory = dirs::download_dir()
+            .or_else(dirs::desktop_dir)
+            .unwrap_or_else(std::env::temp_dir);
+        fs::create_dir_all(&directory)?;
+
+        let file_name = design_export_file_name(suggested_path);
+        Ok(unique_design_download_path(&directory, &file_name))
+    }
+
+    fn unique_design_download_path(directory: &Path, file_name: &str) -> PathBuf {
+        let candidate = directory.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+
+        let file = Path::new(file_name);
+        let stem = file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("design-export");
+        let extension = file.extension().and_then(|extension| extension.to_str());
+
+        for index in 1_u64.. {
+            let next_name = match extension {
+                Some(extension) if !extension.is_empty() => {
+                    format!("{stem} ({index}).{extension}")
+                }
+                _ => format!("{stem} ({index})"),
+            };
+            let candidate = directory.join(next_name);
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+
+        unreachable!("the design export suffix space is unbounded")
+    }
+
     fn penpot_chrome_sync_script(assistant_open: bool, compare_open: bool) -> String {
         format!(
             r##"(() => {{
@@ -2386,6 +2442,14 @@ mod imp {
                 );
                 let ipc_messages = penpot_messages.clone();
                 let ipc_app = app.clone();
+                let download_paths =
+                    Arc::new(Mutex::new(HashMap::<String, VecDeque<PathBuf>>::new()));
+                let started_download_paths = download_paths.clone();
+                let started_messages = penpot_messages.clone();
+                let started_app = app.clone();
+                let completed_download_paths = download_paths;
+                let completed_messages = penpot_messages.clone();
+                let completed_app = app.clone();
                 WebViewBuilder::new()
                     .with_initialization_script(script)
                     .with_ipc_handler(move |request| {
@@ -2404,6 +2468,57 @@ mod imp {
                                 eprintln!("invalid Design WebKit message: {error}");
                             }
                         }
+                    })
+                    .with_download_started_handler(move |uri, suggested_path| {
+                        let target = match design_download_destination(suggested_path) {
+                            Ok(target) => target,
+                            Err(error) => {
+                                eprintln!("could not prepare Design export download: {error}");
+                                if let Ok(mut messages) = started_messages.lock() {
+                                    messages.push_back(PenpotMessage::ExportFinished {
+                                        success: false,
+                                        file_name: design_export_file_name(suggested_path),
+                                    });
+                                }
+                                let _ = started_app.refresh();
+                                return false;
+                            }
+                        };
+
+                        if let Ok(mut paths) = started_download_paths.lock() {
+                            paths.entry(uri).or_default().push_back(target.clone());
+                        }
+                        *suggested_path = target;
+                        true
+                    })
+                    .with_download_completed_handler(move |uri, _, success| {
+                        let target = completed_download_paths.lock().ok().and_then(|mut paths| {
+                            let queue = paths.get_mut(&uri)?;
+                            let target = queue.pop_front();
+                            if queue.is_empty() {
+                                paths.remove(&uri);
+                            }
+                            target
+                        });
+                        let file_name = target
+                            .as_deref()
+                            .map(design_export_file_name)
+                            .unwrap_or_else(|| "design export".to_string());
+
+                        if success {
+                            if let Some(target) = target.as_deref() {
+                                eprintln!("Design export saved to {}", target.display());
+                            } else {
+                                eprintln!("Design export finished: {file_name}");
+                            }
+                        } else {
+                            eprintln!("Design export failed: {file_name}");
+                        }
+                        if let Ok(mut messages) = completed_messages.lock() {
+                            messages
+                                .push_back(PenpotMessage::ExportFinished { success, file_name });
+                        }
+                        let _ = completed_app.refresh();
                     })
                     .with_url(url)
                     .with_bounds(rect)
@@ -2870,12 +2985,12 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
         use uuid::Uuid;
 
         use super::{
-            bind_project_preview_message, decode_project_preview_message,
+            bind_project_preview_message, decode_project_preview_message, design_export_file_name,
             inject_visualization_chrome, penpot_assistant_initialization_script,
             penpot_chrome_sync_script, penpot_left_sidebar_collapse_script,
             penpot_message_matches_surface, penpot_sidebar_tab_script, preview_key_event_data,
-            same_surface, surface_visible, PenpotMessage, PenpotSidebarTab,
-            MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
+            same_surface, surface_visible, unique_design_download_path, PenpotMessage,
+            PenpotSidebarTab, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
         use crate::ui::center::web_preview::{ProjectPreviewMessage, WebPreviewIntent};
 
@@ -2884,6 +2999,32 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             assert!(!surface_visible(false, false));
             assert!(surface_visible(false, true));
             assert!(!surface_visible(true, true));
+        }
+
+        #[test]
+        fn design_export_uses_only_the_suggested_file_name() {
+            assert_eq!(
+                design_export_file_name(std::path::Path::new("../../Coffee home.svg")),
+                "Coffee home.svg"
+            );
+            assert_eq!(
+                design_export_file_name(std::path::Path::new("")),
+                "design-export"
+            );
+        }
+
+        #[test]
+        fn design_export_does_not_overwrite_an_existing_download() {
+            let directory = tempfile::tempdir().expect("temporary export directory");
+            std::fs::write(directory.path().join("Coffee home.png"), b"existing")
+                .expect("existing export");
+            std::fs::write(directory.path().join("Coffee home (1).png"), b"existing")
+                .expect("second existing export");
+
+            assert_eq!(
+                unique_design_download_path(directory.path(), "Coffee home.png"),
+                directory.path().join("Coffee home (2).png")
+            );
         }
 
         #[test]

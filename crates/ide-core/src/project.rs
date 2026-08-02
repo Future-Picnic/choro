@@ -8,6 +8,7 @@ use crate::task_tracker::TaskTrackerConnection;
 
 pub const DEFAULT_PROJECT_ICON: &str = "folder";
 pub const DEFAULT_PROJECT_ICON_COLOR: &str = "default";
+pub const CUSTOM_PROJECT_SVG_ICON: &str = "custom-svg";
 
 pub fn default_project_icon() -> String {
     DEFAULT_PROJECT_ICON.to_string()
@@ -270,8 +271,8 @@ pub struct Project {
     pub icon: String,
     #[serde(default = "default_project_icon_color")]
     pub icon_color: String,
-    /// Legacy custom-image setting. Kept for a compatibility migration; new UI
-    /// only supports named icons and colors.
+    /// App-owned custom SVG. The file is copied into the local project data
+    /// directory; arbitrary external images are not supported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_image_path: Option<PathBuf>,
     #[serde(default)]
@@ -307,12 +308,14 @@ impl Project {
         }
     }
 
-    /// Replaces the removed custom-image feature with the standard folder
-    /// visual. Returns whether a legacy image setting was migrated.
+    /// Replaces images saved by the retired arbitrary-image picker with the
+    /// standard folder visual. New app-owned SVGs are explicitly marked in the
+    /// `icon` field and survive this compatibility migration.
     pub fn migrate_legacy_icon_image(&mut self) -> bool {
-        if self.icon_image_path.take().is_none() {
+        if self.icon_image_path.is_none() || self.icon == CUSTOM_PROJECT_SVG_ICON {
             return false;
         }
+        self.icon_image_path = None;
         self.icon = default_project_icon();
         self.icon_color = default_project_icon_color();
         true
@@ -383,6 +386,22 @@ mod tests {
         assert_eq!(project.icon_color, DEFAULT_PROJECT_ICON_COLOR);
         assert_eq!(project.icon_image_path, None);
         assert!(!project.migrate_legacy_icon_image());
+    }
+
+    #[test]
+    fn custom_svg_visual_survives_legacy_image_migration() {
+        let mut project = Project::from_path(PathBuf::from("/tmp/app server"));
+        project.icon = CUSTOM_PROJECT_SVG_ICON.to_string();
+        project.icon_color = "green".to_string();
+        project.icon_image_path = Some(PathBuf::from("/tmp/icon.svg"));
+
+        assert!(!project.migrate_legacy_icon_image());
+        assert_eq!(project.icon, CUSTOM_PROJECT_SVG_ICON);
+        assert_eq!(project.icon_color, "green");
+        assert_eq!(
+            project.icon_image_path,
+            Some(PathBuf::from("/tmp/icon.svg"))
+        );
     }
 
     #[test]

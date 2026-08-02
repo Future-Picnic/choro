@@ -87,6 +87,7 @@ use gpui_component::{
     input::Position,
     input::{Enter, Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, Paste},
     menu::{ContextMenuExt, DropdownMenu as _, PopupMenuItem},
+    notification::Notification,
     resizable::{resizable_panel, v_resizable},
     scroll::ScrollableElement,
     tab::{Tab, TabBar},

@@ -1,10 +1,11 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::FluentBuilder, px, uniform_list, App, AppContext, Context, Entity, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
 use gpui_component::{
@@ -15,7 +16,10 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex, Icon, IconName, Sizable, WindowExt,
 };
-use ide_core::{agents, AgentRecord, AgentRuntimeKind, AgentStatus, ProjectId, ProjectSectionId};
+use ide_core::{
+    agents, AgentRecord, AgentRuntimeKind, AgentStatus, ProjectId, ProjectSectionId,
+    CUSTOM_PROJECT_SVG_ICON,
+};
 use uuid::Uuid;
 
 use crate::state::agent_chat::AgentChatStatus;
@@ -26,8 +30,8 @@ use crate::state::{
 use crate::ui::center::CenterArea;
 use crate::ui::logo_spinner::logo_spinner;
 use crate::ui::project_visuals::{
-    project_color_options, project_icon, project_icon_color, project_icon_element,
-    project_icon_glyph, project_icon_options, POPULAR_PROJECT_ICONS,
+    import_project_svg, project_color_options, project_icon_color, project_icon_element,
+    project_icon_glyph, project_icon_options, project_icon_visual_glyph, POPULAR_PROJECT_ICONS,
 };
 use crate::ui::style;
 
@@ -40,6 +44,7 @@ struct RowInfo {
     path: SharedString,
     icon: String,
     icon_color: String,
+    icon_image_path: Option<PathBuf>,
     section_id: Option<ProjectSectionId>,
     is_favorite: bool,
     is_active: bool,
@@ -124,6 +129,9 @@ struct ProjectIconDialog {
     project_name: SharedString,
     selected_icon: String,
     selected_color: String,
+    selected_svg_path: Option<PathBuf>,
+    selected_svg_name: Option<SharedString>,
+    import_error: Option<SharedString>,
     search_input: Entity<InputState>,
 }
 
@@ -131,11 +139,51 @@ impl ProjectIconDialog {
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let icon = self.selected_icon.clone();
         let color = self.selected_color.clone();
+        let svg_path = self.selected_svg_path.clone();
         self.workspace.update(cx, |workspace, cx| {
-            workspace.set_project_icon(self.project, icon, cx);
-            workspace.set_project_icon_color(self.project, color, cx);
+            workspace.set_project_visual(self.project, icon, color, svg_path, cx);
         });
         window.close_dialog(cx);
+    }
+
+    fn import_svg(&mut self, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import SVG".into()),
+        });
+        let project = self.project;
+        cx.spawn(async move |this, cx| {
+            let source = match receiver.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                _ => None,
+            };
+            let Some(source) = source else {
+                return;
+            };
+            let source_name = source
+                .file_name()
+                .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| SharedString::from("Custom SVG"));
+            let result = import_project_svg(project, &source);
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(path) => {
+                        this.selected_icon = CUSTOM_PROJECT_SVG_ICON.to_string();
+                        this.selected_svg_path = Some(path);
+                        this.selected_svg_name = Some(source_name);
+                        this.import_error = None;
+                    }
+                    Err(error) => {
+                        this.import_error = Some(SharedString::from(error.to_string()));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 
@@ -209,6 +257,7 @@ impl Render for ProjectIconDialog {
                             .child(project_icon_element(
                                 &self.selected_icon,
                                 &self.selected_color,
+                                self.selected_svg_path.as_deref(),
                                 px(48.),
                                 px(24.),
                                 cx,
@@ -319,6 +368,12 @@ impl Render for ProjectIconDialog {
                                                                         .update(cx, |this, cx| {
                                                                             this.selected_icon =
                                                                                 icon_id.clone();
+                                                                            this.selected_svg_path =
+                                                                            None;
+                                                                            this.selected_svg_name =
+                                                                            None;
+                                                                            this.import_error =
+                                                                                None;
                                                                             cx.notify();
                                                                         })
                                                                         .ok();
@@ -334,6 +389,60 @@ impl Render for ProjectIconDialog {
                         )
                     }),
             )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .rounded(crate::ui::design::r_sm())
+                    .border_1()
+                    .border_color(crate::ui::design::line(cx).opacity(0.4))
+                    .px_3()
+                    .py_2()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_ui())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(crate::ui::design::t1(cx))
+                                    .child(
+                                        self.selected_svg_name
+                                            .clone()
+                                            .unwrap_or_else(|| "Custom SVG".into()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_label())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child("Simple monochrome SVG · recolored with the palette"),
+                            ),
+                    )
+                    .child(
+                        style::dialog_neutral_button(
+                            "import-project-svg",
+                            if self.selected_svg_path.is_some() {
+                                "Replace SVG"
+                            } else {
+                                "Import SVG"
+                            },
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.import_svg(cx))),
+                    ),
+            )
+            .when_some(self.import_error.clone(), |content, error| {
+                content.child(
+                    div()
+                        .text_size(crate::ui::design::text_label())
+                        .text_color(crate::ui::design::rose(cx))
+                        .child(error),
+                )
+            })
             .child(
                 v_flex()
                     .gap_2()
@@ -638,6 +747,7 @@ impl ProjectList {
                     path: SharedString::from(p.path.display().to_string()),
                     icon: p.icon.clone(),
                     icon_color: p.icon_color.clone(),
+                    icon_image_path: p.icon_image_path.clone(),
                     section_id: p.section_id,
                     is_favorite: p.is_favorite,
                     is_active: state.active == Some(p.id),
@@ -728,6 +838,7 @@ impl ProjectList {
         current_name: SharedString,
         icon: String,
         icon_color: String,
+        icon_image_path: Option<PathBuf>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -752,6 +863,11 @@ impl ProjectList {
                 project_name: current_name,
                 selected_icon: icon,
                 selected_color: icon_color,
+                selected_svg_name: icon_image_path
+                    .as_ref()
+                    .map(|_| SharedString::from("Custom SVG")),
+                selected_svg_path: icon_image_path,
+                import_error: None,
                 search_input,
             }
         });
@@ -766,18 +882,13 @@ impl ProjectList {
                 .footer(move |_, _, _, cx| {
                     let save_dialog = save_dialog.clone();
                     vec![
-                        Button::new("cancel-project-icon")
-                            .small()
-                            .custom(crate::ui::style::dialog_neutral_variant(cx))
-                            .label("Cancel")
+                        style::dialog_neutral_button("cancel-project-icon", "Cancel", cx)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
-                        Button::new("save-project-icon")
-                            .primary()
-                            .small()
-                            .label("Done")
-                            .on_click(move |_, window, cx| {
+                        style::primary_button_compact("save-project-icon", "Done", cx).on_click(
+                            move |_, window, cx| {
                                 save_dialog.update(cx, |dialog, cx| dialog.save(window, cx));
-                            }),
+                            },
+                        ),
                     ]
                 })
         });
@@ -1226,6 +1337,13 @@ impl ProjectList {
         let warning = crate::ui::design::amber(cx);
         let selected = self.attention_pinned == Some(agent_id);
         let hovered = self.hovered_attention == Some(agent_id);
+        let custom_svg_path = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .find(|candidate| candidate.id == project)
+            .and_then(|candidate| candidate.icon_image_path.clone());
 
         h_flex()
             .id(("attention-agent-row", ix))
@@ -1281,8 +1399,9 @@ impl ProjectList {
                         .child(project_name),
                 )
             })
-            .child(project_icon_glyph(
-                project_icon(project_icon_id),
+            .child(project_icon_visual_glyph(
+                project_icon_id,
+                custom_svg_path.as_deref(),
                 warning,
                 px(13.),
             ))
@@ -1382,6 +1501,7 @@ impl ProjectList {
         let icon_name = row.name.clone();
         let current_icon = row.icon.clone();
         let current_icon_color = row.icon_color.clone();
+        let current_icon_image_path = row.icon_image_path.clone();
         let open_with_path = row.path.clone();
         let copy_project_path = row.path.to_string();
         let is_favorite = row.is_favorite;
@@ -1475,6 +1595,7 @@ impl ProjectList {
                                 icon_name.clone(),
                                 current_icon.clone(),
                                 current_icon_color.clone(),
+                                current_icon_image_path.clone(),
                                 window,
                                 cx,
                             );
@@ -1787,6 +1908,7 @@ impl ProjectList {
     fn render_sidebar_section(
         &self,
         section: SidebarSection,
+        after_rows: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let collapsed = section.collapsed;
@@ -1794,7 +1916,8 @@ impl ProjectList {
             .id(("project-sidebar-section", section.ix))
             .w_full()
             .gap_0p5()
-            .when(section.ix > 0, |section| section.mt_4())
+            .when(section.ix > 0 && after_rows, |section| section.mt_4())
+            .when(section.ix > 0 && !after_rows, |section| section.mt_1())
             .child(self.render_section_header(&section, cx))
             .when(!collapsed, |column| {
                 column.children(
@@ -1830,13 +1953,15 @@ impl ProjectList {
             .id(("project-row", row.ix))
             .w_full()
             .gap_0p5()
-            .when(row.ix > 0, |row| row.pt_2())
             .child(
                 v_flex()
                     .id(("project-row-card", row.ix))
                     .w_full()
                     .px_3()
-                    .py_2()
+                    // Every project is one 22px line, open or closed: the card
+                    // stays snug around it and the agent list below brings its
+                    // own indent and rhythm.
+                    .py(px(4.))
                     .gap_1p5()
                     .rounded(crate::ui::design::r_sm())
                     .cursor_pointer()
@@ -1875,6 +2000,7 @@ impl ProjectList {
                                     .child(project_icon_element(
                                         &row.icon,
                                         &row.icon_color,
+                                        row.icon_image_path.as_deref(),
                                         px(22.),
                                         px(16.),
                                         cx,
@@ -1904,7 +2030,14 @@ impl ProjectList {
                                             // Sidebar project row (`.proj`): 13px, medium.
                                             .text_size(crate::ui::design::text_head())
                                             .font_weight(FontWeight::MEDIUM)
-                                            .text_color(crate::ui::design::t1(cx))
+                                            // Only the active project holds full
+                                            // strength; the rest rest one step
+                                            // down, still above their agents.
+                                            .text_color(if row.is_active {
+                                                crate::ui::design::t1(cx)
+                                            } else {
+                                                crate::ui::design::t1_soft(cx)
+                                            })
                                             .truncate()
                                             .child(row.name.clone()),
                                     )
@@ -2112,6 +2245,19 @@ impl Render for ProjectList {
         }
         let is_empty = sections.is_empty();
         let attention_section = self.render_attention_section(cx);
+        // The 16px section break exists to close a list of projects. A header
+        // that follows a closed (or empty) section has no list to close, so it
+        // stacks at row rhythm instead of floating in its own band.
+        let mut previous_section_had_rows = false;
+        let section_elements = sections
+            .into_iter()
+            .map(|section| {
+                let had_rows = !section.collapsed && !section.rows.is_empty();
+                let element = self.render_sidebar_section(section, previous_section_had_rows, cx);
+                previous_section_had_rows = had_rows;
+                element
+            })
+            .collect::<Vec<_>>();
 
         v_flex()
             .size_full()
@@ -2125,12 +2271,7 @@ impl Render for ProjectList {
                     .gap_0p5()
                     .overflow_y_scroll()
                     .children(attention_section)
-                    .children(
-                        sections
-                            .into_iter()
-                            .map(|section| self.render_sidebar_section(section, cx))
-                            .collect::<Vec<_>>(),
-                    )
+                    .children(section_elements)
                     .when(is_empty, |list| {
                         list.child(
                             div()
