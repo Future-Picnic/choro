@@ -60,6 +60,19 @@ impl Render for CenterArea {
                 } => {
                     self.handle_design_mcp_status(connected, file_id, cx);
                 }
+                web_preview::PenpotMessage::ExportFinished { success, file_name } => {
+                    let message = if success {
+                        format!("Exported {file_name} to Downloads")
+                    } else {
+                        format!("Could not export {file_name}")
+                    };
+                    let notification = if success {
+                        Notification::success(message)
+                    } else {
+                        Notification::error(message)
+                    };
+                    window.push_notification(notification, cx);
+                }
             }
         }
         self.handle_project_preview_messages(window, cx);

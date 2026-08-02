@@ -343,29 +343,24 @@ impl Workspace {
         }
     }
 
-    pub fn set_project_icon(&mut self, id: ProjectId, icon: String, cx: &mut Context<Self>) {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.id == id) {
-            if project.icon == icon {
+    pub fn set_project_visual(
+        &mut self,
+        id: ProjectId,
+        icon: String,
+        icon_color: String,
+        icon_image_path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(project) = self.projects.iter_mut().find(|project| project.id == id) {
+            if project.icon == icon
+                && project.icon_color == icon_color
+                && project.icon_image_path == icon_image_path
+            {
                 return;
             }
             project.icon = icon;
-            cx.emit(WorkspaceEvent::ProjectsChanged);
-            self.schedule_save(cx);
-            cx.notify();
-        }
-    }
-
-    pub fn set_project_icon_color(
-        &mut self,
-        id: ProjectId,
-        icon_color: String,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(project) = self.projects.iter_mut().find(|p| p.id == id) {
-            if project.icon_color == icon_color {
-                return;
-            }
             project.icon_color = icon_color;
+            project.icon_image_path = icon_image_path;
             cx.emit(WorkspaceEvent::ProjectsChanged);
             self.schedule_save(cx);
             cx.notify();

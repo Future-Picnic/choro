@@ -361,9 +361,14 @@ impl RootView {
         let root_view = cx.entity().clone();
         let (project_visual, branch) = {
             let ws = self.workspace.read(cx);
-            let project_visual = ws
-                .active_project()
-                .map(|p| (p.name.clone(), p.icon.clone(), p.icon_color.clone()));
+            let project_visual = ws.active_project().map(|p| {
+                (
+                    p.name.clone(),
+                    p.icon.clone(),
+                    p.icon_color.clone(),
+                    p.icon_image_path.clone(),
+                )
+            });
             let branch = ws
                 .active
                 .and_then(|id| self.git_states.read(cx).get(id))
@@ -384,38 +389,42 @@ impl RootView {
             .when(!self.show_left, |bar| {
                 bar.child(self.nav_history_buttons(cx))
             })
-            .when_some(project_visual, |bar, (name, icon, icon_color)| {
-                bar.child(
-                    // The project name shows in full (never truncated); the
-                    // branch is what ellipsizes when space runs short.
-                    h_flex()
-                        .flex_none()
-                        .gap_1p5()
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_none()
-                                .size(px(22.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(project_icon_element(
-                                    &icon,
-                                    &icon_color,
-                                    px(22.),
-                                    px(16.),
-                                    cx,
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(crate::ui::design::text_head())
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(gpui::SharedString::from(name)),
-                        ),
-                )
-            })
+            .when_some(
+                project_visual,
+                |bar, (name, icon, icon_color, icon_image_path)| {
+                    bar.child(
+                        // The project name shows in full (never truncated); the
+                        // branch is what ellipsizes when space runs short.
+                        h_flex()
+                            .flex_none()
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(project_icon_element(
+                                        &icon,
+                                        &icon_color,
+                                        icon_image_path.as_deref(),
+                                        px(22.),
+                                        px(16.),
+                                        cx,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(crate::ui::design::text_head())
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(gpui::SharedString::from(name)),
+                            ),
+                    )
+                },
+            )
             .when_some(branch, |bar, branch| {
                 bar.child(
                     div()

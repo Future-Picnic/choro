@@ -448,6 +448,12 @@ impl PenpotState {
             updated_at: now,
         };
         store.save_active_penpot_connection(&connection)?;
+        if let (Some(project), Some(starter)) = (
+            managed_starter_project_id(),
+            provisioned.starter_design.as_ref(),
+        ) {
+            persist_managed_starter_design(&store, project, connection_id, starter, now)?;
+        }
         self.config = config;
         self.connection = Some(connection);
         self.designs = store
@@ -1830,6 +1836,18 @@ struct ManagedPenpotBootstrap {
     api_token: String,
     mcp_key: String,
     session_token: String,
+    #[serde(default)]
+    starter_design: Option<ManagedStarterDesign>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedStarterDesign {
+    file_id: Uuid,
+    project_id: Uuid,
+    team_id: Uuid,
+    name: String,
+    page_id: Option<Uuid>,
 }
 
 fn bootstrap_managed_penpot() -> std::result::Result<ManagedPenpotBootstrap, String> {
@@ -1848,6 +1866,7 @@ fn bootstrap_managed_penpot() -> std::result::Result<ManagedPenpotBootstrap, Str
             json!({
                 "installationId": installation.id,
                 "installationSecret": installation.secret,
+                "includeStarterDesign": managed_starter_project_id().is_some(),
             })
             .to_string(),
         )
@@ -1867,6 +1886,87 @@ fn bootstrap_managed_penpot() -> std::result::Result<ManagedPenpotBootstrap, Str
         .map_err(|_| "The Design service returned an unreadable response.".to_string())?;
     serde_json::from_str(&body)
         .map_err(|_| "The Design service returned an unreadable response.".to_string())
+}
+
+fn managed_starter_project_id() -> Option<ProjectId> {
+    if !crate::onboarding::enabled() {
+        return None;
+    }
+    let store = LocalStore::open_default().ok()?;
+    let config = store
+        .load_workspace_config(ide_core::AppConfig::load())
+        .ok()?;
+    let playground_root = crate::onboarding::playground_root();
+    config
+        .projects
+        .into_iter()
+        .find(|project| project.path == playground_root)
+        .map(|project| project.id)
+}
+
+fn persist_managed_starter_design(
+    store: &LocalStore,
+    project: ProjectId,
+    connection_id: Uuid,
+    starter: &ManagedStarterDesign,
+    now: u64,
+) -> Result<()> {
+    if store
+        .load_penpot_designs(project)?
+        .into_iter()
+        .any(|design| {
+            design.connection_id == connection_id
+                && design.penpot_file_id == starter.file_id
+                && design.archived_at.is_none()
+        })
+    {
+        return Ok(());
+    }
+
+    let design = starter_design_record(project, connection_id, starter, now);
+    let existing_binding = store.project_penpot_binding(project, connection_id)?;
+    let binding = StoredProjectPenpotBinding {
+        project_id: project,
+        connection_id,
+        penpot_team_id: starter.team_id,
+        penpot_project_id: starter.project_id,
+        selected_design_id: existing_binding
+            .as_ref()
+            .and_then(|binding| binding.selected_design_id),
+        created_at: existing_binding
+            .as_ref()
+            .map(|binding| binding.created_at)
+            .unwrap_or(now),
+        updated_at: now,
+    };
+    store.upsert_project_penpot_binding(&binding)?;
+    store.upsert_penpot_design(&design)?;
+    store.ensure_current_penpot_conversation(design.id)?;
+    Ok(())
+}
+
+fn starter_design_record(
+    project: ProjectId,
+    connection_id: Uuid,
+    starter: &ManagedStarterDesign,
+    now: u64,
+) -> PenpotDesign {
+    PenpotDesign {
+        id: Uuid::new_v4(),
+        project_id: project,
+        connection_id,
+        penpot_file_id: starter.file_id,
+        penpot_project_id: starter.project_id,
+        penpot_team_id: starter.team_id,
+        name: starter.name.clone(),
+        page_id: starter.page_id,
+        source_doc: None,
+        source_task: None,
+        last_synced_at: Some(now),
+        archived_at: None,
+        created_at: now,
+        updated_at: now,
+    }
 }
 
 fn managed_provisioning_url() -> String {
@@ -2214,6 +2314,47 @@ fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_bootstrap_accepts_optional_starter_design() {
+        let without_starter: ManagedPenpotBootstrap = serde_json::from_value(json!({
+            "instanceUrl": "https://design.example",
+            "mcpUrl": "https://design.example/mcp/stream",
+            "profileId": Uuid::from_u128(1),
+            "profileEmail": "user@example.test",
+            "teamId": Uuid::from_u128(2),
+            "projectId": Uuid::from_u128(3),
+            "apiToken": "api",
+            "mcpKey": "mcp",
+            "sessionToken": "session"
+        }))
+        .unwrap();
+        assert!(without_starter.starter_design.is_none());
+
+        let with_starter: ManagedPenpotBootstrap = serde_json::from_value(json!({
+            "instanceUrl": "https://design.example",
+            "mcpUrl": "https://design.example/mcp/stream",
+            "profileId": Uuid::from_u128(1),
+            "profileEmail": "user@example.test",
+            "teamId": Uuid::from_u128(2),
+            "projectId": Uuid::from_u128(3),
+            "apiToken": "api",
+            "mcpKey": "mcp",
+            "sessionToken": "session",
+            "starterDesign": {
+                "fileId": Uuid::from_u128(4),
+                "projectId": Uuid::from_u128(3),
+                "teamId": Uuid::from_u128(2),
+                "name": "Welcome to Choro Design",
+                "pageId": Uuid::from_u128(5),
+                "templateVersion": "ignored-by-desktop"
+            }
+        }))
+        .unwrap();
+        let starter = with_starter.starter_design.unwrap();
+        assert_eq!(starter.file_id, Uuid::from_u128(4));
+        assert_eq!(starter.page_id, Some(Uuid::from_u128(5)));
+    }
 
     #[test]
     fn copied_remote_url_is_split_from_its_key() {

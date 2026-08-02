@@ -147,6 +147,12 @@ impl AssetSource for AppAssets {
             return Ok(crate::ui::illustrations::themed_svg(path).map(Cow::Owned));
         }
 
+        // User-imported, monochrome project SVGs. The project visuals module
+        // validates and registers their normalized bytes before rendering.
+        if path.starts_with("project-icons/") {
+            return Ok(crate::ui::project_visuals::custom_project_svg(path).map(Cow::Owned));
+        }
+
         if let Some((_, bytes)) = Self::APP_ASSETS
             .iter()
             .find(|(asset_path, _)| *asset_path == path)

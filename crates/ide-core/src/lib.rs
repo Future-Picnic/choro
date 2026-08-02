@@ -36,7 +36,7 @@ pub use doc_assistant::{
 };
 pub use project::{
     DbConnection, DbProvider, Project, ProjectId, ProjectReference, ProjectReferenceKind,
-    ProjectSection, ProjectSectionId, ScriptPreset,
+    ProjectSection, ProjectSectionId, ScriptPreset, CUSTOM_PROJECT_SVG_ICON,
 };
 pub use redaction::{redact_sensitive_text, redact_sensitive_text_with};
 pub use services::{

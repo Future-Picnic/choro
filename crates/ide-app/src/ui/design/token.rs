@@ -233,6 +233,13 @@ pub fn t1(cx: &App) -> Hsla {
 pub fn t2(cx: &App) -> Hsla {
     cx.theme().sidebar_foreground
 }
+/// Resting text for a primary object that is not the selected one — sidebar
+/// projects at rest. Derived halfway between `t1` and `t2` so selecting a row
+/// can lift it to full strength without the rows around it falling all the way
+/// to the weight of their own children.
+pub fn t1_soft(cx: &App) -> Hsla {
+    mix(t1(cx), t2(cx), 0.5)
+}
 /// Muted text — labels, steps, inactive rail.
 pub fn t3(cx: &App) -> Hsla {
     cx.theme().muted_foreground

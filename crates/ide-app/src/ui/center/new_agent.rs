@@ -447,6 +447,7 @@ impl CenterArea {
                             .child(crate::ui::project_visuals::project_icon_element(
                                 &project_info.icon,
                                 &project_info.icon_color,
+                                project_info.icon_image_path.as_deref(),
                                 px(18.),
                                 px(13.),
                                 cx,
