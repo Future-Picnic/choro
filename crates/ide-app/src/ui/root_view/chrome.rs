@@ -1,0 +1,717 @@
+use super::*;
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+
+impl RootView {
+    pub(super) fn update_dock_badge(&self, cx: &mut Context<Self>) {
+        let label = self.agent_chats.read(cx).dock_badge_label();
+        crate::notifications::set_dock_badge(label.as_deref());
+    }
+
+    pub(super) fn render_title_branch_picker(
+        &self,
+        project_id: ide_core::ProjectId,
+        mut branches: Vec<BranchInfo>,
+        left: gpui::Pixels,
+        top: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let query = self.title_branch_query.read(cx).value().trim().to_string();
+        if !query.is_empty() {
+            let needle = query.to_lowercase();
+            branches.retain(|branch| branch.name.to_lowercase().contains(&needle));
+        }
+        branches.sort_by(|a, b| {
+            (!a.is_head, a.is_remote)
+                .cmp(&(!b.is_head, b.is_remote))
+                .then_with(|| b.tip_time.cmp(&a.tip_time))
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        branches.truncate(if query.is_empty() {
+            TITLE_BRANCH_PICKER_LIMIT
+        } else {
+            20
+        });
+
+        v_flex()
+            .absolute()
+            .top(top)
+            .left(left)
+            .w(px(360.))
+            .rounded(crate::ui::design::r_md())
+            .border_1()
+            .border_color(crate::ui::design::line(cx).opacity(0.42))
+            .bg(crate::ui::design::focus(cx))
+            .text_color(crate::ui::design::t1(cx))
+            .shadow_lg()
+            .overflow_hidden()
+            .child(
+                v_flex()
+                    .id("title-branch-picker-scroll")
+                    .max_h(px(260.))
+                    .overflow_y_scroll()
+                    .p_1()
+                    .gap_0p5()
+                    .when(branches.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_size(crate::ui::design::text_body())
+                                .text_color(crate::ui::design::t3(cx))
+                                .child("No matching branches"),
+                        )
+                    })
+                    .children(branches.into_iter().enumerate().map(|(ix, branch)| {
+                        let name: SharedString = branch.name.clone().into();
+                        let checkout_name = branch.name.clone();
+                        let git_states = self.git_states.clone();
+                        let ahead_behind: Option<SharedString> =
+                            if branch.ahead > 0 || branch.behind > 0 {
+                                Some(format!("↑{} ↓{}", branch.ahead, branch.behind).into())
+                            } else {
+                                None
+                            };
+                        let detail: SharedString = {
+                            let mut parts: Vec<String> = Vec::new();
+                            if !branch.tip_author.is_empty() {
+                                parts.push(branch.tip_author.clone());
+                            }
+                            let when = branch_relative_time(branch.tip_time);
+                            if !when.is_empty() {
+                                parts.push(when);
+                            }
+                            if !branch.tip_summary.is_empty() {
+                                parts.push(branch.tip_summary.clone());
+                            }
+                            parts.join(" · ").into()
+                        };
+
+                        h_flex()
+                            .id(("title-branch-row", ix))
+                            .w_full()
+                            .px_2()
+                            .py_0p5()
+                            .gap_2()
+                            .items_center()
+                            .rounded(crate::ui::design::r_sm())
+                            .cursor_pointer()
+                            .when(branch.is_head, |row| {
+                                row.bg(crate::ui::design::surface_2(cx))
+                            })
+                            .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if !branch.is_head {
+                                    if let Some(git) = git_states.read(cx).get(project_id) {
+                                        git.update(cx, |git, cx| {
+                                            git.checkout(checkout_name.clone(), cx);
+                                        });
+                                    }
+                                }
+                                this.title_branch_query
+                                    .update(cx, |input, cx| input.set_value("", window, cx));
+                                this.title_branch_expanded = false;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .w(px(18.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(if branch.is_head {
+                                        Icon::new(IconName::Check)
+                                            .size(crate::ui::design::icon_sm())
+                                            .text_color(crate::ui::design::accent(cx))
+                                    } else if branch.is_remote {
+                                        Icon::new(IconName::Globe)
+                                            .size(crate::ui::design::icon_sm())
+                                            .text_color(crate::ui::design::t3(cx))
+                                    } else {
+                                        Icon::new(IconName::Replace)
+                                            .size(crate::ui::design::icon_sm())
+                                            .text_color(crate::ui::design::t3(cx))
+                                    }),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .text_size(crate::ui::design::text_ui())
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(name),
+                                    )
+                                    .when(!detail.is_empty(), |col| {
+                                        col.child(
+                                            div()
+                                                .text_size(crate::ui::design::text_label())
+                                                .text_color(crate::ui::design::t3(cx))
+                                                .truncate()
+                                                .child(detail),
+                                        )
+                                    }),
+                            )
+                            .when_some(ahead_behind, |row, label| {
+                                row.child(
+                                    div()
+                                        .text_size(crate::ui::design::text_label())
+                                        .text_color(crate::ui::design::t3(cx))
+                                        .child(label),
+                                )
+                            })
+                    })),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .px_2()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .border_t_1()
+                    .border_color(crate::ui::design::line(cx).opacity(0.28))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(Input::new(&self.title_branch_query)),
+                    )
+                    .child(
+                        Icon::new(IconName::SortDescending)
+                            .size(crate::ui::design::icon())
+                            .text_color(crate::ui::design::t3(cx)),
+                    ),
+            )
+    }
+
+    pub(super) fn render_title_branch_overlay(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.title_branch_expanded {
+            return None;
+        }
+        let (project_id, branches) = {
+            let project_id = self.workspace.read(cx).active?;
+            let git = self.git_states.read(cx).get(project_id)?;
+            let git = git.read(cx);
+            let branches = git
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.branches.clone())
+                .unwrap_or_default();
+            (project_id, branches)
+        };
+        let anchor = self.title_branch_bounds.clone()?;
+        Some(
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .size_full()
+                .child(
+                    div()
+                        .id("title-branch-picker-backdrop")
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(0.))
+                        .size_full()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.title_branch_expanded = false;
+                            cx.notify();
+                        })),
+                )
+                .child(self.render_title_branch_picker(
+                    project_id,
+                    branches,
+                    anchor.origin.x,
+                    anchor.origin.y + anchor.size.height + px(2.),
+                    cx,
+                ))
+                .into_any_element(),
+        )
+    }
+
+    /// Help and Settings pinned to the right rail footer.
+    pub(super) fn rail_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let help = style::rail_footer_button("rail-help", IconName::Info, "Help", cx)
+            .tooltip("Help")
+            .dropdown_menu_with_anchor(gpui::Corner::TopRight, |menu, _, _| {
+                menu.item(
+                    PopupMenuItem::new("Send feedback")
+                        .icon(IconName::Inbox)
+                        .on_click(|_, window, cx| {
+                            crate::ui::feedback::FeedbackModal::open(window, cx);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Tutorials")
+                        .icon(IconName::BookOpen)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url("https://choro.dev");
+                        }),
+                )
+            });
+
+        let settings =
+            style::rail_footer_button("rail-settings", IconName::Settings, "Settings", cx)
+                .tooltip("Settings (⌘,)")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_settings(window, cx);
+                }));
+
+        v_flex().flex_none().w_full().pb_2().child(
+            v_flex()
+                .w_full()
+                .border_l_1()
+                .border_color(style::hairline(cx))
+                .child(help)
+                .child(settings),
+        )
+    }
+
+    /// Help and Settings controls anchored at the bottom of the right sidebar.
+    pub(super) fn settings_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let help = style::sidebar_footer_button("right-sidebar-help", IconName::Info, "Help")
+            .dropdown_menu_with_anchor(gpui::Corner::TopRight, |menu, _, _| {
+                menu.item(
+                    PopupMenuItem::new("Send feedback")
+                        .icon(IconName::Inbox)
+                        .on_click(|_, window, cx| {
+                            crate::ui::feedback::FeedbackModal::open(window, cx);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Tutorials")
+                        .icon(IconName::BookOpen)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url("https://choro.dev");
+                        }),
+                )
+            });
+
+        h_flex()
+            .h(px(44.))
+            .w_full()
+            .px_3()
+            .gap_2()
+            .items_center()
+            .border_t_1()
+            .border_color(style::hairline(cx))
+            .child(help)
+            .child(
+                style::sidebar_footer_button(
+                    "right-sidebar-settings",
+                    IconName::Settings,
+                    "Settings",
+                )
+                .tooltip("Settings (⌘,)")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.toggle_settings(window, cx);
+                })),
+            )
+    }
+
+    /// The center's back/forward history controls. Rendered in the header when
+    /// the sidebar is collapsed, and in the sidebar's top zone when it's open.
+    pub(super) fn nav_history_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (can_go_back, can_go_forward) = {
+            let center = self.center.read(cx);
+            (center.can_go_back(), center.can_go_forward())
+        };
+        let center_for_back = self.center.clone();
+        let center_for_forward = self.center.clone();
+        h_flex()
+            .flex_none()
+            .gap_0p5()
+            .items_center()
+            .child(
+                Button::new("title-nav-back")
+                    .ghost()
+                    .xsmall()
+                    .compact()
+                    .w(px(24.))
+                    .h(crate::ui::design::control_h_xs())
+                    .icon(IconName::ChevronLeft)
+                    .disabled(!can_go_back)
+                    .tooltip("Back")
+                    .on_click(move |_, _, cx| {
+                        center_for_back.update(cx, |center, cx| center.go_back(cx));
+                    }),
+            )
+            .child(
+                Button::new("title-nav-forward")
+                    .ghost()
+                    .xsmall()
+                    .compact()
+                    .w(px(24.))
+                    .h(crate::ui::design::control_h_xs())
+                    .icon(IconName::ChevronRight)
+                    .disabled(!can_go_forward)
+                    .tooltip("Forward")
+                    .on_click(move |_, _, cx| {
+                        center_for_forward.update(cx, |center, cx| center.go_forward(cx));
+                    }),
+            )
+    }
+
+    pub(super) fn project_branch_label(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let root_view = cx.entity().clone();
+        let (project_visual, branch) = {
+            let ws = self.workspace.read(cx);
+            let project_visual = ws
+                .active_project()
+                .map(|p| (p.name.clone(), p.icon.clone(), p.icon_color.clone()));
+            let branch = ws
+                .active
+                .and_then(|id| self.git_states.read(cx).get(id))
+                .map(|git| {
+                    let git = git.read(cx);
+                    git.branch_label()
+                })
+                .unwrap_or(None);
+            (project_visual, branch)
+        };
+        h_flex()
+            .flex_1()
+            .min_w(px(0.))
+            .gap_1p5()
+            .items_center()
+            // Back/forward navigate the center; when the sidebar is open they
+            // live in its top zone instead (see `nav_history_buttons`).
+            .when(!self.show_left, |bar| {
+                bar.child(self.nav_history_buttons(cx))
+            })
+            .when_some(project_visual, |bar, (name, icon, icon_color)| {
+                bar.child(
+                    // The project name shows in full (never truncated); the
+                    // branch is what ellipsizes when space runs short.
+                    h_flex()
+                        .flex_none()
+                        .gap_1p5()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(22.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(project_icon_element(
+                                    &icon,
+                                    &icon_color,
+                                    px(22.),
+                                    px(16.),
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(crate::ui::design::text_head())
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(gpui::SharedString::from(name)),
+                        ),
+                )
+            })
+            .when_some(branch, |bar, branch| {
+                bar.child(
+                    div()
+                        .relative()
+                        .child(
+                            h_flex()
+                                .id("titlebar-branch-selector")
+                                .max_w(px(200.))
+                                .min_w(px(0.))
+                                .px_2()
+                                .py_0p5()
+                                .gap_1p5()
+                                .items_center()
+                                .rounded(crate::ui::design::r_sm())
+                                .cursor_pointer()
+                                .text_size(crate::ui::design::text_ui())
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(crate::ui::design::t3(cx))
+                                .when(self.title_branch_expanded, |row| {
+                                    row.bg(crate::ui::design::surface_2(cx))
+                                })
+                                .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
+                                .on_hover(cx.listener(|this, hovered, _, cx| {
+                                    this.title_branch_hovered = *hovered;
+                                    cx.notify();
+                                }))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.title_branch_expanded = !this.title_branch_expanded;
+                                    if this.title_branch_expanded {
+                                        this.title_branch_query.update(cx, |input, cx| {
+                                            input.set_value("", window, cx);
+                                            input.focus(window, cx);
+                                        });
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(branch_icon(crate::ui::design::t3(cx)))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .truncate()
+                                        .child(gpui::SharedString::from(branch)),
+                                )
+                                .when(
+                                    self.title_branch_hovered || self.title_branch_expanded,
+                                    |row| {
+                                        row.child(
+                                            Icon::new(IconName::ChevronDown)
+                                                .size(crate::ui::design::icon_sm())
+                                                .text_color(crate::ui::design::t3(cx)),
+                                        )
+                                    },
+                                ),
+                        )
+                        .child(
+                            gpui::canvas(
+                                move |bounds, _, cx| {
+                                    root_view.update(cx, |this, _| {
+                                        this.title_branch_bounds = Some(bounds);
+                                    });
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
+                        ),
+                )
+            })
+    }
+
+    /// The fixed vertical activity rail docked to the right of the project tools.
+    pub(super) fn nav_rail(
+        &self,
+        on_right: bool,
+        show_divider: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let activity = self.center.read(cx).activity();
+        let active_project = self.workspace.read(cx).active;
+        let design_connection_pending = self.penpot.read(cx).connection_pending();
+        let design_connection_needs_attention = self.penpot.read(cx).connection_needs_attention();
+        // The design's `.rail` sits on `sink` — the darkest plane, one step below
+        // the `nav` sidebar — so the rail reads as its own deepest column.
+        let panel_bg = crate::ui::design::sink(cx);
+        let item = |id: &'static str,
+                    icon: IconName,
+                    label: &'static str,
+                    target: ProjectActivity,
+                    cx: &mut Context<Self>| {
+            let center = self.center.clone();
+            let selected = activity == target;
+            let is_docs = target == ProjectActivity::Docs;
+            let is_tasks = target == ProjectActivity::Tasks;
+            let design_connection_color = (target == ProjectActivity::Design)
+                .then(|| {
+                    if design_connection_needs_attention {
+                        Some(crate::ui::design::rose(cx))
+                    } else if design_connection_pending {
+                        Some(crate::ui::design::amber(cx))
+                    } else {
+                        None
+                    }
+                })
+                .flatten();
+            // Both rails give the active cell a filled accent chip around its
+            // icon so the selection is unmistakable (on the right it lives in the
+            // divider column; on the left, inside a rounded pill).
+            let fg = if selected {
+                crate::ui::design::t1(cx)
+            } else {
+                crate::ui::design::t3(cx)
+            };
+            v_flex()
+                .id(id)
+                .relative()
+                .h(px(if on_right { 64. } else { 56. }))
+                .gap_1()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .text_color(fg)
+                .map(|el| {
+                    // The cell never fills — the highlight lives on the icon pill
+                    // only (below). The right rail keeps its left-edge divider.
+                    if on_right {
+                        el.w_full().border_l_1().border_color(style::hairline(cx))
+                    } else {
+                        el.mx(px(8.))
+                    }
+                })
+                .child(
+                    // The design's `.railitem .ic-lg`: the highlight is on the icon
+                    // pill only — hover = `surface`, active = `surface-2` — never the
+                    // whole cell, and never accent (the rail is the location channel).
+                    div()
+                        .relative()
+                        .size(px(30.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(crate::ui::design::r_sm())
+                        .when(selected, |b| b.bg(crate::ui::design::surface_2(cx)))
+                        .when(!selected, |b| {
+                            b.hover(|s| s.bg(crate::ui::design::surface(cx)))
+                        })
+                        .child(
+                            Icon::new(icon)
+                                .size(crate::ui::design::icon_lg())
+                                .text_color(fg),
+                        )
+                        .children(design_connection_color.map(|color| {
+                            div()
+                                .absolute()
+                                .top(px(1.))
+                                .right(px(1.))
+                                .child(crate::ui::design::indicator::dot(color))
+                        })),
+                )
+                .child(
+                    // `.railitem` label: 11px, `t3` by default, `t1` when active.
+                    div()
+                        .text_size(crate::ui::design::text_label())
+                        .font_weight(if selected {
+                            gpui::FontWeight::SEMIBOLD
+                        } else {
+                            gpui::FontWeight::NORMAL
+                        })
+                        .child(label),
+                )
+                .when(is_docs, |item| {
+                    item.child(crate::ui::onboarding::target_marker(
+                        crate::ui::onboarding::SpotlightTarget::DocsNav,
+                        cx,
+                    ))
+                })
+                .when(is_tasks, |item| {
+                    item.child(crate::ui::onboarding::target_marker(
+                        crate::ui::onboarding::SpotlightTarget::TasksNav,
+                        cx,
+                    ))
+                })
+                .on_click(move |_, _, cx| {
+                    center.update(cx, |center, cx| center.show_activity(target, cx));
+                    if is_docs && active_project.is_some() {
+                        crate::ui::onboarding::emit_for_project(
+                            active_project.unwrap(),
+                            crate::ui::onboarding::OnboardingEvent::DocsOpened,
+                            cx,
+                        );
+                    }
+                    if is_tasks && active_project.is_some() {
+                        crate::ui::onboarding::emit_for_project(
+                            active_project.unwrap(),
+                            crate::ui::onboarding::OnboardingEvent::TasksOpened,
+                            cx,
+                        );
+                    }
+                })
+        };
+
+        v_flex()
+            .flex_none()
+            .w(px(if on_right { 66. } else { 60. }))
+            .h_full()
+            // Right-rail cells run flush and carry their own left-edge dividers;
+            // the left rail keeps its inset, rounded pills.
+            .when(!on_right, |rail| rail.pt_2().gap_1())
+            .bg(panel_bg)
+            // Left rail: a divider on the sidebar side so the rail reads as its
+            // own column, not a bleed of the sidebar (shown whenever the sidebar
+            // is present; when it's collapsed the rail is at the window edge).
+            .when(!on_right && !show_divider, |rail| {
+                rail.border_l_1().border_color(style::hairline(cx))
+            })
+            .when(show_divider && !on_right, |rail| {
+                rail.border_r_1().border_color(style::hairline(cx))
+            })
+            // Right rail: a short top spacer (carrying the divider) so the first
+            // cell's chip lines up with the top of the panel's Board/Git toggle.
+            .when(on_right, |rail| {
+                rail.child(
+                    div()
+                        .flex_none()
+                        .h(px(4.))
+                        .border_l_1()
+                        .border_color(style::hairline(cx)),
+                )
+            })
+            .child(item(
+                "rail-agents",
+                IconName::Bot,
+                "Agents",
+                ProjectActivity::Agents,
+                cx,
+            ))
+            .child(item(
+                "rail-code",
+                IconName::PanelBottomOpen,
+                "Code",
+                ProjectActivity::Code,
+                cx,
+            ))
+            .child(item(
+                "rail-tasks",
+                crate::ui::design::tasks_icon(),
+                "Tasks",
+                ProjectActivity::Tasks,
+                cx,
+            ))
+            .child(item(
+                "rail-design",
+                crate::ui::design::design_icon(),
+                "Design",
+                ProjectActivity::Design,
+                cx,
+            ))
+            .child(item(
+                "rail-docs",
+                crate::ui::design::docs_icon(),
+                "Docs",
+                ProjectActivity::Docs,
+                cx,
+            ))
+            .child(item(
+                "rail-db",
+                IconName::Database,
+                "DB",
+                ProjectActivity::Db,
+                cx,
+            ))
+            .child(item(
+                "rail-designs",
+                IconName::Image,
+                "Assets",
+                ProjectActivity::Designs,
+                cx,
+            ))
+            .child(item(
+                "rail-services",
+                IconName::Network,
+                "Services",
+                ProjectActivity::Services,
+                cx,
+            ))
+            // Right rail: a flexible spacer (carrying the divider) pushes the
+            // Settings cell to the bottom, VS Code-style.
+            .when(on_right, |rail| {
+                rail.child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .border_l_1()
+                        .border_color(style::hairline(cx)),
+                )
+                .child(self.rail_footer(cx))
+            })
+    }
+}

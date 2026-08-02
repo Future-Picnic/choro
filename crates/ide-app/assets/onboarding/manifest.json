@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "project": {
+    "name": "Choro Playground",
+    "folder": "choro-playground",
+    "icon": "rocket",
+    "icon_color": "purple",
+    "scripts": [
+      {
+        "name": "Preview",
+        "command": "python3 scripts/serve.py"
+      }
+    ],
+    "preview": {
+      "title": "Playground · Live preview",
+      "url": "http://127.0.0.1:4173",
+      "notes": "The local page served by the Playground Preview script."
+    }
+  },
+  "first_agent": {
+    "prompt": "Build the top of the Choro Field Guide. Edit index.html ONLY, and do not touch any other file (styles.css, showcase.html, and stack.json stay exactly as they are). Do not add a framework, dependency, image, or new file.\n\nIn showcase.html there is a block marked between <!-- FIELD-GUIDE:TOP ... --> and <!-- /FIELD-GUIDE:TOP -->. In index.html there is a matching pair of FIELD-GUIDE:TOP markers around a placeholder <main>.\n\nReplace everything between index.html's FIELD-GUIDE:TOP markers with the exact contents of that same block from showcase.html (the hero and the short script after it). Copy it verbatim — do not reword, restyle, or reformat anything. Keep the markers. Do not ask questions; finish quickly."
+  },
+  "starter_task": {
+    "title": "Bring in the rest of the Field Guide",
+    "description": "The top of index.html is built. Now bring in the rest of the page from showcase.html — the connected build strip, the toolkit section, and the footer.\n\nIn showcase.html there is a block marked between <!-- FIELD-GUIDE:BOTTOM ... --> and <!-- /FIELD-GUIDE:BOTTOM -->. Copy that whole block verbatim and paste it into index.html directly after the <!-- /FIELD-GUIDE:TOP --> marker (i.e. under the hero), before </body>.\n\nKeep the existing hero exactly as it is. Do NOT modify styles.css, showcase.html, stack.json, or any other file, and do not redesign or rewrite anything. This is a straight copy — finish quickly, do not ask questions."
+  }
+}

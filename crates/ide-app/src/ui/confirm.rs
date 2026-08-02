@@ -1,0 +1,249 @@
+//! Shared confirmation dialog.
+//!
+//! One polished alert/confirmation modal used across the whole app so every
+//! destructive or important prompt looks identical and respects the active
+//! theme. Build one with [`ConfirmDialog::new`], configure it with the builder
+//! methods, and present it with [`ConfirmDialog::open`].
+//!
+//! Layout: a tinted icon badge + title, a muted supporting line, an optional
+//! "detail" chip for the affected target (file path, branch, …) and a footer
+//! with a ghost *Cancel* and a tone-colored confirm button.
+
+use std::rc::Rc;
+
+use gpui::{
+    div, px, relative, App, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled,
+    Window,
+};
+use gpui_component::{
+    button::{Button, ButtonVariants},
+    h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, WindowExt,
+};
+
+/// Accent tone for a confirmation dialog. Picks the icon-badge tint and the
+/// confirm button variant. Every color is pulled from the theme, so the dialog
+/// reads correctly in every light/dark palette.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmTone {
+    /// Destructive, irreversible actions (discard, delete, overwrite).
+    Danger,
+    /// Cautionary actions that are notable but not strictly destructive.
+    Warning,
+    /// Neutral / affirmative confirmations.
+    #[allow(dead_code, reason = "reserved for affirmative confirmation flows")]
+    Primary,
+}
+
+type ConfirmHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// A reusable confirmation modal.
+pub struct ConfirmDialog {
+    tone: ConfirmTone,
+    icon: IconName,
+    title: SharedString,
+    message: SharedString,
+    detail: Option<SharedString>,
+    confirm_label: SharedString,
+    cancel_label: SharedString,
+    confirm_id: SharedString,
+    width: f32,
+    on_confirm: Option<ConfirmHandler>,
+}
+
+impl ConfirmDialog {
+    /// Starts a danger-tone confirmation with a warning triangle. Override the
+    /// tone/icon/labels with the builder methods as needed.
+    pub fn new(title: impl Into<SharedString>, message: impl Into<SharedString>) -> Self {
+        Self {
+            tone: ConfirmTone::Danger,
+            icon: IconName::TriangleAlert,
+            title: title.into(),
+            message: message.into(),
+            detail: None,
+            confirm_label: "Confirm".into(),
+            cancel_label: "Cancel".into(),
+            confirm_id: "confirm-dialog-ok".into(),
+            width: 440.0,
+            on_confirm: None,
+        }
+    }
+
+    pub fn tone(mut self, tone: ConfirmTone) -> Self {
+        self.tone = tone;
+        self
+    }
+
+    pub fn icon(mut self, icon: IconName) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    /// A secondary line shown in a subtle chip (e.g. the file path or branch).
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn confirm_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.confirm_label = label.into();
+        self
+    }
+
+    pub fn cancel_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.cancel_label = label.into();
+        self
+    }
+
+    /// Stable element id for the confirm button. Keep it unique per dialog so
+    /// GPUI's input routing stays predictable.
+    pub fn confirm_id(mut self, id: impl Into<SharedString>) -> Self {
+        self.confirm_id = id.into();
+        self
+    }
+
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Runs when the user accepts. The dialog is already closed by the time this
+    /// fires.
+    pub fn on_confirm(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_confirm = Some(Rc::new(handler));
+        self
+    }
+
+    /// Presents the dialog in the given window.
+    pub fn open(self, window: &mut Window, cx: &mut App) {
+        let ConfirmDialog {
+            tone,
+            icon,
+            title,
+            message,
+            detail,
+            confirm_label,
+            cancel_label,
+            confirm_id,
+            width,
+            on_confirm,
+        } = self;
+
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let accent = tone_color(tone, cx);
+            let icon = icon.clone();
+            let on_confirm = on_confirm.clone();
+            let confirm_label = confirm_label.clone();
+            let confirm_id = confirm_id.clone();
+            let cancel_label = cancel_label.clone();
+            let detail = detail.clone();
+
+            dialog
+                .w(px(width))
+                .overlay_closable(true)
+                .title(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(icon_badge(icon, accent, cx))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(title.clone())),
+                )
+                .child(
+                    v_flex()
+                        .pt_1()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_size(crate::ui::design::text_body())
+                                .line_height(relative(1.45))
+                                .text_color(crate::ui::design::t3(cx))
+                                .child(message.clone()),
+                        )
+                        .children(detail.map(|detail| detail_chip(detail, cx))),
+                )
+                .footer(move |_, _, _, cx| {
+                    let on_confirm = on_confirm.clone();
+                    let confirm = apply_tone(
+                        Button::new(confirm_id.clone())
+                            .small()
+                            .label(confirm_label.clone()),
+                        tone,
+                    )
+                    .on_click(move |_, window, cx| {
+                        window.close_dialog(cx);
+                        if let Some(handler) = on_confirm.clone() {
+                            handler(window, cx);
+                        }
+                    });
+                    vec![
+                        // A dialog is a lifted box, so its neutral action is
+                        // *recessed* (a step darker than the popover surface) —
+                        // a raised fill would sit almost on the dialog colour and
+                        // read as bare text.
+                        Button::new("confirm-dialog-cancel")
+                            .small()
+                            .custom(crate::ui::style::dialog_neutral_variant(cx))
+                            .label(cancel_label.clone())
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                        confirm,
+                    ]
+                })
+        });
+    }
+}
+
+/// Resolves the accent color for a tone from the active theme.
+fn tone_color(tone: ConfirmTone, cx: &App) -> Hsla {
+    match tone {
+        ConfirmTone::Danger => crate::ui::design::rose(cx),
+        ConfirmTone::Warning => crate::ui::design::amber(cx),
+        ConfirmTone::Primary => crate::ui::design::accent(cx),
+    }
+}
+
+/// Applies the matching button variant for a tone.
+fn apply_tone(button: Button, tone: ConfirmTone) -> Button {
+    match tone {
+        ConfirmTone::Danger => button.danger(),
+        ConfirmTone::Warning => button.warning(),
+        ConfirmTone::Primary => button.primary(),
+    }
+}
+
+/// The tinted, rounded icon badge shown next to the title.
+/// The tinted identity badge that leads every dialog title. Shared so any modal
+/// reads with the same identity as the confirmation dialogs rather than pairing
+/// its title with a bare, untinted glyph.
+pub fn icon_badge(icon: IconName, accent: Hsla, cx: &App) -> impl IntoElement {
+    div()
+        .flex_none()
+        .size(px(28.))
+        .rounded(cx.theme().radius)
+        .bg(accent.opacity(0.12))
+        .border_1()
+        .border_color(accent.opacity(0.22))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            Icon::new(icon)
+                .size(crate::ui::design::icon())
+                .text_color(accent),
+        )
+}
+
+/// The subtle chip that names the affected target (a path, branch, …).
+fn detail_chip(detail: SharedString, cx: &App) -> impl IntoElement {
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .px_3()
+        .py_2()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(crate::ui::design::line(cx).opacity(0.6))
+        .bg(crate::ui::design::surface(cx).opacity(0.4))
+        .text_size(crate::ui::design::text_ui())
+        .text_color(crate::ui::design::t3(cx))
+        .truncate()
+        .child(detail)
+}

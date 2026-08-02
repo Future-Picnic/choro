@@ -1,0 +1,41 @@
+use gpui::actions;
+
+actions!(
+    choro,
+    [
+        SaveFile,
+        NewTerminal,
+        CloseTab,
+        OpenProjectSearch,
+        OpenCommands,
+        OpenContentSearch,
+        OpenFolder,
+        ToggleFocusMode,
+        ToggleLeftPanel,
+        ToggleRightPanel,
+        OpenSettings,
+        ViewCode,
+        ViewAgents,
+        ViewTasks,
+        ViewDb,
+        ViewDocs,
+        ViewDesigns,
+        ViewDesign,
+        ViewServices,
+        ViewSplit,
+        ViewFiles,
+        ViewTerminal,
+        NewAgentChat,
+        StartNewAgent,
+        ToggleAgentPlanMode,
+        NavigateBack,
+        NavigateForward,
+        TogglePreview,
+        ToggleTerminalArea,
+        NextOpenItem,
+        PreviousOpenItem,
+        StopCurrentAgent,
+        QuickAddTask,
+        QuitApplication
+    ]
+);

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "format": "blocknote",
+  "title": "Extend the Field Guide",
+  "blocks": [
+    { "type": "heading", "props": { "level": 1 }, "content": "Extend the Field Guide" },
+    { "type": "heading", "props": { "level": 2 }, "content": "Outcome" },
+    { "type": "paragraph", "content": "The Field Guide is a small site that explains how work moves through Choro: an idea becomes a brief, a brief becomes an agent, an agent becomes a pull request, and the result is a page you can actually open." },
+    { "type": "paragraph", "content": "This Doc is the spec for the next slice of it. It is also an example of the point: written once, properly, and handed to an agent whole — every decision and caveat travelling with it, nothing re-explained in a chat." },
+    { "type": "heading", "props": { "level": 2 }, "content": "What it should say" },
+    { "type": "paragraph", "content": "The Field Guide's argument is Choro's argument, in the product's own words:" },
+    { "type": "quote", "content": "The hard part isn't the code. It's the context." },
+    { "type": "paragraph", "content": "Agents write the code now. The hard part is holding the whole thing in your head while they move fast. So: one window, one context, nothing scattered, nothing lost — and you still deciding what ships." },
+    { "type": "heading", "props": { "level": 2 }, "content": "Constraints" },
+    { "type": "bulletListItem", "content": "styles.css is the design. Never modify it, never add CSS, never add a framework, dependency, or image." },
+    { "type": "bulletListItem", "content": "showcase.html is the finished article. It is the reference for how the page should look when it grows up." },
+    { "type": "bulletListItem", "content": "Words are the part worth writing. Everything else is already decided." },
+    { "type": "heading", "props": { "level": 2 }, "content": "Voice" },
+    { "type": "paragraph", "content": "Plain, confident, specific. No marketing language, no exclamation marks, no seamless or unlock. Say what it does. Short sentences beat long ones." }
+  ]
+}

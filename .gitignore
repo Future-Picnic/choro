@@ -1,0 +1,11 @@
+/target
+.DS_Store
+node_modules/
+.remotion/
+.expo/
+dist/
+!crates/ide-app/web/doc-editor/dist/
+!crates/ide-app/web/doc-editor/dist/**
+__pycache__/
+*.py[cod]
+*.tmp
