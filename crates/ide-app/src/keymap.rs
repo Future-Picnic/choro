@@ -330,7 +330,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         shortcut!(
             "toggle_agent_plan_mode",
-            None,
+            Some("shift-tab"),
             ToggleAgentPlanMode,
             "Toggle plan mode",
             "Switch the selected agent between default and plan mode",
@@ -472,5 +472,17 @@ mod tests {
         assert_eq!(focus_mode.default_keystroke, Some("cmd-f"));
         assert_eq!(focus_mode.category, ShortcutCategory::NavigationLayout);
         assert!(focus_mode.in_commands);
+    }
+
+    #[test]
+    fn plan_mode_defaults_to_shift_tab() {
+        let plan_mode = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_agent_plan_mode")
+            .unwrap();
+
+        assert_eq!(plan_mode.default_keystroke, Some("shift-tab"));
+        assert_eq!(plan_mode.category, ShortcutCategory::Agents);
+        assert!(plan_mode.in_commands);
     }
 }
