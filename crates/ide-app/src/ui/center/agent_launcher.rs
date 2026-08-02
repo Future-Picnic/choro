@@ -1,3 +1,4 @@
+use super::agent_naming::initial_agent_title;
 use super::*;
 
 impl CenterArea {
@@ -292,18 +293,13 @@ impl CenterArea {
                 })
                 .detach();
         }
-        let title = draft
-            .lines()
-            .next()
-            .map(|line| line.chars().take(60).collect::<String>())
-            .filter(|line| !line.trim().is_empty())
-            .or_else(|| {
-                composer
-                    .selected_command
-                    .as_ref()
-                    .map(|command| command.title.clone())
-            })
-            .unwrap_or_else(|| "New agent".to_string());
+        let title = initial_agent_title(
+            &draft,
+            composer
+                .selected_command
+                .as_ref()
+                .map(|command| command.title.as_str()),
+        );
         let provider = composer.provider;
         let runtime = composer.runtime;
         let interaction_mode = composer.interaction_mode;
