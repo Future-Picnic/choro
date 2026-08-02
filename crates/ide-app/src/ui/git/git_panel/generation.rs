@@ -239,6 +239,17 @@ fn run_streamed_generation(
     }
 }
 
+/// Run the configured small-writing model in the same isolated, no-tools path
+/// used by commit, pull-request, Riff, and memory generation.
+pub(crate) fn generate_one_shot_text(
+    generation_agent: &GenerationAgent,
+    working_directory: &Path,
+    prompt: String,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    run_streamed_generation(generation_agent, working_directory, prompt, timeout)
+}
+
 fn run_claude_generation(
     working_directory: &Path,
     model: &str,

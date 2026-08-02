@@ -1074,6 +1074,8 @@ impl CenterArea {
         }) else {
             return;
         };
+        let auto_name_context =
+            self.auto_name_context_for_second_message(agent, &message_display_text, surface, cx);
         // A plan existed, so this submission went through plan resolution;
         // Plan mode back out means the user typed a correction (refine path).
         if let Some(plan_markdown) = refine_plan_markdown {
@@ -1117,7 +1119,7 @@ impl CenterArea {
         } else {
             AgentInteractionMode::Default
         };
-        self.dispatch_agent_chat_submission_with_agent(
+        let submitted = self.dispatch_agent_chat_submission_with_agent(
             agent,
             submission_text,
             Some(message_display_text),
@@ -1125,6 +1127,14 @@ impl CenterArea {
             mode,
             cx,
         );
+        if submitted {
+            if let Some((first_message, second_message)) = auto_name_context {
+                self.request_agent_auto_name(agent.clone(), first_message, second_message, cx);
+            }
+        } else {
+            // A failed dispatch did not consume the second-message trigger.
+            self.agent_auto_names_requested.remove(&agent.id);
+        }
         self.acknowledge_agent_chat_seen(agent.id, cx);
     }
 

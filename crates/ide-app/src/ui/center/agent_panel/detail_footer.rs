@@ -50,7 +50,10 @@ impl CenterArea {
 
         if !title.is_empty() {
             self.agents.update(cx, |agents, cx| {
-                agents.update_title(agent_id, title, cx);
+                agents.update_title(agent_id, title.clone(), cx);
+            });
+            self.agent_chats.update(cx, |chats, cx| {
+                chats.update_title(agent_id, title, cx);
             });
         }
         self.agent_title_edit = None;

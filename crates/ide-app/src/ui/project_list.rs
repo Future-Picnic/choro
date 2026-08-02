@@ -1,12 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::FluentBuilder, px, uniform_list, App, AppContext, Context, Entity, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement, Styled, WeakEntity, Window,
+    div, ease_out_quint, prelude::FluentBuilder, px, uniform_list, Animation, AnimationExt, App,
+    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity,
+    Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -515,9 +516,78 @@ pub struct ProjectList {
     /// A newly waiting agent auto-expands a collapsed attention section, but the
     /// baseline scan at startup respects the persisted collapse.
     known_waiting: Option<HashSet<Uuid>>,
+    /// Snapshot used to distinguish real renames from the many status changes
+    /// that also emit AgentRecordsEvent::Changed.
+    known_agent_titles: HashMap<Uuid, String>,
+    /// Bumped per rename so GPUI mounts one fresh, one-shot title animation.
+    agent_title_animation_epochs: HashMap<Uuid, u64>,
 }
 
 impl ProjectList {
+    fn refresh_agent_title_animations(&mut self, records: Vec<AgentRecord>) {
+        let next_titles = records
+            .into_iter()
+            .map(|agent| (agent.id, agent.title))
+            .collect::<HashMap<_, _>>();
+        for (agent_id, title) in &next_titles {
+            if self
+                .known_agent_titles
+                .get(agent_id)
+                .is_some_and(|known| known != title)
+            {
+                let epoch = self
+                    .agent_title_animation_epochs
+                    .entry(*agent_id)
+                    .or_insert(0);
+                *epoch = epoch.wrapping_add(1);
+            }
+        }
+        self.agent_title_animation_epochs
+            .retain(|agent_id, _| next_titles.contains_key(agent_id));
+        self.known_agent_titles = next_titles;
+    }
+
+    fn render_agent_title(
+        &self,
+        agent: &AgentRecord,
+        weight: FontWeight,
+        color: gpui::Hsla,
+        cx: &App,
+    ) -> gpui::AnyElement {
+        let title = div()
+            .flex_1()
+            .min_w(px(0.))
+            .text_size(crate::ui::design::text_head())
+            .font_weight(weight)
+            .text_color(color)
+            .truncate()
+            .child(SharedString::from(agent.title.clone()));
+
+        let Some(epoch) = self.agent_title_animation_epochs.get(&agent.id).copied() else {
+            return title.into_any_element();
+        };
+        let seed = (agent.id.as_u128() as u64)
+            .rotate_left(17)
+            .wrapping_add(epoch);
+        let accent = crate::ui::design::accent(cx);
+        title
+            .rounded(crate::ui::design::r_sm())
+            .with_animation(
+                ("agent-title-rename", seed),
+                Animation::new(Duration::from_millis(280)).with_easing(ease_out_quint()),
+                move |title, delta| {
+                    // Primary: the resolved name settles upward. Secondary:
+                    // opacity catches up. Ambient: a quiet accent wash recedes.
+                    title
+                        .relative()
+                        .top(px((1.0 - delta) * 3.0))
+                        .opacity(0.38 + delta * 0.62)
+                        .bg(accent.opacity((1.0 - delta) * 0.13))
+                },
+            )
+            .into_any_element()
+    }
+
     fn save_project_name(
         workspace: Entity<Workspace>,
         id: ProjectId,
@@ -630,6 +700,12 @@ impl ProjectList {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
+            let known_agent_titles = agents
+                .read(cx)
+                .all_records()
+                .into_iter()
+                .map(|agent| (agent.id, agent.title))
+                .collect();
             cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
             cx.observe(&git_states, |_, _, cx| cx.notify()).detach();
             cx.observe(&terminals, |this: &mut Self, _, cx| {
@@ -650,6 +726,9 @@ impl ProjectList {
             cx.subscribe(
                 &agents,
                 |this: &mut Self, agents, event: &AgentRecordsEvent, cx| {
+                    if matches!(event, AgentRecordsEvent::Changed) {
+                        this.refresh_agent_title_animations(agents.read(cx).all_records());
+                    }
                     if matches!(event, AgentRecordsEvent::SelectionChanged) {
                         let selected = this.workspace.read(cx).active.and_then(|project| {
                             agents.read(cx).explicitly_selected_agent_id(project)
@@ -683,6 +762,8 @@ impl ProjectList {
                 attention_pinned: None,
                 hovered_attention: None,
                 known_waiting: None,
+                known_agent_titles,
+                agent_title_animation_epochs: HashMap::new(),
             }
         })
     }
@@ -1143,28 +1224,24 @@ impl ProjectList {
                     crate::ui::design::icon_sm(),
                 ))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    // Sidebar agent row (`.agent`): 13px, muted `t2` by default so the
-                    // list reads calm; only the selected/waiting row lifts to `t1`.
-                    .text_size(crate::ui::design::text_head())
-                    .font_weight(if waiting {
-                        FontWeight::MEDIUM
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .text_color(if waiting {
-                        warning
-                    } else if selected {
-                        crate::ui::design::t1(cx)
-                    } else {
-                        crate::ui::design::t2(cx)
-                    })
-                    .truncate()
-                    .child(SharedString::from(agent.title.clone())),
-            )
+            // Sidebar agent row (`.agent`): 13px, muted `t2` by default so the
+            // list reads calm; only the selected/waiting row lifts to `t1`.
+            .child(self.render_agent_title(
+                agent,
+                if waiting {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                },
+                if waiting {
+                    warning
+                } else if selected {
+                    crate::ui::design::t1(cx)
+                } else {
+                    crate::ui::design::t2(cx)
+                },
+                cx,
+            ))
             .when(runtime == ProjectAgentRuntime::Working, |row| {
                 row.child(
                     div()
@@ -1378,16 +1455,7 @@ impl ProjectList {
                     crate::ui::design::icon_sm(),
                 ))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .text_size(crate::ui::design::text_head())
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(warning)
-                    .truncate()
-                    .child(SharedString::from(agent.title.clone())),
-            )
+            .child(self.render_agent_title(agent, FontWeight::MEDIUM, warning, cx))
             .when(hovered, |row| {
                 row.child(
                     div()

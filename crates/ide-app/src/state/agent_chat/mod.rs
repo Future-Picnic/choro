@@ -638,6 +638,18 @@ impl AgentChatState {
         cx.notify();
     }
 
+    pub fn update_title(&mut self, agent_id: Uuid, title: String, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return;
+        };
+        if session.title == title {
+            return;
+        }
+        session.title = title;
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+    }
+
     pub fn queue_turn(
         &mut self,
         agent_id: Uuid,
