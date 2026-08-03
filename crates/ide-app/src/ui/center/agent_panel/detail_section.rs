@@ -483,7 +483,7 @@ impl CenterArea {
                         area.child(self.render_agent_diff_drawer(&agent, &drawer, cx))
                     })
                     .when_some(plan_drawer, |area, plan| {
-                        area.child(self.render_agent_plan_drawer(&agent, &plan, cx))
+                        area.child(self.render_agent_plan_drawer(&agent, &plan, window, cx))
                     })
                     .when(
                         agent.runtime == AgentRuntimeKind::Chat

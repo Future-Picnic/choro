@@ -947,19 +947,19 @@ impl CenterArea {
             }
             AgentChatTimelineItem::PendingUserInput(_) => div().into_any_element(),
             AgentChatTimelineItem::ProposedPlan(plan) => {
-                self.render_proposed_plan_card(agent.id, row_index, plan, cx)
+                self.render_proposed_plan_card(agent.id, row_index, plan, window, cx)
             }
             AgentChatTimelineItem::CodeReview(review) => {
-                self.render_code_review_card(agent.id, review, cx)
+                self.render_code_review_card(agent.id, review, window, cx)
             }
             AgentChatTimelineItem::Verification(verification) => {
-                self.render_verification_card(agent.id, verification, cx)
+                self.render_verification_card(agent.id, verification, window, cx)
             }
             AgentChatTimelineItem::ChangedFiles(summary) => {
                 self.render_changed_files_card(agent, summary, window, cx)
             }
             AgentChatTimelineItem::ShipResult(result) => {
-                self.render_ship_result_card(agent, result, cx)
+                self.render_ship_result_card(agent, result, window, cx)
             }
             AgentChatTimelineItem::Rejoined(card) => self.render_rejoined_card(agent, card, cx),
             AgentChatTimelineItem::RejoinConflict(card) => {

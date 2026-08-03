@@ -141,6 +141,7 @@ impl CenterArea {
         &self,
         agent_id: Uuid,
         verification: &crate::state::agent_chat::Verification,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let hide_unclear = self
@@ -225,7 +226,7 @@ impl CenterArea {
                         .w_full()
                         .px(crate::ui::design::chat_card_body_pad_x())
                         .py(crate::ui::design::chat_card_body_pad_y())
-                        .child(render_plan_markdown(&verification.display_markdown(), cx)),
+                        .child(render_plan_markdown(&verification.display_markdown(), window, cx)),
                 )
                 .into_any_element();
         }
@@ -276,7 +277,8 @@ impl CenterArea {
                     display_items
                         .iter()
                         .take(visible)
-                        .map(|item| self.render_verification_item(item, cx)),
+                        .map(|item| self.render_verification_item(item, window, cx))
+                        .collect::<Vec<_>>(),
                 ),
         );
 
@@ -358,6 +360,7 @@ impl CenterArea {
     fn render_verification_item(
         &self,
         item: &crate::state::agent_chat::VerificationItem,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let (icon, color) = verification_status_style(item.status, cx);
@@ -428,7 +431,7 @@ impl CenterArea {
                             ),
                     )
                     .when(!item.detail.trim().is_empty(), |col| {
-                        col.child(div().w_full().child(render_plan_markdown(&item.detail, cx)))
+                        col.child(div().w_full().child(render_plan_markdown(&item.detail, window, cx)))
                     }),
             )
             .into_any_element()

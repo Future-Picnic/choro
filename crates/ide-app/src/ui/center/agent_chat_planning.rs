@@ -6,6 +6,7 @@ impl CenterArea {
         agent_id: Uuid,
         row_index: usize,
         plan: &crate::state::agent_chat::ProposedPlan,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let collapsible = plan.should_collapse();
@@ -70,7 +71,7 @@ impl CenterArea {
                     .when(!plan.expanded && collapsible, |body| {
                         body.max_h(px(300.)).overflow_hidden()
                     })
-                    .child(render_plan_markdown(&body, cx)),
+                    .child(render_plan_markdown(&body, window, cx)),
             )
             .when(collapsible, |card| {
                 let expanded = plan.expanded;
