@@ -5,6 +5,7 @@ impl CenterArea {
         &self,
         agent_id: Uuid,
         review: &crate::state::agent_chat::CodeReview,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let collapsible = review.should_collapse();
@@ -94,17 +95,24 @@ impl CenterArea {
                             .child(div().flex_1().min_w(px(0.)).child("What happens"))
                             .child(div().flex_1().min_w(px(0.)).child("Suggested fix")),
                     )
-                    .children(review.findings.iter().take(visible).enumerate().map(
-                        |(i, finding)| {
-                            self.render_code_review_finding(
-                                agent_id,
-                                &review_id_for_rows,
-                                i,
-                                finding,
-                                cx,
-                            )
-                        },
-                    )),
+                    .children(
+                        review
+                            .findings
+                            .iter()
+                            .take(visible)
+                            .enumerate()
+                            .map(|(i, finding)| {
+                                self.render_code_review_finding(
+                                    agent_id,
+                                    &review_id_for_rows,
+                                    i,
+                                    finding,
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
             );
 
         let card_key = code_review_card_key(agent_id, &review.id);
@@ -197,6 +205,7 @@ impl CenterArea {
         review_id: &str,
         index: usize,
         finding: &crate::state::agent_chat::CodeReviewFinding,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let color = code_review_severity_color(finding.severity, cx);
@@ -308,7 +317,7 @@ impl CenterArea {
                     .flex_1()
                     .min_w(px(0.))
                     .when(!finding.impact.trim().is_empty(), |cell| {
-                        cell.child(render_plan_markdown(&finding.impact, cx))
+                        cell.child(render_plan_markdown(&finding.impact, window, cx))
                     }),
             )
             .child(
@@ -316,7 +325,7 @@ impl CenterArea {
                     .flex_1()
                     .min_w(px(0.))
                     .when_some(finding.fix.clone(), |cell, fix| {
-                        cell.child(render_plan_markdown(&fix, cx))
+                        cell.child(render_plan_markdown(&fix, window, cx))
                     }),
             )
             .into_any_element()

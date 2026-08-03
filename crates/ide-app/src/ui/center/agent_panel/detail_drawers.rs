@@ -420,6 +420,7 @@ impl CenterArea {
         &self,
         agent: &AgentRecord,
         plan: &crate::state::agent_chat::ProposedPlan,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
@@ -455,7 +456,7 @@ impl CenterArea {
                 .bg(crate::ui::style::surface(cx))
                 .p_4()
                 .gap_3()
-                .child(render_plan_markdown(&plan.display_markdown(), cx)),
+                .child(render_plan_markdown(&plan.display_markdown(), window, cx)),
         );
 
         self.render_agent_detail_drawer(
