@@ -10,6 +10,10 @@ use super::*;
 
 const SOLO_AHEAD_REFRESH: Duration = Duration::from_secs(30);
 
+fn should_scope_to_solo_lane(is_solo: bool, is_rejoined: bool, lane_has_git: bool) -> bool {
+    is_solo && !is_rejoined && lane_has_git
+}
+
 /// The Solo context the panel is currently scoped around.
 pub(super) struct LaneScope {
     pub agent_id: uuid::Uuid,
@@ -26,10 +30,14 @@ impl GitPanel {
             .read(cx)
             .active
             .and_then(|project| self.agents.read(cx).explicitly_selected_agent(project))
-            .filter(|agent| agent.is_solo())
             .and_then(|agent| {
                 let lane = agent.lane_path.clone()?;
-                lane.join(".git").exists().then_some((agent, lane))
+                should_scope_to_solo_lane(
+                    agent.is_solo(),
+                    agent.solo_rejoined_branch.is_some(),
+                    lane.join(".git").exists(),
+                )
+                .then_some((agent, lane))
             });
 
         let Some((agent, lane)) = context else {
@@ -214,5 +222,16 @@ impl GitPanel {
             })
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_scope_to_solo_lane;
+
+    #[test]
+    fn rejoined_solo_never_uses_its_leftover_lane_for_git() {
+        assert!(!should_scope_to_solo_lane(true, true, true));
+        assert!(should_scope_to_solo_lane(true, false, true));
     }
 }

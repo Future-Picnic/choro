@@ -129,6 +129,11 @@ impl GitPanel {
         self.git_accounts_error.clone()
     }
 
+    pub(crate) fn git_repository_error(&self, cx: &App) -> Option<String> {
+        let git = self.active_git(cx)?;
+        git.read(cx).last_error.clone()
+    }
+
     pub(crate) fn select_git_account(&mut self, account: Option<String>, cx: &mut Context<Self>) {
         let Some(git) = self.active_git(cx) else {
             return;

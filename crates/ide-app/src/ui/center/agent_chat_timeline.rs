@@ -1,6 +1,10 @@
 use super::agent_chat_runtime::{verification_lifecycle, VerificationLifecycle};
 use super::*;
 
+fn should_show_ship_action(has_project_changed_files: bool, is_rejoined: bool) -> bool {
+    has_project_changed_files && !is_rejoined
+}
+
 impl CenterArea {
     pub(super) fn render_agent_chat_body(
         &mut self,
@@ -173,6 +177,10 @@ impl CenterArea {
                     active_git.as_ref().is_some_and(has_changes)
                 }
             };
+        let show_ship_action = should_show_ship_action(
+            has_project_changed_files,
+            agent.solo_rejoined_branch.is_some(),
+        );
         let compact_actions = self.agent_chat_rail_compact;
         let supported_efforts = agent.supported_efforts();
         let is_running = matches!(
@@ -1039,7 +1047,7 @@ impl CenterArea {
                                         )
                                         },
                                     )
-                                    .when(has_project_changed_files, |row| {
+                                    .when(show_ship_action, |row| {
                                         row.child(
                                             div()
                                                 .relative()
@@ -1251,5 +1259,12 @@ mod assistant_control_tests {
             assistant_open_code_effort(&variants, AgentEffort::Max),
             AgentEffort::High
         );
+    }
+
+    #[test]
+    fn ship_action_disappears_after_a_solo_is_rejoined() {
+        assert!(should_show_ship_action(true, false));
+        assert!(!should_show_ship_action(true, true));
+        assert!(!should_show_ship_action(false, false));
     }
 }

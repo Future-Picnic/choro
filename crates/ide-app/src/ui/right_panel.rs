@@ -41,6 +41,10 @@ impl RightToolTab {
     }
 }
 
+fn git_account_selector_visible(selected: RightToolTab) -> bool {
+    selected == RightToolTab::Git
+}
+
 /// Right panel: contextual tools for the selected project activity.
 pub struct RightPanel {
     center: Entity<CenterArea>,
@@ -264,86 +268,108 @@ impl Render for RightPanel {
         let selected_git_account = self.git_panel.read(cx).selected_git_account(cx);
         let git_accounts_loading = self.git_panel.read(cx).git_accounts_loading();
         let git_accounts_error = self.git_panel.read(cx).git_accounts_error();
-        let git_account_selector = git_account_remote
-            .filter(ide_core::git::GitRemote::is_github_https)
-            .map(|remote| {
-                let account_avatar = selected_git_account
-                    .clone()
-                    .map(|account| Avatar::new().name(account).xsmall().into_any_element())
-                    .unwrap_or_else(|| {
-                        Icon::new(IconName::GitHub)
-                            .size(crate::ui::design::icon())
-                            .text_color(crate::ui::design::t3(cx))
-                            .into_any_element()
+        let git_repository_error = self.git_panel.read(cx).git_repository_error(cx);
+        let git_account_remote =
+            git_account_remote.filter(ide_core::git::GitRemote::is_github_https);
+        let git_account_selector = git_account_selector_visible(selected).then(|| {
+            let account_switching_available = git_account_remote.is_some();
+            let account_avatar = selected_git_account
+                .clone()
+                .map(|account| Avatar::new().name(account).xsmall().into_any_element())
+                .unwrap_or_else(|| {
+                    Icon::new(IconName::GitHub)
+                        .size(crate::ui::design::icon())
+                        .text_color(if git_repository_error.is_some() {
+                            crate::ui::design::rose(cx)
+                        } else {
+                            crate::ui::design::t3(cx)
+                        })
+                        .into_any_element()
+                });
+            let tooltip = match (
+                &selected_git_account,
+                &git_accounts_error,
+                &git_account_remote,
+                &git_repository_error,
+            ) {
+                (_, _, _, Some(error)) => {
+                    format!("GitHub account unavailable · {error}")
+                }
+                (_, _, None, None) => {
+                    "GitHub account switching is unavailable for this repository".to_string()
+                }
+                // A notice ("Finish connecting in Terminal…") must stay
+                // visible even when an account is already selected.
+                (Some(account), Some(notice), Some(_), None) => {
+                    format!("GitHub account: @{account} · {notice}")
+                }
+                (Some(account), None, Some(remote), None) => format!(
+                    "GitHub account: @{account} · {} · Click to switch",
+                    remote.name
+                ),
+                (None, Some(error), Some(_), None) => {
+                    format!("Choose a GitHub account · {error}")
+                }
+                (None, None, Some(_), None) => {
+                    "Choose a GitHub account for this repository".to_string()
+                }
+            };
+            let panel = self.git_panel.clone();
+            style::header_svg_button("git-account-selector", account_avatar, cx)
+                .tooltip(tooltip)
+                .dropdown_menu(move |menu, _, _| {
+                    let mut menu = git_accounts.iter().fold(menu, |menu, account| {
+                        let login = account.login.clone();
+                        let selected = selected_git_account.as_deref() == Some(login.as_str());
+                        let panel = panel.clone();
+                        menu.item(
+                            PopupMenuItem::new(format!("@{login}"))
+                                .checked(selected)
+                                .disabled(!account_switching_available)
+                                .on_click(move |_, _, cx| {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.select_git_account(Some(login.clone()), cx)
+                                    });
+                                }),
+                        )
                     });
-                let tooltip = match (&selected_git_account, &git_accounts_error) {
-                    // A notice ("Finish connecting in Terminal…") must stay
-                    // visible even when an account is already selected.
-                    (Some(account), Some(notice)) => {
-                        format!("GitHub account: @{account} · {notice}")
+                    if git_accounts.is_empty() {
+                        let label = if git_accounts_loading {
+                            "Loading connected accounts…"
+                        } else {
+                            "No connected GitHub accounts"
+                        };
+                        menu = menu.item(PopupMenuItem::new(label).disabled(true));
                     }
-                    (Some(account), None) => format!(
-                        "GitHub account: @{account} · {} · Click to switch",
-                        remote.name
-                    ),
-                    (None, Some(error)) => format!("Choose a GitHub account · {error}"),
-                    (None, None) => "Choose a GitHub account for this repository".to_string(),
-                };
-                let panel = self.git_panel.clone();
-                style::header_svg_button("git-account-selector", account_avatar, cx)
-                    .tooltip(tooltip)
-                    .dropdown_menu(move |menu, _, _| {
-                        let mut menu = git_accounts.iter().fold(menu, |menu, account| {
-                            let login = account.login.clone();
-                            let selected = selected_git_account.as_deref() == Some(login.as_str());
-                            let panel = panel.clone();
-                            menu.item(
-                                PopupMenuItem::new(format!("@{login}"))
-                                    .checked(selected)
-                                    .on_click(move |_, _, cx| {
-                                        panel.update(cx, |panel, cx| {
-                                            panel.select_git_account(Some(login.clone()), cx)
-                                        });
-                                    }),
-                            )
-                        });
-                        if git_accounts.is_empty() {
-                            let label = if git_accounts_loading {
-                                "Loading connected accounts…"
-                            } else {
-                                "No connected GitHub accounts"
-                            };
-                            menu = menu.item(PopupMenuItem::new(label).disabled(true));
-                        }
-                        let system_panel = panel.clone();
-                        let refresh_panel = panel.clone();
-                        let connect_panel = panel.clone();
-                        menu.separator()
-                            .item(
-                                PopupMenuItem::new("Use system Git credentials")
-                                    .checked(selected_git_account.is_none())
-                                    .on_click(move |_, _, cx| {
-                                        system_panel.update(cx, |panel, cx| {
-                                            panel.select_git_account(None, cx)
-                                        });
-                                    }),
-                            )
-                            .item(PopupMenuItem::new("Refresh accounts").on_click(
+                    let system_panel = panel.clone();
+                    let refresh_panel = panel.clone();
+                    let connect_panel = panel.clone();
+                    menu.separator()
+                        .item(
+                            PopupMenuItem::new("Use system Git credentials")
+                                .checked(selected_git_account.is_none())
+                                .disabled(!account_switching_available)
+                                .on_click(move |_, _, cx| {
+                                    system_panel
+                                        .update(cx, |panel, cx| panel.select_git_account(None, cx));
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Refresh accounts").on_click(move |_, _, cx| {
+                                refresh_panel
+                                    .update(cx, |panel, cx| panel.refresh_git_accounts(cx));
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Connect another GitHub account…").on_click(
                                 move |_, _, cx| {
-                                    refresh_panel
-                                        .update(cx, |panel, cx| panel.refresh_git_accounts(cx));
+                                    connect_panel
+                                        .update(cx, |panel, cx| panel.connect_git_account(cx));
                                 },
-                            ))
-                            .item(
-                                PopupMenuItem::new("Connect another GitHub account…").on_click(
-                                    move |_, _, cx| {
-                                        connect_panel
-                                            .update(cx, |panel, cx| panel.connect_git_account(cx));
-                                    },
-                                ),
-                            )
-                    })
-            });
+                            ),
+                        )
+                })
+        });
         v_flex()
             .size_full()
             .child(
@@ -384,5 +410,17 @@ impl Render for RightPanel {
                 RightToolTab::Agents => self.agents_panel.clone().into_any_element(),
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_account_selector_stays_visible_for_the_git_panel() {
+        assert!(git_account_selector_visible(RightToolTab::Git));
+        assert!(!git_account_selector_visible(RightToolTab::Files));
+        assert!(!git_account_selector_visible(RightToolTab::Agents));
     }
 }
