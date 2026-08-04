@@ -4,6 +4,7 @@ mod center_ship;
 mod detail_drawers;
 mod detail_footer;
 mod detail_section;
+mod multi_repo_ship;
 mod operations;
 mod remote_ship;
 mod render;
@@ -24,6 +25,47 @@ enum AgentShipAction {
     Commit,
     CommitPush,
     CommitPushPr,
+}
+
+struct MultiRepoShipRepository {
+    label: String,
+    git: Entity<GitState>,
+    repo_path: PathBuf,
+    tracked_repo_path: PathBuf,
+    branch: Option<String>,
+    needs_upstream: bool,
+    all_files: Vec<PathBuf>,
+    conversation_files: Vec<PathBuf>,
+    staged_files: Vec<PathBuf>,
+    file_kinds: HashMap<PathBuf, ide_core::git::ChangeKind>,
+    deselected: HashSet<PathBuf>,
+    branch_name: Entity<InputState>,
+    commit_message: Entity<InputState>,
+    pr_base_branch: String,
+    pr_base_branch_options: Vec<String>,
+    pr_title: Entity<InputState>,
+    pr_description: Entity<InputState>,
+    pending_commit: Option<AgentShipPendingCommit>,
+    completed: bool,
+}
+
+struct MultiRepoShipDialog {
+    agent_id: Uuid,
+    project_id: ProjectId,
+    center: gpui::WeakEntity<CenterArea>,
+    agent_title: String,
+    generation_agent: ide_core::config::GenerationAgent,
+    repositories: Vec<MultiRepoShipRepository>,
+    selected_repository: usize,
+    files_collapsed: bool,
+    create_branch: bool,
+    scope: AgentShipScope,
+    push: bool,
+    open_pr: bool,
+    auto_ship: bool,
+    busy: bool,
+    prepared: bool,
+    error: Option<String>,
 }
 
 struct AgentShipDialog {
@@ -61,6 +103,7 @@ struct AgentShipDialog {
     prepared: bool,
     error: Option<String>,
     status: Option<String>,
+    pending_commit: Option<AgentShipPendingCommit>,
     /// `(project_root, lane_path)` when shipping a Solo from its lane. PR
     /// tracking then keys on the project root (the lane folder is disposable),
     /// and a successful PR packs the lane up.
@@ -380,6 +423,7 @@ impl AgentShipDialog {
         let pr_base_branch = self.pr_base_branch.trim().to_string();
         let pr_title = self.pr_title.read(cx).value().trim().to_string();
         let pr_description = self.pr_description.read(cx).value().trim().to_string();
+        let pending_commit = self.pending_commit.clone();
         let agent_id = self.agent_id;
         let project_id = self.project_id;
         let center = self.center.clone();
@@ -413,6 +457,7 @@ impl AgentShipDialog {
                         &pr_base_branch,
                         &pr_title,
                         &pr_description,
+                        pending_commit,
                         action,
                     )
                 })
@@ -422,6 +467,7 @@ impl AgentShipDialog {
                 dialog.busy = false;
                 match result {
                     Ok(outcome) => {
+                        dialog.pending_commit = None;
                         crate::ui::onboarding::emit_for_project(
                             project_id,
                             crate::ui::onboarding::OnboardingEvent::ShipCompleted,
@@ -437,7 +483,7 @@ impl AgentShipDialog {
                                     outcome.commit_sha.clone(),
                                     cx,
                                 );
-                                center.append_agent_ship_result(agent_id, &outcome, cx);
+                                center.append_agent_ship_result(agent_id, None, &outcome, cx);
                                 if let Some(branch) = outcome.tracked_pr_branch.clone() {
                                     center.track_agent_ship_pr_branch(
                                         agent_id,
@@ -469,10 +515,11 @@ impl AgentShipDialog {
                             .ok();
                     }
                     Err(error) => {
-                        dialog.error = Some(format!("{error:#}"));
+                        dialog.pending_commit = error.pending_commit.clone();
+                        dialog.error = Some(error.to_string());
                         dialog.status = None;
                         git.update(cx, |git, cx| {
-                            git.last_error = Some(format!("{error:#}"));
+                            git.last_error = Some(error.to_string());
                             git.last_error_from_refresh = false;
                             git.refresh(cx);
                         });
@@ -525,6 +572,7 @@ impl AgentShipDialog {
                         "",
                         "",
                         "",
+                        None,
                         AgentShipAction::Commit,
                     )
                 })
@@ -556,7 +604,7 @@ impl AgentShipDialog {
                                     outcome.commit_sha.clone(),
                                     cx,
                                 );
-                                center.append_agent_ship_result(agent_id, &outcome, cx);
+                                center.append_agent_ship_result(agent_id, None, &outcome, cx);
                                 center.agent_ship_prs.insert(
                                     agent_id,
                                     crate::ui::git::git_panel::BranchPullRequest {
@@ -652,6 +700,7 @@ impl AgentShipDialog {
         let pr_description = self.pr_description.read(cx).value().trim().to_string();
         let agent_title = self.agent_title.clone();
         let generation_agent = self.generation_agent.clone();
+        let pending_commit = self.pending_commit.clone();
         let agent_id = self.agent_id;
         let project_id = self.project_id;
         let center = self.center.clone();
@@ -717,6 +766,7 @@ impl AgentShipDialog {
                         &pr_base_branch,
                         resolved_pr_title,
                         resolved_pr_body,
+                        pending_commit,
                         action,
                     )
                 })
@@ -726,6 +776,7 @@ impl AgentShipDialog {
                 dialog.busy = false;
                 match result {
                     Ok(outcome) => {
+                        dialog.pending_commit = None;
                         crate::ui::onboarding::emit_for_project(
                             project_id,
                             crate::ui::onboarding::OnboardingEvent::ShipCompleted,
@@ -741,7 +792,7 @@ impl AgentShipDialog {
                                     outcome.commit_sha.clone(),
                                     cx,
                                 );
-                                center.append_agent_ship_result(agent_id, &outcome, cx);
+                                center.append_agent_ship_result(agent_id, None, &outcome, cx);
                                 if let Some(branch) = outcome.tracked_pr_branch.clone() {
                                     center.track_agent_ship_pr_branch(
                                         agent_id,
@@ -773,10 +824,11 @@ impl AgentShipDialog {
                             .ok();
                     }
                     Err(error) => {
-                        dialog.error = Some(format!("{error:#}"));
+                        dialog.pending_commit = error.pending_commit.clone();
+                        dialog.error = Some(error.to_string());
                         dialog.status = None;
                         git.update(cx, |git, cx| {
-                            git.last_error = Some(format!("{error:#}"));
+                            git.last_error = Some(error.to_string());
                             git.last_error_from_refresh = false;
                             git.refresh(cx);
                         });
@@ -964,6 +1016,13 @@ impl AgentShipDialog {
                                 .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pr_base_branch = value.clone();
+                                    if this.open_pr
+                                        && this.branch.as_deref().is_some_and(|branch| {
+                                            validate_agent_ship_pr_branches(branch, &value).is_err()
+                                        })
+                                    {
+                                        this.create_branch = true;
+                                    }
                                     this.pr_base_branch_expanded = false;
                                     this.reset_prepared();
                                     this.error = None;
@@ -1161,6 +1220,53 @@ pub(super) struct AgentShipOutcome {
     tracked_pr_branch: Option<String>,
     snapshot_id: Option<Uuid>,
     commit_sha: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentShipPendingCommit {
+    branch: String,
+    commit_sha: String,
+    commit_sha_short: String,
+    snapshot_id: Option<Uuid>,
+    commit_message: String,
+    files: Vec<PathBuf>,
+    pushed: bool,
+}
+
+#[derive(Debug)]
+struct AgentShipOperationFailure {
+    error: anyhow::Error,
+    pending_commit: Option<AgentShipPendingCommit>,
+}
+
+impl AgentShipOperationFailure {
+    fn before_commit(error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            error: error.into(),
+            pending_commit: None,
+        }
+    }
+
+    fn after_commit(error: impl Into<anyhow::Error>, pending: AgentShipPendingCommit) -> Self {
+        Self {
+            error: error.into(),
+            pending_commit: Some(pending),
+        }
+    }
+}
+
+impl std::fmt::Display for AgentShipOperationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.error)
+    }
+}
+
+impl std::error::Error for AgentShipOperationFailure {}
+
+impl From<anyhow::Error> for AgentShipOperationFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self::before_commit(error)
+    }
 }
 
 struct AgentShipPreparation {

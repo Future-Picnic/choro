@@ -20,7 +20,7 @@ use gpui_component::{
 };
 use ide_core::{
     config::{GenerationAgent, GitStatusGroupMode, GitStatusViewMode},
-    git::{BranchInfo, FileDiff},
+    git::{BranchInfo, FileDiff, GitHubAccount, GitRemote},
     AgentKind, ProjectId,
 };
 
@@ -337,7 +337,11 @@ pub struct GitPanel {
     tab: GitTab,
     commit_ai_generating: bool,
     commit_ai_error: Option<String>,
+    git_accounts: Vec<GitHubAccount>,
+    git_accounts_loading: bool,
+    git_accounts_error: Option<String>,
     last_active_project: Option<ProjectId>,
+    last_active_repository: Option<PathBuf>,
     last_push_notice_message: Option<String>,
     seen_push_notice_messages: HashSet<String>,
     branch_pr_key: Option<PullRequestLookupKey>,

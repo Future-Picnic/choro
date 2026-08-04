@@ -405,7 +405,7 @@ fn render_file_row(
             };
             row_center
                 .update(cx, |center, cx| {
-                    center.open_diff(project, kind, diff_title.clone(), cx);
+                    center.open_diff_from_git(project, kind, diff_title.clone(), cx);
                 })
                 .ok();
         })

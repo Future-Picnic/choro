@@ -42,7 +42,9 @@ fn run_git_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> Result<RemoteOutput> {
+    crate::blocking_guard::debug_warn_if_ui_thread("git::remote::run_git");
     let mut command = Command::new("git");
+    super::accounts::configure_selected_account(&mut command, repo_path, args);
     command
         .args(args)
         .current_dir(repo_path)

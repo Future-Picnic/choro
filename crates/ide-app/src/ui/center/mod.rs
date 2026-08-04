@@ -274,6 +274,9 @@ struct PastedTextBlock {
 
 struct NewAgentComposer {
     project: ProjectId,
+    /// `None` means the whole opened workspace. A Solo always resolves this to
+    /// one repository before launch.
+    repository_path: Option<PathBuf>,
     prompt: Entity<InputState>,
     provider: AgentKind,
     runtime: AgentRuntimeKind,
@@ -1605,4 +1608,7 @@ pub struct CenterArea {
     /// Close button and re-opened when a card is selected.
     tasks_detail_collapsed: bool,
     agent_open_epoch: u64,
+    /// Changes whenever a diff is opened from the Git sidebar, allowing the
+    /// right panel to keep Git visible while the center moves into Code.
+    git_diff_open_epoch: u64,
 }

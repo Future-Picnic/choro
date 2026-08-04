@@ -530,7 +530,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn push_to_talk_uses_command_l_everywhere_in_the_workspace() {
         let voice = shortcuts()
             .into_iter()
@@ -587,7 +586,9 @@ mod tests {
                 .unwrap();
             assert_eq!(shortcut.keystroke(&overrides), Some(expected));
         }
-=======
+    }
+
+    #[test]
     fn plan_mode_defaults_to_shift_tab() {
         let plan_mode = shortcuts()
             .into_iter()
@@ -597,6 +598,5 @@ mod tests {
         assert_eq!(plan_mode.default_keystroke, Some("shift-tab"));
         assert_eq!(plan_mode.category, ShortcutCategory::Agents);
         assert!(plan_mode.in_commands);
->>>>>>> main
     }
 }

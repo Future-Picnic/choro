@@ -457,6 +457,8 @@ impl RootView {
                 },
             )
             .detach();
+            cx.observe(&git_states, |_: &mut Self, _, cx| cx.notify())
+                .detach();
             let chat_remote_events = remote_events.clone();
             cx.observe(&agent_chats, move |this: &mut Self, _, cx| {
                 let _ = chat_remote_events.send(RemoteEvent::HostSnapshotChanged);
@@ -989,7 +991,7 @@ impl Render for RootView {
             .h(crate::ui::design::header_h())
             .flex_none()
             .items_center()
-            .px_2()
+            .px(crate::ui::design::header_edge_inset_x())
             // Same fill as the middle/center screen (not the sidebars), with just
             // the hairline divider underneath.
             .bg(crate::ui::design::base(cx))

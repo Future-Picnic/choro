@@ -59,10 +59,9 @@ pub fn agent_chat_actions_overlay() -> Div {
     actions()
         .absolute()
         .top(scale::agent_header_actions_top())
-        // The center pane already owns the outer right inset. Adding the chat
-        // gutter here a second time shifts status controls left of the global
-        // Run/Scripts control above them.
-        .right(px(0.))
+        // Match the right edge of Scripts / Preview / microphone above. This is
+        // the titlebar inset, not the much larger conversation gutter.
+        .right(scale::header_edge_inset_x())
 }
 
 /// The growing left column that stacks the title over its subline.

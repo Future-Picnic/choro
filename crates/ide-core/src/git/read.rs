@@ -25,12 +25,18 @@ pub fn read_snapshot(repo_path: &Path) -> Result<GitSnapshot> {
     let repo = Repository::open(repo_path).context("not a git repository")?;
     let (insertions, deletions) = worktree_line_stats(&repo);
     let (staged_stats, unstaged_stats) = status_line_stats(&repo);
+    let primary_remote = super::accounts::primary_remote_of(&repo);
+    let assigned_account = primary_remote
+        .as_ref()
+        .and_then(|remote| super::accounts::assigned_account_of(&repo, remote));
     Ok(GitSnapshot {
         head: head_info(&repo)?,
         branches: branches(&repo)?,
         entries: status_entries(&repo, &staged_stats, &unstaged_stats)?,
         insertions,
         deletions,
+        primary_remote,
+        assigned_account,
     })
 }
 

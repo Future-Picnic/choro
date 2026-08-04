@@ -78,7 +78,7 @@ impl GitPanel {
                                         let title: SharedString = short.clone().into();
                                         center
                                             .update(cx, |center, cx| {
-                                                center.open_diff(project, kind, title, cx);
+                                                center.open_diff_from_git(project, kind, title, cx);
                                             })
                                             .ok();
                                     })

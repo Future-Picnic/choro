@@ -703,6 +703,7 @@ impl CenterArea {
                 tasks_refresh_epoch: 0,
                 tasks_detail_collapsed: false,
                 agent_open_epoch: 0,
+                git_diff_open_epoch: 0,
             }
         })
     }

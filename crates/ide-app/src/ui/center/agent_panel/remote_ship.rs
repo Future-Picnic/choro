@@ -191,7 +191,7 @@ impl CenterArea {
             .unwrap_or_else(|| crate::ui::git::git_panel::default_remote_branch(&source.repo));
 
         let repo = source.repo.clone();
-        let tracked_repo = agent.project_path.clone();
+        let tracked_repo = agent.repository_root().to_path_buf();
         let current_branch = source.branch.clone();
         let needs_upstream = source.needs_upstream;
         let agent_title = agent.title.clone();
@@ -248,6 +248,7 @@ impl CenterArea {
                         &pr_base_branch,
                         resolved_pr_title,
                         resolved_pr_body,
+                        None,
                         action,
                     )
                 })
@@ -263,7 +264,7 @@ impl CenterArea {
                             outcome.commit_sha.clone(),
                             cx,
                         );
-                        center.append_agent_ship_result(agent_id, &outcome, cx);
+                        center.append_agent_ship_result(agent_id, None, &outcome, cx);
                         if let Some(branch) = outcome.tracked_pr_branch.clone() {
                             center.track_agent_ship_pr_branch(
                                 agent_id,

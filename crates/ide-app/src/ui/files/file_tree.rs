@@ -197,7 +197,12 @@ impl FileTree {
     }
 
     fn reload(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        self.loading = true;
+        // Only surface the loading row when there is nothing to show yet
+        // (first load or a root switch). On an expand/collapse the existing
+        // rows stay put until the fresh ones swap in — inserting the loading
+        // row above them made the whole tree jump down and back every tap.
+        let root_changed = self.rows_root.as_deref() != Some(root.as_path());
+        self.loading = root_changed || self.rows.is_empty();
         self.error = None;
         self.rows_root = Some(root.clone());
         self.load_seq = self.load_seq.wrapping_add(1);
@@ -902,6 +907,25 @@ impl Render for FileTree {
             }
         }
         let lane_active = lane_context.is_some() && !self.scope_main;
+        let (repository_roots, active_repository) = if lane_active {
+            (HashSet::new(), None)
+        } else {
+            let git_states = self.git_states.read(cx);
+            let active = git_states.active_repository_path(project);
+            let repositories = git_states
+                .repositories(project)
+                .into_iter()
+                .filter_map(|git| {
+                    let git = git.read(cx);
+                    git.is_repo.then(|| git.repo_path.clone())
+                })
+                .collect::<HashSet<_>>();
+            if repositories.len() > 1 {
+                (repositories, active)
+            } else {
+                (HashSet::new(), active)
+            }
+        };
         let root = match &lane_context {
             Some((_, lane, _)) if lane_active => lane.clone(),
             _ => root,
@@ -918,10 +942,10 @@ impl Render for FileTree {
         };
         let git_decorations = active_git
             .and_then(|git| {
-                git.read(cx)
-                    .snapshot
+                let git = git.read(cx);
+                git.snapshot
                     .as_ref()
-                    .map(|snapshot| Self::git_decorations(&root, snapshot))
+                    .map(|snapshot| Self::git_decorations(&git.repo_path, snapshot))
             })
             .unwrap_or_default();
         let rows = self.rows.clone();
@@ -1034,6 +1058,12 @@ impl Render for FileTree {
                 let path = row.path.clone();
                 let root = root.clone();
                 let is_dir = row.is_dir;
+                let is_repository_root = is_dir && repository_roots.contains(&row.path);
+                let repository_icon_color = if active_repository.as_ref() == Some(&row.path) {
+                    crate::ui::design::sky(cx).opacity(0.82)
+                } else {
+                    crate::ui::design::sky(cx).opacity(0.58)
+                };
                 let selected = self.selected.as_ref() == Some(&row.path);
                 let name_color = git_decorations
                     .get(&row.path)
@@ -1126,11 +1156,19 @@ impl Render for FileTree {
                             });
                         }
                     }))
-                    .child(
+                    .child(if is_repository_root {
+                        crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::FolderGit2,
+                            repository_icon_color,
+                            crate::ui::design::icon(),
+                        )
+                        .into_any_element()
+                    } else {
                         Icon::new(icon)
                             .size(crate::ui::design::icon())
-                            .text_color(crate::ui::design::t3(cx)),
-                    )
+                            .text_color(crate::ui::design::t3(cx))
+                            .into_any_element()
+                    })
                     .child(name_element)
                     .context_menu(move |menu, _, menu_cx| {
                         Self::build_row_menu(

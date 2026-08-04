@@ -239,7 +239,6 @@ fn run_streamed_generation(
     }
 }
 
-<<<<<<< HEAD
 /// Read-only, tool-free one-shot generation shared by app-owned features.
 /// The provider runs in an empty disposable directory and cannot approve or
 /// mutate a user's repository.
@@ -249,7 +248,8 @@ pub(crate) fn run_safe_text_generation(
     timeout: Duration,
 ) -> anyhow::Result<String> {
     run_streamed_generation(generation_agent, Path::new("."), prompt, timeout)
-=======
+}
+
 /// Run the configured small-writing model in the same isolated, no-tools path
 /// used by commit, pull-request, Riff, and memory generation.
 pub(crate) fn generate_one_shot_text(
@@ -259,7 +259,6 @@ pub(crate) fn generate_one_shot_text(
     timeout: Duration,
 ) -> anyhow::Result<String> {
     run_streamed_generation(generation_agent, working_directory, prompt, timeout)
->>>>>>> main
 }
 
 fn run_claude_generation(

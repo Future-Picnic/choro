@@ -684,6 +684,7 @@ impl CenterArea {
     pub(super) fn render_composer_branch_picker(
         &self,
         project: ProjectId,
+        repository_path: PathBuf,
         mut branches: Vec<BranchInfo>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -738,6 +739,7 @@ impl CenterArea {
                     .children(branches.into_iter().enumerate().map(|(ix, branch)| {
                         let name: SharedString = branch.name.clone().into();
                         let checkout_name = branch.name.clone();
+                        let checkout_repository = repository_path.clone();
                         let git_states = self.git_states.clone();
                         let ahead_behind: Option<SharedString> =
                             if branch.ahead > 0 || branch.behind > 0 {
@@ -775,7 +777,10 @@ impl CenterArea {
                             .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if !branch.is_head {
-                                    if let Some(git) = git_states.read(cx).get(project) {
+                                    if let Some(git) = git_states
+                                        .read(cx)
+                                        .get_for_path(project, &checkout_repository)
+                                    {
                                         git.update(cx, |git, cx| {
                                             git.checkout(checkout_name.clone(), cx);
                                         });
@@ -891,10 +896,17 @@ impl CenterArea {
                         .justify_center()
                         .pt(px(210.))
                         .child(
-                            div()
-                                .w(px(760.))
-                                .pl(px(124.))
-                                .child(self.render_composer_branch_picker(project, branches, cx)),
+                            div().w(px(760.)).pl(px(124.)).child(
+                                self.render_composer_branch_picker(
+                                    project,
+                                    self.git_states
+                                        .read(cx)
+                                        .active_repository_path(project)
+                                        .unwrap_or_default(),
+                                    branches,
+                                    cx,
+                                ),
+                            ),
                         ),
                 )
                 .into_any_element(),
