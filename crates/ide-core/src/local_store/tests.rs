@@ -117,6 +117,121 @@ fn migrates_schema_in_temp_root() {
 }
 
 #[test]
+fn voice_turns_round_trip_and_clear_without_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let agent_id = Uuid::new_v4();
+
+    let user = store
+        .save_voice_turn("director", "user", "  Check the API chat  ", None)
+        .unwrap();
+    let assistant = store
+        .save_voice_turn(
+            "director",
+            "assistant",
+            "The API chat is still running.",
+            Some(agent_id),
+        )
+        .unwrap();
+    let project_talk = store
+        .save_voice_turn(
+            "project_talk",
+            "assistant",
+            "This is a Rust workspace.",
+            None,
+        )
+        .unwrap();
+    let command = store
+        .save_voice_turn("command", "user", "send", Some(agent_id))
+        .unwrap();
+
+    let turns = store.load_voice_turns(10).unwrap();
+    assert_eq!(turns.len(), 4);
+    assert_eq!(turns[0].id, user.id);
+    assert_eq!(turns[0].text, "Check the API chat");
+    assert_eq!(turns[1].id, assistant.id);
+    assert_eq!(turns[1].agent_id, Some(agent_id));
+    assert_eq!(turns[2].id, project_talk.id);
+    assert_eq!(turns[2].mode, "project_talk");
+    assert_eq!(turns[3].id, command.id);
+    assert_eq!(turns[3].mode, "command");
+    assert!(store
+        .save_voice_turn("unknown", "user", "No", None)
+        .is_err());
+    assert!(store
+        .save_voice_turn("dictation", "user", "   ", None)
+        .is_err());
+
+    store.clear_voice_turns().unwrap();
+    assert!(store.load_voice_turns(10).unwrap().is_empty());
+}
+
+#[test]
+fn current_schema_repairs_missing_voice_table() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DROP TABLE voice_turns", ()).await?;
+                assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    store
+        .save_voice_turn("dictation", "user", "Restored", None)
+        .unwrap();
+    assert_eq!(store.load_voice_turns(10).unwrap()[0].text, "Restored");
+}
+
+#[test]
+fn migrates_v23_voice_turns_to_the_expanded_mode_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy_id = Uuid::new_v4();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DROP TABLE voice_turns", ()).await?;
+                for statement in SCHEMA_V23 {
+                    conn.execute(statement, ()).await?;
+                }
+                conn.execute(
+                    "INSERT INTO voice_turns (id, mode, role, text, agent_id, created_at)
+                     VALUES (?1, 'director', 'user', 'Legacy turn', NULL, ?2)",
+                    params![legacy_id.to_string(), u64_to_i64(unix_now())?],
+                )
+                .await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 24", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 23);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    store
+        .save_voice_turn("project_talk", "assistant", "Migrated", None)
+        .unwrap();
+    store
+        .save_voice_turn("command", "user", "send", None)
+        .unwrap();
+    let turns = store.load_voice_turns(10).unwrap();
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].id, legacy_id);
+    assert_eq!(turns[1].mode, "project_talk");
+    assert_eq!(turns[2].mode, "command");
+}
+
+#[test]
 fn solo_lane_fields_round_trip_through_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let project = sample_project();

@@ -6,9 +6,10 @@ mod shutdown;
 use shutdown::ShutdownState;
 
 use gpui::{
-    div, prelude::FluentBuilder, px, svg, App, AppContext, Context, DragMoveEvent, Entity,
-    FocusHandle, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Window,
+    div, prelude::FluentBuilder, px, svg, AnyElement, App, AppContext, Context, DragMoveEvent,
+    Entity, FocusHandle, InteractiveElement, IntoElement, KeyUpEvent, Keystroke, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -24,9 +25,9 @@ use crate::actions::{
     CloseTab, NavigateBack, NavigateForward, NewAgentChat, NewTerminal, NextOpenItem, OpenCommands,
     OpenContentSearch, OpenFolder, OpenProjectSearch, OpenSettings, PreviousOpenItem, QuickAddTask,
     QuitApplication, SaveFile, StopCurrentAgent, ToggleAgentPlanMode, ToggleFocusMode,
-    ToggleLeftPanel, TogglePreview, ToggleRightPanel, ToggleTerminalArea, ViewAgents, ViewCode,
-    ViewDb, ViewDesign, ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit, ViewTasks,
-    ViewTerminal,
+    ToggleHandsFreeDictation, ToggleLeftPanel, TogglePreview, ToggleRightPanel, ToggleTerminalArea,
+    ToggleVoiceDictation, ToggleVoiceDirector, ViewAgents, ViewCode, ViewDb, ViewDesign,
+    ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit, ViewTasks, ViewTerminal,
 };
 use crate::remote::dto::RemoteEvent;
 use crate::state::{
@@ -53,6 +54,7 @@ use crate::ui::project_visuals::project_icon_element;
 use crate::ui::right_panel::RightPanel;
 use crate::ui::settings::SettingsView;
 use crate::ui::style;
+use crate::voice::{VoiceEvent, VoicePhase, VoiceState};
 
 fn apply_theme(theme: ConfigTheme, window: Option<&mut Window>, cx: &mut App) {
     let mode = match theme {
@@ -181,6 +183,7 @@ pub struct RootView {
     git_states: Entity<GitStates>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
+    voice: Entity<VoiceState>,
     project_list: Entity<ProjectList>,
     center: Entity<CenterArea>,
     title_preset_bar: Entity<PresetBar>,
@@ -194,6 +197,10 @@ pub struct RootView {
     title_branch_bounds: Option<gpui::Bounds<gpui::Pixels>>,
     title_branch_query: Entity<InputState>,
     title_branch_expanded: bool,
+    voice_control_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    voice_source_popover_visible: bool,
+    voice_source_hover_generation: u64,
+    voice_push_to_talk_binding: Option<Keystroke>,
     /// When set, Settings is shown as a dedicated full-screen route over the app.
     settings_view: Option<Entity<SettingsView>>,
     remote_auth: crate::remote::RemoteAuth,
@@ -251,6 +258,7 @@ impl RootView {
         let services = ServicesState::view(workspace.clone(), cx);
         let penpot = PenpotState::view(cx);
         penpot.update(cx, |penpot, cx| penpot.ensure_auto_provisioned(cx));
+        let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
         let center = CenterArea::view(
             workspace.clone(),
             terminals.clone(),
@@ -263,9 +271,14 @@ impl RootView {
             services.clone(),
             doc_assistants,
             penpot.clone(),
+            voice.clone(),
             window,
             cx,
         );
+        let open_voice_chat = center.read(cx).open_voice_chat_id(cx);
+        voice.update(cx, |voice, cx| {
+            voice.set_open_chat_target(open_voice_chat, cx)
+        });
         center.update(cx, |center, cx| center.refresh_open_code_models(false, cx));
         let remote_server = crate::remote::start_remote_server();
         let remote_address = remote_server.address;
@@ -402,8 +415,48 @@ impl RootView {
                 cx.notify();
             })
             .detach();
-            cx.observe(&center, |_: &mut Self, _, cx| cx.notify())
+            cx.observe(&center, |this: &mut Self, _, cx| {
+                let open_voice_chat = this.center.read(cx).open_voice_chat_id(cx);
+                this.voice.update(cx, |voice, cx| {
+                    voice.set_open_chat_target(open_voice_chat, cx)
+                });
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            cx.subscribe(
+                &voice,
+                |this: &mut Self, _, event: &VoiceEvent, cx| match event {
+                    VoiceEvent::Decision(decision) => this.center.update(cx, |center, cx| {
+                        center.apply_voice_decision(decision.clone(), cx)
+                    }),
+                    VoiceEvent::CreatePlan { project_id, prompt } => {
+                        this.center.update(cx, |center, cx| {
+                            center.queue_voice_project_plan(*project_id, prompt.clone(), cx)
+                        })
+                    }
+                    VoiceEvent::Dictation {
+                        agent_id,
+                        text,
+                        insert_at_cursor,
+                    } => this.center.update(cx, |center, cx| {
+                        center.queue_voice_dictation(*agent_id, text.clone(), *insert_at_cursor, cx)
+                    }),
+                    VoiceEvent::SendDraft {
+                        agent_id,
+                        fallback_text,
+                    } => this.center.update(cx, |center, cx| {
+                        center.queue_voice_draft_send(*agent_id, fallback_text.clone(), cx)
+                    }),
+                    VoiceEvent::DiscardDraft { agent_id, text } => {
+                        this.center.update(cx, |center, cx| {
+                            center.queue_voice_draft_discard(*agent_id, text.clone(), cx)
+                        })
+                    }
+                },
+            )
+            .detach();
             cx.observe(&git_states, |_: &mut Self, _, cx| cx.notify())
                 .detach();
             let chat_remote_events = remote_events.clone();
@@ -436,6 +489,7 @@ impl RootView {
                 git_states,
                 agents,
                 agent_chats,
+                voice,
                 project_list,
                 center,
                 title_preset_bar,
@@ -449,6 +503,10 @@ impl RootView {
                 title_branch_bounds: None,
                 title_branch_query,
                 title_branch_expanded: false,
+                voice_control_bounds: None,
+                voice_source_popover_visible: false,
+                voice_source_hover_generation: 0,
+                voice_push_to_talk_binding: None,
                 settings_view: None,
                 remote_auth,
                 remote_relay_identity,
@@ -541,6 +599,242 @@ impl RootView {
     }
 }
 
+impl RootView {
+    fn configured_push_to_talk_binding(&self, cx: &App) -> Option<Keystroke> {
+        let binding = {
+            let workspace = self.workspace.read(cx);
+            crate::keymap::shortcuts()
+                .into_iter()
+                .find(|shortcut| shortcut.id == "toggle_voice_dictation")
+                .and_then(|shortcut| shortcut.keystroke(&workspace.keymap).map(str::to_string))
+        }?;
+        Keystroke::parse(&binding).ok()
+    }
+
+    fn reset_voice_shortcut_gesture(&mut self) {
+        self.voice_push_to_talk_binding = None;
+    }
+
+    fn begin_voice_shortcut(&mut self, cx: &mut Context<Self>) {
+        if self.voice.read(cx).push_to_talk_held() {
+            return;
+        }
+        let Some(agent_id) = self.center.read(cx).selected_voice_chat_id(cx) else {
+            self.reset_voice_shortcut_gesture();
+            self.voice
+                .update(cx, |voice, cx| voice.report_missing_dictation_target(cx));
+            return;
+        };
+
+        self.voice_push_to_talk_binding = self.configured_push_to_talk_binding(cx);
+        self.voice
+            .update(cx, |voice, cx| voice.begin_push_to_talk_for(agent_id, cx));
+    }
+
+    fn toggle_hands_free_dictation(&mut self, cx: &mut Context<Self>) {
+        self.reset_voice_shortcut_gesture();
+        if self.voice.read(cx).continuous_dictation_active() {
+            self.voice.update(cx, |voice, cx| voice.stop(cx));
+            return;
+        }
+        let Some(agent_id) = self.center.read(cx).selected_voice_chat_id(cx) else {
+            self.voice
+                .update(cx, |voice, cx| voice.report_missing_dictation_target(cx));
+            return;
+        };
+        self.voice.update(cx, |voice, cx| {
+            voice.begin_continuous_dictation_for(agent_id, cx)
+        });
+    }
+
+    fn finish_voice_push_to_talk(&mut self, cx: &mut Context<Self>) {
+        self.voice_push_to_talk_binding = None;
+        self.voice
+            .update(cx, |voice, cx| voice.finish_push_to_talk(cx));
+    }
+
+    fn push_to_talk_key_released(&self, event: &KeyUpEvent, cx: &App) -> bool {
+        self.voice.read(cx).push_to_talk_held()
+            && self
+                .voice_push_to_talk_binding
+                .as_ref()
+                .is_some_and(|binding| binding.key.eq_ignore_ascii_case(&event.keystroke.key))
+    }
+
+    fn voice_shortcut_modifier_released(&self, event: &ModifiersChangedEvent) -> bool {
+        self.voice_push_to_talk_binding
+            .as_ref()
+            .is_some_and(|binding| !modifiers_include(event.modifiers, binding.modifiers))
+    }
+
+    fn set_voice_source_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        self.voice_source_hover_generation = self.voice_source_hover_generation.wrapping_add(1);
+        let generation = self.voice_source_hover_generation;
+        if hovered {
+            if self.voice.read(cx).control_active() {
+                self.voice_source_popover_visible = true;
+                cx.notify();
+            }
+            return;
+        }
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(180))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.voice_source_hover_generation == generation {
+                    this.voice_source_popover_visible = false;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_voice_source_popover(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.voice_source_popover_visible {
+            return None;
+        }
+
+        let voice = self.voice.read(cx);
+        if !voice.control_active() {
+            return None;
+        }
+        let anchor = self.voice_control_bounds?;
+        let input_devices = voice.input_devices().to_vec();
+        let selected_input_device = voice.selected_input_device().map(str::to_string);
+        let default_input_device = input_devices
+            .iter()
+            .find(|device| device.is_default)
+            .map(|device| device.name.clone());
+        let default_label = default_input_device
+            .as_ref()
+            .map(|name| format!("System Default — {name}"))
+            .unwrap_or_else(|| "System Default".to_string());
+        let voice_for_default = self.voice.clone();
+        let voice_for_refresh = self.voice.clone();
+        let panel_width = px(304.);
+        let preferred_left = anchor.origin.x + anchor.size.width - panel_width;
+        let left = if preferred_left < px(8.) {
+            px(8.)
+        } else {
+            preferred_left
+        };
+
+        Some(
+            v_flex()
+                .id("voice-source-popover")
+                .absolute()
+                .left(left)
+                .top(anchor.origin.y + anchor.size.height + px(3.))
+                .w(panel_width)
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .p_2()
+                .gap_1()
+                .rounded(crate::ui::design::r_md())
+                .border_1()
+                .border_color(crate::ui::design::line(cx).opacity(0.42))
+                .bg(crate::ui::design::focus(cx))
+                .shadow(crate::ui::design::menu_shadow())
+                .occlude()
+                .on_hover(cx.listener(|this, hovered, _, cx| {
+                    this.set_voice_source_hovered(*hovered, cx);
+                }))
+                .child(
+                    h_flex()
+                        .h(px(28.))
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .child(
+                            svg()
+                                .path("icons/microphone.svg")
+                                .size(px(14.))
+                                .text_color(crate::ui::design::accent(cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(crate::ui::design::text_body())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(crate::ui::design::t1(cx))
+                                .child("Microphone source"),
+                        )
+                        .child(
+                            style::refresh_icon_button("refresh-voice-sources", cx)
+                                .tooltip("Refresh microphones")
+                                .on_click(move |_, _, cx| {
+                                    voice_for_refresh
+                                        .update(cx, |voice, cx| voice.refresh_input_devices(cx));
+                                }),
+                        ),
+                )
+                .child(
+                    style::popover_selection_button(
+                        "voice-source-system-default",
+                        default_label,
+                        selected_input_device.is_none(),
+                        cx,
+                    )
+                    .on_click(move |_, _, cx| {
+                        voice_for_default
+                            .update(cx, |voice, cx| voice.select_input_device(None, cx));
+                    }),
+                )
+                .when(input_devices.is_empty(), |panel| {
+                    panel.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child("No other microphones detected"),
+                    )
+                })
+                .children(
+                    input_devices
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, device)| {
+                            let selected =
+                                selected_input_device.as_deref() == Some(device.name.as_str());
+                            let option_label = if device.is_default {
+                                format!("{} (current default)", device.name)
+                            } else {
+                                device.name.clone()
+                            };
+                            let selected_name = device.name;
+                            let voice = self.voice.clone();
+                            style::popover_selection_button(
+                                ("voice-source-device", index),
+                                option_label,
+                                selected,
+                                cx,
+                            )
+                            .on_click(move |_, _, cx| {
+                                voice.update(cx, |voice, cx| {
+                                    voice.select_input_device(Some(selected_name.clone()), cx)
+                                });
+                            })
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+fn modifiers_include(actual: Modifiers, required: Modifiers) -> bool {
+    (!required.control || actual.control)
+        && (!required.alt || actual.alt)
+        && (!required.shift || actual.shift)
+        && (!required.platform || actual.platform)
+        && (!required.function || actual.function)
+}
+
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (left_size, right_size) = {
@@ -550,6 +844,57 @@ impl Render for RootView {
                 px(panels.right.max(crate::ui::design::RIGHT_SIDEBAR_MIN_W)),
             )
         };
+        let (
+            voice_active,
+            voice_dictation_active,
+            continuous_dictation_active,
+            voice_phase,
+            voice_level,
+        ) = {
+            let voice = self.voice.read(cx);
+            (
+                voice.control_active(),
+                voice.dictation_active(),
+                voice.continuous_dictation_active(),
+                voice.phase().clone(),
+                voice.level(),
+            )
+        };
+        if !voice_active {
+            self.voice_source_popover_visible = false;
+        }
+        let voice_shortcut = crate::keymap::shortcut_display(
+            "toggle_voice_dictation",
+            &self.workspace.read(cx).keymap,
+        )
+        .unwrap_or_else(|| "Unassigned".to_string());
+        let hands_off_shortcut = crate::keymap::shortcut_display(
+            "toggle_hands_free_dictation",
+            &self.workspace.read(cx).keymap,
+        )
+        .unwrap_or_else(|| "Unassigned".to_string());
+        let assistant_shortcut = crate::keymap::shortcut_display(
+            "toggle_voice_director",
+            &self.workspace.read(cx).keymap,
+        )
+        .unwrap_or_else(|| "Unassigned".to_string());
+        let voice_tooltip = format!(
+            "Hold {voice_shortcut} to dictate · {hands_off_shortcut} hands off · {assistant_shortcut} Assistant"
+        );
+        let voice_capsule_assistant = voice_active && !voice_dictation_active;
+        let voice_capsule_mode_chip = if voice_capsule_assistant {
+            Some("Assistant")
+        } else if continuous_dictation_active {
+            Some("Hands off")
+        } else {
+            None
+        };
+        let voice_meter_level = if matches!(&voice_phase, VoicePhase::Listening) {
+            voice_level.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let voice_root = cx.entity().downgrade();
 
         // Overlay layers (dialogs, sheets, notifications) are NOT rendered by
         // gpui_component::Root automatically — the app root must include them.
@@ -695,6 +1040,106 @@ impl Render for RootView {
                                     .items_center()
                                     .gap_1()
                                     .child(self.title_preset_bar.clone())
+                                    .child(
+                                        div()
+                                            .id("voice-control-anchor")
+                                            .relative()
+                                            .on_hover(cx.listener(move |this, hovered, _, cx| {
+                                                if voice_active {
+                                                    this.set_voice_source_hovered(*hovered, cx);
+                                                }
+                                            }))
+                                            .child(
+                                                style::header_voice_capsule_button(
+                                                    "toggle-hands-free-dictation",
+                                                    voice_active,
+                                                    voice_capsule_mode_chip.is_some(),
+                                                    h_flex()
+                                                        .size_full()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .gap_1p5()
+                                                        .child(
+                                                            svg()
+                                                                .path("icons/microphone.svg")
+                                                                .size(px(15.))
+                                                                .text_color(if voice_active {
+                                                                    crate::ui::design::accent(cx)
+                                                                } else {
+                                                                    crate::ui::design::t3(cx)
+                                                                }),
+                                                        )
+                                                        .when(voice_active, |content| {
+                                                            const BAR_WEIGHTS: [f32; 7] = [
+                                                                0.48, 0.78, 1.0, 0.66, 0.9, 0.72,
+                                                                0.44,
+                                                            ];
+                                                            content.child(
+                                                                h_flex()
+                                                                    .h(px(16.))
+                                                                    .items_center()
+                                                                    .gap_0p5()
+                                                                    .children(BAR_WEIGHTS.into_iter().map(
+                                                                        |weight| {
+                                                                            let amplitude =
+                                                                                voice_meter_level
+                                                                                    * weight;
+                                                                            div()
+                                                                                .w(px(2.))
+                                                                                .h(px(
+                                                                                    3.0 + amplitude
+                                                                                        * 11.0,
+                                                                                ))
+                                                                                .rounded_full()
+                                                                                .bg(
+                                                                                    crate::ui::design::accent(cx)
+                                                                                        .opacity(
+                                                                                            0.34
+                                                                                                + amplitude
+                                                                                                    * 0.66,
+                                                                                        ),
+                                                                                )
+                                                                        },
+                                                                    )),
+                                                            )
+                                                        })
+                                                        .when_some(
+                                                            voice_capsule_mode_chip,
+                                                            |content, mode| {
+                                                                content.child(
+                                                                    style::voice_mode_chip(mode, cx),
+                                                                )
+                                                            },
+                                                        ),
+                                                    cx,
+                                                )
+                                                .when(!voice_active, |button| {
+                                                    button.tooltip(voice_tooltip.clone())
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.voice_source_hover_generation = this
+                                                        .voice_source_hover_generation
+                                                        .wrapping_add(1);
+                                                    this.voice_source_popover_visible = false;
+                                                    this.toggle_hands_free_dictation(cx);
+                                                })),
+                                            )
+                                            .child(
+                                                gpui::canvas(
+                                                    move |bounds, _, cx| {
+                                                        voice_root
+                                                            .update(cx, |this, _| {
+                                                                this.voice_control_bounds =
+                                                                    Some(bounds);
+                                                            })
+                                                            .ok();
+                                                    },
+                                                    |_, _, _, _| {},
+                                                )
+                                                .absolute()
+                                                .size_full(),
+                                            ),
+                                    )
                                     .when(remote_connected, |row| {
                                         row.child(
                                             div()
@@ -746,6 +1191,21 @@ impl Render for RootView {
         div()
             .relative()
             .size_full()
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, cx| {
+                if this.push_to_talk_key_released(event, cx) {
+                    this.finish_voice_push_to_talk(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &ModifiersChangedEvent, _, cx| {
+                    if this.voice_shortcut_modifier_released(event) {
+                        if this.voice.read(cx).push_to_talk_held() {
+                            this.finish_voice_push_to_talk(cx);
+                        }
+                    }
+                },
+            ))
             // WKWebView is a native AppKit child and keeps first-responder
             // ownership after interaction. Any click that reaches GPUI is a
             // click back into Choro, so return keyboard ownership before the
@@ -846,6 +1306,20 @@ impl Render for RootView {
                     .on_action(cx.listener(|this, _: &StopCurrentAgent, _, cx| {
                         this.center
                             .update(cx, |center, cx| center.stop_selected_agent(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleVoiceDirector, _, cx| {
+                        this.voice_source_hover_generation =
+                            this.voice_source_hover_generation.wrapping_add(1);
+                        this.voice_source_popover_visible = false;
+                        this.reset_voice_shortcut_gesture();
+                        this.voice
+                            .update(cx, |voice, cx| voice.toggle_director(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleHandsFreeDictation, _, cx| {
+                        this.toggle_hands_free_dictation(cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleVoiceDictation, _, cx| {
+                        this.begin_voice_shortcut(cx);
                     }))
                     .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                         this.toggle_settings(window, cx);
@@ -1214,6 +1688,9 @@ impl Render for RootView {
             .when_some(self.render_title_branch_overlay(cx), |root, overlay| {
                 root.child(overlay)
             })
+            .when_some(self.render_voice_source_popover(cx), |root, popover| {
+                root.child(popover)
+            })
             .when_some(settings_screen, |root, screen| root.child(screen))
             .children(sheet_layer)
             .children(dialog_layer)
@@ -1257,5 +1734,15 @@ mod tests {
         assert!(!focus.exit(&mut show_left, &mut show_right));
         assert!(show_left);
         assert!(!show_right);
+    }
+
+    #[test]
+    fn push_to_talk_finishes_when_a_required_modifier_is_released() {
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        assert!(modifiers_include(command, command));
+        assert!(!modifiers_include(Modifiers::default(), command));
     }
 }

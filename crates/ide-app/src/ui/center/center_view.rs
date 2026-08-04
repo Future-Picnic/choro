@@ -13,6 +13,7 @@ impl CenterArea {
         services: Entity<ServicesState>,
         doc_assistants: Entity<DocAssistantState>,
         penpot: Entity<PenpotState>,
+        voice: Entity<VoiceState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -550,6 +551,7 @@ impl CenterArea {
                 services,
                 doc_assistants,
                 penpot,
+                voice,
                 penpot_instance_input,
                 penpot_mcp_input,
                 penpot_key_input,
@@ -666,6 +668,7 @@ impl CenterArea {
                 memory_proposal_errors: HashMap::new(),
                 remote_command_ids: HashSet::new(),
                 remote_ship_status: HashMap::new(),
+                voice_composer_pending: VecDeque::new(),
                 selected_file: HashMap::new(),
                 pending_editor_positions: HashMap::new(),
                 pending_reference_open: None,

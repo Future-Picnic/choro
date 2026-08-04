@@ -44,6 +44,7 @@ mod repository_setup;
 mod solo_strip;
 
 use generation::git_output;
+pub(crate) use generation::run_safe_text_generation;
 pub(crate) use generation::{
     default_remote_branch, distill_memory_proposal, generate_commit_message,
     generate_commit_message_for_files, generate_one_shot_text, generate_pull_request,

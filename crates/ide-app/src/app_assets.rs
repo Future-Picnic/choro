@@ -5,7 +5,7 @@ use gpui::{AssetSource, Result, SharedString};
 pub struct AppAssets;
 
 impl AppAssets {
-    const APP_ASSETS: [(&'static str, &'static [u8]); 34] = [
+    const APP_ASSETS: [(&'static str, &'static [u8]); 35] = [
         (
             "icons/database.svg",
             include_bytes!("../assets/icons/database.svg"),
@@ -25,6 +25,10 @@ impl AppAssets {
         (
             "icons/phone.svg",
             include_bytes!("../assets/icons/phone.svg"),
+        ),
+        (
+            "icons/microphone.svg",
+            include_bytes!("../assets/icons/microphone.svg"),
         ),
         (
             "icons/asset-figma.svg",

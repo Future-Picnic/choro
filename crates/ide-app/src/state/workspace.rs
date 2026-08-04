@@ -5,7 +5,7 @@ use std::time::Duration;
 use gpui::{Context, EventEmitter, PathPromptOptions};
 use ide_core::config::{
     AppConfig, ConversationLayout, GenerationAgent, GitStatusGroupMode, GitStatusViewMode,
-    NavStyle, NewAgentDefaults, PanelSizes, ThemeMode, VerificationMode,
+    NavStyle, NewAgentDefaults, PanelSizes, ThemeMode, VerificationMode, VoiceSettings,
 };
 use ide_core::local_store::LocalStore;
 use ide_core::{Project, ProjectId, ProjectSection, ProjectSectionId};
@@ -38,6 +38,7 @@ pub struct Workspace {
     pub git_status_view: GitStatusViewMode,
     pub git_status_group: GitStatusGroupMode,
     pub conversation_layout: ConversationLayout,
+    pub voice: VoiceSettings,
     pub generation_agent: GenerationAgent,
     /// `None` = config predates the composer/generation split; readers fall
     /// back to the generation agent via [`Self::new_agent_defaults`].
@@ -111,6 +112,7 @@ impl Workspace {
             git_status_view: config.git_status_view,
             git_status_group: config.git_status_group,
             conversation_layout: config.conversation_layout,
+            voice: config.voice,
             generation_agent: config.generation_agent.normalized(),
             stored_new_agent_defaults: config.new_agent_defaults.map(NewAgentDefaults::normalized),
             code_review_prompt: user_code_review_prompt(config.code_review_prompt),
@@ -632,6 +634,37 @@ impl Workspace {
         self.schedule_save(cx);
     }
 
+    pub fn set_voice_announcements(
+        &mut self,
+        announcements: ide_core::VoiceAnnouncements,
+        cx: &mut Context<Self>,
+    ) {
+        if self.voice.announcements == announcements {
+            return;
+        }
+        self.voice.announcements = announcements;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_voice_patient_turn_taking(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.voice.patient_turn_taking == enabled {
+            return;
+        }
+        self.voice.patient_turn_taking = enabled;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_voice_input_device(&mut self, input_device: Option<String>, cx: &mut Context<Self>) {
+        if self.voice.input_device == input_device {
+            return;
+        }
+        self.voice.input_device = input_device;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
     fn to_config(&self) -> AppConfig {
         AppConfig {
             projects: self.projects.clone(),
@@ -644,6 +677,7 @@ impl Workspace {
             git_status_view: self.git_status_view,
             git_status_group: self.git_status_group,
             conversation_layout: self.conversation_layout,
+            voice: self.voice.clone(),
             generation_agent: self.generation_agent.clone(),
             new_agent_defaults: self.stored_new_agent_defaults.clone(),
             code_review_prompt: self.code_review_prompt.clone(),

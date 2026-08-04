@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 APP_NAME="Choro"
 BUNDLE="target/release/bundle/$APP_NAME.app"
 INSTALL_BUNDLE="/Applications/$APP_NAME.app"
+ENTITLEMENTS="scripts/choro.entitlements"
 SIGN_IDENTITY="${CHORO_CODESIGN_IDENTITY:-${MY_IDE_CODESIGN_IDENTITY:-}}"
 INSTALL_TO_APPLICATIONS="${CHORO_INSTALL_TO_APPLICATIONS:-${MY_IDE_INSTALL_TO_APPLICATIONS:-1}}"
 
@@ -72,6 +73,10 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>NSUserNotificationAlertStyle</key><string>alert</string>
     <key>NSDocumentsFolderUsageDescription</key>
     <string>Choro needs access to your project folders to load Git, docs, services, and environment files.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Choro uses the microphone only during Project Talk or composer dictation. Audio is processed locally and is not retained.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Choro converts speech into editable text and Project Talk questions using local speech models.</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
 </dict>
 </plist>
@@ -85,7 +90,8 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
 fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
-  codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$BUNDLE"
+  codesign --force --options runtime --timestamp=none \
+    --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BUNDLE"
   codesign --verify --deep --strict "$BUNDLE"
   echo "Signed: $SIGN_IDENTITY"
 else

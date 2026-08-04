@@ -55,6 +55,7 @@ block = { path = "vendor/block" }
 # This local copy backports upstream PR #1711 without taking unrelated
 # unreleased Wry changes.
 wry = { path = "vendor/wry" }
+smart-turn-rs = { path = "vendor/smart-turn-rs" }
 
 # Optimize dependencies (gpui is heavy) once; keep our code fast to rebuild.
 [profile.dev]

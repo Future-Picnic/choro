@@ -1,6 +1,41 @@
 use super::*;
 
 impl LocalStore {
+    pub fn save_voice_turn(
+        &self,
+        mode: &str,
+        role: &str,
+        text: &str,
+        agent_id: Option<Uuid>,
+    ) -> Result<StoredVoiceTurn> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            insert_voice_turn_async(&conn, mode, role, text, agent_id).await
+        })
+    }
+
+    pub fn load_voice_turns(&self, limit: usize) -> Result<Vec<StoredVoiceTurn>> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            load_voice_turns_async(&conn, limit).await
+        })
+    }
+
+    pub fn clear_voice_turns(&self) -> Result<()> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            clear_voice_turns_async(&conn).await
+        })
+    }
+
+    pub fn prune_voice_turns(&self, retention_days: u32) -> Result<()> {
+        let cutoff = unix_now().saturating_sub(u64::from(retention_days) * 86_400);
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            prune_voice_turns_async(&conn, cutoff).await
+        })
+    }
+
     pub fn open_default() -> Result<Self> {
         let root = AppConfig::config_path()
             .parent()

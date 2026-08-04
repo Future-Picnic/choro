@@ -51,6 +51,7 @@ mod services;
 mod shutdown;
 mod tasks;
 mod time;
+mod voice;
 pub(crate) mod web_preview;
 
 /// Native WKWebView children can remain AppKit's first responder after the
@@ -135,6 +136,7 @@ use crate::ui::db::{collection_pane::CollectionPane, table_pane::TablePane};
 use crate::ui::git::diff_pane::{DiffKind, DiffPane};
 use crate::ui::logo_spinner::logo_spinner;
 use crate::ui::style;
+use crate::voice::VoiceState;
 
 use velotype::{Editor as VelotypeEditor, EmbeddedThemeColors};
 
@@ -400,6 +402,32 @@ enum AgentChatSurface {
         relative_doc_path: PathBuf,
     },
 }
+
+#[derive(Clone, Debug)]
+enum VoiceComposerAction {
+    PresentResponse {
+        text: String,
+    },
+    CreatePlan {
+        project: ProjectId,
+        prompt: String,
+    },
+    Write {
+        agent_id: Option<Uuid>,
+        text: String,
+        insert_at_cursor: bool,
+    },
+    Send {
+        agent_id: Uuid,
+        fallback_text: String,
+    },
+    Discard {
+        agent_id: Uuid,
+        text: String,
+    },
+}
+
+struct ProjectTalkResponseNotification;
 
 impl AgentChatSurface {
     fn is_document(&self) -> bool {
@@ -1303,6 +1331,7 @@ pub struct CenterArea {
     services: Entity<ServicesState>,
     doc_assistants: Entity<DocAssistantState>,
     penpot: Entity<PenpotState>,
+    voice: Entity<VoiceState>,
     penpot_instance_input: Entity<InputState>,
     penpot_mcp_input: Entity<InputState>,
     penpot_key_input: Entity<InputState>,
@@ -1528,6 +1557,9 @@ pub struct CenterArea {
     /// keyed by agent id. The phone polls this through the agent snapshot; a
     /// new ship attempt replaces a stale failure.
     remote_ship_status: HashMap<Uuid, agent_panel::RemoteShipStatus>,
+    /// Voice composer actions arrive without a `Window`; the next center
+    /// render applies them through InputState's normal editing/submission path.
+    voice_composer_pending: VecDeque<VoiceComposerAction>,
     selected_file: HashMap<ProjectId, FileSel>,
     pending_editor_positions: HashMap<(ProjectId, PathBuf), (usize, usize)>,
     /// A reference embed / `ref:` link clicked inside a doc editor, pending
