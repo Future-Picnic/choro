@@ -437,17 +437,17 @@ impl RootView {
                         })
                     }
                     VoiceEvent::Dictation {
-                        agent_id,
+                        target,
                         text,
                         insert_at_cursor,
                     } => this.center.update(cx, |center, cx| {
-                        center.queue_voice_dictation(*agent_id, text.clone(), *insert_at_cursor, cx)
+                        center.queue_voice_dictation(*target, text.clone(), *insert_at_cursor, cx)
                     }),
                     VoiceEvent::SendDraft {
-                        agent_id,
+                        target,
                         fallback_text,
                     } => this.center.update(cx, |center, cx| {
-                        center.queue_voice_draft_send(*agent_id, fallback_text.clone(), cx)
+                        center.queue_voice_draft_send(*target, fallback_text.clone(), cx)
                     }),
                     VoiceEvent::DiscardDraft { agent_id, text } => {
                         this.center.update(cx, |center, cx| {
@@ -619,7 +619,7 @@ impl RootView {
         if self.voice.read(cx).push_to_talk_held() {
             return;
         }
-        let Some(agent_id) = self.center.read(cx).selected_voice_chat_id(cx) else {
+        let Some(target) = self.center.read(cx).selected_voice_dictation_target(cx) else {
             self.reset_voice_shortcut_gesture();
             self.voice
                 .update(cx, |voice, cx| voice.report_missing_dictation_target(cx));
@@ -628,7 +628,7 @@ impl RootView {
 
         self.voice_push_to_talk_binding = self.configured_push_to_talk_binding(cx);
         self.voice
-            .update(cx, |voice, cx| voice.begin_push_to_talk_for(agent_id, cx));
+            .update(cx, |voice, cx| voice.begin_push_to_talk_for(target, cx));
     }
 
     fn toggle_hands_free_dictation(&mut self, cx: &mut Context<Self>) {
@@ -637,13 +637,13 @@ impl RootView {
             self.voice.update(cx, |voice, cx| voice.stop(cx));
             return;
         }
-        let Some(agent_id) = self.center.read(cx).selected_voice_chat_id(cx) else {
+        let Some(target) = self.center.read(cx).selected_voice_dictation_target(cx) else {
             self.voice
                 .update(cx, |voice, cx| voice.report_missing_dictation_target(cx));
             return;
         };
         self.voice.update(cx, |voice, cx| {
-            voice.begin_continuous_dictation_for(agent_id, cx)
+            voice.begin_continuous_dictation_for(target, cx)
         });
     }
 

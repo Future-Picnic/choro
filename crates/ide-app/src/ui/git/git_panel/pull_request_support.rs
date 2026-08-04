@@ -65,7 +65,7 @@ pub(super) fn branch_from_push_message(message: &str) -> Option<PushNoticeEvent>
 }
 
 pub(super) fn existing_pull_request_url(repo: &Path, branch: &str) -> Option<String> {
-    let output = gh_command()
+    let output = gh_command_for_repo(repo)
         .ok()?
         .args(["pr", "view", branch, "--json", "url", "--jq", ".url"])
         .current_dir(repo)
@@ -81,7 +81,7 @@ pub(super) fn existing_pull_request_url(repo: &Path, branch: &str) -> Option<Str
         return Some(url);
     }
 
-    let output = gh_command()
+    let output = gh_command_for_repo(repo)
         .ok()?
         .args([
             "pr", "list", "--head", branch, "--state", "all", "--limit", "1", "--json", "url",
@@ -104,7 +104,7 @@ pub(super) fn existing_pull_request_url_for_base(
     branch: &str,
     base_branch: &str,
 ) -> Option<String> {
-    let output = gh_command()
+    let output = gh_command_for_repo(repo)
         .ok()?
         .args([
             "pr",
@@ -148,7 +148,7 @@ pub(crate) fn create_pull_request_with_gh(
         return Ok(url);
     }
 
-    let output = gh_command()?
+    let output = gh_command_for_repo(repo)?
         .args([
             "pr",
             "create",
@@ -338,7 +338,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
         return None;
     }
 
-    let view_output = gh_command()
+    let view_output = gh_command_for_repo(repo)
         .ok()?
         .args([
             "pr",
@@ -358,7 +358,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
         }
     }
 
-    let output = gh_command()
+    let output = gh_command_for_repo(repo)
         .ok()?
         .args([
             "pr",
@@ -389,7 +389,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
 }
 
 pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRequest>> {
-    let output = gh_command()?
+    let output = gh_command_for_repo(repo)?
         .args([
             "pr",
             "list",

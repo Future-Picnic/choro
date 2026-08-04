@@ -42,6 +42,7 @@ pub mod editor;
 mod ios_simulator_preview;
 mod markdown;
 mod new_agent;
+mod new_agent_recents;
 mod penpot;
 pub mod preset_bar;
 mod preview_control_ipc;
@@ -413,12 +414,12 @@ enum VoiceComposerAction {
         prompt: String,
     },
     Write {
-        agent_id: Option<Uuid>,
+        target: crate::voice::VoiceDictationTarget,
         text: String,
         insert_at_cursor: bool,
     },
     Send {
-        agent_id: Uuid,
+        target: crate::voice::VoiceDictationTarget,
         fallback_text: String,
     },
     Discard {

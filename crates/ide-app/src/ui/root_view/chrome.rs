@@ -1,6 +1,11 @@
 use super::*;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 
+enum RailIcon {
+    Component(IconName),
+    Lucide(lucide_icons::Icon),
+}
+
 impl RootView {
     pub(super) fn update_dock_badge(&self, cx: &mut Context<Self>) {
         let label = self.agent_chats.read(cx).dock_badge_label();
@@ -571,7 +576,7 @@ impl RootView {
         // the `nav` sidebar — so the rail reads as its own deepest column.
         let panel_bg = crate::ui::design::sink(cx);
         let item = |id: &'static str,
-                    icon: IconName,
+                    icon: RailIcon,
                     label: &'static str,
                     target: ProjectActivity,
                     cx: &mut Context<Self>| {
@@ -631,11 +636,20 @@ impl RootView {
                         .when(!selected, |b| {
                             b.hover(|s| s.bg(crate::ui::design::surface(cx)))
                         })
-                        .child(
-                            Icon::new(icon)
+                        .child(match icon {
+                            RailIcon::Component(icon) => Icon::new(icon)
                                 .size(crate::ui::design::icon_lg())
-                                .text_color(fg),
-                        )
+                                .text_color(fg)
+                                .into_any_element(),
+                            RailIcon::Lucide(icon) => {
+                                crate::ui::design::indicator::lucide_icon(
+                                    icon,
+                                    fg,
+                                    crate::ui::design::icon_lg(),
+                                )
+                                .into_any_element()
+                            }
+                        })
                         .children(design_connection_color.map(|color| {
                             div()
                                 .absolute()
@@ -716,56 +730,56 @@ impl RootView {
             })
             .child(item(
                 "rail-agents",
-                IconName::Bot,
+                RailIcon::Component(IconName::Bot),
                 "Agents",
                 ProjectActivity::Agents,
                 cx,
             ))
             .child(item(
                 "rail-code",
-                IconName::PanelBottomOpen,
+                RailIcon::Component(IconName::PanelBottomOpen),
                 "Code",
                 ProjectActivity::Code,
                 cx,
             ))
             .child(item(
                 "rail-tasks",
-                crate::ui::design::tasks_icon(),
+                RailIcon::Component(crate::ui::design::tasks_icon()),
                 "Tasks",
                 ProjectActivity::Tasks,
                 cx,
             ))
             .child(item(
                 "rail-design",
-                crate::ui::design::design_icon(),
+                RailIcon::Component(crate::ui::design::design_icon()),
                 "Design",
                 ProjectActivity::Design,
                 cx,
             ))
             .child(item(
                 "rail-docs",
-                crate::ui::design::docs_icon(),
+                RailIcon::Component(crate::ui::design::docs_icon()),
                 "Docs",
                 ProjectActivity::Docs,
                 cx,
             ))
             .child(item(
                 "rail-db",
-                IconName::Database,
+                RailIcon::Component(IconName::Database),
                 "DB",
                 ProjectActivity::Db,
                 cx,
             ))
             .child(item(
                 "rail-designs",
-                IconName::Image,
+                RailIcon::Lucide(lucide_icons::Icon::Bookmark),
                 "Assets",
                 ProjectActivity::Designs,
                 cx,
             ))
             .child(item(
                 "rail-services",
-                IconName::Network,
+                RailIcon::Component(IconName::Network),
                 "Services",
                 ProjectActivity::Services,
                 cx,

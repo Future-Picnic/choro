@@ -1174,14 +1174,23 @@ impl ProjectList {
         }
     }
 
-    fn select_or_toggle_project(&mut self, project: ProjectId, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            if workspace.active == Some(project) {
-                workspace.toggle_project_expanded(project, cx);
-            } else {
-                workspace.set_active(project, cx);
-            }
-        });
+    /// Selecting a project opens its new-agent screen rather than restoring
+    /// whichever agent happened to be selected last — the same click always
+    /// lands in the same place, ready for the next thing you want to start.
+    /// Clicking the project that is already active only folds its agent list.
+    fn select_or_toggle_project(
+        &mut self,
+        project: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace.read(cx).active == Some(project) {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.toggle_project_expanded(project, cx)
+            });
+            return;
+        }
+        self.open_new_agent_for_project(project, window, cx);
     }
 
     fn render_project_agent(
@@ -2061,9 +2070,9 @@ impl ProjectList {
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_click(cx.listener(move |this, _, window, cx| {
                                         cx.stop_propagation();
-                                        this.select_or_toggle_project(id, cx);
+                                        this.select_or_toggle_project(id, window, cx);
                                     }))
                                     .child(project_icon_element(
                                         &row.icon,
@@ -2088,9 +2097,9 @@ impl ProjectList {
                                             Tooltip::new(path.clone()).build(window, cx)
                                         }
                                     })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                    .on_click(cx.listener(move |this, _, window, cx| {
                                         cx.stop_propagation();
-                                        this.select_or_toggle_project(id, cx);
+                                        this.select_or_toggle_project(id, window, cx);
                                     }))
                                     .child(
                                         div()

@@ -20,7 +20,10 @@ const MAX_VISUALIZATION_BYTES: u64 = 2 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebPreviewIntent {
     Url(String),
-    PenpotUrl(String),
+    PenpotUrl {
+        url: String,
+        theme: PenpotTheme,
+    },
     ProjectPreview {
         project_id: ProjectId,
         url: String,
@@ -214,6 +217,67 @@ impl DocEditorTheme {
             accent: crate::ui::design::accent(cx).to_string(),
             danger: crate::ui::design::rose(cx).to_string(),
             dark: cx.theme().mode.is_dark(),
+        }
+    }
+}
+
+/// The Choro design-system colors applied to the embedded Design editor's UI.
+/// These tokens style editor chrome only; artwork on the canvas remains owned
+/// by the design file and is never recolored by an application theme change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PenpotTheme {
+    name: String,
+    dark: bool,
+    sink: String,
+    nav: String,
+    base: String,
+    surface: String,
+    surface_2: String,
+    focus: String,
+    text_1: String,
+    text_2: String,
+    text_3: String,
+    text_4: String,
+    line: String,
+    line_2: String,
+    accent: String,
+    accent_2: String,
+    on_accent: String,
+    accent_soft: String,
+    accent_line: String,
+    info: String,
+    overlay: String,
+    shadow: String,
+}
+
+impl PenpotTheme {
+    pub fn from_app(cx: &App) -> Self {
+        use crate::ui::design;
+
+        Self {
+            name: cx.theme().theme_name().to_string(),
+            dark: cx.theme().mode.is_dark(),
+            sink: design::sink(cx).to_string(),
+            nav: design::nav(cx).to_string(),
+            base: design::base(cx).to_string(),
+            surface: design::surface(cx).to_string(),
+            surface_2: design::surface_2(cx).to_string(),
+            focus: design::focus(cx).to_string(),
+            text_1: design::t1(cx).to_string(),
+            text_2: design::t2(cx).to_string(),
+            text_3: design::t3(cx).to_string(),
+            text_4: design::t4(cx).to_string(),
+            line: design::line(cx).to_string(),
+            line_2: design::line_2(cx).to_string(),
+            accent: design::accent(cx).to_string(),
+            accent_2: design::accent_2(cx).to_string(),
+            on_accent: design::on_accent(cx).to_string(),
+            accent_soft: design::accent_soft(cx).to_string(),
+            accent_line: design::accent_line(cx).to_string(),
+            info: design::sky(cx).to_string(),
+            overlay: design::sink(cx).opacity(0.72).to_string(),
+            shadow: design::sink(cx).opacity(0.60).to_string(),
         }
     }
 }
@@ -917,17 +981,17 @@ mod imp {
 
             let incoming_penpot = intent
                 .as_ref()
-                .is_some_and(|intent| matches!(intent, WebPreviewIntent::PenpotUrl(_)));
+                .is_some_and(|intent| matches!(intent, WebPreviewIntent::PenpotUrl { .. }));
             if !self.penpot_keepalive && !incoming_penpot {
                 self.parked_penpot = None;
             }
 
             let should_park_active_penpot = self.penpot_keepalive
                 && self.active.as_ref().is_some_and(|active| {
-                    matches!(active.intent, WebPreviewIntent::PenpotUrl(_))
-                        && intent
-                            .as_ref()
-                            .is_none_or(|intent| !matches!(intent, WebPreviewIntent::PenpotUrl(_)))
+                    matches!(active.intent, WebPreviewIntent::PenpotUrl { .. })
+                        && intent.as_ref().is_none_or(|intent| {
+                            !matches!(intent, WebPreviewIntent::PenpotUrl { .. })
+                        })
                 });
             if should_park_active_penpot {
                 if let Some(active) = self.active.take() {
@@ -943,7 +1007,7 @@ mod imp {
                 return had_active;
             };
 
-            if matches!(intent, WebPreviewIntent::PenpotUrl(_))
+            if matches!(intent, WebPreviewIntent::PenpotUrl { .. })
                 && !self
                     .active
                     .as_ref()
@@ -952,6 +1016,7 @@ mod imp {
                 if let Some(mut parked) = self.parked_penpot.take() {
                     if same_surface(&parked.intent, &intent) {
                         self.active = None;
+                        sync_active_penpot_theme(&parked, &intent);
                         parked.intent = intent;
                         let _ = parked.webview.set_visible(false);
                         self.active = Some(parked);
@@ -970,6 +1035,7 @@ mod imp {
                 if self.active.as_ref().map(|active| &active.intent) != Some(&intent) {
                     if let Some(active) = self.active.as_mut() {
                         sync_active_doc_editor(active, &intent);
+                        sync_active_penpot_theme(active, &intent);
                         active.intent = intent.clone();
                     }
                 }
@@ -1074,7 +1140,7 @@ mod imp {
             let active_surface_id = self
                 .active
                 .as_ref()
-                .filter(|active| matches!(active.intent, WebPreviewIntent::PenpotUrl(_)))
+                .filter(|active| matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }))
                 .and_then(|active| active.surface_id)
                 .or_else(|| {
                     self.parked_penpot
@@ -1098,7 +1164,7 @@ mod imp {
             let Some(active) = self.active.as_ref() else {
                 return Err("The Design canvas is still loading.".to_string());
             };
-            if !matches!(active.intent, WebPreviewIntent::PenpotUrl(_)) {
+            if !matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }) {
                 return Err("The active web view cannot navigate to this design.".to_string());
             }
             active
@@ -1130,7 +1196,7 @@ mod imp {
             let Some(active) = self.active.as_ref() else {
                 return;
             };
-            if matches!(active.intent, WebPreviewIntent::PenpotUrl(_)) {
+            if matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }) {
                 let _ = active
                     .webview
                     .evaluate_script(&penpot_sidebar_tab_script(tab));
@@ -1141,7 +1207,7 @@ mod imp {
             let Some(active) = self.active.as_ref() else {
                 return;
             };
-            if matches!(active.intent, WebPreviewIntent::PenpotUrl(_)) {
+            if matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }) {
                 let _ = active
                     .webview
                     .evaluate_script(penpot_left_sidebar_collapse_script());
@@ -1705,7 +1771,7 @@ mod imp {
             }
             if let Some(intent) = self.pending.take() {
                 let surface_id =
-                    matches!(intent, WebPreviewIntent::PenpotUrl(_)).then(Uuid::new_v4);
+                    matches!(intent, WebPreviewIntent::PenpotUrl { .. }).then(Uuid::new_v4);
                 match build(
                     &intent,
                     bounds,
@@ -1738,15 +1804,15 @@ mod imp {
                     .webview
                     .set_visible(surface_visible(false, active.doc_editor_ready));
                 let penpot_assistant_changed =
-                    matches!(&active.intent, WebPreviewIntent::PenpotUrl(_))
+                    matches!(&active.intent, WebPreviewIntent::PenpotUrl { .. })
                         && active.penpot_assistant_open != self.penpot_assistant_open;
                 let penpot_compare_changed =
-                    matches!(&active.intent, WebPreviewIntent::PenpotUrl(_))
+                    matches!(&active.intent, WebPreviewIntent::PenpotUrl { .. })
                         && active.penpot_compare_open != self.penpot_compare_open;
                 if active.bounds != bounds {
                     active.bounds = bounds;
                     let _ = active.webview.set_bounds(bounds);
-                    if matches!(&active.intent, WebPreviewIntent::PenpotUrl(_)) {
+                    if matches!(&active.intent, WebPreviewIntent::PenpotUrl { .. }) {
                         // WKWebView updates its native frame here, but WebKit does
                         // not reliably emit a DOM resize event for child-view
                         // frame changes. Penpot caches its workspace measurements,
@@ -1895,6 +1961,10 @@ mod imp {
         }
         match (left, right) {
             (
+                WebPreviewIntent::PenpotUrl { url: left, .. },
+                WebPreviewIntent::PenpotUrl { url: right, .. },
+            ) => left == right,
+            (
                 WebPreviewIntent::DocEditor {
                     path: left,
                     assets: left_assets,
@@ -2015,6 +2085,26 @@ mod imp {
                 }};
                 sync();
             }})();"##
+        )
+    }
+
+    fn penpot_theme_sync_script(theme: &super::PenpotTheme) -> String {
+        let theme = serde_json::to_string(theme).expect("Design theme serializes to JSON");
+        format!(
+            r#"(() => {{
+                const theme = {theme};
+                window.__choroTheme = theme;
+                let attempts = 0;
+                const sync = () => {{
+                    const api = window.choroPenpot;
+                    if (api && typeof api.setTheme === "function") {{
+                        api.setTheme(theme);
+                        return;
+                    }}
+                    if (attempts++ < 240) window.setTimeout(sync, 250);
+                }};
+                sync();
+            }})();"#
         )
     }
 
@@ -2195,14 +2285,18 @@ mod imp {
         assistant_open: bool,
         compare_open: bool,
         surface_id: Uuid,
+        theme: &super::PenpotTheme,
     ) -> String {
         let surface_id =
             serde_json::to_string(&surface_id).unwrap_or_else(|_| "\"invalid\"".to_string());
+        let theme = serde_json::to_string(theme).expect("Design theme serializes to JSON");
         format!(
             r##"(() => {{
                 const assistantOpen = {assistant_open};
                 const compareOpen = {compare_open};
                 const surfaceId = {surface_id};
+                const theme = {theme};
+                window.__choroTheme = theme;
                 {key_guard}
                 const installEmbeddedTextEditorFix = () => {{
                     if (document.getElementById("choro-embedded-penpot-fixes")) return;
@@ -2265,10 +2359,13 @@ mod imp {
                             window.__choroAssistantOpen || window.__choroCompareOpen
                         ));
                     }}
+                    if (api && typeof api.setTheme === "function") {{
+                        api.setTheme(theme);
+                    }}
                     if (api && (
                         typeof api.setCompareMode === "function" ||
                         typeof api.setAssistantOpen === "function"
-                    )) {{
+                    ) && typeof api.setTheme === "function") {{
                         return;
                     }}
                     if (attempts++ < 240) window.setTimeout(sync, 250);
@@ -2410,6 +2507,24 @@ mod imp {
         }
     }
 
+    fn sync_active_penpot_theme(active: &Active, next: &WebPreviewIntent) {
+        let (
+            WebPreviewIntent::PenpotUrl {
+                theme: current_theme,
+                ..
+            },
+            WebPreviewIntent::PenpotUrl { theme, .. },
+        ) = (&active.intent, next)
+        else {
+            return;
+        };
+        if current_theme != theme {
+            let _ = active
+                .webview
+                .evaluate_script(&penpot_theme_sync_script(theme));
+        }
+    }
+
     fn build(
         intent: &WebPreviewIntent,
         bounds: Bounds<Pixels>,
@@ -2432,13 +2547,14 @@ mod imp {
                 .build_as_child(window)
                 .map(WebSurface::WebKit)
                 .map_err(|error| error.to_string()),
-            WebPreviewIntent::PenpotUrl(url) => {
+            WebPreviewIntent::PenpotUrl { url, theme } => {
                 let surface_id = penpot_surface_id
                     .ok_or_else(|| "Design surface identity is missing".to_string())?;
                 let script = penpot_assistant_initialization_script(
                     penpot_assistant_open,
                     penpot_compare_open,
                     surface_id,
+                    theme,
                 );
                 let ipc_messages = penpot_messages.clone();
                 let ipc_app = app.clone();
@@ -2988,11 +3104,40 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             bind_project_preview_message, decode_project_preview_message, design_export_file_name,
             inject_visualization_chrome, penpot_assistant_initialization_script,
             penpot_chrome_sync_script, penpot_left_sidebar_collapse_script,
-            penpot_message_matches_surface, penpot_sidebar_tab_script, preview_key_event_data,
-            same_surface, surface_visible, unique_design_download_path, PenpotMessage,
-            PenpotSidebarTab, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
+            penpot_message_matches_surface, penpot_sidebar_tab_script, penpot_theme_sync_script,
+            preview_key_event_data, same_surface, surface_visible, unique_design_download_path,
+            PenpotMessage, PenpotSidebarTab, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
-        use crate::ui::center::web_preview::{ProjectPreviewMessage, WebPreviewIntent};
+        use crate::ui::center::web_preview::{
+            PenpotTheme, ProjectPreviewMessage, WebPreviewIntent,
+        };
+
+        fn test_penpot_theme() -> PenpotTheme {
+            PenpotTheme {
+                name: "Test".into(),
+                dark: true,
+                sink: "#111111".into(),
+                nav: "#121212".into(),
+                base: "#131313".into(),
+                surface: "#202020".into(),
+                surface_2: "#242424".into(),
+                focus: "#282828".into(),
+                text_1: "#f5f5f5".into(),
+                text_2: "#d0d0d0".into(),
+                text_3: "#999999".into(),
+                text_4: "#707070".into(),
+                line: "#303030".into(),
+                line_2: "#383838".into(),
+                accent: "#cac9ee".into(),
+                accent_2: "#d9d8f6".into(),
+                on_accent: "#202027".into(),
+                accent_soft: "#303049".into(),
+                accent_line: "#555577".into(),
+                info: "#85b8df".into(),
+                overlay: "rgb(0 0 0 / 72%)".into(),
+                shadow: "rgb(0 0 0 / 60%)".into(),
+            }
+        }
 
         #[test]
         fn web_surface_stays_hidden_until_content_is_ready() {
@@ -3221,6 +3366,33 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
         }
 
         #[test]
+        fn penpot_theme_changes_reuse_the_open_design_surface() {
+            let first = WebPreviewIntent::PenpotUrl {
+                url: "https://design.example/workspace#file=1".into(),
+                theme: test_penpot_theme(),
+            };
+            let mut next_theme = test_penpot_theme();
+            next_theme.name = "Light".into();
+            next_theme.dark = false;
+            next_theme.base = "#ffffff".into();
+            let second = WebPreviewIntent::PenpotUrl {
+                url: "https://design.example/workspace#file=1".into(),
+                theme: next_theme,
+            };
+
+            assert!(same_surface(&first, &second));
+        }
+
+        #[test]
+        fn penpot_theme_sync_uses_the_stable_integration_api() {
+            let script = penpot_theme_sync_script(&test_penpot_theme());
+
+            assert!(script.contains("window.__choroTheme = theme"));
+            assert!(script.contains("api.setTheme(theme)"));
+            assert!(script.contains("\"accent\":\"#cac9ee\""));
+        }
+
+        #[test]
         fn penpot_chrome_sync_uses_the_stable_integration_api() {
             let open = penpot_chrome_sync_script(true, false);
             let closed = penpot_chrome_sync_script(false, false);
@@ -3236,7 +3408,12 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
 
         #[test]
         fn penpot_assistant_state_follows_choro_after_webview_navigation() {
-            let script = penpot_assistant_initialization_script(false, false, Uuid::from_u128(1));
+            let script = penpot_assistant_initialization_script(
+                false,
+                false,
+                Uuid::from_u128(1),
+                &test_penpot_theme(),
+            );
 
             assert!(script.contains("const assistantOpen = false"));
             assert!(script.contains("const compareOpen = false"));
@@ -3255,6 +3432,8 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             assert!(script.contains("api.ensureMcpConnected"));
             assert!(script.contains("api.isMcpConnected"));
             assert!(script.contains(r#"type: "mcpStatus""#));
+            assert!(script.contains("api.setTheme(theme)"));
+            assert!(script.contains(r#"window.__choroTheme = theme"#));
         }
 
         #[test]

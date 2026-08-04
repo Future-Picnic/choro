@@ -107,6 +107,12 @@ fn gh_command() -> anyhow::Result<Command> {
     Ok(Command::new(path))
 }
 
+fn gh_command_for_repo(repo: &Path) -> anyhow::Result<Command> {
+    let mut command = gh_command()?;
+    ide_core::git::configure_selected_github_cli(&mut command, repo)?;
+    Ok(command)
+}
+
 /// "4 hours ago"-style label from a unix timestamp.
 pub(crate) fn relative_time(unix_secs: i64) -> String {
     if unix_secs <= 0 {

@@ -58,9 +58,9 @@ pub fn is_generated_tool_path(path: &Path) -> bool {
 }
 
 pub use accounts::{
-    assign_github_account, assigned_github_account, connected_github_accounts,
-    handle_git_credential, open_github_account_login, primary_remote, repository_remotes,
-    GitHubAccount, GitRemote,
+    assign_github_account, assigned_github_account, configure_selected_github_cli,
+    connected_github_accounts, handle_git_credential, open_github_account_login, primary_remote,
+    repository_remotes, GitHubAccount, GitRemote,
 };
 pub use diff::{DiffHunk, DiffLine, FileDiff, LineOrigin};
 pub use ignore::ensure_local_dependency_excludes;

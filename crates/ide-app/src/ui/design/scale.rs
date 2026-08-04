@@ -518,6 +518,8 @@ pub fn center_column_pad_x() -> Pixels {
 pub fn center_column_pad_y() -> Pixels {
     px(CENTER_COLUMN_PAD_Y)
 }
+/// Project Home. The composer is the one raised surface; lanes are sunken wells
+/// whose rows fill on hover, so the column reads as one strip without dividers.
 pub fn services_group_gap() -> Pixels {
     px(SERVICES_GROUP_GAP)
 }
