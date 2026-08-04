@@ -35,6 +35,9 @@ actions!(
         NextOpenItem,
         PreviousOpenItem,
         StopCurrentAgent,
+        ToggleVoiceDirector,
+        ToggleVoiceDictation,
+        ToggleHandsFreeDictation,
         QuickAddTask,
         QuitApplication
     ]

@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 22;
+const STORE_SCHEMA_VERSION: u32 = 24;
 const EXPORT_FORMAT_VERSION: u32 = 4;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -52,6 +52,20 @@ pub struct StoredChatMessage {
     pub sequence: i64,
     pub created_at: u64,
     pub backend_message_id: Option<String>,
+}
+
+/// Text-only history from Project Talk or composer dictation. Microphone
+/// samples are never written to the local store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredVoiceTurn {
+    pub id: Uuid,
+    /// `director`, `dictation`, `project_talk`, or `command`.
+    pub mode: String,
+    /// `user`, `assistant`, or `system`.
+    pub role: String,
+    pub text: String,
+    pub agent_id: Option<Uuid>,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +267,7 @@ mod references;
 mod schema;
 mod support;
 mod tasks;
+mod voice;
 mod workspace;
 
 use agents::*;
@@ -271,6 +286,7 @@ use references::*;
 use schema::*;
 use support::*;
 use tasks::*;
+use voice::*;
 use workspace::*;
 
 #[cfg(test)]

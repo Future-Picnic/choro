@@ -1084,6 +1084,123 @@ pub fn header_svg_button(id: impl Into<ElementId>, icon: impl IntoElement, _cx: 
         .child(icon)
 }
 
+/// A microphone action that stays icon-sized at rest and expands into a live
+/// signal capsule while Voice is active. The caller owns the semantic glyphs
+/// and meter bars; this builder owns the chrome treatment and dimensions.
+pub fn header_voice_capsule_button(
+    id: impl Into<ElementId>,
+    active: bool,
+    shows_mode_chip: bool,
+    content: impl IntoElement,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .h(px(CONTROL_H_COMPACT))
+        .w(px(if shows_mode_chip {
+            132.0
+        } else if active {
+            68.0
+        } else {
+            CONTROL_H_COMPACT
+        }))
+        .p_0()
+        .rounded(design::r_pill())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if active {
+                    design::accent_soft(cx)
+                } else {
+                    transparent
+                })
+                .foreground(if active {
+                    design::accent(cx)
+                } else {
+                    design::t3(cx)
+                })
+                .border(transparent)
+                .hover(if active {
+                    design::accent_soft(cx).opacity(0.9)
+                } else {
+                    design::hover(cx).opacity(0.5)
+                })
+                .active(design::hover(cx)),
+        )
+        .child(content)
+}
+
+/// Compact mode tag inside the active voice capsule. It stays informational—
+/// the surrounding microphone capsule remains the only pointer action.
+pub fn voice_mode_chip(label: impl Into<SharedString>, cx: &App) -> Div {
+    h_flex()
+        .h(px(18.))
+        .px_1p5()
+        .items_center()
+        .rounded(design::r_pill())
+        .bg(design::surface(cx))
+        .text_size(design::text_label())
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(design::t2(cx))
+        .child(label.into())
+}
+
+/// A full-width option inside a compact configuration popover. Selection is
+/// carried by both the check glyph and the quiet accent surface.
+pub fn popover_selection_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w_full()
+        .h(px(CONTROL_H_COMPACT))
+        .px_2()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if selected {
+                    design::accent_soft(cx)
+                } else {
+                    transparent
+                })
+                .foreground(if selected {
+                    design::accent(cx)
+                } else {
+                    design::t2(cx)
+                })
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .min_w(px(0.))
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .w(design::icon_sm())
+                        .h(design::icon_sm())
+                        .flex_none()
+                        .when(selected, |slot| {
+                            slot.child(
+                                Icon::new(IconName::Check)
+                                    .size(design::icon_sm())
+                                    .text_color(design::accent(cx)),
+                            )
+                        }),
+                )
+                .child(div().min_w(px(0.)).truncate().child(label.into())),
+        )
+}
+
 /// Canonical refresh action. A true circular-refresh glyph distinguishes this
 /// from undo/retry, while the surface and border keep it visible in headers.
 pub fn refresh_icon_button(id: impl Into<ElementId>, cx: &App) -> Button {

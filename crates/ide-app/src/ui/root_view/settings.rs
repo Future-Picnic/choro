@@ -87,6 +87,7 @@ impl RootView {
             let view = SettingsView::new(
                 self.workspace.clone(),
                 self.penpot.clone(),
+                self.voice.clone(),
                 self.remote_auth.clone(),
                 self.remote_relay_identity.clone(),
                 self.remote_relay_control.clone(),
@@ -103,6 +104,7 @@ impl RootView {
         let view = SettingsView::new_remote(
             self.workspace.clone(),
             self.penpot.clone(),
+            self.voice.clone(),
             self.remote_auth.clone(),
             self.remote_relay_identity.clone(),
             self.remote_relay_control.clone(),

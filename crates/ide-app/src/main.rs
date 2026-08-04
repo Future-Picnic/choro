@@ -9,6 +9,7 @@ mod remote;
 mod state;
 mod theme;
 mod ui;
+mod voice;
 
 use gpui::{
     px, size, App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, OsAction,

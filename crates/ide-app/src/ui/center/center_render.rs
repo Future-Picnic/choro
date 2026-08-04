@@ -2,6 +2,7 @@ use super::*;
 
 impl Render for CenterArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.apply_pending_voice_composer_actions(window, cx);
         let Some((project, _)) = self.active_project(cx) else {
             return v_flex()
                 .size_full()

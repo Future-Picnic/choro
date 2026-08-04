@@ -33,6 +33,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_penpot_schema(conn).await?;
         ensure_penpot_source_columns(conn).await?;
         ensure_penpot_conversation_model_columns(conn).await?;
+        ensure_voice_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -433,6 +434,67 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 23 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                for statement in SCHEMA_V23 {
+                    conn.execute(statement, ()).await?;
+                }
+                record_schema_version(conn, 23).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    if current < 24 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                migrate_voice_schema_v24_inner(conn).await?;
+                record_schema_version(conn, 24).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_voice_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_voice_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_voice_schema_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V24 {
+        conn.execute(statement, ()).await?;
+    }
+    Ok(())
+}
+
+async fn migrate_voice_schema_v24_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V23 {
+        conn.execute(statement, ()).await?;
+    }
+    conn.execute("DROP INDEX IF EXISTS idx_voice_turns_created", ())
+        .await?;
+    conn.execute(
+        "ALTER TABLE voice_turns RENAME TO voice_turns_v23_backup",
+        (),
+    )
+    .await?;
+    for statement in SCHEMA_V24 {
+        conn.execute(statement, ()).await?;
+    }
+    conn.execute(
+        "INSERT INTO voice_turns (id, mode, role, text, agent_id, created_at)
+         SELECT id, mode, role, text, agent_id, created_at FROM voice_turns_v23_backup",
+        (),
+    )
+    .await?;
+    conn.execute("DROP TABLE voice_turns_v23_backup", ())
+        .await?;
     Ok(())
 }
 
@@ -493,6 +555,32 @@ async fn ensure_penpot_source_columns_inner(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
+
+pub(super) const SCHEMA_V23: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS voice_turns (
+        id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL CHECK(mode IN ('director', 'dictation')),
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+        text TEXT NOT NULL,
+        agent_id TEXT,
+        created_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_created
+        ON voice_turns(created_at DESC)",
+];
+
+const SCHEMA_V24: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS voice_turns (
+        id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL CHECK(mode IN ('director', 'dictation', 'project_talk', 'command')),
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+        text TEXT NOT NULL,
+        agent_id TEXT,
+        created_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_voice_turns_created
+        ON voice_turns(created_at DESC)",
+];
 
 const SCHEMA_V19: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS penpot_connections (

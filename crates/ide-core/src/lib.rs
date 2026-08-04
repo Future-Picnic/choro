@@ -24,7 +24,7 @@ pub use agents::{
     AgentModel, AgentRecord, AgentRuntimeKind, AgentStatus, AgentStoreFile, LaneProfile,
 };
 pub use branding::{APP_ID, APP_NAME, DOCS_DIR_NAME};
-pub use config::AppConfig;
+pub use config::{AppConfig, VoiceAnnouncements, VoiceSettings};
 pub use db::{
     DatabaseHandle, DbObject, DbObjectKind, DocEntry, DocPage, MongoHandle, TableColumn,
     TableFilter, TablePage, TableRow,

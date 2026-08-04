@@ -77,6 +77,78 @@ pub enum ConversationLayout {
     TopDown,
 }
 
+/// How much spoken feedback Project Talk provides after a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceAnnouncements {
+    /// Speak important outcomes and blockers, while leaving routine detail in
+    /// the visible transcript.
+    #[default]
+    Balanced,
+    /// Only speak errors and actions that need the user's attention.
+    Minimal,
+    /// Speak every completed Project Talk turn.
+    All,
+    /// Never synthesize speech; the transcript remains available.
+    Off,
+}
+
+/// Local Project Talk and composer-dictation preferences.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VoiceSettings {
+    /// Voice remains dormant until the user explicitly activates it.
+    #[serde(default = "default_voice_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub announcements: VoiceAnnouncements,
+    /// Number of days local text-only voice history is retained.
+    #[serde(default = "default_voice_retention_days")]
+    pub transcript_retention_days: u32,
+    /// Wait for Smart Turn to judge a complete thought instead of stopping at
+    /// the first short silence.
+    #[serde(default = "default_patient_turn_taking")]
+    pub patient_turn_taking: bool,
+    /// Optional input-device name. `None` follows the macOS system default.
+    #[serde(default)]
+    pub input_device: Option<String>,
+    /// Optional macOS system voice name. `None` uses the system default.
+    #[serde(default)]
+    pub system_voice: Option<String>,
+    /// Multiplier applied to the native speech rate.
+    #[serde(default = "default_voice_speech_rate")]
+    pub speech_rate: f32,
+}
+
+const fn default_voice_enabled() -> bool {
+    true
+}
+
+const fn default_voice_retention_days() -> u32 {
+    30
+}
+
+const fn default_patient_turn_taking() -> bool {
+    true
+}
+
+const fn default_voice_speech_rate() -> f32 {
+    1.0
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            announcements: VoiceAnnouncements::Balanced,
+            transcript_retention_days: 30,
+            patient_turn_taking: true,
+            input_device: None,
+            system_voice: None,
+            speech_rate: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PanelSizes {
     pub left: f32,
@@ -277,6 +349,9 @@ pub struct AppConfig {
     /// Placement and reading direction of agent conversations.
     #[serde(default)]
     pub conversation_layout: ConversationLayout,
+    /// Local Project Talk and composer dictation preferences.
+    #[serde(default)]
+    pub voice: VoiceSettings,
     /// Provider and model used by one-shot AI generation features.
     #[serde(default)]
     pub generation_agent: GenerationAgent,
@@ -328,6 +403,7 @@ impl Default for AppConfig {
             git_status_view: GitStatusViewMode::default(),
             git_status_group: GitStatusGroupMode::default(),
             conversation_layout: ConversationLayout::default(),
+            voice: VoiceSettings::default(),
             generation_agent: GenerationAgent::default(),
             new_agent_defaults: None,
             code_review_prompt: default_code_review_prompt(),
@@ -482,6 +558,7 @@ mod tests {
             git_status_group: GitStatusGroupMode::None,
             conversation_layout: ConversationLayout::TopDown,
             generation_agent: GenerationAgent::default(),
+            voice: VoiceSettings::default(),
             new_agent_defaults: Some(NewAgentDefaults::for_provider(AgentKind::Claude)),
             code_review_prompt: default_code_review_prompt(),
             code_review_output_instructions: default_code_review_output_instructions(),

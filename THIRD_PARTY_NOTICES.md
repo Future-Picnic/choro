@@ -32,6 +32,15 @@ The build-time license collector records every resolved Cargo package, its
 version, declared SPDX expression, repository, and copied license files in the
 desktop application.
 
+## Local voice models
+
+Project Talk and dictation download their optional model payload only after the user opts
+in. Moonshine Small Streaming English and the Moonshine runtime are provided by
+Moonshine AI; the English-language speech models and Moonshine code are MIT
+licensed. Smart Turn v3.2 is provided by Daily under the BSD 2-Clause License.
+The exact license texts are included in the packaged license materials. Choro
+pins and verifies the SHA-256 digest of every downloaded model artifact.
+
 ## Embedded BlockNote editor
 
 Choro embeds the unmodified BlockNote Core, React, and Mantine packages for its

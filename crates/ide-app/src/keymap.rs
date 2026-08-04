@@ -13,6 +13,7 @@ pub struct Shortcut {
     pub description: &'static str,
     pub category: ShortcutCategory,
     pub in_commands: bool,
+    context: Option<&'static str>,
     binding: fn(&str) -> KeyBinding,
     action: fn() -> Box<dyn Action>,
 }
@@ -77,7 +78,24 @@ macro_rules! shortcut {
             description: $desc,
             category: $category,
             in_commands: $commands,
+            context: None,
             binding: |keys| KeyBinding::new(keys, <$action>::default(), None),
+            action: || Box::new(<$action>::default()),
+        }
+    };
+}
+
+macro_rules! shortcut_in {
+    ($id:literal, $keys:expr, $action:ty, $title:literal, $desc:literal, $category:expr, $commands:expr, $context:literal) => {
+        Shortcut {
+            id: $id,
+            default_keystroke: $keys,
+            title: $title,
+            description: $desc,
+            category: $category,
+            in_commands: $commands,
+            context: Some($context),
+            binding: |keys| KeyBinding::new(keys, <$action>::default(), Some($context)),
             action: || Box::new(<$action>::default()),
         }
     };
@@ -328,6 +346,36 @@ pub fn shortcuts() -> Vec<Shortcut> {
             ShortcutCategory::Agents,
             true
         ),
+        shortcut_in!(
+            "toggle_voice_director",
+            Some("cmd-shift-a"),
+            ToggleVoiceDirector,
+            "Assistant",
+            "Start or end a read-only conversation about the active project",
+            ShortcutCategory::Agents,
+            true,
+            "Root"
+        ),
+        shortcut_in!(
+            "toggle_hands_free_dictation",
+            Some("cmd-shift-l"),
+            ToggleHandsFreeDictation,
+            "Hands-off dictation",
+            "Start or stop continuous dictation in the open agent chat",
+            ShortcutCategory::Agents,
+            true,
+            "Root"
+        ),
+        shortcut_in!(
+            "toggle_voice_dictation",
+            Some("cmd-l"),
+            ToggleVoiceDictation,
+            "Dictate with voice",
+            "Hold to dictate once; release to insert into the open agent chat",
+            ShortcutCategory::Agents,
+            false,
+            "Root"
+        ),
         shortcut!(
             "toggle_agent_plan_mode",
             None,
@@ -382,7 +430,7 @@ pub fn apply_bindings(
         .filter_map(|shortcut| {
             shortcut
                 .keystroke(previous)
-                .map(|keys| KeyBinding::new(keys, NoAction {}, None))
+                .map(|keys| KeyBinding::new(keys, NoAction {}, shortcut.context))
         })
         .collect();
     cx.bind_keys(masks);
@@ -423,6 +471,13 @@ pub fn display_keystroke(keys: &str) -> String {
         other => return format!("{}{}", display, other.to_uppercase()),
     });
     display
+}
+
+pub fn shortcut_display(id: &str, overrides: &HashMap<String, String>) -> Option<String> {
+    shortcuts()
+        .into_iter()
+        .find(|shortcut| shortcut.id == id)
+        .and_then(|shortcut| shortcut.keystroke(overrides).map(display_keystroke))
 }
 
 pub fn normalized_keystroke(keys: &str) -> Option<String> {
@@ -472,5 +527,64 @@ mod tests {
         assert_eq!(focus_mode.default_keystroke, Some("cmd-f"));
         assert_eq!(focus_mode.category, ShortcutCategory::NavigationLayout);
         assert!(focus_mode.in_commands);
+    }
+
+    #[test]
+    fn push_to_talk_uses_command_l_everywhere_in_the_workspace() {
+        let voice = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_voice_dictation")
+            .unwrap();
+        assert_eq!(voice.default_keystroke, Some("cmd-l"));
+        assert_eq!(voice.context, Some("Root"));
+        assert!(!voice.in_commands);
+    }
+
+    #[test]
+    fn hands_off_uses_command_shift_l_everywhere_in_the_workspace() {
+        let hands_off = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_hands_free_dictation")
+            .unwrap();
+        assert_eq!(hands_off.default_keystroke, Some("cmd-shift-l"));
+        assert_eq!(hands_off.context, Some("Root"));
+        assert!(hands_off.in_commands);
+    }
+
+    #[test]
+    fn assistant_uses_command_shift_a_everywhere_in_the_workspace() {
+        let assistant = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_voice_director")
+            .unwrap();
+        assert_eq!(assistant.default_keystroke, Some("cmd-shift-a"));
+        assert_eq!(assistant.context, Some("Root"));
+        assert!(assistant.in_commands);
+    }
+
+    #[test]
+    fn every_voice_mode_is_independently_remappable() {
+        let overrides = [
+            ("toggle_voice_dictation".to_string(), "alt-d".to_string()),
+            (
+                "toggle_hands_free_dictation".to_string(),
+                "alt-h".to_string(),
+            ),
+            ("toggle_voice_director".to_string(), "alt-a".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        for (id, expected) in [
+            ("toggle_voice_dictation", "alt-d"),
+            ("toggle_hands_free_dictation", "alt-h"),
+            ("toggle_voice_director", "alt-a"),
+        ] {
+            let shortcut = shortcuts()
+                .into_iter()
+                .find(|shortcut| shortcut.id == id)
+                .unwrap();
+            assert_eq!(shortcut.keystroke(&overrides), Some(expected));
+        }
     }
 }

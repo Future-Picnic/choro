@@ -8,6 +8,7 @@ SOURCE_BUNDLE="target/release/bundle/Choro.app"
 APP_NAME="Choro Demo"
 BUNDLE="target/release/bundle/$APP_NAME.app"
 INSTALL_BUNDLE="/Applications/$APP_NAME.app"
+ENTITLEMENTS="scripts/choro.entitlements"
 INSTALL_TO_APPLICATIONS="${CHORO_DEMO_INSTALL_TO_APPLICATIONS:-1}"
 SIGN_IDENTITY="${CHORO_CODESIGN_IDENTITY:-${MY_IDE_CODESIGN_IDENTITY:-}}"
 BUILD_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
@@ -57,14 +58,17 @@ fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
   codesign --force --options runtime --timestamp=none \
+    --entitlements "$ENTITLEMENTS" \
     --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/choro-bin"
   codesign --force --options runtime --timestamp=none \
     --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/choro-mcp"
-  codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$BUNDLE"
+  codesign --force --options runtime --timestamp=none \
+    --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BUNDLE"
 else
-  codesign --force --sign - "$BUNDLE/Contents/MacOS/choro-bin"
+  codesign --force --entitlements "$ENTITLEMENTS" \
+    --sign - "$BUNDLE/Contents/MacOS/choro-bin"
   codesign --force --sign - "$BUNDLE/Contents/MacOS/choro-mcp"
-  codesign --force --sign - "$BUNDLE"
+  codesign --force --entitlements "$ENTITLEMENTS" --sign - "$BUNDLE"
 fi
 codesign --verify --deep --strict "$BUNDLE"
 
