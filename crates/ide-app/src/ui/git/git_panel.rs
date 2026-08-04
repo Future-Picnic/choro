@@ -47,8 +47,9 @@ use generation::git_output;
 pub(crate) use generation::run_safe_text_generation;
 pub(crate) use generation::{
     default_remote_branch, distill_memory_proposal, generate_commit_message,
-    generate_commit_message_for_files, generate_pull_request, generate_pull_request_for_files,
-    generate_riff, pull_request_base_branch_options, GeneratedPullRequest, MemoryDecisionContext,
+    generate_commit_message_for_files, generate_one_shot_text, generate_pull_request,
+    generate_pull_request_for_files, generate_riff, pull_request_base_branch_options,
+    GeneratedPullRequest, MemoryDecisionContext,
 };
 use pull_request_dialog::{confirm_git_action, GitConfirmation};
 use pull_request_support::{

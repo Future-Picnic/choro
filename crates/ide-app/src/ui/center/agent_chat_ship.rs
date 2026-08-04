@@ -5,6 +5,7 @@ impl CenterArea {
         &self,
         agent: &AgentRecord,
         result: &crate::state::agent_chat::ShipResult,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let short_sha = if result.commit_sha.len() > 7 {
@@ -170,7 +171,7 @@ impl CenterArea {
                                     .border_color(crate::ui::design::line(cx))
                                     .bg(crate::ui::design::base(cx).opacity(0.28))
                                     .p_3()
-                                    .child(render_plan_markdown(&body, cx)),
+                                    .child(render_plan_markdown(&body, window, cx)),
                             )
                         }),
                 )

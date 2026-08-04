@@ -464,3 +464,57 @@ fn penpot_design_mention_keeps_durable_identity_and_url() {
     assert!(!submission.contains("Penpot"));
     assert!(submission.ends_with("review accessibility"));
 }
+
+#[test]
+fn markdown_table_cells_keep_inline_markdown() {
+    // Cells render through `TextView::markdown` so they can be selected, which
+    // means the raw inline syntax has to survive parsing.
+    let cells = markdown_table_cells("| **Press L** | Starts `voice` mode |");
+    assert_eq!(cells, vec!["**Press L**", "Starts `voice` mode"]);
+}
+
+#[test]
+fn markdown_table_parses_header_and_rows() {
+    let lines = vec![
+        "| User action | Choro behavior |",
+        "| --- | --- |",
+        "| Press L | Starts continuous Voice mode |",
+        "| Normal speech | Converses with Choro |",
+        "",
+        "Example:",
+    ];
+    let (header, rows, consumed) = markdown_table(&lines, 0).expect("table");
+    assert_eq!(header, vec!["User action", "Choro behavior"]);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1], vec!["Normal speech", "Converses with Choro"]);
+    // Header + separator + both rows, stopping at the blank line.
+    assert_eq!(consumed, 4);
+}
+
+#[test]
+fn markdown_table_rejects_non_table_lines() {
+    let lines = vec!["Just a | pipe in prose", "and another | line"];
+    assert!(markdown_table(&lines, 0).is_none());
+}
+
+#[test]
+fn table_cell_markdown_escapes_leading_block_markers() {
+    // A cell is a phrase, not a block: these must render literally.
+    assert_eq!(table_cell_markdown("-"), "\\-");
+    assert_eq!(table_cell_markdown("- item"), "\\- item");
+    assert_eq!(table_cell_markdown("* star"), "\\* star");
+    assert_eq!(table_cell_markdown("# Heading"), "\\# Heading");
+    assert_eq!(table_cell_markdown("> quoted"), "\\> quoted");
+    assert_eq!(table_cell_markdown("1. First"), "1\\. First");
+    assert_eq!(table_cell_markdown("12."), "12\\.");
+}
+
+#[test]
+fn table_cell_markdown_leaves_ordinary_cells_alone() {
+    assert_eq!(table_cell_markdown("Press L"), "Press L");
+    assert_eq!(table_cell_markdown("**bold**"), "**bold**");
+    assert_eq!(table_cell_markdown("a - b"), "a - b");
+    assert_eq!(table_cell_markdown("-1 offset"), "-1 offset");
+    assert_eq!(table_cell_markdown("2024 release"), "2024 release");
+    assert_eq!(table_cell_markdown(""), "");
+}

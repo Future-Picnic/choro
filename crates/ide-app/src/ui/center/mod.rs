@@ -23,6 +23,7 @@ mod agent_composer_picker;
 mod agent_helpers;
 mod agent_lane;
 mod agent_launcher;
+mod agent_naming;
 mod agent_panel;
 mod attachment_helpers;
 mod center_docs_workspace;
@@ -1370,6 +1371,9 @@ pub struct CenterArea {
     agent_chat_attached_files: HashMap<Uuid, Vec<PathBuf>>,
     agent_chat_pasted_text_blocks: HashMap<Uuid, Vec<PastedTextBlock>>,
     agent_chat_selected_commands: HashMap<Uuid, AgentCapability>,
+    /// Naming requests already started in this app run. The second submitted
+    /// user turn is the one and only trigger; failures leave the original name.
+    agent_auto_names_requested: HashSet<Uuid>,
     /// Draft-scoped native Project Preview attachments.
     agent_chat_preview_armed: HashSet<Uuid>,
     /// Exact draft for which the optional Preview suggestion was dismissed.

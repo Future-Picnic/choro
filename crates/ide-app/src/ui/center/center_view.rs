@@ -627,6 +627,7 @@ impl CenterArea {
                 agent_chat_active_reveal: None,
                 agent_chat_hovered_message: None,
                 agent_chat_expanded_user_messages: HashSet::new(),
+                agent_auto_names_requested: HashSet::new(),
                 active_chat_visualization: None,
                 auto_loaded_chat_visualizations: HashSet::new(),
                 agent_chat_visualization_sync_stamps: HashMap::new(),

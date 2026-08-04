@@ -257,7 +257,13 @@ fn render_chat_blocks(
         }
 
         if let Some((header, rows, consumed)) = markdown_table(&lines, ix) {
-            elements.push(render_markdown_table(&header, &rows, cx));
+            elements.push(render_markdown_table(
+                &header,
+                &rows,
+                element_seed.wrapping_add(elements.len() as u64),
+                window,
+                cx,
+            ));
             ix += consumed;
             continue;
         }
@@ -579,7 +585,10 @@ fn render_chat_code_block(
         ))
         .w_full()
         .min_w(px(0.))
-        .overflow_hidden()
+        // x-only for the same reason as the markdown table: a non-`Visible`
+        // `overflow.y` zeroes the automatic minimum height and lets the chat
+        // list measure this block short, clipping its last code lines.
+        .overflow_x_hidden()
         .rounded(px(crate::ui::style::RADIUS_LG))
         .border_1()
         .border_color(border)
@@ -787,8 +796,17 @@ fn local_image_path_from_target(target: &str) -> Option<PathBuf> {
 
 pub(super) fn render_plan_markdown(
     markdown: &str,
+    window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
+    // Plan/verification bodies carry no element seed of their own, so tables
+    // key their selectable cells off the content they render.
+    let element_seed = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        markdown.hash(&mut hasher);
+        hasher.finish()
+    };
     let lines = markdown.lines().collect::<Vec<_>>();
     let mut elements = Vec::new();
     let mut ix = 0;
@@ -832,7 +850,13 @@ pub(super) fn render_plan_markdown(
         }
 
         if let Some((header, rows, consumed)) = markdown_table(&lines, ix) {
-            elements.push(render_markdown_table(&header, &rows, cx));
+            elements.push(render_markdown_table(
+                &header,
+                &rows,
+                element_seed.wrapping_add(elements.len() as u64),
+                window,
+                cx,
+            ));
             ix += consumed;
             continue;
         }
@@ -956,69 +980,168 @@ pub(super) fn markdown_table_cells(line: &str) -> Vec<String> {
     let trimmed = line.trim().trim_matches('|');
     trimmed
         .split('|')
-        .map(|cell| strip_inline_markdown(cell.trim()))
+        .map(|cell| cell.trim().to_string())
         .collect()
+}
+
+/// Inner radius of the table's rounded frame — gpui does not clip children to a
+/// parent's rounded rect, so the first and last rows round their own corners.
+fn table_inner_radius() -> gpui::Pixels {
+    px(crate::ui::design::R_SM - 1.)
+}
+
+/// A table cell is rendered as markdown so its inline formatting survives and
+/// the text stays selectable — but a cell is a *phrase*, never a block. Escape a
+/// leading block marker so a placeholder like `-` or a cell such as `1. First`
+/// renders literally instead of collapsing into a bullet, heading or quote.
+pub(super) fn table_cell_markdown(cell: &str) -> String {
+    let trimmed = cell.trim();
+    let leading = &cell[..cell.len() - cell.trim_start().len()];
+
+    let marker_len = if let Some(rest) = trimmed.strip_prefix(['#', '-', '*', '+', '>']) {
+        (rest.is_empty() || rest.starts_with(' ')).then_some(1)
+    } else {
+        let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+        let rest = &trimmed[digits..];
+        (digits > 0 && (rest == "." || rest.starts_with(". "))).then_some(digits + 1)
+    };
+
+    match marker_len {
+        Some(len) => format!(
+            "{leading}{}\\{}{}",
+            &trimmed[..len - 1],
+            &trimmed[len - 1..len],
+            &trimmed[len..]
+        ),
+        None => cell.to_string(),
+    }
+}
+
+fn render_markdown_table_row(
+    cells: &[String],
+    is_header: bool,
+    is_last: bool,
+    seed: u64,
+    row_index: usize,
+    window: &mut Window,
+    cx: &mut Context<CenterArea>,
+) -> gpui::AnyElement {
+    let divider = crate::ui::design::line(cx);
+    let cell_count = cells.len();
+    // Not `h_flex()`: that centres its items, and cells need to stretch to the
+    // row's height so the column rules run edge to edge.
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .w_full()
+        .flex_none()
+        .when(is_header, |row| {
+            row.rounded_t(table_inner_radius())
+                .bg(crate::ui::design::surface_2(cx))
+        })
+        .when(is_last, |row| row.rounded_b(table_inner_radius()))
+        // Every row but the last carries the hairline, so the final rule never
+        // doubles up with the table's own border.
+        .when(!is_last, |row| row.border_b_1().border_color(divider));
+
+    for (index, cell) in cells.iter().enumerate() {
+        // The leading column reads as the row's key, so it keeps UI weight
+        // while the remaining columns render as prose.
+        let is_key_column = index == 0 && !is_header;
+        let color = if is_header {
+            crate::ui::design::t2(cx)
+        } else if is_key_column {
+            crate::ui::design::t1_soft(cx)
+        } else {
+            crate::ui::design::chat_body(cx)
+        };
+        let weight = if is_header || is_key_column {
+            gpui::FontWeight::MEDIUM
+        } else {
+            gpui::FontWeight::NORMAL
+        };
+
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w(px(120.))
+                .px_3()
+                .py_2()
+                .text_size(crate::ui::design::text_ui())
+                .line_height(gpui::relative(1.45))
+                .font_weight(weight)
+                .text_color(color)
+                .when(index + 1 < cell_count, |cell| {
+                    cell.border_r_1().border_color(divider)
+                })
+                .child(
+                    TextView::markdown(
+                        (
+                            "agent-chat-table-cell",
+                            // The seed is scattered first so two tables a few
+                            // blocks apart can't land on each other's cell ids.
+                            seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(
+                                (row_index as u64)
+                                    .wrapping_mul(1024)
+                                    .wrapping_add(index as u64),
+                            ),
+                        ),
+                        table_cell_markdown(&soften_file_code_spans(cell)),
+                        window,
+                        cx,
+                    )
+                    .selectable(true),
+                ),
+        );
+    }
+
+    row.into_any_element()
 }
 
 pub(super) fn render_markdown_table(
     header: &[String],
     rows: &[Vec<String>],
+    seed: u64,
+    window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
-    let render_row = |cells: &[String], is_header: bool, cx: &mut Context<CenterArea>| {
-        h_flex()
-            .w_full()
-            .items_start()
-            // Round the header row's own top corners (the rounded-rect overflow
-            // clip doesn't apply to children in gpui).
-            .when(is_header, |row| {
-                row.rounded_t(px(crate::ui::style::RADIUS_SM - 1.))
-            })
-            .border_b_1()
-            .border_color(crate::ui::design::line(cx))
-            .bg(if is_header {
-                crate::ui::design::surface(cx)
-            } else {
-                crate::ui::design::base(cx).opacity(0.0)
-            })
-            .children(cells.iter().enumerate().map(|(index, cell)| {
-                div()
-                    .flex_1()
-                    .min_w(px(120.))
-                    .px_2()
-                    .py_1p5()
-                    .text_size(crate::ui::design::text_ui())
-                    .line_height(gpui::relative(1.35))
-                    .font_weight(if is_header {
-                        gpui::FontWeight::SEMIBOLD
-                    } else {
-                        gpui::FontWeight::NORMAL
-                    })
-                    .text_color(if is_header {
-                        crate::ui::style::focus_text(cx)
-                    } else {
-                        crate::ui::design::t3(cx)
-                    })
-                    .when(index + 1 < cells.len(), |cell| {
-                        cell.border_r_1().border_color(crate::ui::design::line(cx))
-                    })
-                    .child(cell.clone())
-                    .into_any_element()
-            }))
-            .into_any_element()
-    };
-
-    v_flex()
+    let mut table = v_flex()
         .w_full()
         .min_w(px(0.))
+        .flex_none()
         .rounded(crate::ui::design::r_sm())
         .border_1()
         .border_color(crate::ui::design::line(cx))
         .bg(crate::ui::style::surface(cx))
-        .overflow_hidden()
-        .child(render_row(header, true, cx))
-        .children(rows.iter().map(|row| render_row(row, false, cx)))
-        .into_any_element()
+        // Deliberately x-only. `overflow_hidden` also sets `overflow.y`, and
+        // taffy zeroes the automatic minimum size on any axis that is not
+        // `Visible` — on the column main axis that let the chat list (which
+        // measures rows at `MinContent` height) size the table short and clip
+        // its last rows mid-row.
+        .overflow_x_hidden()
+        .child(render_markdown_table_row(
+            header,
+            true,
+            rows.is_empty(),
+            seed,
+            0,
+            window,
+            cx,
+        ));
+
+    for (index, row) in rows.iter().enumerate() {
+        table = table.child(render_markdown_table_row(
+            row,
+            false,
+            index + 1 == rows.len(),
+            seed,
+            index + 1,
+            window,
+            cx,
+        ));
+    }
+
+    table.into_any_element()
 }
 
 pub(super) fn markdown_heading(line: &str) -> Option<(usize, &str)> {
