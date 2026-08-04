@@ -73,7 +73,18 @@ impl Render for AgentShipDialog {
                                         |this, _, cx| {
                                             this.create_branch = false;
                                             this.reset_prepared();
-                                            this.error = None;
+                                            this.error = (this.open_pr
+                                                && this.branch.as_deref().is_some_and(|branch| {
+                                                    validate_agent_ship_pr_branches(
+                                                        branch,
+                                                        &this.pr_base_branch,
+                                                    )
+                                                    .is_err()
+                                                }))
+                                            .then(|| {
+                                                "Choose New branch to open a pull request into the current branch."
+                                                    .to_string()
+                                            });
                                             cx.notify();
                                         },
                                         cx,
@@ -331,6 +342,17 @@ impl Render for AgentShipDialog {
                         self.busy,
                         |this, _, cx| {
                             this.open_pr = !this.open_pr;
+                            if this.open_pr
+                                && this.branch.as_deref().is_some_and(|branch| {
+                                    validate_agent_ship_pr_branches(
+                                        branch,
+                                        &this.pr_base_branch,
+                                    )
+                                    .is_err()
+                                })
+                            {
+                                this.create_branch = true;
+                            }
                             this.reset_prepared();
                             this.error = None;
                             cx.notify();

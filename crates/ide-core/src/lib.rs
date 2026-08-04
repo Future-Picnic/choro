@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod blocking_guard;
 pub mod branding;
 pub mod config;
 pub mod db;
@@ -50,4 +51,5 @@ pub use task_tracker::{
     TaskRichText, TaskStatusOption, TaskSummary, TaskTrackerClient, TaskTrackerConnection,
     TaskTrackerSource, TaskTrackerUser,
 };
+pub use blocking_guard::mark_ui_thread;
 pub use watcher::{GitWatcher, WorktreeWatcher};

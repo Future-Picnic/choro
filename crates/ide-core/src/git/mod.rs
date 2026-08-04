@@ -1,8 +1,10 @@
+pub mod accounts;
 pub mod diff;
 pub mod ignore;
 pub mod log;
 pub mod read;
 pub mod remote;
+pub mod repository;
 pub mod snapshot;
 pub mod write;
 
@@ -55,11 +57,17 @@ pub fn is_generated_tool_path(path: &Path) -> bool {
     })
 }
 
+pub use accounts::{
+    assign_github_account, assigned_github_account, connected_github_accounts,
+    handle_git_credential, open_github_account_login, primary_remote, repository_remotes,
+    GitHubAccount, GitRemote,
+};
 pub use diff::{DiffHunk, DiffLine, FileDiff, LineOrigin};
 pub use ignore::ensure_local_dependency_excludes;
 pub use log::{ahead_behind, commit_diff, list_commits, worktree_diffs, CommitInfo};
 pub use read::{read_head, read_snapshot};
 pub use remote::{fetch, pull, push, RemoteOutput};
+pub use repository::{discover_repositories, workspace_worktree_diffs};
 pub use snapshot::{BranchInfo, ChangeKind, GitSnapshot, HeadInfo, LineStats, StatusEntry};
 
 #[cfg(test)]

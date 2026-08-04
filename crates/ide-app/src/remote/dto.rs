@@ -146,6 +146,8 @@ pub enum TimelineItemDto {
     },
     ShipResult {
         action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository: Option<String>,
         branch: String,
         commit_sha: String,
         pr_url: Option<String>,
@@ -215,6 +217,11 @@ pub struct CreateAgentRequest {
     /// Run in its own Solo worktree lane instead of the shared project tree.
     #[serde(default)]
     pub solo: bool,
+    /// Repository root inside the opened project. Relative paths are resolved
+    /// from the project folder. Required for Solo when the project contains
+    /// more than one repository; optional for repository-scoped normal agents.
+    #[serde(default)]
+    pub repository_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -377,6 +384,19 @@ mod tests {
         let request: SendMessageRequest =
             serde_json::from_str(r#"{"text":"hello","client_command_id":"command-1"}"#).unwrap();
         assert_eq!(request.interaction_mode, InteractionModeDto::Default);
+    }
+
+    #[test]
+    fn create_agent_repository_path_is_optional() {
+        let request: CreateAgentRequest =
+            serde_json::from_str(r#"{"project_id":"p1","prompt":"hello","solo":true}"#).unwrap();
+        assert_eq!(request.repository_path, None);
+
+        let request: CreateAgentRequest = serde_json::from_str(
+            r#"{"project_id":"p1","prompt":"hello","repository_path":"frontend"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.repository_path.as_deref(), Some("frontend"));
     }
 
     #[test]

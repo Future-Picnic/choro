@@ -88,6 +88,11 @@ pub struct GitSnapshot {
     pub insertions: usize,
     /// Lines removed across all uncommitted changes.
     pub deletions: usize,
+    /// The repo's primary remote (`origin`, else the first configured one).
+    /// Cached here so render paths never have to ask git for it.
+    pub primary_remote: Option<super::GitRemote>,
+    /// GitHub account bound to the primary remote, if the user assigned one.
+    pub assigned_account: Option<String>,
 }
 
 impl GitSnapshot {

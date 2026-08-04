@@ -872,7 +872,12 @@ impl OpenCodeRuntime {
     }
 
     fn changed_files_summary(&self) -> ChangedFilesSummary {
-        let Ok(diffs) = ide_core::git::worktree_diffs(self.agent.runtime_path()) else {
+        let diffs = if self.agent.repository_path.is_none() && self.agent.lane_path.is_none() {
+            ide_core::git::workspace_worktree_diffs(&self.agent.project_path)
+        } else {
+            ide_core::git::worktree_diffs(self.agent.runtime_path())
+        };
+        let Ok(diffs) = diffs else {
             return ChangedFilesSummary::default();
         };
         let files = diffs

@@ -103,6 +103,9 @@ pub struct QueuedChatTurn {
 pub struct ShipResult {
     pub id: String,
     pub action: String,
+    /// The repository label for multi-repository ships. Kept empty for
+    /// single-repository ships so their cards stay compact.
+    pub repository: Option<String>,
     pub branch: String,
     pub commit_sha: String,
     pub pr_url: Option<String>,
@@ -336,6 +339,8 @@ enum StoredTimelinePayload {
     ShipResult {
         id: String,
         action: String,
+        #[serde(default)]
+        repository: Option<String>,
         branch: String,
         commit_sha: String,
         pr_url: Option<String>,

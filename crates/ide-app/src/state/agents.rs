@@ -151,6 +151,7 @@ impl AgentRecords {
         &mut self,
         project_id: ProjectId,
         project_path: PathBuf,
+        repository_path: Option<PathBuf>,
         title: String,
         doc: String,
         provider: AgentKind,
@@ -175,6 +176,7 @@ impl AgentRecords {
             effort,
             access_mode,
         );
+        agent.repository_path = repository_path;
         agent.status = status;
         agent.runtime = runtime;
         agent.linked_docs = linked_docs;

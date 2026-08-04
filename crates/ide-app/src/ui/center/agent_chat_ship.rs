@@ -13,6 +13,43 @@ impl CenterArea {
         } else {
             result.commit_sha.as_str()
         };
+        let repository = result.repository.clone().or_else(|| {
+            if agent.repository_path.is_some() {
+                return None;
+            }
+            let repositories = self.git_states.read(cx).repositories(agent.project_id);
+            if repositories.len() <= 1 {
+                return None;
+            }
+            let mut matches = repositories.into_iter().filter_map(|git| {
+                let git = git.read(cx);
+                git.history
+                    .iter()
+                    .any(|commit| {
+                        commit.sha == result.commit_sha
+                            || commit.sha.starts_with(&result.commit_sha)
+                            || result.commit_sha.starts_with(&commit.sha_short)
+                    })
+                    .then(|| git.repo_path.clone())
+            });
+            let repo_path = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            Some(
+                repo_path
+                    .strip_prefix(&agent.project_path)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| {
+                        repo_path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| repo_path.display().to_string())
+                    }),
+            )
+        });
         let is_onboarding_demo = result
             .pr_url
             .as_deref()
@@ -101,6 +138,40 @@ impl CenterArea {
                     .items_center()
                     .px(crate::ui::design::chat_card_body_pad_x())
                     .py(crate::ui::design::chat_card_body_pad_y())
+                    .when_some(repository, |row, repository| {
+                        row.child(
+                            v_flex()
+                                .gap_1()
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .text_size(crate::ui::design::text_ui())
+                                        .text_color(crate::ui::design::t3(cx))
+                                        .child("Repository"),
+                                )
+                                .child(
+                                    h_flex()
+                                        .min_w(px(0.))
+                                        .items_center()
+                                        .gap_1()
+                                        .child(
+                                            crate::ui::design::indicator::lucide_icon(
+                                                lucide_icons::Icon::FolderGit2,
+                                                crate::ui::design::sky(cx).opacity(0.78),
+                                                crate::ui::design::icon_sm(),
+                                            ),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .truncate()
+                                                .text_size(crate::ui::design::text_body())
+                                                .text_color(crate::ui::design::t1(cx))
+                                                .child(repository),
+                                        ),
+                                ),
+                        )
+                    })
                     .child(
                         v_flex()
                             .gap_1()

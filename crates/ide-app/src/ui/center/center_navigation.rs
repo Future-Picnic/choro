@@ -35,6 +35,10 @@ impl CenterArea {
         self.agent_open_epoch
     }
 
+    pub fn git_diff_open_epoch(&self) -> u64 {
+        self.git_diff_open_epoch
+    }
+
     pub fn can_go_back(&self) -> bool {
         !self.view_history_back.is_empty()
     }

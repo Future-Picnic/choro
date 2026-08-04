@@ -145,8 +145,12 @@ impl CenterArea {
             }
         })
         .detach();
+        let repositories = self.git_states.read(cx).repositories(project);
+        let repository_path =
+            (repositories.len() == 1).then(|| repositories[0].read(cx).repo_path.clone());
         self.new_agent_composer = Some(NewAgentComposer {
             project,
+            repository_path,
             prompt,
             provider: default_provider,
             runtime: AgentRuntimeKind::Chat,
@@ -258,7 +262,7 @@ impl CenterArea {
         else {
             return;
         };
-        let Some((project, cwd)) = self.project_by_id(project, cx) else {
+        let Some((project, workspace_root)) = self.project_by_id(project, cx) else {
             if let Some(composer) = self.new_agent_composer.as_mut() {
                 composer.error = Some("Choose a project before starting.".into());
             }
@@ -319,9 +323,16 @@ impl CenterArea {
             return;
         }
         let solo = composer.solo;
+        let repository_path = composer.repository_path.clone();
         let lane_profile = composer.lane_profile;
         let solo_base = composer.solo_base.clone();
-        if solo && ide_core::git::read_head(&cwd).is_err() {
+        let git_root = repository_path.as_deref().unwrap_or(&workspace_root);
+        if solo && repository_path.is_none() {
+            composer.error = Some("Choose a repository for Solo first.".into());
+            cx.notify();
+            return;
+        }
+        if solo && ide_core::git::read_head(git_root).is_err() {
             composer.error = Some("Solo needs a git repository with at least one commit.".into());
             cx.notify();
             return;
@@ -380,7 +391,7 @@ impl CenterArea {
         // reservation even before the asynchronous worktree exists.
         let solo_base_branch = if solo {
             solo_base.or_else(|| {
-                ide_core::git::read_head(&cwd)
+                ide_core::git::read_head(git_root)
                     .ok()
                     .and_then(|head| head.branch)
             })
@@ -390,7 +401,8 @@ impl CenterArea {
         let agent_id = self.agents.update(cx, |agents, cx| {
             let agent_id = agents.create_agent(
                 project,
-                cwd,
+                workspace_root,
+                repository_path.clone(),
                 title.clone(),
                 doc.clone(),
                 provider,

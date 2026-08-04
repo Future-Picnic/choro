@@ -534,6 +534,10 @@ pub struct AgentRecord {
     pub id: Uuid,
     pub project_id: ProjectId,
     pub project_path: PathBuf,
+    /// Repository selected when the agent was created. `None` means the agent
+    /// owns the entire opened workspace and may work across its repositories.
+    #[serde(default)]
+    pub repository_path: Option<PathBuf>,
     pub title: String,
     pub doc: String,
     #[serde(default)]
@@ -636,6 +640,7 @@ impl AgentRecord {
             id: Uuid::new_v4(),
             project_id,
             project_path,
+            repository_path: None,
             title: title.into(),
             doc: doc.into(),
             notes: String::new(),
@@ -782,11 +787,21 @@ impl AgentRecord {
         Some(resume_command_with_settings(self, session_id))
     }
 
+    /// Repository used for branch and Git operations. Legacy Solo records did
+    /// not persist this separately, so their project path remains the fallback.
+    pub fn repository_root(&self) -> &Path {
+        self.repository_path
+            .as_deref()
+            .unwrap_or(&self.project_path)
+    }
+
     /// Where this agent actually works: the lane directory for a materialized
-    /// Solo, otherwise the project root. Every consumer that means "the agent's
-    /// working directory" must go through this accessor.
+    /// Solo, otherwise its selected repository, otherwise the workspace root.
+    /// Every consumer that means "the agent's working directory" must use this.
     pub fn runtime_path(&self) -> &Path {
-        self.lane_path.as_deref().unwrap_or(&self.project_path)
+        self.lane_path
+            .as_deref()
+            .unwrap_or_else(|| self.repository_root())
     }
 
     /// True for a Solo agent even while its lane folder is torn down — the
@@ -1422,6 +1437,7 @@ mod tests {
             id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
             project_id: project.id,
             project_path: project.path,
+            repository_path: None,
             title: "Fix Bob's app".into(),
             doc: "Ship it\nwith care".into(),
             notes: String::new(),
@@ -1463,10 +1479,14 @@ mod tests {
         assert_eq!(agent.runtime_path(), Path::new("/tmp/app"));
         assert!(!agent.is_solo());
 
+        agent.repository_path = Some(PathBuf::from("/tmp/app/packages/web"));
+        assert_eq!(agent.repository_root(), Path::new("/tmp/app/packages/web"));
+        assert_eq!(agent.runtime_path(), Path::new("/tmp/app/packages/web"));
+
         agent.solo_branch = Some("solo/fix-auth".into());
         assert!(agent.is_solo());
-        // Solo with a torn-down lane still runs at the project root.
-        assert_eq!(agent.runtime_path(), Path::new("/tmp/app"));
+        // A Solo with a torn-down lane still runs in its selected repository.
+        assert_eq!(agent.runtime_path(), Path::new("/tmp/app/packages/web"));
 
         agent.lane_path = Some(PathBuf::from("/tmp/lanes/p/a"));
         assert_eq!(agent.runtime_path(), Path::new("/tmp/lanes/p/a"));
