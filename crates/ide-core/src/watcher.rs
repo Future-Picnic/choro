@@ -7,6 +7,11 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 const WORKTREE_DEBOUNCE: Duration = Duration::from_millis(750);
+// A debounce that waits for quiet can be starved forever by a steady event
+// stream (a long rebase churning the index, a tool writing continuously).
+// Cap how long a tick may be postponed so refreshes keep flowing.
+const MAX_DEBOUNCE_WAIT: Duration = Duration::from_secs(2);
+const MAX_WORKTREE_DEBOUNCE_WAIT: Duration = Duration::from_secs(3);
 const IGNORED_WORKTREE_DIRS: &[&str] = &[
     ".git",
     "target",
@@ -62,16 +67,34 @@ impl GitWatcher {
         }
 
         // Debounce thread: first event opens a window; quiet period emits one tick.
-        std::thread::spawn(move || {
-            while raw_rx.recv().is_ok() {
-                while raw_rx.recv_timeout(DEBOUNCE).is_ok() {}
-                if tick_tx.send(()).is_err() {
-                    break;
-                }
-            }
-        });
+        std::thread::spawn(move || debounce_ticks(raw_rx, tick_tx, DEBOUNCE, MAX_DEBOUNCE_WAIT));
 
         Ok((Self { _watcher: watcher }, tick_rx))
+    }
+}
+
+/// Forwards one tick per burst of raw events: a tick fires after `quiet` with
+/// no events, or after `max_wait` even if events keep streaming in.
+fn debounce_ticks(
+    raw_rx: mpsc::Receiver<()>,
+    tick_tx: mpsc::Sender<()>,
+    quiet: Duration,
+    max_wait: Duration,
+) {
+    while raw_rx.recv().is_ok() {
+        let deadline = std::time::Instant::now() + max_wait;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if raw_rx.recv_timeout(quiet.min(remaining)).is_err() {
+                break;
+            }
+        }
+        if tick_tx.send(()).is_err() {
+            break;
+        }
     }
 }
 
@@ -92,12 +115,12 @@ impl WorktreeWatcher {
         watcher.watch(repo_path, RecursiveMode::Recursive)?;
 
         std::thread::spawn(move || {
-            while raw_rx.recv().is_ok() {
-                while raw_rx.recv_timeout(WORKTREE_DEBOUNCE).is_ok() {}
-                if tick_tx.send(()).is_err() {
-                    break;
-                }
-            }
+            debounce_ticks(
+                raw_rx,
+                tick_tx,
+                WORKTREE_DEBOUNCE,
+                MAX_WORKTREE_DEBOUNCE_WAIT,
+            )
         });
 
         Ok((Self { _watcher: watcher }, tick_rx))
@@ -160,6 +183,35 @@ mod tests {
 
         let tick = rx.recv_timeout(Duration::from_secs(5));
         assert!(tick.is_ok(), "expected a watcher tick after branch change");
+    }
+
+    #[test]
+    fn debounce_emits_despite_constant_events() {
+        let (raw_tx, raw_rx) = mpsc::channel::<()>();
+        let (tick_tx, tick_rx) = mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            debounce_ticks(
+                raw_rx,
+                tick_tx,
+                Duration::from_millis(50),
+                Duration::from_millis(150),
+            )
+        });
+
+        // Events arrive faster than the quiet window for well past the cap —
+        // without the max-wait deadline no tick would ever fire.
+        let feeder = std::thread::spawn(move || {
+            for _ in 0..60 {
+                if raw_tx.send(()).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        let tick = tick_rx.recv_timeout(Duration::from_millis(400));
+        assert!(tick.is_ok(), "expected a capped tick during an event storm");
+        feeder.join().unwrap();
     }
 
     #[test]

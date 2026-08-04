@@ -651,10 +651,28 @@ impl CenterArea {
             .map(|effort| model.normalize_effort(effort))
             .unwrap_or_else(|| model.default_effort());
         let access_mode = resolve_remote_access_mode(request.access_mode.as_deref())?;
+        let repository_paths = self
+            .git_states
+            .read(cx)
+            .repositories(project.id)
+            .into_iter()
+            .filter_map(|git| {
+                let git = git.read(cx);
+                git.is_repo.then(|| git.repo_path.clone())
+            })
+            .collect::<Vec<_>>();
+        let repository_path = resolve_remote_repository_path(
+            &project.path,
+            request.repository_path.as_deref(),
+            &repository_paths,
+            request.solo,
+        )
+        .map_err(RemoteError::bad_request)?;
         let agent_id = self.agents.update(cx, |agents, cx| {
             agents.create_agent(
                 project.id,
                 project.path.clone(),
+                repository_path,
                 title.clone(),
                 prompt,
                 provider,
@@ -928,6 +946,7 @@ fn timeline_item_dto(
         }),
         AgentChatTimelineItem::ShipResult(result) => Some(TimelineItemDto::ShipResult {
             action: result.action.clone(),
+            repository: result.repository.clone(),
             branch: result.branch.clone(),
             commit_sha: result.commit_sha.clone(),
             pr_url: result.pr_url.clone(),
@@ -1058,6 +1077,44 @@ fn normalize_remote_diff_path(
         })
 }
 
+fn resolve_remote_repository_path(
+    project_path: &std::path::Path,
+    requested: Option<&str>,
+    repository_paths: &[std::path::PathBuf],
+    solo: bool,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if let Some(requested) = requested {
+        let requested = requested.trim();
+        if requested.is_empty() {
+            return Err("repository_path cannot be empty".into());
+        }
+        let requested = std::path::PathBuf::from(requested);
+        let candidate = if requested.is_absolute() {
+            requested
+        } else {
+            project_path.join(requested)
+        };
+        return repository_paths
+            .iter()
+            .find(|repository| **repository == candidate)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                "repository_path must identify a discovered Git repository inside the project"
+                    .to_string()
+            });
+    }
+
+    if !solo {
+        return Ok(None);
+    }
+    match repository_paths {
+        [] => Err("Solo needs a Git repository with at least one commit".into()),
+        [repository] => Ok(Some(repository.clone())),
+        _ => Err("repository_path is required for Solo in a multi-repository project".into()),
+    }
+}
+
 fn changed_files_dto(files: &[crate::state::agent_chat::FileChangeStat]) -> Vec<ChangedFileDto> {
     files
         .iter()
@@ -1149,6 +1206,31 @@ mod tests {
         assert_eq!(
             resolve_remote_access_mode(Some("root")).unwrap_err().status,
             400,
+        );
+    }
+
+    #[test]
+    fn remote_solo_requires_repository_when_project_has_many() {
+        let project = std::path::Path::new("/workspace");
+        let repositories = vec![project.join("backend"), project.join("frontend")];
+        assert!(resolve_remote_repository_path(project, None, &repositories, true).is_err());
+        assert_eq!(
+            resolve_remote_repository_path(project, Some("frontend"), &repositories, true).unwrap(),
+            Some(project.join("frontend")),
+        );
+    }
+
+    #[test]
+    fn remote_workspace_and_single_repo_solo_defaults_are_deterministic() {
+        let project = std::path::Path::new("/workspace");
+        let repositories = vec![project.join("frontend")];
+        assert_eq!(
+            resolve_remote_repository_path(project, None, &repositories, false).unwrap(),
+            None,
+        );
+        assert_eq!(
+            resolve_remote_repository_path(project, None, &repositories, true).unwrap(),
+            Some(project.join("frontend")),
         );
     }
 }

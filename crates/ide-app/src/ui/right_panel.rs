@@ -3,8 +3,9 @@ use gpui::{
     Render, Styled, Window,
 };
 use gpui_component::{
+    avatar::Avatar,
     menu::{DropdownMenu as _, PopupMenuItem},
-    v_flex, IconName,
+    v_flex, Icon, IconName, Sizable,
 };
 
 use crate::ui::agents_panel::AgentsPanel;
@@ -55,6 +56,7 @@ pub struct RightPanel {
     selected: RightToolTab,
     last_activity: ProjectActivity,
     last_agent_open_epoch: u64,
+    last_git_diff_open_epoch: u64,
 }
 
 impl RightPanel {
@@ -93,6 +95,7 @@ impl RightPanel {
                 selected: RightToolTab::Git,
                 last_activity: ProjectActivity::Agents,
                 last_agent_open_epoch: 0,
+                last_git_diff_open_epoch: 0,
             }
         })
     }
@@ -113,16 +116,24 @@ impl RightPanel {
 
 impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (activity, agent_open_epoch) = {
+        let (activity, agent_open_epoch, git_diff_open_epoch) = {
             let center = self.center.read(cx);
-            (center.activity(), center.agent_open_epoch())
+            (
+                center.activity(),
+                center.agent_open_epoch(),
+                center.git_diff_open_epoch(),
+            )
         };
-        // Code always opens with Files so the primary way into the editor is
-        // immediately available. Agents keeps Git as its default because that
-        // view is where agent-authored changes are reviewed.
+        // Code normally opens with Files. A diff chosen from Git is the one
+        // exception: keep Git visible so the user can continue reviewing the
+        // change list. Agents keeps Git as its default.
         let agents_requested =
             activity == ProjectActivity::Agents && agent_open_epoch != self.last_agent_open_epoch;
+        let git_diff_requested = activity == ProjectActivity::Code
+            && git_diff_open_epoch != self.last_git_diff_open_epoch;
         if agents_requested {
+            self.selected = RightToolTab::Git;
+        } else if git_diff_requested {
             self.selected = RightToolTab::Git;
         } else if activity != self.last_activity {
             match activity {
@@ -130,9 +141,10 @@ impl Render for RightPanel {
                 ProjectActivity::Agents => self.selected = RightToolTab::Git,
                 _ => {}
             }
-            self.last_activity = activity;
         }
+        self.last_activity = activity;
         self.last_agent_open_epoch = agent_open_epoch;
+        self.last_git_diff_open_epoch = git_diff_open_epoch;
 
         // Docs and Designs are now first-class activities with their own panel —
         // no in-panel toggle.
@@ -245,13 +257,109 @@ impl Render for RightPanel {
                         }),
                 )
             });
+        // Both read the GitState snapshot's cached values — render must never
+        // ask git directly (per-frame subprocesses once tanked scrolling).
+        let git_account_remote = self.git_panel.read(cx).git_account_remote(cx);
+        let git_accounts = self.git_panel.read(cx).connected_git_accounts();
+        let selected_git_account = self.git_panel.read(cx).selected_git_account(cx);
+        let git_accounts_loading = self.git_panel.read(cx).git_accounts_loading();
+        let git_accounts_error = self.git_panel.read(cx).git_accounts_error();
+        let git_account_selector = git_account_remote
+            .filter(ide_core::git::GitRemote::is_github_https)
+            .map(|remote| {
+                let account_avatar = selected_git_account
+                    .clone()
+                    .map(|account| Avatar::new().name(account).xsmall().into_any_element())
+                    .unwrap_or_else(|| {
+                        Icon::new(IconName::GitHub)
+                            .size(crate::ui::design::icon())
+                            .text_color(crate::ui::design::t3(cx))
+                            .into_any_element()
+                    });
+                let tooltip = match (&selected_git_account, &git_accounts_error) {
+                    // A notice ("Finish connecting in Terminal…") must stay
+                    // visible even when an account is already selected.
+                    (Some(account), Some(notice)) => {
+                        format!("GitHub account: @{account} · {notice}")
+                    }
+                    (Some(account), None) => format!(
+                        "GitHub account: @{account} · {} · Click to switch",
+                        remote.name
+                    ),
+                    (None, Some(error)) => format!("Choose a GitHub account · {error}"),
+                    (None, None) => "Choose a GitHub account for this repository".to_string(),
+                };
+                let panel = self.git_panel.clone();
+                style::header_svg_button("git-account-selector", account_avatar, cx)
+                    .tooltip(tooltip)
+                    .dropdown_menu(move |menu, _, _| {
+                        let mut menu = git_accounts.iter().fold(menu, |menu, account| {
+                            let login = account.login.clone();
+                            let selected = selected_git_account.as_deref() == Some(login.as_str());
+                            let panel = panel.clone();
+                            menu.item(
+                                PopupMenuItem::new(format!("@{login}"))
+                                    .checked(selected)
+                                    .on_click(move |_, _, cx| {
+                                        panel.update(cx, |panel, cx| {
+                                            panel.select_git_account(Some(login.clone()), cx)
+                                        });
+                                    }),
+                            )
+                        });
+                        if git_accounts.is_empty() {
+                            let label = if git_accounts_loading {
+                                "Loading connected accounts…"
+                            } else {
+                                "No connected GitHub accounts"
+                            };
+                            menu = menu.item(PopupMenuItem::new(label).disabled(true));
+                        }
+                        let system_panel = panel.clone();
+                        let refresh_panel = panel.clone();
+                        let connect_panel = panel.clone();
+                        menu.separator()
+                            .item(
+                                PopupMenuItem::new("Use system Git credentials")
+                                    .checked(selected_git_account.is_none())
+                                    .on_click(move |_, _, cx| {
+                                        system_panel.update(cx, |panel, cx| {
+                                            panel.select_git_account(None, cx)
+                                        });
+                                    }),
+                            )
+                            .item(PopupMenuItem::new("Refresh accounts").on_click(
+                                move |_, _, cx| {
+                                    refresh_panel
+                                        .update(cx, |panel, cx| panel.refresh_git_accounts(cx));
+                                },
+                            ))
+                            .item(
+                                PopupMenuItem::new("Connect another GitHub account…").on_click(
+                                    move |_, _, cx| {
+                                        connect_panel
+                                            .update(cx, |panel, cx| panel.connect_git_account(cx));
+                                    },
+                                ),
+                            )
+                    })
+            });
         v_flex()
             .size_full()
             .child(
                 crate::ui::design::header::panel_bar(cx)
-                    .child(crate::ui::design::header::panel_identity(
-                        cur_icon, cur_label, cx,
-                    ))
+                    .child(
+                        gpui_component::h_flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1p5()
+                            .when_some(git_account_selector, |identity, selector| {
+                                identity.child(selector)
+                            })
+                            .child(crate::ui::design::header::panel_identity(
+                                cur_icon, cur_label, cx,
+                            )),
+                    )
                     .when(selected == RightToolTab::Git, |row| {
                         row.child(
                             div()

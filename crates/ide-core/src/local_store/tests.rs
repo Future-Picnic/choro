@@ -121,6 +121,7 @@ fn solo_lane_fields_round_trip_through_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let project = sample_project();
     let mut solo = sample_agent(&project);
+    solo.repository_path = Some(project.path.join("apps/desktop"));
     solo.lane_path = Some(PathBuf::from("/tmp/choro-data/lanes/p/a"));
     solo.solo_branch = Some("solo/implement-storage".to_string());
     solo.solo_base_branch = Some("main".to_string());
@@ -138,6 +139,7 @@ fn solo_lane_fields_round_trip_through_the_store() {
     let loaded = store.load_agents().unwrap();
     let loaded_solo = loaded.iter().find(|agent| agent.id == solo.id).unwrap();
     assert_eq!(loaded_solo.lane_path, solo.lane_path);
+    assert_eq!(loaded_solo.repository_path, solo.repository_path);
     assert_eq!(loaded_solo.solo_branch, solo.solo_branch);
     assert_eq!(loaded_solo.solo_base_branch, solo.solo_base_branch);
     assert_eq!(loaded_solo.solo_rejoined_branch, solo.solo_rejoined_branch);

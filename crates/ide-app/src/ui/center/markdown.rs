@@ -1113,12 +1113,14 @@ pub(super) fn render_markdown_table(
         .border_1()
         .border_color(crate::ui::design::line(cx))
         .bg(crate::ui::style::surface(cx))
-        // Deliberately x-only. `overflow_hidden` also sets `overflow.y`, and
-        // taffy zeroes the automatic minimum size on any axis that is not
-        // `Visible` — on the column main axis that let the chat list (which
-        // measures rows at `MinContent` height) size the table short and clip
-        // its last rows mid-row.
-        .overflow_x_hidden()
+        // No `overflow_*` here, deliberately. A gpui `ContentMask` is a rect, so
+        // any non-`Visible` overflow clips on *both* axes — there is no x-only
+        // clip. The chat list measures each row once at `MinContent` and caches
+        // the height, and cells parse their markdown on a background task, so a
+        // row can be measured before its text has height. Every other chat block
+        // paints through that harmlessly; a masked table instead ate its last
+        // row. Rows round their own corners (see `render_markdown_table_row`),
+        // which is what the mask was for.
         .child(render_markdown_table_row(
             header,
             true,

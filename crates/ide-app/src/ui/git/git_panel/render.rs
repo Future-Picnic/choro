@@ -5,8 +5,14 @@ impl Render for GitPanel {
         self.maybe_refresh_solo_ahead(cx);
         self.sync_lane_scope(cx);
         let active_project = self.workspace.read(cx).active;
-        if self.last_active_project != active_project {
+        let active_repository = self
+            .active_git(cx)
+            .map(|git| git.read(cx).repo_path.clone());
+        if self.last_active_project != active_project
+            || self.last_active_repository != active_repository
+        {
             self.last_active_project = active_project;
+            self.last_active_repository = active_repository;
             self.commit_ai_error = None;
             self.commit_ai_generating = false;
             self.last_push_notice_message = None;
@@ -356,7 +362,7 @@ impl Render for GitPanel {
                             let Some(project) = project else { return };
                             open_diff_center
                                 .update(cx, |center, cx| {
-                                    center.open_diff(
+                                    center.open_diff_from_git(
                                         project,
                                         crate::ui::git::diff_pane::DiffKind::Project,
                                         "All Changes".into(),
@@ -495,7 +501,7 @@ impl Render for GitPanel {
                                     let Some(project) = project else { return };
                                     view_diff_center
                                         .update(cx, |center, cx| {
-                                            center.open_diff(
+                                            center.open_diff_from_git(
                                                 project,
                                                 crate::ui::git::diff_pane::DiffKind::Project,
                                                 "All Changes".into(),

@@ -359,9 +359,10 @@ impl RootView {
 
     pub(super) fn project_branch_label(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let root_view = cx.entity().clone();
-        let (project_visual, branch) = {
+        let (project_visual, repository_context, branch) = {
             let ws = self.workspace.read(cx);
-            let project_visual = ws.active_project().map(|p| {
+            let active_project = ws.active_project();
+            let project_visual = active_project.map(|p| {
                 (
                     p.name.clone(),
                     p.icon.clone(),
@@ -369,15 +370,39 @@ impl RootView {
                     p.icon_image_path.clone(),
                 )
             });
-            let branch = ws
-                .active
-                .and_then(|id| self.git_states.read(cx).get(id))
-                .map(|git| {
-                    let git = git.read(cx);
-                    git.branch_label()
+            let (repository_context, branch) = active_project
+                .map(|project| {
+                    let git_states = self.git_states.read(cx);
+                    let active_repository = git_states.active_repository_path(project.id);
+                    let repositories = git_states
+                        .repositories(project.id)
+                        .into_iter()
+                        .filter_map(|git| {
+                            let git = git.read(cx);
+                            git.is_repo.then(|| {
+                                let path = git.repo_path.clone();
+                                let label = if path == project.path {
+                                    project.name.clone()
+                                } else {
+                                    path.strip_prefix(&project.path)
+                                        .unwrap_or(&path)
+                                        .to_string_lossy()
+                                        .into_owned()
+                                };
+                                let selected = active_repository.as_ref() == Some(&path);
+                                (path, label, selected)
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let repository_context =
+                        (repositories.len() > 1).then_some((project.id, repositories));
+                    let branch = git_states
+                        .get(project.id)
+                        .and_then(|git| git.read(cx).branch_label());
+                    (repository_context, branch)
                 })
-                .unwrap_or(None);
-            (project_visual, branch)
+                .unwrap_or((None, None));
+            (project_visual, repository_context, branch)
         };
         h_flex()
             .flex_1()
@@ -425,6 +450,41 @@ impl RootView {
                     )
                 },
             )
+            .when_some(repository_context, |bar, (project_id, options)| {
+                let label = options
+                    .iter()
+                    .find_map(|(_, label, selected)| selected.then_some(label.clone()))
+                    .unwrap_or_else(|| "Repository".to_string());
+                let git_states = self.git_states.clone();
+                bar.child(
+                    crate::ui::style::header_dropdown_button("titlebar-repository-selector", cx)
+                        .child(crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::FolderGit2,
+                            crate::ui::design::sky(cx).opacity(0.78),
+                            crate::ui::design::icon_sm(),
+                        ))
+                        .child(div().max_w(px(150.)).truncate().child(label))
+                        .dropdown_menu(move |menu, _, _| {
+                            options.iter().fold(menu, |menu, (path, label, selected)| {
+                                let path = path.clone();
+                                let git_states = git_states.clone();
+                                menu.item(
+                                    PopupMenuItem::new(label.clone())
+                                        .checked(*selected)
+                                        .on_click(move |_, _, cx| {
+                                            git_states.update(cx, |states, cx| {
+                                                states.set_active_repository(
+                                                    project_id,
+                                                    path.clone(),
+                                                    cx,
+                                                )
+                                            });
+                                        }),
+                                )
+                            })
+                        }),
+                )
+            })
             .when_some(branch, |bar, branch| {
                 bar.child(
                     div()

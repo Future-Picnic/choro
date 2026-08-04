@@ -565,15 +565,20 @@ impl GitState {
     }
 }
 
-/// Holds one `GitState` per project, kept in sync with the workspace.
+/// Holds one `GitState` per discovered repository, grouped by opened project.
 pub struct GitStates {
     workspace: Entity<Workspace>,
-    states: HashMap<ProjectId, Entity<GitState>>,
+    states: HashMap<ProjectId, Vec<(PathBuf, Entity<GitState>)>>,
+    active_repositories: HashMap<ProjectId, PathBuf>,
     active_worktree: Option<ActiveWorktreeWatcher>,
+    /// Drops stale background-discovery results when projects change again
+    /// while a previous discovery walk is still running.
+    sync_seq: u64,
 }
 
 struct ActiveWorktreeWatcher {
     project_id: ProjectId,
+    repo_path: PathBuf,
     _watcher: WorktreeWatcher,
 }
 
@@ -602,7 +607,9 @@ impl GitStates {
         let mut this = Self {
             workspace,
             states: HashMap::new(),
+            active_repositories: HashMap::new(),
             active_worktree: None,
+            sync_seq: 0,
         };
         this.sync(&projects, cx);
         this.sync_active_worktree(&projects, active, cx);
@@ -610,22 +617,122 @@ impl GitStates {
     }
 
     pub fn get(&self, id: ProjectId) -> Option<Entity<GitState>> {
-        self.states.get(&id).cloned()
+        let states = self.states.get(&id)?;
+        let selected = self.active_repositories.get(&id);
+        selected
+            .and_then(|path| states.iter().find(|(repo_path, _)| repo_path == path))
+            .or_else(|| states.first())
+            .map(|(_, state)| state.clone())
+    }
+
+    pub fn repositories(&self, id: ProjectId) -> Vec<Entity<GitState>> {
+        self.states
+            .get(&id)
+            .map(|states| states.iter().map(|(_, state)| state.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn get_for_path(&self, id: ProjectId, path: &std::path::Path) -> Option<Entity<GitState>> {
+        self.states
+            .get(&id)?
+            .iter()
+            .find(|(repo_path, _)| repo_path == path)
+            .map(|(_, state)| state.clone())
+    }
+
+    pub fn active_repository_path(&self, id: ProjectId) -> Option<PathBuf> {
+        let states = self.states.get(&id)?;
+        let selected = self.active_repositories.get(&id);
+        selected
+            .and_then(|path| states.iter().find(|(repo_path, _)| repo_path == path))
+            .or_else(|| states.first())
+            .map(|(path, _)| path.clone())
+    }
+
+    pub fn set_active_repository(&mut self, id: ProjectId, path: PathBuf, cx: &mut Context<Self>) {
+        if self.get_for_path(id, &path).is_none()
+            || self.active_repositories.get(&id) == Some(&path)
+        {
+            return;
+        }
+        self.active_repositories.insert(id, path);
+        self.active_worktree = None;
+        let (projects, active) = {
+            let workspace = self.workspace.read(cx);
+            (workspace.projects.clone(), workspace.active)
+        };
+        self.sync_active_worktree(&projects, active, cx);
+        if let Some(git) = self.get(id) {
+            git.update(cx, |git, cx| git.refresh(cx));
+        }
+        cx.notify();
     }
 
     pub fn refresh_all(&self, cx: &mut Context<Self>) {
-        for state in self.states.values() {
-            state.update(cx, |state, cx| state.refresh(cx));
+        for states in self.states.values() {
+            for (_, state) in states {
+                state.update(cx, |state, cx| state.refresh(cx));
+            }
         }
     }
 
     fn sync(&mut self, projects: &[Project], cx: &mut Context<Self>) {
+        self.sync_seq = self.sync_seq.wrapping_add(1);
+        let seq = self.sync_seq;
+        let targets: Vec<(ProjectId, PathBuf)> = projects
+            .iter()
+            .map(|project| (project.id, project.path.clone()))
+            .collect();
+        cx.spawn(async move |this, cx| {
+            // Discovery walks every project tree (depth-bounded read_dir per
+            // directory) — far too slow for the UI thread on large repos.
+            let discovered = cx
+                .background_executor()
+                .spawn(async move {
+                    targets
+                        .into_iter()
+                        .map(|(id, path)| {
+                            let mut found = ide_core::git::discover_repositories(&path);
+                            // A folder with no repository keeps the existing
+                            // setup experience.
+                            if found.is_empty() {
+                                found.push(path);
+                            }
+                            (id, found)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.sync_seq == seq {
+                    this.apply_discovered(discovered, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_discovered(
+        &mut self,
+        discovered: Vec<(ProjectId, Vec<PathBuf>)>,
+        cx: &mut Context<Self>,
+    ) {
         self.states
-            .retain(|id, _| projects.iter().any(|p| p.id == *id));
-        for project in projects {
-            self.states.entry(project.id).or_insert_with(|| {
-                let path = project.path.clone();
-                let state = cx.new(|cx| GitState::new(path, cx));
+            .retain(|id, _| discovered.iter().any(|(project_id, _)| project_id == id));
+        self.active_repositories
+            .retain(|id, _| discovered.iter().any(|(project_id, _)| project_id == id));
+        for (project_id, paths) in discovered {
+            let existing = self.states.remove(&project_id).unwrap_or_default();
+            let mut next = Vec::with_capacity(paths.len());
+            for path in paths {
+                if let Some((_, state)) = existing.iter().find(|(repo_path, _)| repo_path == &path)
+                {
+                    next.push((path, state.clone()));
+                    continue;
+                }
+                let state_path = path.clone();
+                let state = cx.new(|cx| GitState::new(state_path, cx));
                 // Cascade child updates so observers of GitStates re-render.
                 // A folder can become a repository while Choro is open, so the
                 // first child update after init also installs the active
@@ -639,8 +746,18 @@ impl GitStates {
                     cx.notify();
                 })
                 .detach();
-                state
-            });
+                next.push((path, state));
+            }
+            let selected_is_valid = self
+                .active_repositories
+                .get(&project_id)
+                .is_some_and(|path| next.iter().any(|(repo_path, _)| repo_path == path));
+            if !selected_is_valid {
+                if let Some(path) = next.first().map(|(path, _)| path.clone()) {
+                    self.active_repositories.insert(project_id, path);
+                }
+            }
+            self.states.insert(project_id, next);
         }
         cx.notify();
     }
@@ -651,12 +768,11 @@ impl GitStates {
         active: Option<ProjectId>,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .active_worktree
-            .as_ref()
-            .map(|watcher| watcher.project_id)
-            == active
-        {
+        if self.active_worktree.as_ref().is_some_and(|watcher| {
+            Some(watcher.project_id) == active
+                && self.active_repository_path(watcher.project_id).as_ref()
+                    == Some(&watcher.repo_path)
+        }) {
             return;
         }
 
@@ -665,14 +781,17 @@ impl GitStates {
         let Some(project_id) = active else {
             return;
         };
-        let Some(project) = projects.iter().find(|project| project.id == project_id) else {
+        let Some(_project) = projects.iter().find(|project| project.id == project_id) else {
             return;
         };
-        if !project.path.join(".git").exists() {
+        let Some(repo_path) = self.active_repository_path(project_id) else {
+            return;
+        };
+        if !repo_path.join(".git").exists() {
             return;
         }
 
-        match WorktreeWatcher::new(&project.path) {
+        match WorktreeWatcher::new(&repo_path) {
             Ok((watcher, ticks)) => {
                 cx.spawn(async move |this, cx| {
                     let mut ticks = ticks;
@@ -691,7 +810,7 @@ impl GitStates {
                                             .as_ref()
                                             .is_some_and(|watcher| watcher.project_id == project_id)
                                         {
-                                            if let Some(state) = states.states.get(&project_id) {
+                                            if let Some(state) = states.get(project_id) {
                                                 state.update(cx, |state, cx| state.refresh(cx));
                                             }
                                         }
@@ -708,11 +827,12 @@ impl GitStates {
                 .detach();
                 self.active_worktree = Some(ActiveWorktreeWatcher {
                     project_id,
+                    repo_path,
                     _watcher: watcher,
                 });
             }
             Err(error) => {
-                eprintln!("worktree watcher failed for {:?}: {error:#}", project.path);
+                eprintln!("worktree watcher failed for {:?}: {error:#}", repo_path);
             }
         }
     }

@@ -20,8 +20,10 @@ impl GitPanel {
         });
         let branch_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search or create branch…"));
-        cx.new(|cx| {
+        let view = cx.new(|cx| {
             let last_active_project = workspace.read(cx).active;
+            let last_active_repository = last_active_project
+                .and_then(|project_id| git_states.read(cx).active_repository_path(project_id));
             cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
             cx.observe(&git_states, |_, _, cx| cx.notify()).detach();
             // Solo lanes appear/disappear with agent changes.
@@ -61,7 +63,11 @@ impl GitPanel {
                 tab: GitTab::default(),
                 commit_ai_generating: false,
                 commit_ai_error: None,
+                git_accounts: Vec::new(),
+                git_accounts_loading: false,
+                git_accounts_error: None,
                 last_active_project,
+                last_active_repository,
                 last_push_notice_message: None,
                 seen_push_notice_messages: HashSet::new(),
                 branch_pr_key: None,
@@ -82,7 +88,9 @@ impl GitPanel {
                 scope_main: false,
                 lane_git: None,
             }
-        })
+        });
+        view.update(cx, |view, cx| view.refresh_git_accounts(cx));
+        view
     }
 
     pub(super) fn active_git(&self, cx: &App) -> Option<Entity<GitState>> {
@@ -95,6 +103,166 @@ impl GitPanel {
         }
         let id = self.workspace.read(cx).active.as_ref().copied()?;
         self.git_states.read(cx).get(id)
+    }
+
+    /// Render-path accessor: reads the snapshot's cached remote — never asks
+    /// git directly (a subprocess per frame is what tanked scroll perf once).
+    pub(crate) fn git_account_remote(&self, cx: &App) -> Option<GitRemote> {
+        let git = self.active_git(cx)?;
+        git.read(cx).snapshot.as_ref()?.primary_remote.clone()
+    }
+
+    pub(crate) fn connected_git_accounts(&self) -> Vec<GitHubAccount> {
+        self.git_accounts.clone()
+    }
+
+    pub(crate) fn selected_git_account(&self, cx: &App) -> Option<String> {
+        let git = self.active_git(cx)?;
+        git.read(cx).snapshot.as_ref()?.assigned_account.clone()
+    }
+
+    pub(crate) fn git_accounts_loading(&self) -> bool {
+        self.git_accounts_loading
+    }
+
+    pub(crate) fn git_accounts_error(&self) -> Option<String> {
+        self.git_accounts_error.clone()
+    }
+
+    pub(crate) fn select_git_account(&mut self, account: Option<String>, cx: &mut Context<Self>) {
+        let Some(git) = self.active_git(cx) else {
+            return;
+        };
+        let repo = git.read(cx).repo_path.clone();
+        cx.spawn(async move |this, cx| {
+            // Remote listing and the bindings read-modify-write are file I/O —
+            // keep them off the UI thread.
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let remotes = ide_core::git::repository_remotes(&repo);
+                    remotes
+                        .iter()
+                        .filter(|remote| remote.is_github_https())
+                        .try_for_each(|remote| {
+                            ide_core::git::assign_github_account(&repo, remote, account.as_deref())
+                        })
+                })
+                .await;
+            this.update(cx, |panel, cx| {
+                match result {
+                    Ok(()) => {
+                        panel.git_accounts_error = None;
+                        // The bindings file has no watcher; refresh so the
+                        // snapshot's cached account reflects the new choice.
+                        git.update(cx, |state, cx| state.refresh(cx));
+                    }
+                    Err(error) => panel.git_accounts_error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn refresh_git_accounts(&mut self, cx: &mut Context<Self>) {
+        if self.git_accounts_loading {
+            return;
+        }
+        self.git_accounts_loading = true;
+        self.git_accounts_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { ide_core::git::connected_github_accounts() })
+                .await;
+            this.update(cx, |panel, cx| {
+                panel.git_accounts_loading = false;
+                match result {
+                    Ok(accounts) => {
+                        panel.git_accounts = accounts;
+                        panel.git_accounts_error = None;
+                    }
+                    Err(error) => {
+                        panel.git_accounts.clear();
+                        panel.git_accounts_error = Some(format!("{error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn connect_git_account(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            // Locating gh can shell out (login shell) and osascript blocks
+            // until Terminal is up — never on the UI thread.
+            let result = cx
+                .background_executor()
+                .spawn(async { ide_core::git::open_github_account_login() })
+                .await;
+            this.update(cx, |panel, cx| {
+                panel.git_accounts_error = Some(match result {
+                    Ok(()) => "Finish connecting in Terminal, then choose Refresh accounts here."
+                        .to_string(),
+                    Err(error) => format!("{error:#}"),
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn repository_options(&self, cx: &App) -> Vec<(PathBuf, String, bool)> {
+        if self.scoped_to_lane() {
+            return Vec::new();
+        }
+        let Some(project_id) = self.workspace.read(cx).active else {
+            return Vec::new();
+        };
+        let Some(project) = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+        else {
+            return Vec::new();
+        };
+        let active = self.git_states.read(cx).active_repository_path(project_id);
+        self.git_states
+            .read(cx)
+            .repositories(project_id)
+            .into_iter()
+            .map(|git| {
+                let path = git.read(cx).repo_path.clone();
+                let label = if path == project.path {
+                    project.name.clone()
+                } else {
+                    path.strip_prefix(&project.path)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                let selected = active.as_ref() == Some(&path);
+                (path, label, selected)
+            })
+            .collect()
+    }
+
+    pub(crate) fn select_repository(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(project_id) = self.workspace.read(cx).active else {
+            return;
+        };
+        self.git_states.update(cx, |states, cx| {
+            states.set_active_repository(project_id, path, cx)
+        });
+        cx.notify();
     }
 
     pub(super) fn generate_commit_message(

@@ -6,6 +6,57 @@ impl GitPanel {
         git: Entity<GitState>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let repository_options = self.repository_options(cx);
+        let repository_selector = (repository_options.len() > 1).then(|| {
+            let label = repository_options
+                .iter()
+                .find_map(|(_, label, selected)| selected.then_some(label.clone()))
+                .unwrap_or_else(|| "Repository".to_string());
+            let options = repository_options.clone();
+            let panel = cx.entity().clone();
+            crate::ui::style::header_meta_button("git-commit-repository", cx)
+                .max_w(px(118.))
+                .child(
+                    h_flex()
+                        .min_w(px(0.))
+                        .items_center()
+                        .gap_1()
+                        .child(crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::FolderGit2,
+                            crate::ui::design::sky(cx).opacity(0.78),
+                            crate::ui::design::icon_sm(),
+                        ))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(crate::ui::design::text_ui())
+                                .text_color(crate::ui::design::t2(cx))
+                                .child(label),
+                        )
+                        .child(
+                            gpui_component::Icon::new(IconName::ChevronDown)
+                                .size(crate::ui::design::icon_sm())
+                                .text_color(crate::ui::design::t4(cx)),
+                        ),
+                )
+                .tooltip("Active repository")
+                .dropdown_menu(move |menu, _, _| {
+                    options.iter().fold(menu, |menu, (path, label, selected)| {
+                        let path = path.clone();
+                        let panel = panel.clone();
+                        menu.item(
+                            PopupMenuItem::new(label.clone())
+                                .checked(*selected)
+                                .on_click(move |_, _, cx| {
+                                    panel.update(cx, |panel, cx| {
+                                        panel.select_repository(path.clone(), cx)
+                                    });
+                                }),
+                        )
+                    })
+                })
+        });
         let state = git.read(cx);
         let busy = state.is_busy;
         let has_staged = state
@@ -134,6 +185,7 @@ impl GitPanel {
                     .px_2()
                     .gap_2()
                     .items_center()
+                    .when_some(repository_selector, |row, selector| row.child(selector))
                     .child(
                         h_flex()
                             .id("branch-button")

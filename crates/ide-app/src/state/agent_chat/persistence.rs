@@ -242,6 +242,7 @@ impl StoredTimelinePayload {
             AgentChatTimelineItem::ShipResult(result) => Some(Self::ShipResult {
                 id: result.id.clone(),
                 action: result.action.clone(),
+                repository: result.repository.clone(),
                 branch: result.branch.clone(),
                 commit_sha: result.commit_sha.clone(),
                 pr_url: result.pr_url.clone(),
@@ -358,6 +359,7 @@ impl StoredTimelinePayload {
             Self::ShipResult {
                 id,
                 action,
+                repository,
                 branch,
                 commit_sha,
                 pr_url,
@@ -370,6 +372,7 @@ impl StoredTimelinePayload {
             } => Some(AgentChatTimelineItem::ShipResult(ShipResult {
                 id,
                 action,
+                repository,
                 branch,
                 commit_sha,
                 pr_url,

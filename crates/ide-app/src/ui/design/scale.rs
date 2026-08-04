@@ -194,6 +194,9 @@ pub const HEADER_SHIP_PAD_X: f32 = 11.0;
 pub const HEADER_SHIP_GAP: f32 = 7.0;
 /// 40px — the header band height (middle header row, panel title row, drawer strip).
 pub const HEADER_H: f32 = 40.0;
+/// Shared inset from the center pane edge for titlebar controls and floating
+/// header actions, keeping their right edges on one vertical guide.
+pub const HEADER_EDGE_INSET_X: f32 = 8.0;
 /// 2px — breathing room between a header divider and its anchored popup.
 pub const HEADER_OVERLAY_GAP: f32 = 2.0;
 /// 34px — drawer / dialog header row.
@@ -222,6 +225,9 @@ pub fn header_ship_gap() -> Pixels {
 }
 pub fn header_h() -> Pixels {
     px(HEADER_H)
+}
+pub fn header_edge_inset_x() -> Pixels {
+    px(HEADER_EDGE_INSET_X)
 }
 pub fn header_overlay_top() -> Pixels {
     px(HEADER_H + HEADER_OVERLAY_GAP)

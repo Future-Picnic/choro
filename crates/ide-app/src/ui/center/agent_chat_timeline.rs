@@ -132,7 +132,23 @@ impl CenterArea {
                 .changed_files
                 .iter()
                 .any(|file| !artifact_filter.is_artifact(&file.path));
-        let active_git = self.git_states.read(cx).get(agent.project_id);
+        let project_gits = self.git_states.read(cx).repositories(agent.project_id);
+        let active_git = if let Some(repository_path) = agent.repository_path.as_deref() {
+            self.git_states
+                .read(cx)
+                .get_for_path(agent.project_id, repository_path)
+        } else {
+            project_gits
+                .iter()
+                .find(|git| {
+                    git.read(cx)
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| !snapshot.entries.is_empty())
+                })
+                .cloned()
+                .or_else(|| self.git_states.read(cx).get(agent.project_id))
+        };
         let has_project_changed_files = surface.allows_project_actions()
             && if agent.is_solo() {
                 // A Solo ships from its lane — the project tree is clean by
@@ -143,14 +159,19 @@ impl CenterArea {
                         .iter()
                         .any(|file| !artifact_filter.is_artifact(&file.path))
             } else {
-                active_git.as_ref().is_some_and(|git| {
+                let has_changes = |git: &Entity<GitState>| {
                     let git = git.read(cx);
                     git.is_repo
                         && git
                             .snapshot
                             .as_ref()
                             .is_some_and(|snapshot| !snapshot.entries.is_empty())
-                })
+                };
+                if agent.repository_path.is_none() {
+                    project_gits.iter().any(has_changes)
+                } else {
+                    active_git.as_ref().is_some_and(has_changes)
+                }
             };
         let compact_actions = self.agent_chat_rail_compact;
         let supported_efforts = agent.supported_efforts();

@@ -435,7 +435,7 @@ impl CenterArea {
             return true;
         }
 
-        let project_root = agent.project_path.clone();
+        let project_root = agent.repository_root().to_path_buf();
         let profile = agent.lane_profile.unwrap_or(LaneProfile::Full);
         let base_hint = agent.solo_base_branch.clone();
         self.lane_setups.insert(agent_id, LaneSetup::begin());
@@ -539,7 +539,7 @@ impl CenterArea {
         };
         // One-shot read of the main tree: its local branches (Solo branches
         // are never targets) and what's currently checked out.
-        let snapshot = ide_core::git::read_snapshot(&agent.project_path).ok();
+        let snapshot = ide_core::git::read_snapshot(agent.repository_root()).ok();
         let current = snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.head.branch.clone());
@@ -648,7 +648,7 @@ impl CenterArea {
         if !self.lane_path_is_expected(&agent, &lane_path, cx) {
             return;
         }
-        let project_root = agent.project_path.clone();
+        let project_root = agent.repository_root().to_path_buf();
         let title = agent.title.clone();
         if !self.begin_lane_exit(&agent, cx) {
             return;
@@ -740,7 +740,7 @@ impl CenterArea {
         if !self.begin_lane_exit(&agent, cx) {
             return;
         }
-        let project_root = agent.project_path.clone();
+        let project_root = agent.repository_root().to_path_buf();
         cx.spawn(async move |this, cx| {
             let removed = cx
                 .background_executor()
@@ -885,7 +885,7 @@ impl CenterArea {
         if !self.begin_lane_exit(&agent, cx) {
             return true;
         }
-        let project_root = agent.project_path.clone();
+        let project_root = agent.repository_root().to_path_buf();
         cx.spawn(async move |this, cx| {
             let removed = cx
                 .background_executor()

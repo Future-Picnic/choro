@@ -24,6 +24,9 @@ use crate::app_assets::AppAssets;
 use crate::ui::root_view::RootView;
 
 fn main() {
+    if let Some(exit_code) = ide_core::git::handle_git_credential() {
+        std::process::exit(exit_code);
+    }
     if let Err(error) = demo::prepare() {
         eprintln!("failed to prepare Choro Demo: {error:#}");
     }
@@ -33,6 +36,10 @@ fn main() {
     let app = Application::new().with_assets(AppAssets);
 
     app.run(move |cx: &mut App| {
+        // Debug tripwire: blocking git helpers warn if they ever run on this
+        // thread (i.e. inside a render path). Marked here, after the startup
+        // helpers above, so intentional pre-UI blocking work stays quiet.
+        ide_core::mark_ui_thread();
         gpui_component::init(cx);
         velotype::init_embedded(cx);
         Theme::change(ThemeMode::Dark, None, cx);

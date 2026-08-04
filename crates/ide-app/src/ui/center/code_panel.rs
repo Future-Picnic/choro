@@ -200,6 +200,19 @@ impl CenterArea {
         true
     }
 
+    /// Opens a diff selected in the Git sidebar without replacing that sidebar
+    /// with Files when the center transitions from Agents to Code.
+    pub fn open_diff_from_git(
+        &mut self,
+        project: ProjectId,
+        kind: DiffKind,
+        title: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_diff_open_epoch = self.git_diff_open_epoch.wrapping_add(1);
+        self.open_diff(project, kind, title, cx);
+    }
+
     /// Opens (or focuses) a diff view tab for the project.
     pub fn open_diff(
         &mut self,

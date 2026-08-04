@@ -1,5 +1,21 @@
 use super::*;
 
+fn conversation_files_for_repository(
+    workspace_root: &Path,
+    repository_root: &Path,
+    repository_files: &[PathBuf],
+    workspace_files: &std::collections::BTreeSet<PathBuf>,
+) -> Vec<PathBuf> {
+    let repository_prefix = repository_root
+        .strip_prefix(workspace_root)
+        .unwrap_or(Path::new(""));
+    repository_files
+        .iter()
+        .filter(|path| workspace_files.contains(&repository_prefix.join(path)))
+        .cloned()
+        .collect()
+}
+
 impl CenterArea {
     pub(in crate::ui::center) fn attach_ship_commit_to_changed_files(
         &mut self,
@@ -55,6 +71,7 @@ impl CenterArea {
     pub(in crate::ui::center) fn append_agent_ship_result(
         &mut self,
         agent_id: Uuid,
+        repository: Option<String>,
         outcome: &AgentShipOutcome,
         cx: &mut Context<Self>,
     ) {
@@ -81,7 +98,10 @@ impl CenterArea {
             })
             .unwrap_or((None, None));
 
-        let ship_id = format!("{}:{}", outcome.branch, outcome.commit_sha);
+        let ship_id = repository
+            .as_ref()
+            .map(|repository| format!("{}:{}:{}", repository, outcome.branch, outcome.commit_sha))
+            .unwrap_or_else(|| format!("{}:{}", outcome.branch, outcome.commit_sha));
         let mut timeline_to_persist = None;
         self.agent_chats.update(cx, |chats, cx| {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
@@ -100,6 +120,7 @@ impl CenterArea {
                 crate::state::agent_chat::ShipResult {
                     id,
                     action: outcome.action.clone(),
+                    repository: repository.clone(),
                     branch: outcome.branch.clone(),
                     commit_sha: outcome.commit_sha.clone(),
                     pr_url: outcome.pr_url.clone(),
@@ -261,6 +282,12 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if agent.repository_path.is_none()
+            && !agent.is_solo()
+            && self.open_multi_repo_ship_dialog(&agent, window, cx)
+        {
+            return;
+        }
         // A materialized Solo ships from its lane: same execution path, the
         // lane's own snapshot as the source instead of the project GitState.
         let solo_lane = agent.solo_branch.clone().zip(agent.lane_path.clone());
@@ -382,20 +409,30 @@ impl CenterArea {
             };
 
         let mut related = std::collections::BTreeSet::new();
+        let whole_workspace = agent.repository_path.is_none() && !agent.is_solo();
+        let related_root = if whole_workspace {
+            agent.project_path.as_path()
+        } else {
+            agent.runtime_path()
+        };
         for file in &agent.changed_files {
-            related.insert(normalize_agent_ship_path(agent.runtime_path(), &file.path));
+            related.insert(normalize_agent_ship_path(related_root, &file.path));
         }
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
             for file in &session.changed_files.files {
-                related.insert(normalize_agent_ship_path(agent.runtime_path(), &file.path));
+                related.insert(normalize_agent_ship_path(related_root, &file.path));
             }
         }
 
-        let conversation_files = all_files
-            .iter()
-            .filter(|path| related.contains(*path))
-            .cloned()
-            .collect::<Vec<_>>();
+        let conversation_files = if whole_workspace {
+            conversation_files_for_repository(&agent.project_path, &repo_path, &all_files, &related)
+        } else {
+            all_files
+                .iter()
+                .filter(|path| related.contains(*path))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         let branch_name = cx.new(|cx| InputState::new(window, cx).placeholder("Generated branch"));
         let commit_message = cx.new(|cx| {
             InputState::new(window, cx)
@@ -435,7 +472,7 @@ impl CenterArea {
                 && solo_lane.is_none();
         let solo_dialog_lane = solo_lane
             .as_ref()
-            .map(|(_, lane)| (agent.project_path.clone(), lane.clone()));
+            .map(|(_, lane)| (agent.repository_root().to_path_buf(), lane.clone()));
         let all_changes = crate::ui::onboarding::ship_defaults_to_all_changes(agent.project_id, cx);
         let onboarding_demo =
             crate::ui::onboarding::ship_uses_demo_pull_request(agent.project_id, cx);
@@ -487,6 +524,7 @@ impl CenterArea {
                 prepared: false,
                 error: None,
                 status: None,
+                pending_commit: None,
                 solo_lane: solo_dialog_lane,
             }
         });
@@ -503,6 +541,200 @@ impl CenterArea {
             agent.project_id,
             crate::ui::onboarding::OnboardingEvent::ShipOpened,
             cx,
+        );
+    }
+
+    fn open_multi_repo_ship_dialog(
+        &mut self,
+        agent: &AgentRecord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut related = std::collections::BTreeSet::new();
+        for file in &agent.changed_files {
+            related.insert(normalize_agent_ship_path(&agent.project_path, &file.path));
+        }
+        if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
+            for file in &session.changed_files.files {
+                related.insert(normalize_agent_ship_path(&agent.project_path, &file.path));
+            }
+        }
+
+        let git_repositories = self.git_states.read(cx).repositories(agent.project_id);
+        let mut repositories = Vec::new();
+        for git in git_repositories {
+            let state = git.read(cx);
+            let Some(snapshot) = state.snapshot.as_ref() else {
+                continue;
+            };
+            let mut all_files = snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.staged.is_some() || entry.unstaged.is_some())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>();
+            all_files.sort();
+            all_files.dedup();
+            if all_files.is_empty() {
+                continue;
+            }
+            let repo_path = state.repo_path.clone();
+            let conversation_files = conversation_files_for_repository(
+                &agent.project_path,
+                &repo_path,
+                &all_files,
+                &related,
+            );
+            let mut staged_files = snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.staged.is_some())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>();
+            staged_files.sort();
+            staged_files.dedup();
+            let file_kinds = snapshot
+                .entries
+                .iter()
+                .filter_map(|entry| Some((entry.path.clone(), entry.staged.or(entry.unstaged)?)))
+                .collect::<HashMap<_, _>>();
+            let branch = snapshot.head.branch.clone();
+            let needs_upstream = snapshot
+                .branches
+                .iter()
+                .find(|branch| branch.is_head)
+                .map(|branch| branch.upstream.is_none())
+                .unwrap_or(false);
+            let default_base = crate::ui::git::git_panel::default_remote_branch(&repo_path);
+            let pr_base_branch_options =
+                crate::ui::git::git_panel::pull_request_base_branch_options(
+                    &default_base,
+                    &snapshot.branches,
+                );
+            let pr_base_branch = pr_base_branch_options
+                .first()
+                .cloned()
+                .unwrap_or(default_base);
+            let label = repo_path
+                .strip_prefix(&agent.project_path)
+                .ok()
+                .filter(|relative| !relative.as_os_str().is_empty())
+                .map(|relative| relative.to_string_lossy().into_owned())
+                .unwrap_or_else(|| {
+                    repo_path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| repo_path.display().to_string())
+                });
+            repositories.push(MultiRepoShipRepository {
+                label,
+                git,
+                tracked_repo_path: repo_path.clone(),
+                repo_path,
+                branch,
+                needs_upstream,
+                all_files,
+                conversation_files,
+                staged_files,
+                file_kinds,
+                deselected: HashSet::new(),
+                branch_name: cx
+                    .new(|cx| InputState::new(window, cx).placeholder("Generated branch")),
+                commit_message: cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .auto_grow(3, 8)
+                        .placeholder("Generate or enter manually")
+                }),
+                pr_base_branch,
+                pr_base_branch_options,
+                pr_title: cx.new(|cx| {
+                    InputState::new(window, cx).placeholder("Generate or enter manually")
+                }),
+                pr_description: cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .auto_grow(4, 9)
+                        .placeholder("Generate or enter manually")
+                }),
+                pending_commit: None,
+                completed: false,
+            });
+        }
+        if repositories.len() < 2 {
+            return false;
+        }
+
+        let all_changes = crate::ui::onboarding::ship_defaults_to_all_changes(agent.project_id, cx);
+        let create_branch =
+            crate::ui::onboarding::ship_defaults_to_new_branch(agent.project_id, cx);
+        let center = cx.entity().downgrade();
+        let dialog = cx.new(|cx| MultiRepoShipDialog {
+            agent_id: agent.id,
+            project_id: agent.project_id,
+            center,
+            agent_title: agent.title.clone(),
+            generation_agent: self.workspace.read(cx).generation_agent.clone(),
+            repositories,
+            selected_repository: 0,
+            files_collapsed: false,
+            create_branch,
+            scope: if all_changes {
+                AgentShipScope::All
+            } else {
+                AgentShipScope::Conversation
+            },
+            push: true,
+            open_pr: false,
+            auto_ship: false,
+            busy: false,
+            prepared: false,
+            error: None,
+        });
+        window.open_dialog(cx, move |dialog_view, _, _| {
+            dialog_view
+                .title("Ship agent work")
+                // Preserve the existing Ship form's content width; the extra
+                // space belongs only to the new repository/settings rail.
+                .w(px(960.))
+                .margin_top(px(20.))
+                .overlay_closable(false)
+                .child(dialog.clone())
+        });
+        crate::ui::onboarding::emit_for_project(
+            agent.project_id,
+            crate::ui::onboarding::OnboardingEvent::ShipOpened,
+            cx,
+        );
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_workspace_changed_files_into_nested_repository_scope() {
+        let workspace = Path::new("/workspace");
+        let repository = workspace.join("apps/frontend");
+        let repository_files = vec![
+            PathBuf::from("src/app.rs"),
+            PathBuf::from("src/unrelated.rs"),
+        ];
+        let workspace_files = [
+            PathBuf::from("apps/frontend/src/app.rs"),
+            PathBuf::from("services/backend/src/api.rs"),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            conversation_files_for_repository(
+                workspace,
+                &repository,
+                &repository_files,
+                &workspace_files,
+            ),
+            vec![PathBuf::from("src/app.rs")],
         );
     }
 }

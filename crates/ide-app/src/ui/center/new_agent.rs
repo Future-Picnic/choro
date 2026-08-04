@@ -413,6 +413,8 @@ impl CenterArea {
         project_info: Project,
         project_entries: Vec<(ProjectId, String)>,
         selected_project: ProjectId,
+        repository_entries: Vec<(PathBuf, String)>,
+        selected_repository: Option<PathBuf>,
         branch_data: Option<(Option<String>, Vec<BranchInfo>, bool)>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -470,10 +472,24 @@ impl CenterArea {
                                         .on_click(window.listener_for(
                                             &composer_view,
                                             move |this: &mut Self, _, window, cx| {
+                                                let repositories = this
+                                                    .git_states
+                                                    .read(cx)
+                                                    .repositories(project_id);
+                                                let repository_path =
+                                                    (repositories.len() == 1).then(|| {
+                                                        repositories[0]
+                                                            .read(cx)
+                                                            .repo_path
+                                                            .clone()
+                                                    });
                                                 if let Some(composer) =
                                                     this.new_agent_composer.as_mut()
                                                 {
                                                     composer.project = project_id;
+                                                    composer.repository_path = repository_path;
+                                                    composer.solo = false;
+                                                    composer.solo_base = None;
                                                     composer.linked_docs.clear();
                                                     composer.attached_files.clear();
                                                     composer.source_doc = None;
@@ -501,6 +517,91 @@ impl CenterArea {
                     }),
             )
             .child(div().flex_1())
+            .when(repository_entries.len() > 1, |row| {
+                let label = selected_repository
+                    .as_ref()
+                    .and_then(|selected| {
+                        repository_entries
+                            .iter()
+                            .find(|(path, _)| path == selected)
+                            .map(|(_, label)| label.clone())
+                    })
+                    .unwrap_or_else(|| "Entire workspace".to_string());
+                let entries = repository_entries.clone();
+                let selected = selected_repository.clone();
+                let entire_workspace = selected_repository.is_none();
+                row.child(
+                    crate::ui::style::header_meta_button("composer-repository", cx)
+                        .text_size(crate::ui::design::text_label())
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::t3(cx))
+                                .when(entire_workspace, |scope| {
+                                    scope.child(
+                                        crate::ui::design::indicator::lucide_icon(
+                                            lucide_icons::Icon::FolderGit2,
+                                            crate::ui::design::sky(cx).opacity(0.78),
+                                            crate::ui::design::icon_sm(),
+                                        ),
+                                    )
+                                })
+                                .child(div().max_w(px(150.)).truncate().child(label))
+                                .child(
+                                    gpui_component::Icon::new(IconName::ChevronDown)
+                                        .size(crate::ui::design::icon_sm())
+                                        .text_color(crate::ui::design::t3(cx)),
+                                ),
+                        )
+                        .tooltip("Choose one repository or let the agent work across the workspace")
+                        .dropdown_menu({
+                            let composer_view = composer_view.clone();
+                            move |mut menu, window, _| {
+                                menu = menu.item(
+                                    PopupMenuItem::new("Entire workspace")
+                                        .checked(selected.is_none())
+                                        .on_click(window.listener_for(
+                                            &composer_view,
+                                            move |this: &mut Self, _, _, cx| {
+                                                if let Some(composer) =
+                                                    this.new_agent_composer.as_mut()
+                                                {
+                                                    composer.repository_path = None;
+                                                    composer.solo = false;
+                                                    composer.solo_base = None;
+                                                    composer.error = None;
+                                                }
+                                                cx.notify();
+                                            },
+                                        )),
+                                );
+                                for (path, label) in entries.clone() {
+                                    let checked = selected.as_ref() == Some(&path);
+                                    menu = menu.item(
+                                        PopupMenuItem::new(label)
+                                            .checked(checked)
+                                            .on_click(window.listener_for(
+                                                &composer_view,
+                                                move |this: &mut Self, _, _, cx| {
+                                                    if let Some(composer) =
+                                                        this.new_agent_composer.as_mut()
+                                                    {
+                                                        composer.repository_path = Some(path.clone());
+                                                        composer.solo_base = None;
+                                                        composer.error = None;
+                                                    }
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    );
+                                }
+                                menu
+                            }
+                        }),
+                )
+            })
             // Solo sits beside the branch: it's the same kind of decision —
             // *where* the agent works — but its own control, not a branch.
             .child({
@@ -610,12 +711,22 @@ impl CenterArea {
                                 "Run as a Solo: its own branch and folder, your files untouched"
                             })
                             .on_click(cx.listener(move |this: &mut Self, _, _, cx| {
+                                let selected_repository = this
+                                    .new_agent_composer
+                                    .as_ref()
+                                    .and_then(|composer| composer.repository_path.clone());
+                                let repository = selected_repository.or_else(|| {
+                                    this.git_states
+                                        .read(cx)
+                                        .active_repository_path(project)
+                                });
                                 let default_profile = this
                                     .project_by_id(project, cx)
-                                    .map(|(_, path)| ide_core::lanes::default_profile(&path));
+                                    .and_then(|_| repository.as_deref().map(ide_core::lanes::default_profile));
                                 if let Some(composer) = this.new_agent_composer.as_mut() {
                                     composer.solo = !composer.solo;
                                     if composer.solo {
+                                        composer.repository_path = repository;
                                         if let Some(profile) = default_profile {
                                             composer.lane_profile = profile;
                                         }
@@ -745,6 +856,7 @@ impl CenterArea {
                             composer_for_content.update(cx, |this, cx| {
                                 this.render_composer_branch_picker(
                                     selected_project,
+                                    selected_repository.clone().unwrap(),
                                     entries.clone(),
                                     cx,
                                 )
@@ -807,6 +919,7 @@ impl CenterArea {
         let attached_files = composer.attached_files.clone();
         let error = composer.error.clone();
         let selected_project = composer.project;
+        let selected_repository = composer.repository_path.clone();
         let slash_view = self.active_composer_slash_view(cx);
         let doc_mention_view = if slash_view.is_none() {
             self.active_composer_doc_mention_view(cx)
@@ -825,19 +938,42 @@ impl CenterArea {
             .iter()
             .map(|project| (project.id, project.name.clone()))
             .collect::<Vec<_>>();
-        let branch_data = self.git_states.read(cx).get(selected_project).map(|git| {
-            let git = git.read(cx);
-            let current = git.branch_label();
-            let mut branches = git
-                .snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.branches.clone())
-                .unwrap_or_default();
-            // Solo branches never appear as checkout targets — they belong to
-            // their agents (and live lanes can't be checked out here anyway).
-            branches.retain(|branch| !branch.name.starts_with("solo/"));
-            (current, branches, git.is_busy)
-        });
+        let repository_entries = self
+            .git_states
+            .read(cx)
+            .repositories(selected_project)
+            .into_iter()
+            .map(|git| {
+                let path = git.read(cx).repo_path.clone();
+                let label = path
+                    .strip_prefix(&project_info.path)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| project_info.name.clone());
+                (path, label)
+            })
+            .collect::<Vec<_>>();
+        let branch_data = selected_repository
+            .as_ref()
+            .and_then(|repository| {
+                self.git_states
+                    .read(cx)
+                    .get_for_path(selected_project, repository)
+            })
+            .map(|git| {
+                let git = git.read(cx);
+                let current = git.branch_label();
+                let mut branches = git
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.branches.clone())
+                    .unwrap_or_default();
+                // Solo branches never appear as checkout targets — they belong to
+                // their agents (and live lanes can't be checked out here anyway).
+                branches.retain(|branch| !branch.name.starts_with("solo/"));
+                (current, branches, git.is_busy)
+            });
         let mention_picker = slash_view
             .as_ref()
             .map(|view| self.render_composer_slash_picker(view, cx))
@@ -1607,6 +1743,8 @@ impl CenterArea {
                         project_info.clone(),
                         project_entries.clone(),
                         selected_project,
+                        repository_entries.clone(),
+                        selected_repository.clone(),
                         branch_data.clone(),
                         cx,
                     ))

@@ -795,7 +795,12 @@ pub(super) fn capture_changed_files_snapshot(
         return summary;
     }
 
-    let diffs = match ide_core::git::worktree_diffs(&repo_path) {
+    let diffs_result = if agent.repository_path.is_none() && agent.lane_path.is_none() {
+        ide_core::git::workspace_worktree_diffs(&agent.project_path)
+    } else {
+        ide_core::git::worktree_diffs(&repo_path)
+    };
+    let diffs = match diffs_result {
         Ok(diffs) => diffs
             .into_iter()
             .filter(|diff| wanted_paths.contains(&normalize_repo_path(&repo_path, &diff.path)))

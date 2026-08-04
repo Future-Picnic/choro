@@ -33,6 +33,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_penpot_schema(conn).await?;
         ensure_penpot_source_columns(conn).await?;
         ensure_penpot_conversation_model_columns(conn).await?;
+        ensure_agent_repository_column(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -433,6 +434,31 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 23 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_agent_repository_column_inner(conn).await?;
+                record_schema_version(conn, 23).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_agent_repository_column(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_agent_repository_column_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_agent_repository_column_inner(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "agents", "repository_path").await? {
+        conn.execute("ALTER TABLE agents ADD COLUMN repository_path TEXT", ())
+            .await?;
+    }
     Ok(())
 }
 
@@ -681,6 +707,7 @@ const SCHEMA_V1: &[&str] = &[
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
         project_path TEXT NOT NULL,
+        repository_path TEXT,
         title TEXT NOT NULL,
         doc TEXT NOT NULL,
         notes TEXT NOT NULL,
