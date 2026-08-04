@@ -298,6 +298,50 @@ pub(crate) fn configure_selected_account(command: &mut Command, repo_path: &Path
         .env(CREDENTIAL_ACCOUNT_ENV, account);
 }
 
+/// Make a GitHub CLI command use the same per-repository account as Git
+/// fetch/push. `gh` otherwise uses its globally active account, which can make
+/// a private repository look nonexistent even though the selected account can
+/// push to it successfully.
+pub fn configure_selected_github_cli(command: &mut Command, repo_path: &Path) -> Result<()> {
+    let Some(remote) = primary_remote(repo_path).filter(GitRemote::is_github_https) else {
+        return Ok(());
+    };
+    let Some(account) = assigned_github_account(repo_path, &remote) else {
+        return Ok(());
+    };
+
+    let mut token_command = github_cli_command()?;
+    token_command.args([
+        "auth",
+        "token",
+        "--hostname",
+        GITHUB_HOST,
+        "--user",
+        &account,
+    ]);
+    // The stored account selection must win even if Choro itself was launched
+    // from a shell that already exported a different GitHub token.
+    token_command
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN");
+    let output = output_with_timeout(token_command, Duration::from_secs(30))
+        .with_context(|| format!("Could not read the GitHub credential for @{account}"))?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(if message.is_empty() {
+            format!("Could not read the GitHub credential for @{account}")
+        } else {
+            format!("Could not use GitHub account @{account}: {message}")
+        });
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        anyhow::bail!("GitHub CLI returned an empty credential for @{account}");
+    }
+    command.env("GH_TOKEN", token).env("GH_HOST", GITHUB_HOST);
+    Ok(())
+}
+
 fn remote_for_operation(repo_path: &Path, args: &[&str]) -> Option<GitRemote> {
     let repo = git2::Repository::open(repo_path).ok()?;
     let operation = args.first().copied().unwrap_or_default();
@@ -324,12 +368,7 @@ fn remote_for_operation(repo_path: &Path, args: &[&str]) -> Option<GitRemote> {
     let branch = repo
         .find_reference("HEAD")
         .ok()
-        .and_then(|head| {
-            head.symbolic_target()
-                .ok()
-                .flatten()
-                .map(str::to_string)
-        })
+        .and_then(|head| head.symbolic_target().ok().flatten().map(str::to_string))
         .and_then(|target| target.strip_prefix("refs/heads/").map(str::to_string));
     let config = repo.config().ok();
     let configured_remote = branch.as_deref().and_then(|branch| {
@@ -656,6 +695,19 @@ mod tests {
         let mut command = Command::new("git");
         configure_selected_account(&mut command, dir.path(), &["push", "origin", "main"]);
         assert_eq!(command.get_args().count(), 0);
+    }
+
+    #[test]
+    fn unbound_repositories_get_no_github_cli_override() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init"]);
+        git(
+            dir.path(),
+            &["remote", "add", "origin", "https://github.com/me/app.git"],
+        );
+        let mut command = Command::new("gh");
+        configure_selected_github_cli(&mut command, dir.path()).unwrap();
+        assert!(!command.get_envs().any(|(key, _)| key == "GH_TOKEN"));
     }
 
     #[test]

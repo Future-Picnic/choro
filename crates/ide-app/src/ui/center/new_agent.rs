@@ -1755,7 +1755,10 @@ impl CenterArea {
                                 .text_color(crate::ui::design::rose(cx))
                                 .child(error),
                         )
-                    }),
+                    })
+                    // The project's recent conversations, under the composer:
+                    // close enough to step back into without going looking.
+                    .children(self.render_new_agent_recent_agents(project, cx)),
             )
             .into_any_element()
     }

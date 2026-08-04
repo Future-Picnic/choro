@@ -49,6 +49,21 @@ pub enum VoiceSessionMode {
     AwaitingSend,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceDictationTarget {
+    Agent(uuid::Uuid),
+    NewAgent(ProjectId),
+}
+
+impl VoiceDictationTarget {
+    fn agent_id(self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Agent(agent_id) => Some(agent_id),
+            Self::NewAgent(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum VoiceEvent {
     Decision(VoiceDecision),
@@ -57,12 +72,12 @@ pub enum VoiceEvent {
         prompt: String,
     },
     Dictation {
-        agent_id: Option<uuid::Uuid>,
+        target: VoiceDictationTarget,
         text: String,
         insert_at_cursor: bool,
     },
     SendDraft {
-        agent_id: uuid::Uuid,
+        target: VoiceDictationTarget,
         fallback_text: String,
     },
     DiscardDraft {
@@ -86,7 +101,7 @@ pub struct VoiceState {
     model_status: VoiceModelStatus,
     phase: VoicePhase,
     requested_mode: Option<VoiceMode>,
-    dictation_target: Option<uuid::Uuid>,
+    dictation_target: Option<VoiceDictationTarget>,
     session_active: bool,
     session_mode: VoiceSessionMode,
     open_chat_target: Option<uuid::Uuid>,
@@ -285,20 +300,24 @@ impl VoiceState {
     }
 
     pub fn activate_dictation_for(&mut self, agent_id: uuid::Uuid, cx: &mut Context<Self>) {
-        self.dictation_target = Some(agent_id);
+        self.dictation_target = Some(VoiceDictationTarget::Agent(agent_id));
         self.activate(VoiceMode::Dictation, false, false, cx);
     }
 
-    pub fn begin_push_to_talk_for(&mut self, agent_id: uuid::Uuid, cx: &mut Context<Self>) {
+    pub fn begin_push_to_talk_for(&mut self, target: VoiceDictationTarget, cx: &mut Context<Self>) {
         if self.push_to_talk_held || self.dictation_active() {
             return;
         }
-        self.dictation_target = Some(agent_id);
+        self.dictation_target = Some(target);
         self.activate(VoiceMode::Dictation, true, false, cx);
     }
 
-    pub fn begin_continuous_dictation_for(&mut self, agent_id: uuid::Uuid, cx: &mut Context<Self>) {
-        self.dictation_target = Some(agent_id);
+    pub fn begin_continuous_dictation_for(
+        &mut self,
+        target: VoiceDictationTarget,
+        cx: &mut Context<Self>,
+    ) {
+        self.dictation_target = Some(target);
         self.activate(VoiceMode::Dictation, false, true, cx);
     }
 
@@ -766,18 +785,25 @@ impl VoiceState {
                         let target = self.dictation_target;
                         let (text, send_after_insert) = split_dictation_send_command(&text);
                         if !text.is_empty() {
-                            self.save_turn("dictation", "user", &text, target);
-                            cx.emit(VoiceEvent::Dictation {
-                                agent_id: target,
-                                text: text.clone(),
-                                insert_at_cursor: true,
-                            });
+                            self.save_turn(
+                                "dictation",
+                                "user",
+                                &text,
+                                target.and_then(VoiceDictationTarget::agent_id),
+                            );
+                            if let Some(target) = target {
+                                cx.emit(VoiceEvent::Dictation {
+                                    target,
+                                    text: text.clone(),
+                                    insert_at_cursor: true,
+                                });
+                            }
                         }
                         if send_after_insert {
-                            if let Some(agent_id) = target {
-                                self.save_turn("command", "user", "send", Some(agent_id));
+                            if let Some(target) = target {
+                                self.save_turn("command", "user", "send", target.agent_id());
                                 cx.emit(VoiceEvent::SendDraft {
-                                    agent_id,
+                                    target,
                                     fallback_text: text,
                                 });
                             }
@@ -994,7 +1020,7 @@ impl VoiceState {
                     return;
                 };
                 cx.emit(VoiceEvent::SendDraft {
-                    agent_id,
+                    target: VoiceDictationTarget::Agent(agent_id),
                     fallback_text,
                 });
                 self.end_voice_session("Sent. Voice stopped.", Some(agent_id), cx);
@@ -1083,7 +1109,7 @@ impl VoiceState {
         self.session_mode = VoiceSessionMode::AwaitingSend;
         self.confirmation_expires_at = Some(Instant::now() + SEND_CONFIRMATION_TIMEOUT);
         cx.emit(VoiceEvent::Dictation {
-            agent_id: Some(agent_id),
+            target: VoiceDictationTarget::Agent(agent_id),
             text,
             insert_at_cursor: false,
         });
@@ -1097,12 +1123,12 @@ impl VoiceState {
     fn write_and_send(&mut self, agent_id: uuid::Uuid, text: String, cx: &mut Context<Self>) {
         self.save_turn("dictation", "user", &text, Some(agent_id));
         cx.emit(VoiceEvent::Dictation {
-            agent_id: Some(agent_id),
+            target: VoiceDictationTarget::Agent(agent_id),
             text: text.clone(),
             insert_at_cursor: false,
         });
         cx.emit(VoiceEvent::SendDraft {
-            agent_id,
+            target: VoiceDictationTarget::Agent(agent_id),
             fallback_text: text,
         });
         self.end_voice_session("Sent. Voice stopped.", Some(agent_id), cx);

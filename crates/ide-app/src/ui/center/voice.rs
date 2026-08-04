@@ -1,9 +1,12 @@
 use super::*;
 
 impl CenterArea {
-    pub fn selected_voice_chat_id(&self, cx: &App) -> Option<Uuid> {
+    pub fn selected_voice_dictation_target(
+        &self,
+        cx: &App,
+    ) -> Option<crate::voice::VoiceDictationTarget> {
         if let Some(agent_id) = self.open_voice_chat_id(cx) {
-            return Some(agent_id);
+            return Some(crate::voice::VoiceDictationTarget::Agent(agent_id));
         }
         let (project, _) = self.active_project(cx)?;
         if self
@@ -11,13 +14,13 @@ impl CenterArea {
             .as_ref()
             .is_some_and(|composer| composer.project == project)
         {
-            return None;
+            return Some(crate::voice::VoiceDictationTarget::NewAgent(project));
         }
         self.agents
             .read(cx)
             .explicitly_selected_agent(project)
             .filter(|agent| agent.runtime == ide_core::AgentRuntimeKind::Chat)
-            .map(|agent| agent.id)
+            .map(|agent| crate::voice::VoiceDictationTarget::Agent(agent.id))
     }
 
     pub fn open_voice_chat_id(&self, cx: &App) -> Option<Uuid> {
@@ -83,14 +86,14 @@ impl CenterArea {
 
     pub fn queue_voice_dictation(
         &mut self,
-        agent_id: Option<Uuid>,
+        target: crate::voice::VoiceDictationTarget,
         text: String,
         insert_at_cursor: bool,
         cx: &mut Context<Self>,
     ) {
         self.voice_composer_pending
             .push_back(VoiceComposerAction::Write {
-                agent_id,
+                target,
                 text,
                 insert_at_cursor,
             });
@@ -110,13 +113,13 @@ impl CenterArea {
 
     pub fn queue_voice_draft_send(
         &mut self,
-        agent_id: Uuid,
+        target: crate::voice::VoiceDictationTarget,
         fallback_text: String,
         cx: &mut Context<Self>,
     ) {
         self.voice_composer_pending
             .push_back(VoiceComposerAction::Send {
-                agent_id,
+                target,
                 fallback_text,
             });
         cx.notify();
@@ -185,24 +188,55 @@ impl CenterArea {
                 }
                 action => action,
             };
-            let target_agent_id = match &action {
+            let target = match &action {
                 VoiceComposerAction::PresentResponse { .. } => {
                     unreachable!("Project Talk responses are presented before chat actions")
                 }
                 VoiceComposerAction::CreatePlan { .. } => {
                     unreachable!("plan handoff is handled before chat actions")
                 }
-                VoiceComposerAction::Write { agent_id, .. } => *agent_id,
-                VoiceComposerAction::Send { agent_id, .. }
-                | VoiceComposerAction::Discard { agent_id, .. } => Some(*agent_id),
+                VoiceComposerAction::Write { target, .. }
+                | VoiceComposerAction::Send { target, .. } => *target,
+                VoiceComposerAction::Discard { agent_id, .. } => {
+                    crate::voice::VoiceDictationTarget::Agent(*agent_id)
+                }
             };
-            let Some((project, _)) = self.active_project(cx) else {
+
+            if let crate::voice::VoiceDictationTarget::NewAgent(project) = target {
+                let Some(input) = self
+                    .new_agent_composer
+                    .as_ref()
+                    .filter(|composer| composer.project == project)
+                    .map(|composer| composer.prompt.clone())
+                else {
+                    continue;
+                };
+                match action {
+                    VoiceComposerAction::Write {
+                        text,
+                        insert_at_cursor,
+                        ..
+                    } => write_voice_text(&input, text, insert_at_cursor, window, cx),
+                    VoiceComposerAction::Send { fallback_text, .. } => {
+                        if input.read(cx).value().trim().is_empty() {
+                            input
+                                .update(cx, |input, cx| input.set_value(fallback_text, window, cx));
+                        }
+                        self.start_new_agent_composer(window, cx);
+                    }
+                    VoiceComposerAction::PresentResponse { .. }
+                    | VoiceComposerAction::CreatePlan { .. }
+                    | VoiceComposerAction::Discard { .. } => {
+                        unreachable!("new-agent dictation only writes or sends")
+                    }
+                }
                 continue;
+            }
+
+            let crate::voice::VoiceDictationTarget::Agent(agent_id) = target else {
+                unreachable!("new-agent dictation is handled before chat dictation")
             };
-            let Some(agent) = target_agent_id
-                .and_then(|id| self.agents.read(cx).agent(id).cloned())
-                .or_else(|| self.agents.read(cx).selected_agent(project))
-            else {
+            let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
                 continue;
             };
             self.focus_voice_chat(agent.id, cx);
@@ -218,27 +252,7 @@ impl CenterArea {
                     text,
                     insert_at_cursor,
                     ..
-                } => {
-                    if insert_at_cursor {
-                        input.update(cx, |input, cx| {
-                            let current = input.value();
-                            let insertion = voice_insertion_text(&current, input.cursor(), &text);
-                            input.replace(insertion, window, cx);
-                            input.focus(window, cx);
-                        });
-                    } else {
-                        input.update(cx, |input, cx| {
-                            let current = input.value();
-                            let existing = current.trim_end();
-                            let combined = if existing.is_empty() {
-                                text
-                            } else {
-                                format!("{existing} {text}")
-                            };
-                            input.set_value(combined, window, cx);
-                        });
-                    }
-                }
+                } => write_voice_text(&input, text, insert_at_cursor, window, cx),
                 VoiceComposerAction::Send { fallback_text, .. } => {
                     if input.read(cx).value().trim().is_empty() {
                         input.update(cx, |input, cx| input.set_value(fallback_text, window, cx));
@@ -253,6 +267,34 @@ impl CenterArea {
                 }
             }
         }
+    }
+}
+
+fn write_voice_text(
+    input: &Entity<InputState>,
+    text: String,
+    insert_at_cursor: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if insert_at_cursor {
+        input.update(cx, |input, cx| {
+            let current = input.value();
+            let insertion = voice_insertion_text(&current, input.cursor(), &text);
+            input.replace(insertion, window, cx);
+            input.focus(window, cx);
+        });
+    } else {
+        input.update(cx, |input, cx| {
+            let current = input.value();
+            let existing = current.trim_end();
+            let combined = if existing.is_empty() {
+                text
+            } else {
+                format!("{existing} {text}")
+            };
+            input.set_value(combined, window, cx);
+        });
     }
 }
 

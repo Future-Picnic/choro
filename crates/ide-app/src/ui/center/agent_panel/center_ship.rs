@@ -16,6 +16,31 @@ fn conversation_files_for_repository(
         .collect()
 }
 
+/// Put the branch Ship was opened from first in the PR base picker. The
+/// remote default remains the fallback for detached HEADs and older Solo
+/// records that do not remember their fork branch.
+fn prefer_ship_base_branch(
+    preferred: Option<&str>,
+    fallback: &str,
+    options: &mut Vec<String>,
+) -> String {
+    let selected = preferred
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .or_else(|| {
+            let fallback = fallback.trim();
+            (!fallback.is_empty()).then_some(fallback)
+        })
+        .unwrap_or("main")
+        .to_string();
+
+    if let Some(index) = options.iter().position(|branch| branch == &selected) {
+        options.remove(index);
+    }
+    options.insert(0, selected.clone());
+    selected
+}
+
 impl CenterArea {
     pub(in crate::ui::center) fn attach_ship_commit_to_changed_files(
         &mut self,
@@ -440,7 +465,7 @@ impl CenterArea {
                 .placeholder("Generate or enter manually")
         });
         let default_pr_base_branch = crate::ui::git::git_panel::default_remote_branch(&repo_path);
-        let pr_base_branch_options = {
+        let mut pr_base_branch_options = {
             let state = git.read(cx);
             state
                 .snapshot
@@ -453,10 +478,16 @@ impl CenterArea {
                 })
                 .unwrap_or_else(|| vec![default_pr_base_branch.clone()])
         };
-        let pr_base_branch = pr_base_branch_options
-            .first()
-            .cloned()
-            .unwrap_or(default_pr_base_branch);
+        let preferred_pr_base_branch = if solo_lane.is_some() {
+            agent.solo_base_branch.as_deref()
+        } else {
+            branch.as_deref()
+        };
+        let pr_base_branch = prefer_ship_base_branch(
+            preferred_pr_base_branch,
+            &default_pr_base_branch,
+            &mut pr_base_branch_options,
+        );
         let pr_base_branch_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search branch…"));
         let pr_title =
@@ -606,15 +637,16 @@ impl CenterArea {
                 .map(|branch| branch.upstream.is_none())
                 .unwrap_or(false);
             let default_base = crate::ui::git::git_panel::default_remote_branch(&repo_path);
-            let pr_base_branch_options =
+            let mut pr_base_branch_options =
                 crate::ui::git::git_panel::pull_request_base_branch_options(
                     &default_base,
                     &snapshot.branches,
                 );
-            let pr_base_branch = pr_base_branch_options
-                .first()
-                .cloned()
-                .unwrap_or(default_base);
+            let pr_base_branch = prefer_ship_base_branch(
+                branch.as_deref(),
+                &default_base,
+                &mut pr_base_branch_options,
+            );
             let label = repo_path
                 .strip_prefix(&agent.project_path)
                 .ok()
@@ -736,5 +768,25 @@ mod tests {
             ),
             vec![PathBuf::from("src/app.rs")],
         );
+    }
+
+    #[test]
+    fn ship_base_prefers_the_branch_active_when_ship_opened() {
+        let mut options = vec!["main".to_string(), "dev".to_string()];
+
+        let selected = prefer_ship_base_branch(Some("dev"), "main", &mut options);
+
+        assert_eq!(selected, "dev");
+        assert_eq!(options, vec!["dev", "main"]);
+    }
+
+    #[test]
+    fn ship_base_keeps_remote_default_as_the_fallback() {
+        let mut options = vec!["main".to_string(), "dev".to_string()];
+
+        let selected = prefer_ship_base_branch(None, "main", &mut options);
+
+        assert_eq!(selected, "main");
+        assert_eq!(options, vec!["main", "dev"]);
     }
 }

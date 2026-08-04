@@ -198,7 +198,10 @@ impl Render for CenterArea {
             self.penpot
                 .read(cx)
                 .selected_design_web_url(project)
-                .map(web_preview::WebPreviewIntent::PenpotUrl)
+                .map(|url| web_preview::WebPreviewIntent::PenpotUrl {
+                    url,
+                    theme: web_preview::PenpotTheme::from_app(cx),
+                })
         } else if !overlay_open && effective_mode == CenterMode::Agents {
             self.agents
                 .read(cx)
