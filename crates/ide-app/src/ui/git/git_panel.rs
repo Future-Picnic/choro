@@ -15,6 +15,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
+    notification::Notification,
     spinner::Spinner,
     v_flex, Disableable, IconName, Sizable, WindowExt,
 };
@@ -56,8 +57,8 @@ use pull_request_support::{
     branch_from_push_message, existing_pull_request_url, repo_pull_requests,
 };
 pub(crate) use pull_request_support::{
-    branch_pull_request, create_pull_request_with_gh, github_pull_request_url, open_url,
-    pull_request_status_style, pull_request_url_with_text,
+    branch_pull_request, create_pull_request_with_gh, github_pull_request_url,
+    merge_pull_request_with_gh, open_url, pull_request_status_style, pull_request_url_with_text,
 };
 use repository_setup::open_publish_repository_dialog;
 
@@ -277,6 +278,8 @@ pub(crate) enum PullRequestCheckState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BranchPullRequest {
     pub(crate) branch: String,
+    pub(crate) base_branch: String,
+    pub(crate) head_oid: Option<String>,
     pub(crate) number: u64,
     pub(crate) title: String,
     pub(crate) url: String,
@@ -295,6 +298,10 @@ struct GithubPullRequest {
     state: String,
     #[serde(default, rename = "headRefName")]
     head_ref_name: Option<String>,
+    #[serde(default, rename = "baseRefName")]
+    base_ref_name: Option<String>,
+    #[serde(default, rename = "headRefOid")]
+    head_ref_oid: Option<String>,
     #[serde(rename = "isDraft")]
     is_draft: bool,
     #[serde(rename = "mergeStateStatus")]

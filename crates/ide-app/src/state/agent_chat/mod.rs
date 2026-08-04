@@ -107,6 +107,9 @@ pub struct ShipResult {
     /// single-repository ships so their cards stay compact.
     pub repository: Option<String>,
     pub branch: String,
+    /// The PR's destination branch. Present only for Ship actions that opened
+    /// a pull request; optional for backward compatibility with older cards.
+    pub pr_base_branch: Option<String>,
     pub commit_sha: String,
     pub pr_url: Option<String>,
     pub pr_title: Option<String>,
@@ -342,6 +345,8 @@ enum StoredTimelinePayload {
         #[serde(default)]
         repository: Option<String>,
         branch: String,
+        #[serde(default)]
+        pr_base_branch: Option<String>,
         commit_sha: String,
         pr_url: Option<String>,
         #[serde(default)]

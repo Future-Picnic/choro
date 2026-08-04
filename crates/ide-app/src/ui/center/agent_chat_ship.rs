@@ -13,6 +13,7 @@ impl CenterArea {
         } else {
             result.commit_sha.as_str()
         };
+        let repo_path = self.ship_result_repository_path(agent, result, cx);
         let repository = result.repository.clone().or_else(|| {
             if agent.repository_path.is_some() {
                 return None;
@@ -21,21 +22,7 @@ impl CenterArea {
             if repositories.len() <= 1 {
                 return None;
             }
-            let mut matches = repositories.into_iter().filter_map(|git| {
-                let git = git.read(cx);
-                git.history
-                    .iter()
-                    .any(|commit| {
-                        commit.sha == result.commit_sha
-                            || commit.sha.starts_with(&result.commit_sha)
-                            || result.commit_sha.starts_with(&commit.sha_short)
-                    })
-                    .then(|| git.repo_path.clone())
-            });
-            let repo_path = matches.next()?;
-            if matches.next().is_some() {
-                return None;
-            }
+            let repo_path = repo_path.as_ref()?;
             Some(
                 repo_path
                     .strip_prefix(&agent.project_path)
@@ -63,6 +50,27 @@ impl CenterArea {
             .pr_body
             .clone()
             .filter(|body| !body.trim().is_empty());
+        let tracked_pr = self
+            .agent_ship_prs
+            .get(&agent.id)
+            .filter(|pr| pr.branch == result.branch);
+        let pr_base_branch = result
+            .pr_base_branch
+            .clone()
+            .filter(|branch| !branch.trim().is_empty())
+            .or_else(|| {
+                tracked_pr
+                    .map(|pr| pr.base_branch.clone())
+                    .filter(|branch| !branch.trim().is_empty())
+            });
+        let can_merge =
+            tracked_pr.is_none_or(|pr| pr.state.eq_ignore_ascii_case("OPEN") && !pr.is_draft);
+        let merge_git = repo_path.as_ref().and_then(|path| {
+            self.git_states
+                .read(cx)
+                .get_for_path(agent.project_id, path)
+        });
+        let merge_busy = merge_git.as_ref().is_some_and(|git| git.read(cx).is_busy);
         let card_title = if pr_url.is_some() {
             "Shipped"
         } else if result.action.to_ascii_lowercase().contains("push") {
@@ -111,6 +119,43 @@ impl CenterArea {
                             }),
                         )
                     })
+                    .when_some(
+                        pr_url
+                            .clone()
+                            .filter(|_| !is_onboarding_demo && can_merge)
+                            .zip(pr_base_branch.clone())
+                            .zip(repo_path.clone())
+                            .zip(merge_git.clone()),
+                        |row, (((_, base_branch), repo_path), git)| {
+                            let branch = result.branch.clone();
+                            let pr_number = tracked_pr.map(|pr| pr.number);
+                            let pr_title = pr_title.clone();
+                            row.child(
+                                crate::ui::style::accent_button_compact(
+                                    (
+                                        "agent-chat-ship-merge-pr",
+                                        stable_text_key(&result.id),
+                                    ),
+                                    "Merge PR",
+                                    cx,
+                                )
+                                .disabled(merge_busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_agent_ship_pr_merge(
+                                        agent_id,
+                                        repo_path.clone(),
+                                        git.clone(),
+                                        branch.clone(),
+                                        base_branch.clone(),
+                                        pr_number,
+                                        pr_title.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                            )
+                        },
+                    )
                     .child(
                         Button::new(("agent-chat-ship-mark-done", agent_id.as_u128() as u64))
                             .xsmall()
@@ -180,7 +225,11 @@ impl CenterArea {
                                 div()
                                     .text_size(crate::ui::design::text_ui())
                                     .text_color(crate::ui::design::t3(cx))
-                                    .child("Branch"),
+                                    .child(if pr_base_branch.is_some() {
+                                        "Branches"
+                                    } else {
+                                        "Branch"
+                                    }),
                             )
                             .child(
                                 div()
@@ -188,7 +237,12 @@ impl CenterArea {
                                     .font_family(crate::ui::design::FONT_MONO)
                                     .truncate()
                                     .text_color(crate::ui::design::t1(cx))
-                                    .child(SharedString::from(result.branch.clone())),
+                                    .child(SharedString::from(
+                                        pr_base_branch
+                                            .as_ref()
+                                            .map(|base| format!("{} → {base}", result.branch))
+                                            .unwrap_or_else(|| result.branch.clone()),
+                                    )),
                             ),
                     )
                     .child(
@@ -275,6 +329,203 @@ impl CenterArea {
                 |card, section| card.child(section),
             )
             .into_any_element()
+    }
+
+    fn ship_result_repository_path(
+        &self,
+        agent: &AgentRecord,
+        result: &crate::state::agent_chat::ShipResult,
+        cx: &App,
+    ) -> Option<PathBuf> {
+        let repositories = self.git_states.read(cx).repositories(agent.project_id);
+        if let Some(selected) = agent.repository_path.as_ref() {
+            if repositories
+                .iter()
+                .any(|git| git.read(cx).repo_path == *selected)
+            {
+                return Some(selected.clone());
+            }
+        }
+
+        if let Some(label) = result.repository.as_deref() {
+            let mut matches = repositories.iter().filter_map(|git| {
+                let path = git.read(cx).repo_path.clone();
+                let relative = path
+                    .strip_prefix(&agent.project_path)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.to_string_lossy());
+                let file_name = path.file_name().map(|name| name.to_string_lossy());
+                (relative.as_deref() == Some(label)
+                    || file_name.as_deref() == Some(label)
+                    || path.to_string_lossy() == label)
+                    .then_some(path)
+            });
+            let matched = matches.next();
+            if matched.is_some() && matches.next().is_none() {
+                return matched;
+            }
+        }
+
+        if let Some((tracked_repo, tracked_branch)) = self.agent_ship_pr_targets.get(&agent.id) {
+            if tracked_branch == &result.branch
+                && repositories
+                    .iter()
+                    .any(|git| git.read(cx).repo_path == *tracked_repo)
+            {
+                return Some(tracked_repo.clone());
+            }
+        }
+
+        if repositories.len() == 1 {
+            return repositories
+                .first()
+                .map(|git| git.read(cx).repo_path.clone());
+        }
+
+        let mut matches = repositories.into_iter().filter_map(|git| {
+            let git = git.read(cx);
+            git.history
+                .iter()
+                .any(|commit| {
+                    commit.sha == result.commit_sha
+                        || commit.sha.starts_with(&result.commit_sha)
+                        || result.commit_sha.starts_with(&commit.sha_short)
+                })
+                .then(|| git.repo_path.clone())
+        });
+        let matched = matches.next();
+        if matched.is_some() && matches.next().is_none() {
+            matched
+        } else {
+            None
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn confirm_agent_ship_pr_merge(
+        &mut self,
+        agent_id: Uuid,
+        repo_path: PathBuf,
+        git: Entity<GitState>,
+        branch: String,
+        base_branch: String,
+        pr_number: Option<u64>,
+        pr_title: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if git.read(cx).is_busy {
+            window.push_notification(
+                Notification::info("Finish the current Git operation before merging"),
+                cx,
+            );
+            return;
+        }
+        let title = pr_number
+            .map(|number| format!("Merge pull request #{number}?"))
+            .unwrap_or_else(|| "Merge pull request?".to_string());
+        let message = pr_title
+            .filter(|title| !title.trim().is_empty())
+            .map(|title| {
+                format!(
+                    "“{title}” will be merged now if its required reviews, checks, and branch protections allow it."
+                )
+            })
+            .unwrap_or_else(|| {
+                "Choro will attempt the merge now. Required reviews, checks, and branch protections still apply."
+                    .to_string()
+            });
+        let route = format!("{branch} → {base_branch}");
+        let center = cx.entity();
+        ConfirmDialog::new(title, message)
+            .tone(ConfirmTone::Primary)
+            .icon(IconName::GitHub)
+            .detail(route)
+            .confirm_label("Merge PR")
+            .confirm_id("confirm-merge-agent-ship-pr")
+            .on_confirm(move |window, cx| {
+                let window_handle = window.window_handle();
+                let merge_git = git.clone();
+                let repo_path = repo_path.clone();
+                let branch = branch.clone();
+                let base_branch = base_branch.clone();
+                center.update(cx, |_center, cx| {
+                    if merge_git.read(cx).is_busy {
+                        window.push_notification(
+                            Notification::info("Finish the current Git operation before merging"),
+                            cx,
+                        );
+                        return;
+                    }
+                    merge_git.update(cx, |git, cx| {
+                        git.is_busy = true;
+                        git.last_error = None;
+                        git.last_error_from_refresh = false;
+                        git.last_message = Some("Merging pull request…".into());
+                        cx.notify();
+                    });
+
+                    cx.spawn(async move |this, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                crate::ui::git::git_panel::merge_pull_request_with_gh(
+                                    &repo_path,
+                                    &branch,
+                                    Some(&base_branch),
+                                )
+                            })
+                            .await;
+                        merge_git
+                            .update(cx, |git, cx| {
+                                git.is_busy = false;
+                                match &result {
+                                    Ok(outcome) => {
+                                        git.last_message = Some(format!(
+                                            "Merged pull request #{} into {}",
+                                            outcome.number, outcome.base_branch
+                                        ));
+                                        git.last_error = None;
+                                    }
+                                    Err(error) => {
+                                        git.last_message = None;
+                                        git.last_error = Some(format!("{error:#}"));
+                                        git.last_error_from_refresh = false;
+                                    }
+                                }
+                                git.refresh(cx);
+                            })
+                            .ok();
+                        this.update(cx, |center, cx| {
+                            center.agent_ship_pr_checked_at.remove(&agent_id);
+                            if let (Some(cached), Ok(outcome)) =
+                                (center.agent_ship_prs.get_mut(&agent_id), &result)
+                            {
+                                if cached.number == outcome.number {
+                                    cached.state = "MERGED".into();
+                                }
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                        let notification = match &result {
+                            Ok(outcome) => Notification::success(format!(
+                                "Merged pull request #{} into {}",
+                                outcome.number, outcome.base_branch
+                            )),
+                            Err(error) => Notification::error(format!("{error:#}")),
+                        };
+                        window_handle
+                            .update(cx, |_, window, cx| {
+                                window.push_notification(notification, cx)
+                            })
+                            .ok();
+                    })
+                    .detach();
+                });
+            })
+            .open(window, cx);
     }
 
     /// The opt-in "update the task" section shown on the ship card when the

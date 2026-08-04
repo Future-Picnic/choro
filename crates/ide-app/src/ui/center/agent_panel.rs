@@ -590,6 +590,7 @@ impl AgentShipDialog {
                         outcome.pr_url = Some(
                             "onboarding-demo://choro-playground/pull/1".to_string(),
                         );
+                        outcome.pr_base_branch = Some("main".to_string());
                         outcome.pr_title = Some(pr_title.clone());
                         outcome.pr_body = Some(pr_description.clone());
                         outcome.tracked_pr_branch = None;
@@ -609,6 +610,8 @@ impl AgentShipDialog {
                                     agent_id,
                                     crate::ui::git::git_panel::BranchPullRequest {
                                         branch: indicator_branch,
+                                        base_branch: "main".into(),
+                                        head_oid: Some(outcome.commit_sha.clone()),
                                         number: 1,
                                         title: indicator_title,
                                         url: String::new(),
@@ -1214,6 +1217,7 @@ pub(super) struct AgentShipOutcome {
     message: String,
     action: String,
     branch: String,
+    pr_base_branch: Option<String>,
     pr_url: Option<String>,
     pr_title: Option<String>,
     pr_body: Option<String>,

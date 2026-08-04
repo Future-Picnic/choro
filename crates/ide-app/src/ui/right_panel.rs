@@ -20,7 +20,7 @@ use crate::ui::services_panel::ServicesPanel;
 use crate::ui::style;
 use crate::ui::tasks_panel::TasksPanel;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RightToolTab {
     Git,
     Files,
@@ -45,6 +45,26 @@ fn git_account_selector_visible(selected: RightToolTab) -> bool {
     selected == RightToolTab::Git
 }
 
+fn right_tool_tab_after_navigation(
+    selected: RightToolTab,
+    previous_activity: ProjectActivity,
+    activity: ProjectActivity,
+    agents_panel_reset_requested: bool,
+    git_diff_requested: bool,
+) -> RightToolTab {
+    if agents_panel_reset_requested || git_diff_requested {
+        return RightToolTab::Git;
+    }
+    if activity == previous_activity {
+        return selected;
+    }
+    match activity {
+        ProjectActivity::Code => RightToolTab::Files,
+        ProjectActivity::Agents => RightToolTab::Git,
+        _ => selected,
+    }
+}
+
 /// Right panel: contextual tools for the selected project activity.
 pub struct RightPanel {
     center: Entity<CenterArea>,
@@ -59,7 +79,7 @@ pub struct RightPanel {
     penpot_panel: Entity<PenpotPanel>,
     selected: RightToolTab,
     last_activity: ProjectActivity,
-    last_agent_open_epoch: u64,
+    last_agents_panel_reset_epoch: u64,
     last_git_diff_open_epoch: u64,
 }
 
@@ -98,7 +118,7 @@ impl RightPanel {
                 // (the default `selected`) showing on launch.
                 selected: RightToolTab::Git,
                 last_activity: ProjectActivity::Agents,
-                last_agent_open_epoch: 0,
+                last_agents_panel_reset_epoch: 0,
                 last_git_diff_open_epoch: 0,
             }
         })
@@ -120,34 +140,30 @@ impl RightPanel {
 
 impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (activity, agent_open_epoch, git_diff_open_epoch) = {
+        let (activity, agents_panel_reset_epoch, git_diff_open_epoch) = {
             let center = self.center.read(cx);
             (
                 center.activity(),
-                center.agent_open_epoch(),
+                center.agents_panel_reset_epoch(),
                 center.git_diff_open_epoch(),
             )
         };
         // Code normally opens with Files. A diff chosen from Git is the one
         // exception: keep Git visible so the user can continue reviewing the
         // change list. Agents keeps Git as its default.
-        let agents_requested =
-            activity == ProjectActivity::Agents && agent_open_epoch != self.last_agent_open_epoch;
+        let agents_panel_reset_requested = activity == ProjectActivity::Agents
+            && agents_panel_reset_epoch != self.last_agents_panel_reset_epoch;
         let git_diff_requested = activity == ProjectActivity::Code
             && git_diff_open_epoch != self.last_git_diff_open_epoch;
-        if agents_requested {
-            self.selected = RightToolTab::Git;
-        } else if git_diff_requested {
-            self.selected = RightToolTab::Git;
-        } else if activity != self.last_activity {
-            match activity {
-                ProjectActivity::Code => self.selected = RightToolTab::Files,
-                ProjectActivity::Agents => self.selected = RightToolTab::Git,
-                _ => {}
-            }
-        }
+        self.selected = right_tool_tab_after_navigation(
+            self.selected,
+            self.last_activity,
+            activity,
+            agents_panel_reset_requested,
+            git_diff_requested,
+        );
         self.last_activity = activity;
-        self.last_agent_open_epoch = agent_open_epoch;
+        self.last_agents_panel_reset_epoch = agents_panel_reset_epoch;
         self.last_git_diff_open_epoch = git_diff_open_epoch;
 
         // Docs and Designs are now first-class activities with their own panel —
@@ -422,5 +438,33 @@ mod tests {
         assert!(git_account_selector_visible(RightToolTab::Git));
         assert!(!git_account_selector_visible(RightToolTab::Files));
         assert!(!git_account_selector_visible(RightToolTab::Agents));
+    }
+
+    #[test]
+    fn opening_an_agent_from_the_board_keeps_the_board_visible() {
+        assert_eq!(
+            right_tool_tab_after_navigation(
+                RightToolTab::Agents,
+                ProjectActivity::Agents,
+                ProjectActivity::Agents,
+                false,
+                false,
+            ),
+            RightToolTab::Agents
+        );
+    }
+
+    #[test]
+    fn explicit_agents_navigation_restores_git() {
+        assert_eq!(
+            right_tool_tab_after_navigation(
+                RightToolTab::Agents,
+                ProjectActivity::Agents,
+                ProjectActivity::Agents,
+                true,
+                false,
+            ),
+            RightToolTab::Git
+        );
     }
 }

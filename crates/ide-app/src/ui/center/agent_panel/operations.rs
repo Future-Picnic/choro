@@ -281,6 +281,8 @@ pub(super) fn run_agent_ship_operation(
         message,
         action: AgentShipDialog::action_label(action).to_string(),
         branch: branch.clone(),
+        pr_base_branch: matches!(action, AgentShipAction::CommitPushPr)
+            .then(|| pr_base_branch.trim().to_string()),
         pr_url,
         pr_title,
         pr_body,

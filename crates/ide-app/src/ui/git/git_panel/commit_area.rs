@@ -357,11 +357,14 @@ impl GitPanel {
                         let (status_label, accent) = pull_request_status_style(&pr, cx);
                         let url = pr.url.clone();
                         let number = pr.number;
+                        let can_merge = pr.state.eq_ignore_ascii_case("OPEN") && !pr.is_draft;
+                        let merge_pr = pr.clone();
+                        let merge_git = git.clone();
+                        let panel = cx.entity();
                         let full: SharedString =
                             format!("· {} · {}", status_label, pr.title).into();
                         row.child(
-                            h_flex()
-                                .id("branch-pr-chip")
+                            crate::ui::style::header_meta_button("branch-pr-chip", cx)
                                 .min_w(px(0.))
                                 // Fill the freed row on hover so the title has the
                                 // whole width to truncate into — never clipping
@@ -373,14 +376,10 @@ impl GitPanel {
                                 .py_0p5()
                                 .rounded(crate::ui::design::r_sm())
                                 .cursor_pointer()
-                                .when(pr_hovered, |chip| {
-                                    chip.bg(crate::ui::design::surface_2(cx).opacity(0.5))
-                                })
                                 .on_hover(cx.listener(|this, hovered, _, cx| {
                                     this.pr_chip_hovered = *hovered;
                                     cx.notify();
                                 }))
-                                .on_click(move |_, _, _| open_url(&url))
                                 .child(pr_icon(accent))
                                 .child(
                                     div()
@@ -406,6 +405,48 @@ impl GitPanel {
                                                 |title, delta| title.opacity(delta),
                                             ),
                                     )
+                                    .child(
+                                        gpui_component::Icon::new(IconName::ChevronDown)
+                                            .size(crate::ui::design::icon_sm())
+                                            .text_color(crate::ui::design::t4(cx)),
+                                    )
+                                })
+                                .dropdown_menu(move |menu, _, _| {
+                                    let open_url_value = url.clone();
+                                    let merge_pr = merge_pr.clone();
+                                    let merge_git = merge_git.clone();
+                                    let panel = panel.clone();
+                                    let open_item = PopupMenuItem::new("Open PR")
+                                        .icon(IconName::ExternalLink)
+                                        .on_click(move |_, _, _| open_url(&open_url_value));
+                                    let menu = menu
+                                        .item(
+                                            PopupMenuItem::new(format!(
+                                                "{} → {}",
+                                                merge_pr.branch, merge_pr.base_branch
+                                            ))
+                                            .disabled(true),
+                                        )
+                                        .separator()
+                                        .item(open_item);
+                                    if can_merge {
+                                        menu.separator().item(
+                                            PopupMenuItem::new("Merge PR").on_click(
+                                                move |_, window, cx| {
+                                                    panel.update(cx, |panel, cx| {
+                                                        panel.confirm_merge_pull_request(
+                                                            merge_git.clone(),
+                                                            merge_pr.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                    } else {
+                                        menu
+                                    }
                                 }),
                         )
                     })

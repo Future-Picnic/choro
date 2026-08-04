@@ -149,6 +149,8 @@ pub enum TimelineItemDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         repository: Option<String>,
         branch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pr_base_branch: Option<String>,
         commit_sha: String,
         pr_url: Option<String>,
         pr_title: Option<String>,
