@@ -6,6 +6,8 @@ node_modules/
 dist/
 !crates/ide-app/web/doc-editor/dist/
 !crates/ide-app/web/doc-editor/dist/**
+# Local Choro working documents may contain private product context.
+/choro_docs/
 __pycache__/
 *.py[cod]
 *.tmp

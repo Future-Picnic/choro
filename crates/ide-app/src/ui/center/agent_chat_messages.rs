@@ -1,6 +1,39 @@
 use super::*;
 
-fn render_saved_message_tag(tag: &AgentChatMessageTag, id: u64, cx: &App) -> gpui::AnyElement {
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SavedMessageTagNavigation {
+    Doc(PathBuf),
+    File(PathBuf),
+}
+
+fn saved_message_tag_navigation(tag: &AgentChatMessageTag) -> Option<SavedMessageTagNavigation> {
+    let detail = tag.detail.as_deref()?.trim();
+    if detail.is_empty() {
+        return None;
+    }
+    match tag.kind {
+        AgentChatMessageTagKind::Doc => Some(SavedMessageTagNavigation::Doc(PathBuf::from(detail))),
+        AgentChatMessageTagKind::File => {
+            Some(SavedMessageTagNavigation::File(PathBuf::from(detail)))
+        }
+        _ => None,
+    }
+}
+
+fn project_tag_target_path(project_root: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        project_root.join(target)
+    }
+}
+
+fn render_saved_message_tag(
+    tag: &AgentChatMessageTag,
+    id: u64,
+    project: ProjectId,
+    cx: &mut Context<CenterArea>,
+) -> gpui::AnyElement {
     let (color, icon, kind_label) = match tag.kind {
         AgentChatMessageTagKind::Preview => (
             crate::ui::design::accent(cx),
@@ -76,7 +109,11 @@ fn render_saved_message_tag(tag: &AgentChatMessageTag, id: u64, cx: &App) -> gpu
     } else {
         tag.label.clone()
     };
+    let navigation = saved_message_tag_navigation(tag);
     let tooltip = SharedString::from(match tag.detail.as_deref() {
+        Some(detail) if !detail.trim().is_empty() && navigation.is_some() => {
+            format!("Open {kind_label} · {detail}")
+        }
         Some(detail) if !detail.trim().is_empty() => format!("{kind_label} · {detail}"),
         _ => kind_label.to_string(),
     });
@@ -95,6 +132,28 @@ fn render_saved_message_tag(tag: &AgentChatMessageTag, id: u64, cx: &App) -> gpu
         .bg(color.opacity(0.11))
         .px_1p5()
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .when_some(navigation, |chip, navigation| {
+            chip.cursor_pointer()
+                .hover(|chip| {
+                    chip.border_color(color.opacity(0.52))
+                        .bg(color.opacity(0.17))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let Some((_, project_root)) = this.project_by_id(project, cx) else {
+                        return;
+                    };
+                    match &navigation {
+                        SavedMessageTagNavigation::Doc(target) => {
+                            let path = project_tag_target_path(&project_root, target);
+                            this.open_doc(project, path, cx);
+                        }
+                        SavedMessageTagNavigation::File(target) => {
+                            let path = project_tag_target_path(&project_root, target);
+                            this.open_file(project, path, window, cx);
+                        }
+                    }
+                }))
+        })
         .child(icon)
         .child(
             div()
@@ -394,6 +453,7 @@ impl CenterArea {
                                                     render_key
                                                         .wrapping_add(tag_index as u64)
                                                         .wrapping_add(1),
+                                                    agent.project_id,
                                                     cx,
                                                 )
                                             },
@@ -972,5 +1032,67 @@ impl CenterArea {
                 self.render_memory_proposal_card(agent.id, card, cx)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doc_and_file_tags_keep_navigable_targets() {
+        let doc = AgentChatMessageTag {
+            kind: AgentChatMessageTagKind::Doc,
+            label: "Notification improvement".to_string(),
+            detail: Some("choro_docs/notifications-improvement.choro".to_string()),
+        };
+        let file = AgentChatMessageTag {
+            kind: AgentChatMessageTagKind::File,
+            label: "main.rs".to_string(),
+            detail: Some("src/main.rs".to_string()),
+        };
+
+        assert_eq!(
+            saved_message_tag_navigation(&doc),
+            Some(SavedMessageTagNavigation::Doc(PathBuf::from(
+                "choro_docs/notifications-improvement.choro"
+            )))
+        );
+        assert_eq!(
+            saved_message_tag_navigation(&file),
+            Some(SavedMessageTagNavigation::File(PathBuf::from(
+                "src/main.rs"
+            )))
+        );
+    }
+
+    #[test]
+    fn non_resource_and_empty_tags_stay_static() {
+        let command = AgentChatMessageTag {
+            kind: AgentChatMessageTagKind::Command,
+            label: "Review".to_string(),
+            detail: Some("Run a review".to_string()),
+        };
+        let empty_doc = AgentChatMessageTag {
+            kind: AgentChatMessageTagKind::Doc,
+            label: "Missing path".to_string(),
+            detail: Some("   ".to_string()),
+        };
+
+        assert_eq!(saved_message_tag_navigation(&command), None);
+        assert_eq!(saved_message_tag_navigation(&empty_doc), None);
+    }
+
+    #[test]
+    fn project_relative_targets_resolve_inside_their_project() {
+        let root = Path::new("/work/choro");
+        assert_eq!(
+            project_tag_target_path(root, Path::new("choro_docs/plan.choro")),
+            PathBuf::from("/work/choro/choro_docs/plan.choro")
+        );
+        assert_eq!(
+            project_tag_target_path(root, Path::new("/shared/plan.choro")),
+            PathBuf::from("/shared/plan.choro")
+        );
     }
 }
