@@ -226,7 +226,11 @@ impl CenterArea {
                         .w_full()
                         .px(crate::ui::design::chat_card_body_pad_x())
                         .py(crate::ui::design::chat_card_body_pad_y())
-                        .child(render_plan_markdown(&verification.display_markdown(), window, cx)),
+                        .child(render_plan_markdown(
+                            &verification.display_markdown(),
+                            window,
+                            cx,
+                        )),
                 )
                 .into_any_element();
         }
@@ -431,7 +435,11 @@ impl CenterArea {
                             ),
                     )
                     .when(!item.detail.trim().is_empty(), |col| {
-                        col.child(div().w_full().child(render_plan_markdown(&item.detail, window, cx)))
+                        col.child(div().w_full().child(render_plan_markdown(
+                            &item.detail,
+                            window,
+                            cx,
+                        )))
                     }),
             )
             .into_any_element()

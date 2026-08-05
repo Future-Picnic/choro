@@ -11,7 +11,8 @@ impl CenterArea {
             .update(cx, |agents, cx| agents.select(project, agent_id, cx));
         self.agent_detail_tabs
             .insert(agent_id, AgentDetailTab::Terminal);
-        self.agent_open_epoch = self.agent_open_epoch.wrapping_add(1);
+        // Opening an agent is a content selection. Keep the user's current
+        // Agents sidebar tool (for example, Board) unchanged.
         self.set_view_mode(CenterMode::Agents, cx);
         let opened_chat = self
             .agents

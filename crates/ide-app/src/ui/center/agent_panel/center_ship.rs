@@ -147,6 +147,7 @@ impl CenterArea {
                     action: outcome.action.clone(),
                     repository: repository.clone(),
                     branch: outcome.branch.clone(),
+                    pr_base_branch: outcome.pr_base_branch.clone(),
                     commit_sha: outcome.commit_sha.clone(),
                     pr_url: outcome.pr_url.clone(),
                     pr_title: outcome.pr_title.clone(),

@@ -1063,8 +1063,16 @@ fn render_markdown_table_row(
 
         row = row.child(
             div()
-                .flex_1()
-                .min_w(px(120.))
+                // A definite width, not `flex_1`. Under `flex: 1 1 0%` a cell's
+                // width is only known once flex resolution runs, but the cell's
+                // *height* depends on where its text wraps at that width — so
+                // the chat list (which measures each row once, at `MinContent`)
+                // sized every cell as a single line and left the table short by
+                // the height of every wrapped second line. Equal definite
+                // columns break that circularity: width is known up front, so
+                // the wrap height is correct in every measurement pass.
+                .w(gpui::relative(1.0 / cell_count as f32))
+                .min_w(px(0.))
                 .px_3()
                 .py_2()
                 .text_size(crate::ui::design::text_ui())

@@ -1608,7 +1608,9 @@ pub struct CenterArea {
     /// board the full width ("board only" mode). Toggled from the detail pane's
     /// Close button and re-opened when a card is selected.
     tasks_detail_collapsed: bool,
-    agent_open_epoch: u64,
+    /// Bumped only by explicit Agents navigation, which restores Git as the
+    /// default sidebar tool. Selecting an agent from Board must not change it.
+    agents_panel_reset_epoch: u64,
     /// Changes whenever a diff is opened from the Git sidebar, allowing the
     /// right panel to keep Git visible while the center moves into Code.
     git_diff_open_epoch: u64,

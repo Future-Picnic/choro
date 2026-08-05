@@ -31,8 +31,8 @@ impl CenterArea {
         }
     }
 
-    pub fn agent_open_epoch(&self) -> u64 {
-        self.agent_open_epoch
+    pub fn agents_panel_reset_epoch(&self) -> u64 {
+        self.agents_panel_reset_epoch
     }
 
     pub fn git_diff_open_epoch(&self) -> u64 {
@@ -130,7 +130,7 @@ impl CenterArea {
     pub fn show_agents(&mut self, cx: &mut Context<Self>) {
         // Entering Agents is also a request to restore its default side
         // panel (Git), even when Agents is already the active center view.
-        self.agent_open_epoch = self.agent_open_epoch.wrapping_add(1);
+        self.agents_panel_reset_epoch = self.agents_panel_reset_epoch.wrapping_add(1);
         self.set_view_mode(CenterMode::Agents, cx);
         cx.notify();
     }

@@ -322,6 +322,8 @@ pub(super) fn branch_pull_request_from_github(
         branch: pr
             .head_ref_name
             .unwrap_or_else(|| fallback_branch.to_string()),
+        base_branch: pr.base_ref_name.unwrap_or_default(),
+        head_oid: pr.head_ref_oid,
         number: pr.number,
         title: pr.title,
         url: pr.url,
@@ -345,7 +347,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
             "view",
             branch,
             "--json",
-            "number,title,url,state,isDraft,headRefName,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -370,7 +372,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
             "--limit",
             "1",
             "--json",
-            "number,title,url,state,isDraft,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -398,7 +400,7 @@ pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRe
             "--limit",
             "30",
             "--json",
-            "number,title,url,state,isDraft,headRefName,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -420,6 +422,305 @@ pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRe
         .collect())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GithubMergeMethod {
+    Merge,
+    Rebase,
+    Squash,
+}
+
+impl GithubMergeMethod {
+    fn api_value(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+            Self::Squash => "squash",
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct GithubRepoMergeSettings {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+    #[serde(default, rename = "viewerDefaultMergeMethod")]
+    viewer_default_merge_method: Option<String>,
+    #[serde(default, rename = "mergeCommitAllowed")]
+    merge_commit_allowed: bool,
+    #[serde(default, rename = "rebaseMergeAllowed")]
+    rebase_merge_allowed: bool,
+    #[serde(default, rename = "squashMergeAllowed")]
+    squash_merge_allowed: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubMergeResponse {
+    merged: bool,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+fn preferred_merge_method(settings: &GithubRepoMergeSettings) -> Option<GithubMergeMethod> {
+    let allowed = |method| match method {
+        GithubMergeMethod::Merge => settings.merge_commit_allowed,
+        GithubMergeMethod::Rebase => settings.rebase_merge_allowed,
+        GithubMergeMethod::Squash => settings.squash_merge_allowed,
+    };
+    let viewer_default = match settings.viewer_default_merge_method.as_deref() {
+        Some("MERGE") => Some(GithubMergeMethod::Merge),
+        Some("REBASE") => Some(GithubMergeMethod::Rebase),
+        Some("SQUASH") => Some(GithubMergeMethod::Squash),
+        _ => None,
+    };
+    viewer_default
+        .filter(|method| allowed(*method))
+        .or_else(|| {
+            [
+                GithubMergeMethod::Squash,
+                GithubMergeMethod::Merge,
+                GithubMergeMethod::Rebase,
+            ]
+            .into_iter()
+            .find(|method| allowed(*method))
+        })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MergePullRequestOutcome {
+    pub(crate) number: u64,
+    pub(crate) branch: String,
+    pub(crate) base_branch: String,
+}
+
+/// Immediately merges an open PR using the repository's preferred allowed
+/// method. This uses GitHub's direct merge endpoint so a protected branch can
+/// reject the attempt without `gh pr merge` silently enabling auto-merge or a
+/// merge queue. It never bypasses protections or deletes the source branch.
+pub(crate) fn merge_pull_request_with_gh(
+    repo: &Path,
+    branch: &str,
+    expected_base_branch: Option<&str>,
+) -> anyhow::Result<MergePullRequestOutcome> {
+    let output = gh_command_for_repo(repo)?
+        .args([
+            "pr",
+            "view",
+            branch,
+            "--json",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
+        ])
+        .current_dir(repo)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(if stderr.is_empty() {
+            format!("No pull request was found for {branch}")
+        } else {
+            stderr
+        });
+    }
+    let pr = branch_pull_request_from_github(
+        serde_json::from_slice::<GithubPullRequest>(&output.stdout)?,
+        branch,
+    );
+    if pr.state.to_ascii_uppercase() != "OPEN" {
+        anyhow::bail!(
+            "Pull request #{} is already {}",
+            pr.number,
+            pr.state.to_ascii_lowercase()
+        );
+    }
+    if pr.is_draft {
+        anyhow::bail!("Pull request #{} is still a draft", pr.number);
+    }
+    if let Some(expected) = expected_base_branch
+        .map(str::trim)
+        .filter(|base| !base.is_empty())
+    {
+        if pr.base_branch != expected {
+            anyhow::bail!(
+                "Pull request #{} now targets {}, not {}",
+                pr.number,
+                pr.base_branch,
+                expected
+            );
+        }
+    }
+    let head_oid = pr
+        .head_oid
+        .as_deref()
+        .filter(|oid| !oid.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("GitHub did not return the PR head commit"))?;
+
+    let settings_output = gh_command_for_repo(repo)?
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,viewerDefaultMergeMethod,mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
+        ])
+        .current_dir(repo)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !settings_output.status.success() {
+        let stderr = String::from_utf8_lossy(&settings_output.stderr)
+            .trim()
+            .to_string();
+        anyhow::bail!(if stderr.is_empty() {
+            "Could not read the repository's allowed merge methods".to_string()
+        } else {
+            stderr
+        });
+    }
+    let settings = serde_json::from_slice::<GithubRepoMergeSettings>(&settings_output.stdout)?;
+    let method = preferred_merge_method(&settings).ok_or_else(|| {
+        anyhow::anyhow!("This repository has no allowed pull request merge method")
+    })?;
+
+    let endpoint = format!(
+        "repos/{}/pulls/{}/merge",
+        settings.name_with_owner, pr.number
+    );
+    let sha_field = format!("sha={head_oid}");
+    let method_field = format!("merge_method={}", method.api_value());
+    let merge_output = gh_command_for_repo(repo)?
+        .args(["api", "--method", "PUT"])
+        .arg(endpoint)
+        .args(["-f", &sha_field, "-f", &method_field])
+        .current_dir(repo)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !merge_output.status.success() {
+        let stderr = String::from_utf8_lossy(&merge_output.stderr)
+            .trim()
+            .to_string();
+        anyhow::bail!(if stderr.is_empty() {
+            format!("GitHub did not allow pull request #{} to merge", pr.number)
+        } else {
+            stderr
+        });
+    }
+    let response = serde_json::from_slice::<GithubMergeResponse>(&merge_output.stdout)?;
+    if !response.merged {
+        anyhow::bail!(response.message.unwrap_or_else(|| format!(
+            "GitHub did not allow pull request #{} to merge",
+            pr.number
+        )));
+    }
+
+    Ok(MergePullRequestOutcome {
+        number: pr.number,
+        branch: pr.branch,
+        base_branch: pr.base_branch,
+    })
+}
+
+impl GitPanel {
+    pub(super) fn confirm_merge_pull_request(
+        &mut self,
+        git: Entity<GitState>,
+        pr: BranchPullRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let route = format!("{} → {}", pr.branch, pr.base_branch);
+        let title = format!("Merge pull request #{}?", pr.number);
+        let panel = cx.entity();
+        ConfirmDialog::new(
+            title,
+            "Choro will attempt the merge now using the repository's preferred allowed method. Required reviews, checks, and branch protections still apply.",
+        )
+        .tone(crate::ui::confirm::ConfirmTone::Primary)
+        .icon(IconName::GitHub)
+        .detail(route)
+        .confirm_label("Merge PR")
+        .confirm_id("confirm-merge-branch-pr")
+        .on_confirm(move |window, cx| {
+            let window_handle = window.window_handle();
+            let repo = git.read(cx).repo_path.clone();
+            let branch = pr.branch.clone();
+            let base_branch = pr.base_branch.clone();
+            let git_for_task = git.clone();
+            let git_for_result = git.clone();
+            let pr_number = pr.number;
+            panel.update(cx, |_panel, cx| {
+                if git_for_task.read(cx).is_busy {
+                    window.push_notification(
+                        Notification::info("Finish the current Git operation before merging"),
+                        cx,
+                    );
+                    return;
+                }
+                git_for_task.update(cx, |git, cx| {
+                    git.is_busy = true;
+                    git.last_error = None;
+                    git.last_error_from_refresh = false;
+                    git.last_message = Some(format!("Merging pull request #{pr_number}…"));
+                    cx.notify();
+                });
+
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            merge_pull_request_with_gh(&repo, &branch, Some(&base_branch))
+                        })
+                        .await;
+                    git_for_result
+                        .update(cx, |git, cx| {
+                            git.is_busy = false;
+                            match &result {
+                                Ok(outcome) => {
+                                    git.last_message = Some(format!(
+                                        "Merged pull request #{} into {}",
+                                        outcome.number, outcome.base_branch
+                                    ));
+                                    git.last_error = None;
+                                }
+                                Err(error) => {
+                                    git.last_message = None;
+                                    git.last_error = Some(format!("{error:#}"));
+                                    git.last_error_from_refresh = false;
+                                }
+                            }
+                            git.refresh(cx);
+                        })
+                        .ok();
+                    this.update(cx, |panel, cx| {
+                        panel.branch_pr_checked_at = None;
+                        panel.repo_prs_checked_at = None;
+                        if let (Some(cached), Ok(outcome)) = (&mut panel.branch_pr, &result) {
+                            if cached.number == outcome.number {
+                                cached.state = "MERGED".into();
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    let notification = match &result {
+                        Ok(outcome) => Notification::success(format!(
+                            "Merged pull request #{} into {}",
+                            outcome.number, outcome.base_branch
+                        )),
+                        Err(error) => Notification::error(format!("{error:#}")),
+                    };
+                    window_handle
+                        .update(cx, |_, window, cx| {
+                            window.push_notification(notification, cx)
+                        })
+                        .ok();
+                })
+                .detach();
+            });
+        })
+        .open(window, cx);
+    }
+}
+
 pub(crate) fn open_url(url: &str) {
     if let Err(error) = Command::new("open").arg("--").arg(url).spawn() {
         eprintln!("open pull request url failed: {error}");
@@ -432,4 +733,39 @@ pub(crate) fn pull_request_url_with_text(url: &str, pull_request: &GeneratedPull
         url_encode(&pull_request.title),
         url_encode(&pull_request.body)
     )
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn preferred_merge_method_uses_allowed_viewer_default() {
+        let settings = GithubRepoMergeSettings {
+            name_with_owner: "owner/repo".into(),
+            viewer_default_merge_method: Some("REBASE".into()),
+            merge_commit_allowed: true,
+            rebase_merge_allowed: true,
+            squash_merge_allowed: true,
+        };
+        assert_eq!(
+            preferred_merge_method(&settings),
+            Some(GithubMergeMethod::Rebase)
+        );
+    }
+
+    #[test]
+    fn preferred_merge_method_falls_back_to_an_allowed_method() {
+        let settings = GithubRepoMergeSettings {
+            name_with_owner: "owner/repo".into(),
+            viewer_default_merge_method: Some("MERGE".into()),
+            merge_commit_allowed: false,
+            rebase_merge_allowed: true,
+            squash_merge_allowed: true,
+        };
+        assert_eq!(
+            preferred_merge_method(&settings),
+            Some(GithubMergeMethod::Squash)
+        );
+    }
 }

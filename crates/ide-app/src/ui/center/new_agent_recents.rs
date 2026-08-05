@@ -92,13 +92,7 @@ impl CenterArea {
             .rounded(crate::ui::design::r_sm())
             .cursor_pointer()
             .hover(|style| style.bg(crate::ui::design::hover(cx)))
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(5.))
-                    .rounded_full()
-                    .bg(dot),
-            )
+            .child(div().flex_none().size(px(5.)).rounded_full().bg(dot))
             .child(
                 div()
                     .flex_1()

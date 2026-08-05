@@ -71,49 +71,48 @@ impl CenterArea {
         }
 
         let review_id_for_rows = review.id.clone();
-        card =
-            card.child(
-                v_flex()
-                    .w_full()
-                    .px(crate::ui::design::chat_card_body_pad_x())
-                    .pb(crate::ui::design::chat_card_body_pad_y())
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .items_center()
-                            .gap_2()
-                            .py(crate::ui::design::chat_card_body_pad_y())
-                            .text_size(crate::ui::design::text_label())
-                            .text_color(crate::ui::design::t3(cx))
-                            .child(div().flex_none().w(crate::ui::design::icon()))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(gpui::relative(REVIEW_ISSUE_COL))
-                                    .child("Issue"),
+        card = card.child(
+            v_flex()
+                .w_full()
+                .px(crate::ui::design::chat_card_body_pad_x())
+                .pb(crate::ui::design::chat_card_body_pad_y())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .py(crate::ui::design::chat_card_body_pad_y())
+                        .text_size(crate::ui::design::text_label())
+                        .text_color(crate::ui::design::t3(cx))
+                        .child(div().flex_none().w(crate::ui::design::icon()))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(gpui::relative(REVIEW_ISSUE_COL))
+                                .child("Issue"),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).child("What happens"))
+                        .child(div().flex_1().min_w(px(0.)).child("Suggested fix")),
+                )
+                .children(
+                    review
+                        .findings
+                        .iter()
+                        .take(visible)
+                        .enumerate()
+                        .map(|(i, finding)| {
+                            self.render_code_review_finding(
+                                agent_id,
+                                &review_id_for_rows,
+                                i,
+                                finding,
+                                window,
+                                cx,
                             )
-                            .child(div().flex_1().min_w(px(0.)).child("What happens"))
-                            .child(div().flex_1().min_w(px(0.)).child("Suggested fix")),
-                    )
-                    .children(
-                        review
-                            .findings
-                            .iter()
-                            .take(visible)
-                            .enumerate()
-                            .map(|(i, finding)| {
-                                self.render_code_review_finding(
-                                    agent_id,
-                                    &review_id_for_rows,
-                                    i,
-                                    finding,
-                                    window,
-                                    cx,
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-            );
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+        );
 
         let card_key = code_review_card_key(agent_id, &review.id);
         let selected = review.selected_count();
