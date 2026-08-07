@@ -118,6 +118,16 @@ pub(super) fn initial_agent_title(prompt: &str, command_title: Option<&str>) -> 
         .unwrap_or_else(|| "New agent".to_string())
 }
 
+pub(super) fn implementation_agent_title(source_title: &str, source: &str) -> String {
+    let source_title = source_title.trim();
+    let source_title = if source_title.is_empty() {
+        "Untitled"
+    } else {
+        source_title
+    };
+    format!("{source_title} (from {source})")
+}
+
 fn visible_user_message(message: &AgentChatMessage) -> Option<String> {
     let AgentChatMessage::User {
         text, display_text, ..
@@ -233,6 +243,22 @@ mod tests {
         );
         assert_eq!(initial_agent_title("", Some("Review")), "Review");
         assert_eq!(initial_agent_title("", None), "New agent");
+    }
+
+    #[test]
+    fn implementation_titles_name_the_source_and_its_kind() {
+        assert_eq!(
+            implementation_agent_title("Checkout experience", "task"),
+            "Checkout experience (from task)"
+        );
+        assert_eq!(
+            implementation_agent_title(" Product spec ", "doc"),
+            "Product spec (from doc)"
+        );
+        assert_eq!(
+            implementation_agent_title("  ", "doc"),
+            "Untitled (from doc)"
+        );
     }
 
     #[test]

@@ -11,6 +11,35 @@ use crate::state::agent_chat::{RejoinConflictCard, RejoinedCard};
 use ide_core::lanes::{self, LaneStep, LaneStepResult, RejoinOutcome};
 use ide_core::LaneProfile;
 
+#[derive(Clone)]
+enum RejoinDialogPhase {
+    Choosing,
+    Rejoining,
+    Succeeded,
+    Paused(String),
+    CleanupNeeded(String),
+    Failed(String),
+}
+
+fn choose_rejoin_target(
+    names: &[String],
+    preferred: Option<&str>,
+    solo_base: Option<&str>,
+    current: Option<&str>,
+) -> String {
+    [preferred, solo_base, current]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| {
+            names
+                .iter()
+                .find(|name| name.as_str() == candidate)
+                .cloned()
+        })
+        .or_else(|| names.first().cloned())
+        .unwrap_or_default()
+}
+
 /// The Rejoin confirmation: which branch the Solo merges into, with the
 /// switch-notice when the pick isn't what the main tree has checked out.
 pub(super) struct RejoinDialog {
@@ -24,9 +53,100 @@ pub(super) struct RejoinDialog {
     expanded: bool,
     query: Entity<InputState>,
     center: gpui::WeakEntity<CenterArea>,
+    phase: RejoinDialogPhase,
 }
 
 impl RejoinDialog {
+    fn start_rejoin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.phase, RejoinDialogPhase::Rejoining) {
+            return;
+        }
+        self.phase = RejoinDialogPhase::Rejoining;
+        self.expanded = false;
+        cx.notify();
+
+        let target = self.target.clone();
+        let agent_id = self.agent_id;
+        let dialog = cx.entity().downgrade();
+        let Some(center) = self.center.upgrade() else {
+            self.phase = RejoinDialogPhase::Failed(
+                "The workspace is no longer available. Close this dialog and try again.".into(),
+            );
+            cx.notify();
+            return;
+        };
+        center.update(cx, |center, cx| {
+            center.rejoin_solo(agent_id, target, dialog, window, cx);
+        });
+    }
+
+    fn render_status(
+        &self,
+        title: &'static str,
+        description: impl Into<SharedString>,
+        icon: gpui::AnyElement,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        v_flex()
+            .w_full()
+            .min_h(px(150.))
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(icon)
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_title())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(340.))
+                            .text_center()
+                            .whitespace_normal()
+                            .text_size(crate::ui::design::text_body())
+                            .line_height(gpui::relative(1.45))
+                            .text_color(crate::ui::design::t3(cx))
+                            .child(description.into()),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_error_details(&self, error: String, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let readable_error = error.replace('/', "/\u{200b}");
+        v_flex()
+            .w_full()
+            .gap_2()
+            .rounded(crate::ui::design::r_md())
+            .bg(crate::ui::design::rose(cx).opacity(0.08))
+            .p_3()
+            .child(
+                div()
+                    .text_size(crate::ui::design::text_label())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(crate::ui::design::rose(cx))
+                    .child("Technical details"),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w(px(0.))
+                    .whitespace_normal()
+                    .text_size(crate::ui::design::text_ui())
+                    .line_height(gpui::relative(1.45))
+                    .text_color(crate::ui::design::t2(cx))
+                    .child(readable_error),
+            )
+            .into_any_element()
+    }
+
     /// Target picker cloned from the Ship dialog's base-branch selector: a
     /// bordered trigger with the branch icon and left-aligned name that
     /// expands an inline, searchable branch list. Select-only.
@@ -205,65 +325,251 @@ impl RejoinDialog {
 
 impl Render for RejoinDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let agent_id = self.agent_id;
-        let switching = self.current.as_deref() != Some(self.target.as_str());
-
-        v_flex()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t3(cx))
-                    .line_height(gpui::relative(1.5))
-                    .child(
-                        "One merge commit lands on the branch you pick. The lane packs up; \
-                         the branch and the chat are kept. Nothing is pushed.",
-                    ),
-            )
-            .child(
+        let phase = self.phase.clone();
+        let target = self.target.clone();
+        match phase {
+            RejoinDialogPhase::Choosing => {
+                let switching = self.current.as_deref() != Some(self.target.as_str());
                 v_flex()
-                    .w_full()
-                    .gap_1p5()
+                    .gap_3()
                     .child(
                         div()
                             .text_size(crate::ui::design::text_ui())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t1(cx))
-                            .child("Merge into"),
-                    )
-                    .child(self.render_target_selector(cx)),
-            )
-            .when(switching, |dialog| {
-                dialog.child(
-                    div()
-                        .text_size(crate::ui::design::text_label())
-                        .text_color(crate::ui::design::amber(cx))
-                        .child(format!("Your project will switch to {}.", self.target)),
-                )
-            })
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        crate::ui::style::dialog_neutral_button("rejoin-cancel", "Cancel", cx)
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.close_dialog(cx);
-                            })),
+                            .text_color(crate::ui::design::t3(cx))
+                            .line_height(gpui::relative(1.5))
+                            .child(
+                                "One merge commit lands on the branch you pick. The lane packs up; \
+                                 the branch and the chat are kept. Nothing is pushed.",
+                            ),
                     )
                     .child(
-                        crate::ui::style::primary_button_compact("rejoin-confirm", "Rejoin", cx)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let target = this.target.clone();
-                                if let Some(center) = this.center.upgrade() {
-                                    center.update(cx, |center, cx| {
-                                        center.rejoin_solo(agent_id, target, cx);
-                                    });
-                                }
-                                window.close_dialog(cx);
-                            })),
+                        v_flex()
+                            .w_full()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_ui())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::t1(cx))
+                                    .child("Merge into"),
+                            )
+                            .child(self.render_target_selector(cx)),
+                    )
+                    .when(switching, |dialog| {
+                        dialog.child(
+                            div()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::amber(cx))
+                                .child(format!("Your project will switch to {}.", self.target)),
+                        )
+                    })
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                crate::ui::style::dialog_neutral_button(
+                                    "rejoin-cancel",
+                                    "Cancel",
+                                    cx,
+                                )
+                                .on_click(cx.listener(|_, _, window, cx| {
+                                    window.close_dialog(cx);
+                                })),
+                            )
+                            .child(
+                                crate::ui::style::primary_button_compact(
+                                    "rejoin-confirm",
+                                    "Rejoin",
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_rejoin(window, cx);
+                                })),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            RejoinDialogPhase::Rejoining => v_flex()
+                .gap_3()
+                .child(self.render_status(
+                    "Rejoining…",
+                    format!(
+                        "Stopping lane processes and merging into {target}. You can hide this and keep working."
                     ),
-            )
+                    logo_spinner(
+                        34.,
+                        "rejoin-progress",
+                        self.agent_id.as_u128() as usize,
+                        crate::ui::design::sky(cx),
+                    ),
+                    cx,
+                ))
+                .child(
+                    h_flex().justify_end().child(
+                        crate::ui::style::dialog_neutral_button(
+                            "rejoin-progress-hide",
+                            "Hide",
+                            cx,
+                        )
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+                )
+                .into_any_element(),
+            RejoinDialogPhase::Succeeded => self.render_status(
+                "Rejoined",
+                format!("The Solo’s work is now on {target}."),
+                crate::ui::design::indicator::lucide_icon(
+                    lucide_icons::Icon::Check,
+                    crate::ui::design::sage(cx),
+                    px(32.),
+                )
+                .into_any_element(),
+                cx,
+            ),
+            RejoinDialogPhase::Paused(error) => {
+                let copy_error = error.clone();
+                v_flex()
+                    .gap_3()
+                    .child(self.render_status(
+                        "Rejoin paused",
+                        "The target branch is untouched. Resolve the conflicts from the card in this chat, then try again.",
+                        crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::AlertTriangle,
+                            crate::ui::design::amber(cx),
+                            px(28.),
+                        )
+                        .into_any_element(),
+                        cx,
+                    ))
+                    .child(self.render_error_details(error, cx))
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                crate::ui::style::dialog_neutral_button(
+                                    "rejoin-paused-copy",
+                                    "Copy details",
+                                    cx,
+                                )
+                                .icon(IconName::Copy)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_error.clone(),
+                                    ));
+                                }),
+                            )
+                            .child(
+                                crate::ui::style::primary_button_compact(
+                                    "rejoin-paused-review",
+                                    "Review in chat",
+                                    cx,
+                                )
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            RejoinDialogPhase::CleanupNeeded(error) => {
+                let copy_error = error.clone();
+                v_flex()
+                    .gap_3()
+                    .child(self.render_status(
+                        "Rejoined — cleanup needed",
+                        "The merge succeeded, but Choro could not remove the lane folder. Your work is safe; use Clean up to retry.",
+                        crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::AlertTriangle,
+                            crate::ui::design::amber(cx),
+                            px(28.),
+                        )
+                        .into_any_element(),
+                        cx,
+                    ))
+                    .child(self.render_error_details(error, cx))
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                crate::ui::style::dialog_neutral_button(
+                                    "rejoin-cleanup-copy",
+                                    "Copy error",
+                                    cx,
+                                )
+                                .icon(IconName::Copy)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_error.clone(),
+                                    ));
+                                }),
+                            )
+                            .child(
+                                crate::ui::style::primary_button_compact(
+                                    "rejoin-cleanup-done",
+                                    "Done",
+                                    cx,
+                                )
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            RejoinDialogPhase::Failed(error) => {
+                let copy_error = error.clone();
+                v_flex()
+                    .gap_3()
+                    .child(self.render_status(
+                        "Couldn’t rejoin",
+                        "The lane and branch are still available. Copy the details if needed, then retry when the Git issue is resolved.",
+                        crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::AlertTriangle,
+                            crate::ui::design::rose(cx),
+                            px(28.),
+                        )
+                        .into_any_element(),
+                        cx,
+                    ))
+                    .child(self.render_error_details(error, cx))
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                crate::ui::style::dialog_neutral_button(
+                                    "rejoin-error-copy",
+                                    "Copy error",
+                                    cx,
+                                )
+                                .icon(IconName::Copy)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_error.clone(),
+                                    ));
+                                }),
+                            )
+                            .child(
+                                crate::ui::style::dialog_neutral_button(
+                                    "rejoin-error-close",
+                                    "Close",
+                                    cx,
+                                )
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                            )
+                            .child(
+                                crate::ui::style::primary_button_compact(
+                                    "rejoin-error-retry",
+                                    "Retry",
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_rejoin(window, cx);
+                                })),
+                            ),
+                    )
+                    .into_any_element()
+            }
+        }
     }
 }
 
@@ -356,8 +662,9 @@ impl CenterArea {
         }
         self.cancel_agent_chat_hydration(agent.id);
         self.sync_chat_session_ids(cx);
-        self.agent_chats
-            .update(cx, |chats, cx| chats.force_stop_backend(agent.id, cx));
+        self.agent_chats.update(cx, |chats, cx| {
+            chats.stop_backend_for_lane_exit(agent.id, cx)
+        });
         self.agent_chat_terminal_open.remove(&agent.id);
         self.lane_preview_pending.remove(&agent.id);
 
@@ -590,6 +897,7 @@ impl CenterArea {
     pub(super) fn open_rejoin_dialog(
         &mut self,
         agent_id: Uuid,
+        preferred_target: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -663,13 +971,12 @@ impl CenterArea {
             .iter()
             .map(|name| (name.clone(), detail_for(name)))
             .collect();
-        let target = agent
-            .solo_base_branch
-            .clone()
-            .filter(|base| names.contains(base))
-            .or_else(|| current.clone())
-            .or_else(|| names.first().cloned())
-            .unwrap_or_default();
+        let target = choose_rejoin_target(
+            &names,
+            preferred_target.as_deref(),
+            agent.solo_base_branch.as_deref(),
+            current.as_deref(),
+        );
 
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search branch…"));
         let center = cx.entity().downgrade();
@@ -690,12 +997,14 @@ impl CenterArea {
                 expanded: false,
                 query: query.clone(),
                 center,
+                phase: RejoinDialogPhase::Choosing,
             }
         });
         window.open_dialog(cx, move |dialog_view, _, _| {
             dialog_view
                 .title(SharedString::from(format!("Rejoin {branch}")))
                 .w(px(420.))
+                .overlay_closable(false)
                 .child(dialog.clone())
         });
     }
@@ -703,22 +1012,66 @@ impl CenterArea {
     /// Rejoin: merge the Solo's branch into the chosen target branch, then
     /// pack the lane up. Uncommitted lane work is committed first; conflicts
     /// abort cleanly and leave both sides intact.
-    pub(super) fn rejoin_solo(&mut self, agent_id: Uuid, target: String, cx: &mut Context<Self>) {
+    pub(super) fn rejoin_solo(
+        &mut self,
+        agent_id: Uuid,
+        target: String,
+        dialog: gpui::WeakEntity<RejoinDialog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
+            dialog
+                .update(cx, |dialog, cx| {
+                    dialog.phase = RejoinDialogPhase::Failed(
+                        "This Solo is no longer available in the workspace.".into(),
+                    );
+                    cx.notify();
+                })
+                .ok();
             return;
         };
         let (Some(branch), Some(lane_path)) = (agent.solo_branch.clone(), agent.lane_path.clone())
         else {
+            dialog
+                .update(cx, |dialog, cx| {
+                    dialog.phase = RejoinDialogPhase::Failed(
+                        "This Solo no longer has a lane to rejoin.".into(),
+                    );
+                    cx.notify();
+                })
+                .ok();
             return;
         };
         if !self.lane_path_is_expected(&agent, &lane_path, cx) {
+            let message = self
+                .agent_start_errors
+                .remove(&agent_id)
+                .unwrap_or_else(|| "The Solo lane path could not be verified.".into());
+            dialog
+                .update(cx, |dialog, cx| {
+                    dialog.phase = RejoinDialogPhase::Failed(message);
+                    cx.notify();
+                })
+                .ok();
             return;
         }
         let project_root = agent.repository_root().to_path_buf();
         let title = agent.title.clone();
+        self.agent_start_errors.remove(&agent_id);
         if !self.begin_lane_exit(&agent, cx) {
+            dialog
+                .update(cx, |dialog, cx| {
+                    dialog.phase = RejoinDialogPhase::Failed(
+                        "Another lane operation is already running. Wait for it to finish, then retry."
+                            .into(),
+                    );
+                    cx.notify();
+                })
+                .ok();
             return;
         }
+        let window_handle = window.window_handle();
 
         cx.spawn(async move |this, cx| {
             let outcome = cx
@@ -734,9 +1087,9 @@ impl CenterArea {
                 })
                 .await;
 
-            this.update(cx, |this, cx| {
+            let close_after_success = this.update(cx, |this, cx| {
                 this.lane_exit_pending.remove(&agent_id);
-                match outcome {
+                let (phase, close_after_success, persistent_error) = match outcome {
                     Ok(RejoinOutcome::Merged) => {
                         // Deliberately NOT status → Done here: that would pull
                         // the agent out of the sidebar the user is looking at.
@@ -748,18 +1101,14 @@ impl CenterArea {
                             agents.set_solo_rejoined_branch(agent_id, target.clone(), cx);
                         });
                         this.append_rejoined_card(agent_id, &branch, &target, cx);
+                        (RejoinDialogPhase::Succeeded, true, None)
                     }
                     Ok(RejoinOutcome::MergedLaneRetained(message)) => {
                         this.agents.update(cx, |agents, cx| {
                             agents.set_solo_rejoined_branch(agent_id, target.clone(), cx);
                         });
                         this.append_rejoined_card(agent_id, &branch, &target, cx);
-                        this.agent_start_errors.insert(
-                            agent_id,
-                            format!(
-                                "Rejoined into {target}, but Choro couldn't remove the lane: {message}. Lane processes were stopped for the safe merge. Use Clean up to retry; do not rejoin again."
-                            ),
-                        );
+                        (RejoinDialogPhase::CleanupNeeded(message), false, None)
                     }
                     Ok(RejoinOutcome::Conflict(message)) => {
                         let files = lanes::conflicted_paths(&message);
@@ -767,25 +1116,50 @@ impl CenterArea {
                             // Not a per-file conflict (dirty tree, failed
                             // switch, …) — no agent hand-off applies, so the
                             // plain error stays the honest surface.
-                            this.agent_start_errors.insert(
-                                agent_id,
-                                format!(
-                                    "Couldn't rejoin automatically — {message} The lane files and branch remain available, and any uncommitted work was preserved in a lane commit. Lane processes were stopped to prevent changes during the merge."
-                                ),
+                            let detail = format!(
+                                "{message} The lane files and branch remain available, and any uncommitted work was preserved in a lane commit."
                             );
+                            (
+                                RejoinDialogPhase::Failed(detail.clone()),
+                                false,
+                                Some(format!("Rejoin failed — {detail}")),
+                            )
                         } else {
                             this.append_rejoin_conflict_card(
                                 agent_id, &branch, &target, files, &message, cx,
                             );
+                            (RejoinDialogPhase::Paused(message), false, None)
                         }
                     }
                     Err(error) => {
-                        this.agent_start_errors
-                            .insert(agent_id, format!("Rejoin failed: {error:#}"));
+                        let detail = format!("{error:#}");
+                        (
+                            RejoinDialogPhase::Failed(detail.clone()),
+                            false,
+                            Some(format!("Rejoin failed — {detail}")),
+                        )
                     }
+                };
+                if let Some(error) = persistent_error {
+                    this.agent_start_errors.insert(agent_id, error);
                 }
+                let dialog_is_open = dialog
+                    .update(cx, |dialog, cx| {
+                        dialog.phase = phase;
+                        cx.notify();
+                    })
+                    .is_ok();
                 cx.notify();
-            })
+                close_after_success && dialog_is_open
+            });
+            if close_after_success.unwrap_or(false) {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(550))
+                    .await;
+                window_handle
+                    .update(cx, |_, window, cx| window.close_dialog(cx))
+                    .ok();
+            }
         })
         .detach();
     }
@@ -803,6 +1177,7 @@ impl CenterArea {
         if !self.lane_path_is_expected(&agent, &lane_path, cx) {
             return;
         }
+        self.agent_start_errors.remove(&agent_id);
         if !self.begin_lane_exit(&agent, cx) {
             return;
         }
@@ -948,6 +1323,7 @@ impl CenterArea {
         if dirty && !force {
             return false;
         }
+        self.agent_start_errors.remove(&agent_id);
         if !self.begin_lane_exit(&agent, cx) {
             return true;
         }
@@ -1344,7 +1720,7 @@ impl CenterArea {
         // button never moves.
         if card.resolved_at.is_some() {
             let target = card.target.clone();
-            let rejoin_target = card.target.clone();
+            let preferred_target = target.clone();
             return crate::ui::style::chat_card(cx)
                 .child(
                     crate::ui::style::chat_card_head(cx)
@@ -1386,8 +1762,13 @@ impl CenterArea {
                                 cx,
                             )
                             .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.rejoin_solo(agent_id, rejoin_target.clone(), cx);
+                                move |this, _, window, cx| {
+                                    this.open_rejoin_dialog(
+                                        agent_id,
+                                        Some(preferred_target.clone()),
+                                        window,
+                                        cx,
+                                    );
                                 },
                             )),
                         ),
@@ -1680,6 +2061,7 @@ impl CenterArea {
                 None => "· packed up".to_string(),
             };
             let agent_id = agent.id;
+            let cleaning = self.lane_exit_pending.contains(&agent_id);
             return Some(
                 h_flex()
                     .w_full()
@@ -1716,11 +2098,16 @@ impl CenterArea {
                         band.child(
                             crate::ui::style::solo_lane_action_button(
                                 ("solo-band-cleanup", agent_id.as_u128() as u64),
-                                "Clean up",
+                                if cleaning {
+                                    "Cleaning up…"
+                                } else {
+                                    "Clean up"
+                                },
                                 false,
                                 cx,
                             )
-                            .disabled(self.lane_exit_pending.contains(&agent_id))
+                            .loading(cleaning)
+                            .disabled(cleaning)
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
                                     this.discard_solo_lane(agent_id, false, cx);
@@ -1758,6 +2145,7 @@ impl CenterArea {
         let agent_id = agent.id;
         let sky = crate::ui::design::sky(cx);
         let starting = self.lane_preview_pending.contains(&agent_id);
+        let rejoining = self.lane_exit_pending.contains(&agent_id);
         let show_preview = agent.lane_profile == Some(LaneProfile::Full)
             && self.first_lane_preset(agent.project_id, cx).is_some();
 
@@ -1812,13 +2200,14 @@ impl CenterArea {
                 .child(
                     crate::ui::style::solo_lane_action_button(
                         ("solo-band-rejoin", agent_id.as_u128() as u64),
-                        "Rejoin",
+                        if rejoining { "Rejoining…" } else { "Rejoin" },
                         true,
                         cx,
                     )
-                    .disabled(self.lane_exit_pending.contains(&agent_id))
+                    .loading(rejoining)
+                    .disabled(rejoining)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_rejoin_dialog(agent_id, window, cx);
+                        this.open_rejoin_dialog(agent_id, None, window, cx);
                     })),
                 )
                 .into_any_element(),
@@ -1991,5 +2380,33 @@ impl CenterArea {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod rejoin_dialog_tests {
+    use super::choose_rejoin_target;
+
+    fn branches() -> Vec<String> {
+        ["develop", "main", "release"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn resolved_conflict_target_stays_selected() {
+        assert_eq!(
+            choose_rejoin_target(&branches(), Some("release"), Some("main"), Some("develop"),),
+            "release"
+        );
+    }
+
+    #[test]
+    fn missing_preferred_target_falls_back_to_solo_base() {
+        assert_eq!(
+            choose_rejoin_target(&branches(), Some("deleted"), Some("main"), Some("develop"),),
+            "main"
+        );
     }
 }
