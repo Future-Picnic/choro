@@ -143,6 +143,10 @@ impl CenterArea {
         });
         composer.linked_tasks.clear();
         composer.linked_tasks.push(reference.clone());
+        composer.suggested_title = Some(super::agent_naming::implementation_agent_title(
+            &summary.reference.title,
+            "task",
+        ));
         composer.source_task = Some(reference);
         composer.error = None;
         composer.doc_mention_selected = 0;

@@ -319,6 +319,9 @@ struct NewAgentComposer {
     preview_suggestion_dismissed: Option<String>,
     selected_mentions: Vec<ComposerMentionToken>,
     attached_files: Vec<PathBuf>,
+    /// Source-aware display name supplied by flows such as task/doc
+    /// implementation. This stays separate from the full first-turn prompt.
+    suggested_title: Option<String>,
     source_doc: Option<PathBuf>,
     linked_tasks: Vec<TaskRef>,
     source_task: Option<TaskRef>,

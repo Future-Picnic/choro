@@ -1,4 +1,4 @@
-use super::agent_naming::initial_agent_title;
+use super::agent_naming::{implementation_agent_title, initial_agent_title};
 use super::*;
 
 impl CenterArea {
@@ -172,6 +172,7 @@ impl CenterArea {
             preview_suggestion_dismissed: None,
             selected_mentions: Vec::new(),
             attached_files: Vec::new(),
+            suggested_title: None,
             source_doc: None,
             linked_tasks: Vec::new(),
             source_task: None,
@@ -210,6 +211,7 @@ impl CenterArea {
         &mut self,
         project: ProjectId,
         relative_doc_path: PathBuf,
+        doc_title: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -238,6 +240,7 @@ impl CenterArea {
         });
         composer.linked_docs.clear();
         composer.linked_docs.push(relative_doc_path.clone());
+        composer.suggested_title = Some(implementation_agent_title(&doc_title, "doc"));
         composer.source_doc = Some(relative_doc_path);
         if crate::ui::onboarding::defaults_doc_agent_to_plan(cx) {
             composer.interaction_mode = AgentInteractionMode::Plan;
@@ -299,13 +302,15 @@ impl CenterArea {
                 })
                 .detach();
         }
-        let title = initial_agent_title(
-            &draft,
-            composer
-                .selected_command
-                .as_ref()
-                .map(|command| command.title.as_str()),
-        );
+        let title = composer.suggested_title.clone().unwrap_or_else(|| {
+            initial_agent_title(
+                &draft,
+                composer
+                    .selected_command
+                    .as_ref()
+                    .map(|command| command.title.as_str()),
+            )
+        });
         let provider = composer.provider;
         let runtime = composer.runtime;
         let interaction_mode = composer.interaction_mode;

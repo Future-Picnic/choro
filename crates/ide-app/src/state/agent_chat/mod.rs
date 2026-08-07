@@ -795,7 +795,7 @@ impl AgentChatState {
 
     pub fn stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         if !self.controllers.contains_key(&agent_id) {
-            self.hard_stop_backend(agent_id, cx);
+            self.hard_stop_backend(agent_id, true, cx);
             return;
         }
         let force_stop = self.cancellation_requested.contains(&agent_id)
@@ -804,7 +804,7 @@ impl AgentChatState {
                 .get(&agent_id)
                 .is_some_and(|session| session.status == AgentChatStatus::Cancelling);
         if force_stop {
-            self.hard_stop_backend(agent_id, cx);
+            self.hard_stop_backend(agent_id, true, cx);
             return;
         }
         if let Some(controller) = self.controllers.get(&agent_id) {
@@ -874,7 +874,7 @@ impl AgentChatState {
     }
 
     pub fn reset_session(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        self.hard_stop_backend(agent_id, cx);
+        self.hard_stop_backend(agent_id, true, cx);
         self.sessions.remove(&agent_id);
         self.cancellation_requested.remove(&agent_id);
         cx.emit(AgentChatEvent::Changed);
@@ -882,7 +882,14 @@ impl AgentChatState {
     }
 
     pub fn force_stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        self.hard_stop_backend(agent_id, cx);
+        self.hard_stop_backend(agent_id, true, cx);
+    }
+
+    /// Stop a backend because its Solo lane is about to be merged or removed.
+    /// This is a lifecycle transition, not a user pressing Stop, so it must not
+    /// leave a misleading "Stopped by user" row in the conversation.
+    pub fn stop_backend_for_lane_exit(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        self.hard_stop_backend(agent_id, false, cx);
     }
 
     /// Stop every app-owned backend process before the application exits.
@@ -901,36 +908,21 @@ impl AgentChatState {
         cx.notify();
     }
 
-    fn hard_stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+    fn hard_stop_backend(
+        &mut self,
+        agent_id: Uuid,
+        record_user_stop: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.next_backend_generation(agent_id);
         if let Some(controller) = self.controllers.remove(&agent_id) {
             controller.force_shutdown();
         }
         self.cancellation_requested.remove(&agent_id);
         if let Some(session) = self.sessions.get_mut(&agent_id) {
-            session.status = AgentChatStatus::Idle;
-            session.started_running_at = None;
-            session.queued_turns.clear();
-            session.pending_user_input = None;
-            session.pending_approval = None;
-            session
-                .timeline
-                .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
-            let entry = WorkLogEntry::new(
-                next_local_id(),
-                "agent-chat-force-stopped",
-                WorkLogEntryKind::System,
-                "Stopped by user",
-                WorkLogStatus::Completed,
-            );
-            upsert_work_log_entry(&mut session.work_log, entry.clone());
-            // A stop is a point-in-time outcome. Never merge it into an older
-            // stop event or it disappears from the end of the conversation.
-            session
-                .timeline
-                .push(AgentChatTimelineItem::WorkLog(entry.clone()));
-            persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
-            session.last_activity_at = unix_now();
+            if let Some(entry) = settle_hard_stopped_session(session, record_user_stop) {
+                persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
+            }
         }
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
@@ -1344,6 +1336,39 @@ fn is_real_cli_session_id(agent_id: Uuid, session_id: &str) -> bool {
     !session_id.trim().is_empty() && session_id != agent_id.to_string()
 }
 
+fn settle_hard_stopped_session(
+    session: &mut AgentChatSession,
+    record_user_stop: bool,
+) -> Option<WorkLogEntry> {
+    session.status = AgentChatStatus::Idle;
+    session.started_running_at = None;
+    session.queued_turns.clear();
+    session.pending_user_input = None;
+    session.pending_approval = None;
+    session
+        .timeline
+        .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
+    let entry = record_user_stop.then(|| {
+        WorkLogEntry::new(
+            next_local_id(),
+            "agent-chat-force-stopped",
+            WorkLogEntryKind::System,
+            "Stopped by user",
+            WorkLogStatus::Completed,
+        )
+    });
+    if let Some(entry) = entry.as_ref() {
+        upsert_work_log_entry(&mut session.work_log, entry.clone());
+        // A stop is a point-in-time outcome. Never merge it into an older
+        // stop event or it disappears from the end of the conversation.
+        session
+            .timeline
+            .push(AgentChatTimelineItem::WorkLog(entry.clone()));
+    }
+    session.last_activity_at = unix_now();
+    entry
+}
+
 /// Structural half of the idle-retirement guard: nothing in-flight that a
 /// backend kill would lose, and at least one provider session id so the next
 /// submission can resume. The caller layers policy on top (idle duration,
@@ -1440,6 +1465,33 @@ mod retirement_tests {
         assert!(!session_safe_to_retire(&session));
     }
 
+    #[test]
+    fn lane_exit_stops_without_claiming_the_user_pressed_stop() {
+        let mut session = retirable_session();
+        session.status = AgentChatStatus::Running;
+
+        let entry = settle_hard_stopped_session(&mut session, false);
+
+        assert!(entry.is_none());
+        assert_eq!(session.status, AgentChatStatus::Idle);
+        assert!(session.timeline.is_empty());
+        assert!(session.work_log.is_empty());
+    }
+
+    #[test]
+    fn explicit_force_stop_keeps_the_user_stop_outcome() {
+        let mut session = retirable_session();
+        session.status = AgentChatStatus::Running;
+
+        let entry = settle_hard_stopped_session(&mut session, true)
+            .expect("an explicit stop should produce a timeline outcome");
+
+        assert_eq!(entry.title, "Stopped by user");
+        assert!(session.timeline.iter().any(|item| matches!(
+            item,
+            AgentChatTimelineItem::WorkLog(entry) if entry.title == "Stopped by user"
+        )));
+    }
 }
 
 #[cfg(test)]
