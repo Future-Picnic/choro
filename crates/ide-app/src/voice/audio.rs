@@ -144,9 +144,11 @@ pub(super) fn recognize_one_turn(
     confirmation_only: bool,
     push_to_talk: bool,
     continuous_dictation: bool,
+    persistent_session: bool,
     input_device: Option<String>,
     silence_timeout: Duration,
     cancelled: Arc<AtomicBool>,
+    recognition_suspended: Arc<AtomicBool>,
     finish_requested: Arc<AtomicBool>,
     events: mpsc::Sender<RecognitionEvent>,
 ) {
@@ -156,9 +158,11 @@ pub(super) fn recognize_one_turn(
         confirmation_only,
         push_to_talk,
         continuous_dictation,
+        persistent_session,
         input_device.as_deref(),
         silence_timeout,
         cancelled.clone(),
+        recognition_suspended,
         finish_requested,
         &events,
     ) {
@@ -176,9 +180,11 @@ fn recognize_one_turn_inner(
     confirmation_only: bool,
     push_to_talk: bool,
     continuous_dictation: bool,
+    persistent_session: bool,
     input_device: Option<&str>,
     silence_timeout: Duration,
     cancelled: Arc<AtomicBool>,
+    recognition_suspended: Arc<AtomicBool>,
     finish_requested: Arc<AtomicBool>,
     events: &mpsc::Sender<RecognitionEvent>,
 ) -> Result<()> {
@@ -244,7 +250,8 @@ fn recognize_one_turn_inner(
     // lets push-to-talk capture the opening words while the model warms up.
     let transcriber = cached_transcriber(models)?;
 
-    let started = Instant::now();
+    let mut started = Instant::now();
+    let mut was_suspended = false;
     let mut heard_speech = false;
     let mut last_speech = Instant::now();
     let mut speech_started_at = None;
@@ -285,6 +292,29 @@ fn recognize_one_turn_inner(
         }
         if let Some(error) = stream_failure.lock().unwrap().take() {
             anyhow::bail!("microphone stream stopped: {error}");
+        }
+        if persistent_session && recognition_suspended.load(Ordering::Relaxed) {
+            if !was_suspended {
+                samples.lock().unwrap().clear();
+                heard_speech = false;
+                speech_started_at = None;
+                speech_start_sample = 0;
+                speech_gate.reset_turn();
+                was_suspended = true;
+            }
+            started = Instant::now();
+            continue;
+        }
+        if was_suspended {
+            samples.lock().unwrap().clear();
+            heard_speech = false;
+            speech_started_at = None;
+            speech_start_sample = 0;
+            last_speech = Instant::now();
+            last_smart_turn_check = Instant::now();
+            speech_gate = SpeechGate::default();
+            started = Instant::now();
+            was_suspended = false;
         }
         if push_to_talk {
             let finish = finish_requested.load(Ordering::Relaxed)
@@ -370,6 +400,25 @@ fn recognize_one_turn_inner(
             if continuous_dictation {
                 let processed_samples = snapshot.len();
                 let turn_samples = turn_samples.to_vec();
+                let _ = events.send(RecognitionEvent::Transcribing);
+                transcribe_and_emit(&transcriber, &turn_samples, sample_rate, events)?;
+                {
+                    let mut samples = samples.lock().unwrap();
+                    let processed_samples = processed_samples.min(samples.len());
+                    samples.drain(..processed_samples);
+                }
+                heard_speech = false;
+                speech_started_at = None;
+                speech_start_sample = 0;
+                last_speech = Instant::now();
+                last_smart_turn_check = Instant::now();
+                speech_gate.reset_turn();
+                continue;
+            }
+            if persistent_session {
+                let processed_samples = snapshot.len();
+                let turn_samples = turn_samples.to_vec();
+                recognition_suspended.store(true, Ordering::Relaxed);
                 let _ = events.send(RecognitionEvent::Transcribing);
                 transcribe_and_emit(&transcriber, &turn_samples, sample_rate, events)?;
                 {

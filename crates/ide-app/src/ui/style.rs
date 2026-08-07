@@ -1084,6 +1084,159 @@ pub fn header_svg_button(id: impl Into<ElementId>, icon: impl IntoElement, _cx: 
         .child(icon)
 }
 
+/// Circular Play/Pause affordance shown beneath the desktop companion on hover.
+/// Its stronger raised surface keeps the control readable over animated art.
+pub fn companion_music_toggle_button(id: impl Into<ElementId>, playing: bool, cx: &App) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(px(34.))
+        .h(px(34.))
+        .p_0()
+        .rounded(design::r_pill())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(design::control_raised(cx).opacity(0.96))
+                .foreground(design::t1(cx))
+                .border(design::control_line(cx))
+                .hover(design::control_raised_hover(cx))
+                .active(design::accent_soft(cx)),
+        )
+        .child(
+            gpui::svg()
+                .path(if playing {
+                    "icons/pause.svg"
+                } else {
+                    "icons/play.svg"
+                })
+                .size(design::icon())
+                .text_color(design::t1(cx)),
+        )
+}
+
+/// Companion-only selector beside Play/Pause. Keeping it separate means music
+/// can be paused instantly while the four configured moods remain reachable.
+pub fn companion_music_playlist_button(id: impl Into<ElementId>, opened: bool, cx: &App) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(px(34.))
+        .h(px(34.))
+        .p_0()
+        .rounded(design::r_pill())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if opened {
+                    design::accent_soft(cx)
+                } else {
+                    design::control_raised(cx)
+                })
+                .foreground(if opened {
+                    design::accent(cx)
+                } else {
+                    design::t1(cx)
+                })
+                .border(design::control_line(cx))
+                .hover(design::control_raised_hover(cx))
+                .active(design::accent_soft(cx)),
+        )
+        .child(
+            Icon::new(IconName::ChevronsUpDown)
+                .size(design::icon())
+                .text_color(if opened {
+                    design::accent(cx)
+                } else {
+                    design::t1(cx)
+                }),
+        )
+}
+
+/// Companion Agent Assistant microphone. While active, the same control turns
+/// into a pause action so the always-on-top surface never needs a second stop
+/// button or an expanded toolbar.
+pub fn companion_agent_assistant_button(
+    id: impl Into<ElementId>,
+    active: bool,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(px(34.))
+        .h(px(34.))
+        .p_0()
+        .rounded(design::r_pill())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if active {
+                    design::accent_soft(cx)
+                } else {
+                    design::control_raised(cx)
+                })
+                .foreground(if active {
+                    design::accent(cx)
+                } else {
+                    design::t1(cx)
+                })
+                .border(design::control_line(cx))
+                .hover(design::control_raised_hover(cx))
+                .active(design::accent_soft(cx)),
+        )
+        .child(
+            gpui::svg()
+                .path(if active {
+                    "icons/pause.svg"
+                } else {
+                    "icons/microphone.svg"
+                })
+                .size(design::icon())
+                .text_color(if active {
+                    design::accent(cx)
+                } else {
+                    design::t1(cx)
+                }),
+        )
+}
+
+/// Compact disclosure below the companion's three-item attention preview.
+/// The low-contrast treatment keeps it subordinate to actionable agent rows.
+pub fn companion_overflow_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    expanded: bool,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w_full()
+        .h(px(30.))
+        .rounded(design::r_md())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(design::focus(cx).opacity(0.9))
+                .foreground(design::t2(cx))
+                .border(design::line_2(cx).opacity(0.45))
+                .hover(design::control_raised_hover(cx))
+                .active(design::accent_soft(cx)),
+        )
+        .child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::new(if expanded {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .size(design::icon_sm()),
+                )
+                .child(label.into()),
+        )
+}
+
 /// A microphone action that stays icon-sized at rest and expands into a live
 /// signal capsule while Voice is active. The caller owns the semantic glyphs
 /// and meter bars; this builder owns the chrome treatment and dimensions.

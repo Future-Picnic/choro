@@ -111,6 +111,22 @@ impl CenterArea {
         cx.notify();
     }
 
+    pub fn queue_voice_agent(
+        &mut self,
+        project: ProjectId,
+        prompt: String,
+        send: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.voice_composer_pending
+            .push_back(VoiceComposerAction::CreateAgent {
+                project,
+                prompt,
+                send,
+            });
+        cx.notify();
+    }
+
     pub fn queue_voice_draft_send(
         &mut self,
         target: crate::voice::VoiceDictationTarget,
@@ -186,6 +202,30 @@ impl CenterArea {
                     self.start_new_agent_composer(window, cx);
                     continue;
                 }
+                VoiceComposerAction::CreateAgent {
+                    project,
+                    prompt,
+                    send,
+                } => {
+                    self.open_new_agent_composer_for_project(project, window, cx);
+                    if let Some(composer) = self.new_agent_composer.as_mut() {
+                        composer.prompt.update(cx, |input, cx| {
+                            input.set_value(prompt.clone(), window, cx);
+                            input.set_cursor_position(
+                                input_position_for_byte_offset(&prompt, prompt.len()),
+                                window,
+                                cx,
+                            );
+                            input.focus(window, cx);
+                        });
+                        composer.interaction_mode = AgentInteractionMode::Default;
+                        composer.error = None;
+                    }
+                    if send {
+                        self.start_new_agent_composer(window, cx);
+                    }
+                    continue;
+                }
                 action => action,
             };
             let target = match &action {
@@ -194,6 +234,9 @@ impl CenterArea {
                 }
                 VoiceComposerAction::CreatePlan { .. } => {
                     unreachable!("plan handoff is handled before chat actions")
+                }
+                VoiceComposerAction::CreateAgent { .. } => {
+                    unreachable!("agent handoff is handled before chat actions")
                 }
                 VoiceComposerAction::Write { target, .. }
                 | VoiceComposerAction::Send { target, .. } => *target,
@@ -226,6 +269,7 @@ impl CenterArea {
                     }
                     VoiceComposerAction::PresentResponse { .. }
                     | VoiceComposerAction::CreatePlan { .. }
+                    | VoiceComposerAction::CreateAgent { .. }
                     | VoiceComposerAction::Discard { .. } => {
                         unreachable!("new-agent dictation only writes or sends")
                     }
@@ -247,6 +291,9 @@ impl CenterArea {
                 }
                 VoiceComposerAction::CreatePlan { .. } => {
                     unreachable!("plan handoff is handled before chat actions")
+                }
+                VoiceComposerAction::CreateAgent { .. } => {
+                    unreachable!("agent handoff is handled before chat actions")
                 }
                 VoiceComposerAction::Write {
                     text,

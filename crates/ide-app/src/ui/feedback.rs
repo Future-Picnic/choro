@@ -411,8 +411,7 @@ fn send_feedback(name: String, issue: String, attachment: Option<PathBuf>) -> Re
 }
 
 fn feedback_endpoint() -> Option<String> {
-    const DEFAULT_FEEDBACK_ENDPOINT: &str =
-        "https://script.google.com/macros/s/AKfycbyUKfwGX2aoiFJejVSPIPSwUbhk77d6dpEO860CG-X26Tm66naw6_csLK_Ej0X-aCl5nQ/exec";
+    const DEFAULT_FEEDBACK_ENDPOINT: &str = "https://script.google.com/macros/s/AKfycbyUKfwGX2aoiFJejVSPIPSwUbhk77d6dpEO860CG-X26Tm66naw6_csLK_Ej0X-aCl5nQ/exec";
 
     std::env::var("CHORO_FEEDBACK_ENDPOINT")
         .ok()

@@ -9,6 +9,7 @@ impl CenterArea {
         self.new_agent_composer = None;
         self.agents
             .update(cx, |agents, cx| agents.select(project, agent_id, cx));
+        crate::notifications::acknowledge_agent(project, agent_id);
         self.agent_detail_tabs
             .insert(agent_id, AgentDetailTab::Terminal);
         // Opening an agent is a content selection. Keep the user's current

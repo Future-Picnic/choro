@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use gpui::{Context, EventEmitter, PathPromptOptions};
 use ide_core::config::{
-    AppConfig, ConversationLayout, GenerationAgent, GitStatusGroupMode, GitStatusViewMode,
-    NavStyle, NewAgentDefaults, PanelSizes, ThemeMode, VerificationMode, VoiceSettings,
+    AppConfig, CompanionMusicSettings, ConversationLayout, GenerationAgent, GitStatusGroupMode,
+    GitStatusViewMode, NavStyle, NewAgentDefaults, NotificationSettings, PanelSizes, ThemeMode,
+    VerificationMode, VoiceSettings,
 };
 use ide_core::local_store::LocalStore;
 use ide_core::{Project, ProjectId, ProjectSection, ProjectSectionId};
@@ -38,6 +39,9 @@ pub struct Workspace {
     pub git_status_view: GitStatusViewMode,
     pub git_status_group: GitStatusGroupMode,
     pub conversation_layout: ConversationLayout,
+    pub notifications: NotificationSettings,
+    pub companion_enabled: bool,
+    pub companion_music: CompanionMusicSettings,
     pub voice: VoiceSettings,
     pub generation_agent: GenerationAgent,
     /// `None` = config predates the composer/generation split; readers fall
@@ -112,6 +116,9 @@ impl Workspace {
             git_status_view: config.git_status_view,
             git_status_group: config.git_status_group,
             conversation_layout: config.conversation_layout,
+            notifications: config.notifications,
+            companion_enabled: config.companion_enabled,
+            companion_music: config.companion_music,
             voice: config.voice,
             generation_agent: config.generation_agent.normalized(),
             stored_new_agent_defaults: config.new_agent_defaults.map(NewAgentDefaults::normalized),
@@ -178,6 +185,41 @@ impl Workspace {
             return;
         }
         self.conversation_layout = layout;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_notification_settings(
+        &mut self,
+        notifications: NotificationSettings,
+        cx: &mut Context<Self>,
+    ) {
+        if self.notifications == notifications {
+            return;
+        }
+        self.notifications = notifications;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_companion_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.companion_enabled == enabled {
+            return;
+        }
+        self.companion_enabled = enabled;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_companion_music_settings(
+        &mut self,
+        companion_music: CompanionMusicSettings,
+        cx: &mut Context<Self>,
+    ) {
+        if self.companion_music == companion_music {
+            return;
+        }
+        self.companion_music = companion_music;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -677,6 +719,9 @@ impl Workspace {
             git_status_view: self.git_status_view,
             git_status_group: self.git_status_group,
             conversation_layout: self.conversation_layout,
+            notifications: self.notifications,
+            companion_enabled: self.companion_enabled,
+            companion_music: self.companion_music.clone(),
             voice: self.voice.clone(),
             generation_agent: self.generation_agent.clone(),
             new_agent_defaults: self.stored_new_agent_defaults.clone(),

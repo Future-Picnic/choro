@@ -212,6 +212,26 @@ pub struct RootView {
 }
 
 impl RootView {
+    pub(crate) fn companion_context(
+        &self,
+    ) -> (
+        Entity<ProjectList>,
+        Entity<Workspace>,
+        Entity<AgentRecords>,
+        Entity<AgentChatState>,
+        Entity<VoiceState>,
+        Entity<CenterArea>,
+    ) {
+        (
+            self.project_list.clone(),
+            self.workspace.clone(),
+            self.agents.clone(),
+            self.agent_chats.clone(),
+            self.voice.clone(),
+            self.center.clone(),
+        )
+    }
+
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
         let workspace = cx.new(|_| Workspace::load());
         let startup_capability_cwd = {
@@ -436,6 +456,13 @@ impl RootView {
                             center.queue_voice_project_plan(*project_id, prompt.clone(), cx)
                         })
                     }
+                    VoiceEvent::CreateAgent {
+                        project_id,
+                        prompt,
+                        send,
+                    } => this.center.update(cx, |center, cx| {
+                        center.queue_voice_agent(*project_id, prompt.clone(), *send, cx)
+                    }),
                     VoiceEvent::Dictation {
                         target,
                         text,

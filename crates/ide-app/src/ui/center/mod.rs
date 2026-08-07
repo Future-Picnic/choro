@@ -413,6 +413,11 @@ enum VoiceComposerAction {
         project: ProjectId,
         prompt: String,
     },
+    CreateAgent {
+        project: ProjectId,
+        prompt: String,
+        send: bool,
+    },
     Write {
         target: crate::voice::VoiceDictationTarget,
         text: String,

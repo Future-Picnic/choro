@@ -73,6 +73,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>NSUserNotificationAlertStyle</key><string>alert</string>
     <key>NSDocumentsFolderUsageDescription</key>
     <string>Choro needs access to your project folders to load Git, docs, services, and environment files.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Choro controls the Spotify desktop app only when you choose a companion playlist.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Choro uses the microphone only during Project Talk or composer dictation. Audio is processed locally and is not retained.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

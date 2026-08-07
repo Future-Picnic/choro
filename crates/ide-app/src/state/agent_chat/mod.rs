@@ -460,21 +460,18 @@ impl AgentChatState {
     }
 
     pub fn dock_badge_label(&self) -> Option<String> {
-        let active = self
+        let unread_attention = self
             .sessions
             .values()
             .filter(|session| {
                 !session.hidden_from_notifications
                     && matches!(
                         session.status,
-                        AgentChatStatus::Running
-                            | AgentChatStatus::Cancelling
-                            | AgentChatStatus::WaitingForUser
-                            | AgentChatStatus::PlanReady
+                        AgentChatStatus::WaitingForUser | AgentChatStatus::PlanReady
                     )
             })
             .count();
-        (active > 0).then(|| active.to_string())
+        (unread_attention > 0).then(|| unread_attention.to_string())
     }
 
     pub fn ensure_session(
