@@ -77,6 +77,142 @@ pub enum ConversationLayout {
     TopDown,
 }
 
+/// When a completed agent turn should create an operating-system notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionNotifications {
+    Never,
+    #[default]
+    Background,
+    Always,
+}
+
+/// Preferences for temporary operating-system notification pointers. Choro's
+/// Board and unread attention state remain available regardless of permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    #[serde(default)]
+    pub completion: CompletionNotifications,
+    #[serde(default = "default_questions_and_approvals")]
+    pub questions_and_approvals: bool,
+    #[serde(default = "default_notification_sound")]
+    pub sound: bool,
+}
+
+const fn default_questions_and_approvals() -> bool {
+    true
+}
+
+const fn default_notification_sound() -> bool {
+    true
+}
+
+const fn default_companion_enabled() -> bool {
+    true
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            completion: CompletionNotifications::Background,
+            questions_and_approvals: true,
+            sound: true,
+        }
+    }
+}
+
+pub const COMPANION_PLAYLIST_SLOT_COUNT: usize = 4;
+pub const COMPANION_MUSIC_MOOD_LABELS: [&str; COMPANION_PLAYLIST_SLOT_COUNT] =
+    ["Deep Focus", "Lo-fi Flow", "Calm", "High Energy"];
+pub const COMPANION_MUSIC_DEFAULT_URLS: [&str; COMPANION_PLAYLIST_SLOT_COUNT] = [
+    "https://open.spotify.com/playlist/14KtkIpsvzDSCXR24EqHCL?nd=1&dlsi=c29797ee5956463d",
+    "https://open.spotify.com/playlist/0EAo4yaK5HfxrsQXAqaOLz?nd=1&dlsi=258fb346eb6e4547",
+    "https://open.spotify.com/playlist/6Uls6BAiuTRMfqEUyyeODT?si=8ad191b86c7a4764",
+    "https://open.spotify.com/playlist/7CraD6gr9I0bJfPt2tQ1mL?nd=1&dlsi=45edee8da0c54025",
+];
+
+pub fn companion_music_mood_label(index: usize) -> &'static str {
+    COMPANION_MUSIC_MOOD_LABELS
+        .get(index)
+        .copied()
+        .unwrap_or("Music")
+}
+
+/// The Spotify playlist configured for one fixed companion music mood.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanionPlaylist {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+impl CompanionPlaylist {
+    pub fn display_label(&self, index: usize) -> String {
+        companion_music_mood_label(index).to_string()
+    }
+
+    pub fn spotify_uri(&self) -> Option<String> {
+        spotify_playlist_uri(&self.url)
+    }
+}
+
+/// Credential-free companion music settings. Playback is delegated to the
+/// locally installed Spotify desktop app; no Spotify developer app is needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompanionMusicSettings {
+    #[serde(default = "default_companion_playlists")]
+    pub playlists: [CompanionPlaylist; COMPANION_PLAYLIST_SLOT_COUNT],
+}
+
+fn default_companion_playlists() -> [CompanionPlaylist; COMPANION_PLAYLIST_SLOT_COUNT] {
+    std::array::from_fn(|index| CompanionPlaylist {
+        label: companion_music_mood_label(index).to_string(),
+        url: COMPANION_MUSIC_DEFAULT_URLS[index].to_string(),
+    })
+}
+
+impl Default for CompanionMusicSettings {
+    fn default() -> Self {
+        Self {
+            playlists: default_companion_playlists(),
+        }
+    }
+}
+
+impl CompanionMusicSettings {
+    fn migrated(mut self) -> Self {
+        for (index, playlist) in self.playlists.iter_mut().enumerate() {
+            playlist.label = companion_music_mood_label(index).to_string();
+            if playlist.url.trim().is_empty() {
+                playlist.url = COMPANION_MUSIC_DEFAULT_URLS[index].to_string();
+            }
+        }
+        self
+    }
+}
+
+/// Accept the canonical Spotify playlist URI or an open.spotify.com playlist
+/// URL and normalize it for the desktop player's AppleScript command.
+pub fn spotify_playlist_uri(value: &str) -> Option<String> {
+    let value = value.trim();
+    let id = if let Some(id) = value.strip_prefix("spotify:playlist:") {
+        id.to_string()
+    } else {
+        let url = url::Url::parse(value).ok()?;
+        if url.scheme() != "https" || url.host_str() != Some("open.spotify.com") {
+            return None;
+        }
+        let mut segments = url.path_segments()?;
+        if segments.next()? != "playlist" {
+            return None;
+        }
+        segments.next()?.to_string()
+    };
+    (id.len() == 22 && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .then(|| format!("spotify:playlist:{id}"))
+}
+
 /// How much spoken feedback Project Talk provides after a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -349,6 +485,16 @@ pub struct AppConfig {
     /// Placement and reading direction of agent conversations.
     #[serde(default)]
     pub conversation_layout: ConversationLayout,
+    /// Operating-system notification preferences.
+    #[serde(default)]
+    pub notifications: NotificationSettings,
+    /// Whether the always-on-top desktop companion is shown. While it is
+    /// shown, it replaces temporary operating-system notification banners.
+    #[serde(default = "default_companion_enabled")]
+    pub companion_enabled: bool,
+    /// Four locally controlled Spotify playlists for the floating companion.
+    #[serde(default)]
+    pub companion_music: CompanionMusicSettings,
     /// Local Project Talk and composer dictation preferences.
     #[serde(default)]
     pub voice: VoiceSettings,
@@ -403,6 +549,9 @@ impl Default for AppConfig {
             git_status_view: GitStatusViewMode::default(),
             git_status_group: GitStatusGroupMode::default(),
             conversation_layout: ConversationLayout::default(),
+            notifications: NotificationSettings::default(),
+            companion_enabled: true,
+            companion_music: CompanionMusicSettings::default(),
             voice: VoiceSettings::default(),
             generation_agent: GenerationAgent::default(),
             new_agent_defaults: None,
@@ -479,6 +628,7 @@ impl AppConfig {
         {
             self.code_review_output_instructions = default_code_review_output_instructions();
         }
+        self.companion_music = self.companion_music.migrated();
         self
     }
 
@@ -557,6 +707,13 @@ mod tests {
             git_status_view: GitStatusViewMode::Tree,
             git_status_group: GitStatusGroupMode::None,
             conversation_layout: ConversationLayout::TopDown,
+            notifications: NotificationSettings {
+                completion: CompletionNotifications::Always,
+                questions_and_approvals: false,
+                sound: false,
+            },
+            companion_enabled: false,
+            companion_music: CompanionMusicSettings::default(),
             generation_agent: GenerationAgent::default(),
             voice: VoiceSettings::default(),
             new_agent_defaults: Some(NewAgentDefaults::for_provider(AgentKind::Claude)),
@@ -566,6 +723,79 @@ mod tests {
             verification_mode: VerificationMode::Ask,
             design_browser_open_prompt_dismissed: false,
         }
+    }
+
+    #[test]
+    fn normalizes_spotify_playlist_links_and_uris() {
+        let id = "37i9dQZF1DX8Uebhn9wzrS";
+        let expected = format!("spotify:playlist:{id}");
+        assert_eq!(
+            spotify_playlist_uri(&format!("https://open.spotify.com/playlist/{id}?si=abc123")),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            spotify_playlist_uri(&format!("spotify:playlist:{id}")),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn rejects_non_playlist_or_non_spotify_music_links() {
+        assert_eq!(
+            spotify_playlist_uri("https://open.spotify.com/track/6rqhFgbbKwnb9MLmUQDhG6"),
+            None
+        );
+        assert_eq!(
+            spotify_playlist_uri("https://example.com/playlist/37i9dQZF1DX8Uebhn9wzrS"),
+            None
+        );
+        assert_eq!(spotify_playlist_uri("spotify:playlist:not-an-id"), None);
+    }
+
+    #[test]
+    fn companion_music_slots_have_fixed_mood_names() {
+        let settings = CompanionMusicSettings::default();
+        let labels = settings
+            .playlists
+            .iter()
+            .enumerate()
+            .map(|(index, playlist)| playlist.display_label(index))
+            .collect::<Vec<_>>();
+        assert_eq!(labels, COMPANION_MUSIC_MOOD_LABELS.map(str::to_string));
+        let urls = settings
+            .playlists
+            .iter()
+            .map(|playlist| playlist.url.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            urls,
+            COMPANION_MUSIC_DEFAULT_URLS.map(str::to_string).to_vec()
+        );
+        assert!(settings
+            .playlists
+            .iter()
+            .all(|playlist| playlist.spotify_uri().is_some()));
+    }
+
+    #[test]
+    fn companion_music_migration_fills_only_empty_playlist_urls() {
+        let custom = "https://open.spotify.com/playlist/37i9dQZF1DX8Uebhn9wzrS";
+        let mut config = AppConfig::default();
+        config.companion_music.playlists[0].url = custom.to_string();
+        config.companion_music.playlists[0].label = "Custom focus".to_string();
+        config.companion_music.playlists[1].url.clear();
+
+        let migrated = config.migrated();
+
+        assert_eq!(migrated.companion_music.playlists[0].url, custom);
+        assert_eq!(
+            migrated.companion_music.playlists[1].url,
+            COMPANION_MUSIC_DEFAULT_URLS[1]
+        );
+        assert_eq!(
+            migrated.companion_music.playlists[0].label,
+            COMPANION_MUSIC_MOOD_LABELS[0]
+        );
     }
 
     #[test]
@@ -686,6 +916,9 @@ mod tests {
         assert_eq!(loaded.git_status_view, GitStatusViewMode::List);
         assert_eq!(loaded.git_status_group, GitStatusGroupMode::Status);
         assert_eq!(loaded.conversation_layout, ConversationLayout::Classic);
+        assert_eq!(loaded.notifications, NotificationSettings::default());
+        assert!(loaded.companion_enabled);
+        assert_eq!(loaded.companion_music, CompanionMusicSettings::default());
         assert_eq!(loaded.verification_mode, VerificationMode::Ask);
     }
 

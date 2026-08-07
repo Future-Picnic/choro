@@ -24,8 +24,11 @@ pub use agents::{
     AgentAccessMode, AgentChangedFile, AgentChat, AgentDesignContext, AgentEffort, AgentKind,
     AgentModel, AgentRecord, AgentRuntimeKind, AgentStatus, AgentStoreFile, LaneProfile,
 };
+pub use blocking_guard::mark_ui_thread;
 pub use branding::{APP_ID, APP_NAME, DOCS_DIR_NAME};
-pub use config::{AppConfig, VoiceAnnouncements, VoiceSettings};
+pub use config::{
+    AppConfig, CompletionNotifications, NotificationSettings, VoiceAnnouncements, VoiceSettings,
+};
 pub use db::{
     DatabaseHandle, DbObject, DbObjectKind, DocEntry, DocPage, MongoHandle, TableColumn,
     TableFilter, TablePage, TableRow,
@@ -51,5 +54,4 @@ pub use task_tracker::{
     TaskRichText, TaskStatusOption, TaskSummary, TaskTrackerClient, TaskTrackerConnection,
     TaskTrackerSource, TaskTrackerUser,
 };
-pub use blocking_guard::mark_ui_thread;
 pub use watcher::{GitWatcher, WorktreeWatcher};

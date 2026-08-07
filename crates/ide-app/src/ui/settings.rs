@@ -25,8 +25,8 @@ use crate::state::{
 };
 use ide_core::{
     config::{
-        ConversationLayout, GenerationAgent, NewAgentDefaults, ThemeMode as ConfigTheme,
-        VerificationMode, DEFAULT_CODE_REVIEW_PROMPT,
+        CompletionNotifications, ConversationLayout, GenerationAgent, NewAgentDefaults,
+        ThemeMode as ConfigTheme, VerificationMode, DEFAULT_CODE_REVIEW_PROMPT,
     },
     local_store::LocalStore,
     AgentEffort, AgentKind, AgentModel, AgentRecord, ProjectId, VoiceAnnouncements,
@@ -41,6 +41,8 @@ enum SettingsSection {
     Design,
     Generation,
     Voice,
+    Companion,
+    Notifications,
     Process,
     AgentSkills,
     Memory,
@@ -56,6 +58,8 @@ impl SettingsSection {
             Self::Design => "Design",
             Self::Generation => "AI generation",
             Self::Voice => "Voice",
+            Self::Companion => "Companion",
+            Self::Notifications => "Notifications",
             Self::Process => "Process monitor",
             Self::AgentSkills => "Skills",
             Self::Memory => "Memory",
@@ -74,8 +78,12 @@ impl SettingsSection {
             Self::Generation => {
                 "Choose how Choro writes generated Git content and configure the agent-chat code review prompt."
             }
-            Self::Voice => {
-                "Manage local speech models, spoken feedback, and patient turn-taking."
+            Self::Voice => "Manage local speech models, spoken feedback, and patient turn-taking.",
+            Self::Companion => {
+                "Choose the Spotify playlists available from the floating companion."
+            }
+            Self::Notifications => {
+                "Choose when agent questions, approvals, and completed turns can interrupt you."
             }
             Self::Process => "Understand how Choro and its connected tools use system resources.",
             Self::AgentSkills => {
@@ -120,6 +128,10 @@ struct RiffEditor {
     instructions: Entity<InputState>,
     generating: bool,
     error: Option<String>,
+}
+
+struct CompanionPlaylistInputs {
+    url: Entity<InputState>,
 }
 
 #[derive(Clone)]
@@ -168,6 +180,7 @@ pub struct SettingsView {
     settings_search: Entity<InputState>,
     code_review_prompt: Entity<InputState>,
     code_review_prompt_dirty: bool,
+    companion_playlists: Vec<CompanionPlaylistInputs>,
     skills_provider: SkillProviderFilter,
     skills_search: Entity<InputState>,
     skills_loading: bool,
@@ -350,6 +363,7 @@ impl SettingsView {
             });
         let code_review_prompt_value = state.effective_code_review_prompt().to_string();
         let active_project = state.active;
+        let companion_music = state.companion_music.clone();
         let shortcut_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts"));
         let settings_search =
@@ -358,6 +372,17 @@ impl SettingsView {
         code_review_prompt.update(cx, |input, cx| {
             input.set_value(code_review_prompt_value, window, cx)
         });
+        let companion_playlists = companion_music
+            .playlists
+            .iter()
+            .map(|playlist| CompanionPlaylistInputs {
+                url: cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .default_value(playlist.url.clone())
+                        .placeholder("https://open.spotify.com/playlist/…")
+                }),
+            })
+            .collect::<Vec<_>>();
         let skills_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search skills"));
         let design_provider = penpot.read(cx).provider();
         let design_config = penpot.read(cx).config().clone();
@@ -404,6 +429,17 @@ impl SettingsView {
                 },
             )
             .detach();
+            for index in 0..companion_playlists.len() {
+                cx.subscribe(
+                    &companion_playlists[index].url,
+                    move |this: &mut Self, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            this.sync_companion_playlist(index, cx);
+                        }
+                    },
+                )
+                .detach();
+            }
             cx.subscribe(
                 &shortcut_search,
                 |_: &mut Self, _, event: &InputEvent, cx| {
@@ -459,6 +495,7 @@ impl SettingsView {
                 settings_search,
                 code_review_prompt,
                 code_review_prompt_dirty: false,
+                companion_playlists,
                 skills_provider: SkillProviderFilter::Choro,
                 skills_search,
                 skills_loading: false,
@@ -2702,6 +2739,496 @@ impl SettingsView {
             )
             .into_any_element()
     }
+
+    fn sync_companion_playlist(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(inputs) = self.companion_playlists.get(index) else {
+            return;
+        };
+        let url = inputs.url.read(cx).value().to_string();
+        self.workspace.update(cx, |workspace, cx| {
+            let mut settings = workspace.companion_music.clone();
+            let Some(playlist) = settings.playlists.get_mut(index) else {
+                return;
+            };
+            playlist.label = ide_core::config::companion_music_mood_label(index).to_string();
+            playlist.url = url;
+            workspace.set_companion_music_settings(settings, cx);
+        });
+        cx.notify();
+    }
+
+    fn render_companion_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let spotify_installed = std::path::Path::new("/Applications/Spotify.app").is_dir();
+        let companion_enabled = self.workspace.read(cx).companion_enabled;
+        let playlist_rows = self
+            .companion_playlists
+            .iter()
+            .enumerate()
+            .map(|(index, inputs)| {
+                let mood_label = ide_core::config::companion_music_mood_label(index);
+                let url = inputs.url.clone();
+                let url_value = url.read(cx).value().trim().to_string();
+                let valid = ide_core::config::spotify_playlist_uri(&url_value).is_some();
+                let (status, status_color) = if url_value.is_empty() {
+                    ("Not configured", crate::ui::design::t4(cx))
+                } else if valid {
+                    ("Ready", crate::ui::design::sage(cx))
+                } else {
+                    (
+                        "Paste a Spotify playlist link or spotify:playlist URI",
+                        crate::ui::design::rose(cx),
+                    )
+                };
+
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .py_3()
+                    .when(index > 0, |row| {
+                        row.border_t_1()
+                            .border_color(crate::ui::design::line(cx).opacity(0.45))
+                    })
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w(px(24.))
+                                    .flex_none()
+                                    .text_size(crate::ui::design::text_ui())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::accent(cx))
+                                    .child((index + 1).to_string()),
+                            )
+                            .child(
+                                div()
+                                    .w(px(190.))
+                                    .flex_none()
+                                    .text_size(crate::ui::design::text_body())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::t1(cx))
+                                    .child(mood_label),
+                            )
+                            .child(div().flex_1().min_w(px(0.)).child(Input::new(&url))),
+                    )
+                    .child(
+                        div()
+                            .pl(px(27.))
+                            .text_size(crate::ui::design::text_label())
+                            .text_color(status_color)
+                            .child(status),
+                    )
+            })
+            .collect::<Vec<_>>();
+
+        v_flex()
+            .w_full()
+            .gap_4()
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_h(px(72.))
+                    .gap_5()
+                    .items_center()
+                    .justify_between()
+                    .p_4()
+                    .rounded(crate::ui::design::r_lg())
+                    .border_1()
+                    .border_color(crate::ui::design::line_2(cx))
+                    .bg(crate::ui::design::surface(cx).opacity(0.55))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_body())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::t1(cx))
+                                    .child("Desktop companion"),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(460.))
+                                    .text_size(crate::ui::design::text_body())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child(if companion_enabled {
+                                        "The companion shows agent activity, so macOS notification banners stay quiet."
+                                    } else {
+                                        "The companion is hidden and macOS notification preferences apply instead."
+                                    }),
+                            ),
+                    )
+                    .child(
+                        crate::ui::style::segmented_container_quiet(cx)
+                            .w(px(210.))
+                            .flex_none()
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-companion-on",
+                                    IconName::Check,
+                                    "On",
+                                    companion_enabled,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        workspace.set_companion_enabled(true, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-companion-off",
+                                    IconName::Close,
+                                    "Off",
+                                    !companion_enabled,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        workspace.set_companion_enabled(false, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .p_4()
+                    .rounded(crate::ui::design::r_lg())
+                    .border_1()
+                    .border_color(crate::ui::design::line_2(cx))
+                    .bg(crate::ui::design::surface(cx).opacity(0.55))
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_body())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child("Spotify playlists"),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(650.))
+                            .text_size(crate::ui::design::text_body())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child("Choose one Spotify playlist for each companion mood. Every mood has its own animation; Choro controls the local Spotify app, so no Spotify developer account or API key is required."),
+                    )
+                    .children(playlist_rows),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .p_4()
+                    .rounded(crate::ui::design::r_lg())
+                    .border_1()
+                    .border_color(crate::ui::design::line_2(cx))
+                    .bg(crate::ui::design::surface(cx).opacity(0.55))
+                    .child(
+                        Icon::new(if spotify_installed {
+                            IconName::CircleCheck
+                        } else {
+                            IconName::TriangleAlert
+                        })
+                        .size(crate::ui::design::icon())
+                        .text_color(if spotify_installed {
+                            crate::ui::design::sage(cx)
+                        } else {
+                            crate::ui::design::amber(cx)
+                        }),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_body())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(if spotify_installed {
+                                        "Spotify is ready"
+                                    } else {
+                                        "Spotify desktop app not found"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_body())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child(if spotify_installed {
+                                        "macOS may ask once for permission when Choro first controls playback."
+                                    } else {
+                                        "Install Spotify in Applications to use companion music."
+                                    }),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_notifications_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let preferences = self.workspace.read(cx).notifications;
+        let permission = crate::notifications::permission();
+        let setting_group =
+            |title: &'static str, description: &'static str, control: gpui::AnyElement| {
+                h_flex()
+                    .w_full()
+                    .min_h(px(72.))
+                    .gap_5()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_body())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::t1(cx))
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(460.))
+                                    .text_size(crate::ui::design::text_body())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child(description),
+                            ),
+                    )
+                    .child(div().w(px(360.)).flex_none().child(control))
+            };
+
+        v_flex()
+            .w_full()
+            .gap_4()
+            .child(
+                v_flex()
+                    .w_full()
+                    .px_4()
+                    .rounded(crate::ui::design::r_lg())
+                    .border_1()
+                    .border_color(crate::ui::design::line_2(cx))
+                    .bg(crate::ui::design::surface(cx).opacity(0.55))
+                    .child(setting_group(
+                        "Questions and approvals",
+                        "Notify when another conversation needs an answer, approval, or plan decision. The open conversation is always suppressed.",
+                        crate::ui::style::segmented_container_quiet(cx)
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-attention-on",
+                                    IconName::Check,
+                                    "On",
+                                    preferences.questions_and_approvals,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.questions_and_approvals = true;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-attention-off",
+                                    IconName::Close,
+                                    "Off",
+                                    !preferences.questions_and_approvals,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.questions_and_approvals = false;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .into_any_element(),
+                    ))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(1.))
+                            .bg(crate::ui::design::line(cx).opacity(0.45)),
+                    )
+                    .child(setting_group(
+                        "Turn completion",
+                        "Completion is less urgent and stays silent. Background-only avoids banners while you are already working in Choro.",
+                        crate::ui::style::segmented_container_quiet(cx)
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-completion-never",
+                                    IconName::Close,
+                                    "Never",
+                                    preferences.completion == CompletionNotifications::Never,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.completion = CompletionNotifications::Never;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-completion-background",
+                                    IconName::CircleCheck,
+                                    "Background",
+                                    preferences.completion == CompletionNotifications::Background,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.completion = CompletionNotifications::Background;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-completion-always",
+                                    IconName::Check,
+                                    "Always",
+                                    preferences.completion == CompletionNotifications::Always,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.completion = CompletionNotifications::Always;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .into_any_element(),
+                    ))
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(1.))
+                            .bg(crate::ui::design::line(cx).opacity(0.45)),
+                    )
+                    .child(setting_group(
+                        "Notification sound",
+                        "Play the macOS notification sound for new questions and approval requests. Completion notifications remain silent.",
+                        crate::ui::style::segmented_container_quiet(cx)
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-sound-on",
+                                    IconName::Check,
+                                    "On",
+                                    preferences.sound,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.sound = true;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .child(
+                                crate::ui::style::segment(
+                                    "settings-notifications-sound-off",
+                                    IconName::Close,
+                                    "Off",
+                                    !preferences.sound,
+                                    cx,
+                                )
+                                .flex_1()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.workspace.update(cx, |workspace, cx| {
+                                        let mut settings = workspace.notifications;
+                                        settings.sound = false;
+                                        workspace.set_notification_settings(settings, cx);
+                                        workspace.save_now();
+                                    });
+                                })),
+                            )
+                            .into_any_element(),
+                    )),
+            )
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_4()
+                    .items_center()
+                    .justify_between()
+                    .p_4()
+                    .rounded(crate::ui::design::r_lg())
+                    .border_1()
+                    .border_color(crate::ui::design::line_2(cx))
+                    .bg(crate::ui::design::surface(cx).opacity(0.55))
+                    .child(
+                        v_flex()
+                            .min_w(px(0.))
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_body())
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::t1(cx))
+                                    .child("macOS permission"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_body())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child(permission.label()),
+                            ),
+                    )
+                    .when(
+                        matches!(
+                            permission,
+                            crate::notifications::NotificationPermission::Denied
+                                | crate::notifications::NotificationPermission::Provisional
+                        ),
+                        |row| {
+                            row.child(
+                                crate::ui::style::dialog_neutral_button(
+                                    "settings-open-system-notifications",
+                                    "Open System Settings",
+                                    cx,
+                                )
+                                .on_click(|_, _, _| {
+                                    crate::notifications::open_system_notification_settings();
+                                }),
+                            )
+                        },
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 #[cfg(test)]
@@ -2954,6 +3481,22 @@ impl Render for SettingsView {
                             cx,
                         ),
                     ))
+                    .when(SettingsSection::Companion.matches(&settings_query), |nav| {
+                        nav.child(Self::section_button(
+                            "settings-companion-section",
+                            SettingsSection::Companion,
+                            section,
+                            cx,
+                        ))
+                    })
+                    .when(SettingsSection::Notifications.matches(&settings_query), |nav| {
+                        nav.child(Self::section_button(
+                            "settings-notifications-section",
+                            SettingsSection::Notifications,
+                            section,
+                            cx,
+                        ))
+                    })
                     .when(SettingsSection::Shortcuts.matches(&settings_query), |nav| nav.child(
                         Self::section_button(
                             "settings-shortcuts-section",
@@ -3053,6 +3596,8 @@ impl Render for SettingsView {
                 SettingsSection::Design => self.render_design_section(cx),
                 SettingsSection::Memory => self.render_memory_section(cx),
                 SettingsSection::Voice => self.render_voice_section(cx),
+                SettingsSection::Companion => self.render_companion_section(cx),
+                SettingsSection::Notifications => self.render_notifications_section(cx),
                 SettingsSection::Generation => {
                     let verification_buttons = [
                         (

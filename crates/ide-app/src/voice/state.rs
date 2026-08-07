@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use ide_core::local_store::StoredVoiceTurn;
-use ide_core::{ProjectId, VoiceAnnouncements};
+use ide_core::{Project, ProjectId, VoiceAnnouncements};
 
 use crate::state::{AgentChatState, AgentRecords, Workspace};
 
@@ -14,7 +14,10 @@ use super::commands::{
     command_label, parse_draft_confirmation, parse_project_conversation_command,
     parse_voice_command, split_dictation_send_command, VoiceCommand,
 };
-use super::coordinator::{self, VoiceAction, VoiceConversationTurn, VoiceDecision};
+use super::coordinator::{
+    self, AgentAssistantAction, AgentAssistantDecision, VoiceAction, VoiceConversationTurn,
+    VoiceDecision,
+};
 use super::model::{VoiceModelManager, VoiceModelProgress, VoiceModelStatus};
 
 const SEND_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -25,6 +28,13 @@ const MAX_PROJECT_CONVERSATION_TURNS: usize = 16;
 pub enum VoiceMode {
     Director,
     Dictation,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VoiceSessionScope {
+    #[default]
+    ProjectTalk,
+    AgentAssistant,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,6 +81,11 @@ pub enum VoiceEvent {
         project_id: ProjectId,
         prompt: String,
     },
+    CreateAgent {
+        project_id: ProjectId,
+        prompt: String,
+        send: bool,
+    },
     Dictation {
         target: VoiceDictationTarget,
         text: String,
@@ -91,6 +106,12 @@ enum WorkerEvent {
     ModelsReady(u64),
     Recognition(u64, RecognitionEvent),
     Decision(u64, ProjectId, anyhow::Result<VoiceDecision>),
+    AgentAssistantDecision {
+        operation_id: u64,
+        project_id: Option<ProjectId>,
+        utterance: String,
+        result: anyhow::Result<AgentAssistantDecision>,
+    },
 }
 
 pub struct VoiceState {
@@ -103,7 +124,9 @@ pub struct VoiceState {
     requested_mode: Option<VoiceMode>,
     dictation_target: Option<VoiceDictationTarget>,
     session_active: bool,
+    session_scope: VoiceSessionScope,
     session_mode: VoiceSessionMode,
+    assistant_project_id: Option<ProjectId>,
     open_chat_target: Option<uuid::Uuid>,
     draft_target: Option<uuid::Uuid>,
     draft_text: Option<String>,
@@ -117,6 +140,7 @@ pub struct VoiceState {
     events_tx: mpsc::Sender<WorkerEvent>,
     events_rx: Arc<Mutex<mpsc::Receiver<WorkerEvent>>>,
     cancellation: Option<Arc<AtomicBool>>,
+    recognition_suspended: Option<Arc<AtomicBool>>,
     finish_requested: Option<Arc<AtomicBool>>,
     push_to_talk_mode: bool,
     push_to_talk_held: bool,
@@ -173,7 +197,9 @@ impl VoiceState {
                 requested_mode: None,
                 dictation_target: None,
                 session_active: false,
+                session_scope: VoiceSessionScope::ProjectTalk,
                 session_mode: VoiceSessionMode::Conversation,
+                assistant_project_id: None,
                 open_chat_target: None,
                 draft_target: None,
                 draft_text: None,
@@ -187,6 +213,7 @@ impl VoiceState {
                 events_tx,
                 events_rx,
                 cancellation: None,
+                recognition_suspended: None,
                 finish_requested: None,
                 push_to_talk_mode: false,
                 push_to_talk_held: false,
@@ -225,6 +252,14 @@ impl VoiceState {
 
     pub fn control_active(&self) -> bool {
         self.session_active || self.dictation_active()
+    }
+
+    pub fn agent_assistant_active(&self) -> bool {
+        self.session_active && self.session_scope == VoiceSessionScope::AgentAssistant
+    }
+
+    pub fn session_notice(&self) -> Option<&str> {
+        self.session_notice.as_deref()
     }
 
     pub fn set_open_chat_target(&mut self, agent_id: Option<uuid::Uuid>, cx: &mut Context<Self>) {
@@ -290,12 +325,22 @@ impl VoiceState {
     }
 
     pub fn toggle_director(&mut self, cx: &mut Context<Self>) {
-        if self.session_active {
+        if self.session_active && self.session_scope == VoiceSessionScope::ProjectTalk {
             self.stop(cx);
             self.session_notice = Some("Voice session ended".to_string());
             cx.notify();
         } else {
             self.start_session(cx);
+        }
+    }
+
+    pub fn toggle_agent_assistant(&mut self, cx: &mut Context<Self>) {
+        if self.agent_assistant_active() {
+            self.stop(cx);
+            self.session_notice = Some("Agent Assistant paused".to_string());
+            cx.notify();
+        } else {
+            self.start_agent_assistant_session(cx);
         }
     }
 
@@ -366,6 +411,7 @@ impl VoiceState {
         if let Some(cancellation) = self.cancellation.take() {
             cancellation.store(true, Ordering::Relaxed);
         }
+        self.recognition_suspended = None;
         self.finish_requested = None;
         self.push_to_talk_mode = false;
         self.push_to_talk_held = false;
@@ -377,7 +423,9 @@ impl VoiceState {
         self.requested_mode = None;
         self.dictation_target = None;
         self.session_active = false;
+        self.session_scope = VoiceSessionScope::ProjectTalk;
         self.session_mode = VoiceSessionMode::Conversation;
+        self.assistant_project_id = None;
         self.draft_target = None;
         self.draft_text = None;
         self.resume_at = None;
@@ -450,8 +498,39 @@ impl VoiceState {
         }
         self.refresh_input_devices(cx);
         self.session_active = true;
+        self.session_scope = VoiceSessionScope::ProjectTalk;
         self.session_mode = VoiceSessionMode::Conversation;
+        self.assistant_project_id = None;
         self.session_notice = None;
+        self.last_command = None;
+        self.confirmation_expires_at = None;
+        self.requested_mode = Some(VoiceMode::Director);
+        if self.model_status != VoiceModelStatus::Ready {
+            self.install_models(cx);
+        } else {
+            self.start_recognition(cx);
+        }
+    }
+
+    fn start_agent_assistant_session(&mut self, cx: &mut Context<Self>) {
+        self.stop(cx);
+        self.refresh_input_devices(cx);
+        self.session_active = true;
+        self.session_scope = VoiceSessionScope::AgentAssistant;
+        self.session_mode = VoiceSessionMode::Conversation;
+        self.assistant_project_id = {
+            let workspace = self.workspace.read(cx);
+            workspace
+                .active
+                .filter(|project_id| {
+                    workspace
+                        .projects
+                        .iter()
+                        .any(|project| project.id == *project_id)
+                })
+                .or_else(|| (workspace.projects.len() == 1).then_some(workspace.projects[0].id))
+        };
+        self.session_notice = Some("Listening".to_string());
         self.last_command = None;
         self.confirmation_expires_at = None;
         self.requested_mode = Some(VoiceMode::Director);
@@ -468,6 +547,7 @@ impl VoiceState {
         if let Some(cancellation) = self.cancellation.take() {
             cancellation.store(true, Ordering::Relaxed);
         }
+        self.recognition_suspended = None;
         self.finish_requested = None;
         self.push_to_talk_mode = false;
         self.push_to_talk_held = false;
@@ -522,6 +602,11 @@ impl VoiceState {
     fn start_recognition(&mut self, cx: &mut Context<Self>) {
         let cancellation = Arc::new(AtomicBool::new(false));
         self.cancellation = Some(cancellation.clone());
+        let persistent_session = self.session_active
+            && self.session_scope == VoiceSessionScope::AgentAssistant
+            && self.requested_mode == Some(VoiceMode::Director);
+        let recognition_suspended = Arc::new(AtomicBool::new(false));
+        self.recognition_suspended = persistent_session.then(|| recognition_suspended.clone());
         let finish_requested = Arc::new(AtomicBool::new(false));
         self.finish_requested = Some(finish_requested.clone());
         self.operation_id = self.operation_id.wrapping_add(1);
@@ -555,6 +640,7 @@ impl VoiceState {
                         event,
                         RecognitionEvent::Cancelled | RecognitionEvent::Error(_)
                     ) || (!continuous_dictation
+                        && !persistent_session
                         && matches!(
                             event,
                             RecognitionEvent::Transcript(_)
@@ -584,9 +670,11 @@ impl VoiceState {
                     confirmation_only,
                     push_to_talk,
                     continuous_dictation,
+                    persistent_session,
                     input_device,
                     silence_timeout,
                     cancellation,
+                    recognition_suspended,
                     finish_requested,
                     recognition_tx,
                 );
@@ -677,6 +765,17 @@ impl VoiceState {
                 }
                 self.handle_decision(project_id, result, cx);
             }
+            WorkerEvent::AgentAssistantDecision {
+                operation_id,
+                project_id,
+                utterance,
+                result,
+            } => {
+                if operation_id != self.operation_id {
+                    return;
+                }
+                self.handle_agent_assistant_decision(project_id, utterance, result, cx);
+            }
         }
         cx.notify();
     }
@@ -707,6 +806,7 @@ impl VoiceState {
                 }
                 self.phase = VoicePhase::Idle;
                 self.level = 0.0;
+                self.recognition_suspended = None;
                 self.finish_requested = None;
                 self.push_to_talk_mode = false;
                 self.push_to_talk_held = false;
@@ -721,6 +821,7 @@ impl VoiceState {
                 self.draft_text = None;
                 self.requested_mode = None;
                 self.cancellation = None;
+                self.recognition_suspended = None;
                 self.finish_requested = None;
                 self.push_to_talk_mode = false;
                 self.push_to_talk_held = false;
@@ -745,7 +846,12 @@ impl VoiceState {
                     self.session_notice = Some("No words caught · still listening".to_string());
                     return;
                 }
-                self.cancellation = None;
+                let persistent_session =
+                    self.agent_assistant_active() && self.recognition_suspended.is_some();
+                if !persistent_session {
+                    self.cancellation = None;
+                    self.recognition_suspended = None;
+                }
                 self.finish_requested = None;
                 self.push_to_talk_mode = false;
                 self.push_to_talk_held = false;
@@ -753,7 +859,11 @@ impl VoiceState {
                 self.level = 0.0;
                 self.session_notice = Some("No words caught · still listening".to_string());
                 if self.session_active && self.requested_mode == Some(VoiceMode::Director) {
-                    self.schedule_resume(Duration::from_millis(180), cx);
+                    if persistent_session {
+                        self.resume_agent_assistant_listener(cx);
+                    } else {
+                        self.schedule_resume(Duration::from_millis(180), cx);
+                    }
                 } else {
                     self.requested_mode = None;
                     self.phase = VoicePhase::Idle;
@@ -766,6 +876,7 @@ impl VoiceState {
                 self.phase = VoicePhase::Error(error);
                 self.level = 0.0;
                 self.cancellation = None;
+                self.recognition_suspended = None;
                 self.finish_requested = None;
                 self.push_to_talk_mode = false;
                 self.push_to_talk_held = false;
@@ -827,7 +938,12 @@ impl VoiceState {
                         }
                     }
                     VoiceMode::Director => {
-                        self.cancellation = None;
+                        let persistent_session =
+                            self.agent_assistant_active() && self.recognition_suspended.is_some();
+                        if !persistent_session {
+                            self.cancellation = None;
+                            self.recognition_suspended = None;
+                        }
                         self.finish_requested = None;
                         self.push_to_talk_mode = false;
                         self.push_to_talk_held = false;
@@ -841,6 +957,10 @@ impl VoiceState {
 
     fn handle_session_utterance(&mut self, text: String, cx: &mut Context<Self>) {
         if !self.session_active {
+            return;
+        }
+        if self.session_scope == VoiceSessionScope::AgentAssistant {
+            self.handle_agent_assistant_utterance(text, cx);
             return;
         }
         if self.session_mode == VoiceSessionMode::AwaitingSend {
@@ -910,6 +1030,204 @@ impl VoiceState {
                 self.write_draft(agent_id, text, cx);
             }
             VoiceSessionMode::AwaitingSend => unreachable!("handled before general commands"),
+        }
+    }
+
+    fn handle_agent_assistant_utterance(&mut self, text: String, cx: &mut Context<Self>) {
+        self.last_command = None;
+        self.save_turn("agent_assistant", "user", &text, None);
+        self.begin_agent_assistant_coordination(text, cx);
+    }
+
+    fn begin_agent_assistant_coordination(&mut self, utterance: String, cx: &mut Context<Self>) {
+        self.phase = VoicePhase::Thinking;
+        let project_id = self.assistant_project_id;
+        let conversation = project_id
+            .and_then(|project_id| self.project_conversations.get(&project_id).cloned())
+            .unwrap_or_default();
+        let context = {
+            let workspace = self.workspace.read(cx);
+            let current_project = project_id.and_then(|project_id| {
+                workspace
+                    .projects
+                    .iter()
+                    .find(|project| project.id == project_id)
+                    .cloned()
+            });
+            let project_names = workspace
+                .projects
+                .iter()
+                .map(|project| project.name.clone())
+                .collect::<Vec<_>>();
+            (
+                current_project,
+                project_names,
+                workspace.generation_agent.clone(),
+            )
+        };
+        let (current_project, project_names, generation_agent) = context;
+        let tx = self.events_tx.clone();
+        let operation_id = self.operation_id;
+        std::thread::spawn(move || {
+            let project_context = current_project
+                .as_ref()
+                .map(|project| (project.name.as_str(), project.path.as_path()));
+            let result = coordinator::coordinate_agent_assistant(
+                &generation_agent,
+                project_context,
+                &project_names,
+                &conversation,
+                &utterance,
+            );
+            let _ = tx.send(WorkerEvent::AgentAssistantDecision {
+                operation_id,
+                project_id: current_project.map(|project| project.id),
+                utterance,
+                result,
+            });
+        });
+    }
+
+    fn handle_agent_assistant_decision(
+        &mut self,
+        project_id: Option<ProjectId>,
+        utterance: String,
+        result: anyhow::Result<AgentAssistantDecision>,
+        cx: &mut Context<Self>,
+    ) {
+        let decision = match result {
+            Ok(decision) => decision,
+            Err(error) => {
+                eprintln!("Agent Assistant failed: {error:#}");
+                let message = self.agent_assistant_recovery_message(cx);
+                self.speak_and_continue(&message, None, cx);
+                return;
+            }
+        };
+
+        match decision.action {
+            AgentAssistantAction::None => {
+                let Some(project_id) = project_id else {
+                    self.speak_and_continue(&decision.speech, None, cx);
+                    return;
+                };
+                self.append_project_conversation(project_id, "user", utterance);
+                self.append_project_conversation(project_id, "assistant", decision.speech.clone());
+                self.save_turn("agent_assistant", "assistant", &decision.speech, None);
+                self.session_notice = Some(decision.speech.clone());
+                let speaking = self.speak_session_response(&decision.speech, cx);
+                self.finish_turn(speaking, cx);
+            }
+            AgentAssistantAction::SwitchProject { project_name } => {
+                let project = match self.resolve_spoken_project(&project_name, cx) {
+                    Ok(project) => project,
+                    Err(message) => {
+                        self.speak_and_continue(&message, None, cx);
+                        return;
+                    }
+                };
+                self.last_command = Some("Switch project".to_string());
+                self.assistant_project_id = Some(project.id);
+                self.append_project_conversation(project.id, "user", utterance);
+                self.append_project_conversation(project.id, "assistant", decision.speech.clone());
+                self.save_turn("agent_assistant", "assistant", &decision.speech, None);
+                self.session_notice = Some(decision.speech.clone());
+                let speaking = self.speak_session_response(&decision.speech, cx);
+                self.finish_turn(speaking, cx);
+            }
+            AgentAssistantAction::CreateAgent {
+                project_name,
+                prompt,
+                send,
+            } => {
+                let project = if let Some(project_name) = project_name {
+                    match self.resolve_spoken_project(&project_name, cx) {
+                        Ok(project) => Some(project),
+                        Err(message) => {
+                            self.speak_and_continue(&message, None, cx);
+                            return;
+                        }
+                    }
+                } else {
+                    project_id.and_then(|project_id| {
+                        self.workspace
+                            .read(cx)
+                            .projects
+                            .iter()
+                            .find(|project| project.id == project_id)
+                            .cloned()
+                    })
+                };
+                let Some(project) = project else {
+                    let message = self.agent_assistant_recovery_message(cx);
+                    self.speak_and_continue(&message, None, cx);
+                    return;
+                };
+                self.last_command = Some(if send {
+                    "Create and send agent".to_string()
+                } else {
+                    "Create agent draft".to_string()
+                });
+                self.assistant_project_id = Some(project.id);
+                self.append_project_conversation(project.id, "user", utterance);
+                self.append_project_conversation(project.id, "assistant", decision.speech.clone());
+                cx.emit(VoiceEvent::CreateAgent {
+                    project_id: project.id,
+                    prompt,
+                    send,
+                });
+                self.speak_and_continue(&decision.speech, None, cx);
+            }
+            AgentAssistantAction::StopListening => {
+                self.last_command = Some("Stop listening".to_string());
+                self.end_voice_session(&decision.speech, None, cx);
+            }
+            AgentAssistantAction::Clarify => {
+                self.speak_and_continue(&decision.speech, None, cx);
+            }
+        }
+    }
+
+    fn agent_assistant_recovery_message(&self, cx: &App) -> String {
+        let workspace = self.workspace.read(cx);
+        match workspace.projects.as_slice() {
+            [] => "I’m listening, but there are no projects open in Choro yet.".to_string(),
+            [project] => format!("I’m still listening. Did you mean {}?", project.name),
+            projects => {
+                let names = projects
+                    .iter()
+                    .take(3)
+                    .map(|project| project.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("I’m still listening. Which project did you mean: {names}?")
+            }
+        }
+    }
+
+    fn resolve_spoken_project(&self, query: &str, cx: &App) -> Result<Project, String> {
+        let workspace = self.workspace.read(cx);
+        let names = workspace
+            .projects
+            .iter()
+            .map(|project| project.name.clone())
+            .collect::<Vec<_>>();
+        match resolve_project_name(query, &names) {
+            ProjectNameResolution::Found(index) => Ok(workspace.projects[index].clone()),
+            ProjectNameResolution::NotFound => {
+                Err(format!("I couldn’t find a project named {query}."))
+            }
+            ProjectNameResolution::Ambiguous(indices) => {
+                let matches = indices
+                    .into_iter()
+                    .take(3)
+                    .map(|index| names[index].as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(format!(
+                    "I found more than one project matching {query}: {matches}. Please say the exact project name."
+                ))
+            }
         }
     }
 
@@ -1145,6 +1463,7 @@ impl VoiceState {
         if let Some(cancellation) = self.cancellation.take() {
             cancellation.store(true, Ordering::Relaxed);
         }
+        self.recognition_suspended = None;
         self.finish_requested = None;
         self.push_to_talk_mode = false;
         self.push_to_talk_held = false;
@@ -1154,7 +1473,9 @@ impl VoiceState {
             speaker.stopSpeaking();
         }
         self.session_active = false;
+        self.session_scope = VoiceSessionScope::ProjectTalk;
         self.session_mode = VoiceSessionMode::Conversation;
+        self.assistant_project_id = None;
         self.requested_mode = None;
         self.resume_at = None;
         self.confirmation_expires_at = None;
@@ -1178,6 +1499,30 @@ impl VoiceState {
         self.finish_turn(false, cx);
     }
 
+    fn speak_and_continue(
+        &mut self,
+        message: &str,
+        agent_id: Option<uuid::Uuid>,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_turn("director", "assistant", message, agent_id);
+        self.session_notice = Some(message.to_string());
+        let speaking = self.speak_session_response(message, cx);
+        self.finish_turn(speaking, cx);
+    }
+
+    fn resume_agent_assistant_listener(&mut self, cx: &mut Context<Self>) {
+        if let Some(suspended) = self.recognition_suspended.as_ref() {
+            suspended.store(false, Ordering::Relaxed);
+            self.resume_at = None;
+            self.phase = VoicePhase::Listening;
+            self.level = 0.0;
+            cx.notify();
+        } else {
+            self.schedule_resume(Duration::ZERO, cx);
+        }
+    }
+
     fn finish_turn(&mut self, speaking: bool, cx: &mut Context<Self>) {
         if !self.session_active {
             self.phase = if speaking {
@@ -1190,6 +1535,8 @@ impl VoiceState {
         if speaking {
             self.phase = VoicePhase::Speaking;
             self.resume_at = None;
+        } else if self.agent_assistant_active() {
+            self.resume_agent_assistant_listener(cx);
         } else {
             self.schedule_resume(QUICK_RESUME_DELAY, cx);
         }
@@ -1223,6 +1570,7 @@ impl VoiceState {
                 };
                 self.append_project_conversation(project_id, "assistant", decision.speech.clone());
                 self.save_turn("project_talk", "assistant", &decision.speech, agent_id);
+                self.session_notice = Some(decision.speech.clone());
                 let speaking = if self.session_active {
                     self.speak_session_response(&decision.speech, cx)
                 } else {
@@ -1388,9 +1736,13 @@ impl VoiceState {
                 self.speaker = None;
             }
             if self.session_active {
-                // Keep the input stream closed briefly so the tail of native
-                // speech output cannot become the next dictated turn.
-                self.schedule_resume(Duration::from_millis(650), cx);
+                if self.agent_assistant_active() {
+                    self.resume_agent_assistant_listener(cx);
+                } else {
+                    // Project Talk still reopens its one-turn listener after a
+                    // short tail guard. Agent Assistant keeps a warm stream.
+                    self.schedule_resume(Duration::from_millis(650), cx);
+                }
             } else {
                 self.phase = VoicePhase::Idle;
                 cx.notify();
@@ -1405,9 +1757,62 @@ impl VoiceState {
         {
             self.resume_at = None;
             self.requested_mode = Some(VoiceMode::Director);
-            self.start_recognition(cx);
+            if self.agent_assistant_active() && self.recognition_suspended.is_some() {
+                self.resume_agent_assistant_listener(cx);
+            } else {
+                self.start_recognition(cx);
+            }
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ProjectNameResolution {
+    Found(usize),
+    Ambiguous(Vec<usize>),
+    NotFound,
+}
+
+fn resolve_project_name(query: &str, project_names: &[String]) -> ProjectNameResolution {
+    let query_key = project_name_key(query);
+    if query_key.is_empty() {
+        return ProjectNameResolution::NotFound;
+    }
+
+    let exact = project_names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| (project_name_key(name) == query_key).then_some(index))
+        .collect::<Vec<_>>();
+    match exact.as_slice() {
+        [index] => return ProjectNameResolution::Found(*index),
+        [] => {}
+        _ => return ProjectNameResolution::Ambiguous(exact),
+    }
+
+    let candidates = project_names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            let name_key = project_name_key(name);
+            (!name_key.is_empty()
+                && (name_key.starts_with(&query_key) || query_key.starts_with(&name_key)))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [index] => ProjectNameResolution::Found(*index),
+        [] => ProjectNameResolution::NotFound,
+        _ => ProjectNameResolution::Ambiguous(candidates),
+    }
+}
+
+fn project_name_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn project_plan_prompt(
@@ -1444,5 +1849,30 @@ mod tests {
         assert!(prompt.contains("Example"));
         assert!(prompt.contains("How should caching work?"));
         assert!(prompt.contains("Do not implement anything"));
+    }
+
+    #[test]
+    fn resolves_exact_and_unique_spoken_project_names_conservatively() {
+        let projects = vec![
+            "Choro Desktop".to_string(),
+            "Choro Mobile".to_string(),
+            "Ritmus Website".to_string(),
+        ];
+        assert_eq!(
+            resolve_project_name("choro desktop", &projects),
+            ProjectNameResolution::Found(0)
+        );
+        assert_eq!(
+            resolve_project_name("ritmus", &projects),
+            ProjectNameResolution::Found(2)
+        );
+        assert_eq!(
+            resolve_project_name("choro", &projects),
+            ProjectNameResolution::Ambiguous(vec![0, 1])
+        );
+        assert_eq!(
+            resolve_project_name("unknown", &projects),
+            ProjectNameResolution::NotFound
+        );
     }
 }

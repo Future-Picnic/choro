@@ -1,5 +1,6 @@
 mod actions;
 mod app_assets;
+mod companion_music;
 mod demo;
 mod keymap;
 mod notifications;
@@ -127,8 +128,10 @@ fn main() {
         };
 
         cx.spawn(async move |cx| {
-            cx.open_window(options, |window, cx| {
+            let mut companion_context = None;
+            let main_window = cx.open_window(options, |window, cx| {
                 let view = RootView::view(window, cx);
+                companion_context = Some(view.read(cx).companion_context());
                 let root_view = view.downgrade();
                 cx.on_action(move |_: &QuitApplication, cx| {
                     root_view
@@ -138,6 +141,27 @@ fn main() {
                         .ok();
                 });
                 cx.new(|cx| Root::new(view, window, cx))
+            })?;
+            let (project_list, workspace, agents, agent_chats, voice, center) =
+                companion_context.expect("root view should provide companion context");
+            let attention_count = crate::notifications::companion_attention().len();
+            let companion_options = cx.update(|cx| {
+                let companion_enabled = workspace.read(cx).companion_enabled;
+                ui::companion::window_options(cx, attention_count, companion_enabled)
+            })?;
+            cx.open_window(companion_options, move |window, cx| {
+                ui::companion::view(
+                    project_list,
+                    workspace,
+                    agents,
+                    agent_chats,
+                    voice,
+                    center,
+                    main_window,
+                    attention_count,
+                    window,
+                    cx,
+                )
             })?;
             Ok::<_, anyhow::Error>(())
         })

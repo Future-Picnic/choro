@@ -3,6 +3,7 @@ pub mod agents_panel;
 pub mod branch_icon;
 pub mod center;
 pub mod command_palette;
+pub mod companion;
 pub mod confirm;
 pub mod content_search;
 pub mod db;

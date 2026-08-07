@@ -7,8 +7,9 @@ enum RailIcon {
 }
 
 impl RootView {
-    pub(super) fn update_dock_badge(&self, cx: &mut Context<Self>) {
-        let label = self.agent_chats.read(cx).dock_badge_label();
+    pub(super) fn update_dock_badge(&self, _cx: &mut Context<Self>) {
+        let count = crate::notifications::unread_agent_count();
+        let label = (count > 0).then(|| count.to_string());
         crate::notifications::set_dock_badge(label.as_deref());
     }
 
@@ -641,14 +642,12 @@ impl RootView {
                                 .size(crate::ui::design::icon_lg())
                                 .text_color(fg)
                                 .into_any_element(),
-                            RailIcon::Lucide(icon) => {
-                                crate::ui::design::indicator::lucide_icon(
-                                    icon,
-                                    fg,
-                                    crate::ui::design::icon_lg(),
-                                )
-                                .into_any_element()
-                            }
+                            RailIcon::Lucide(icon) => crate::ui::design::indicator::lucide_icon(
+                                icon,
+                                fg,
+                                crate::ui::design::icon_lg(),
+                            )
+                            .into_any_element(),
                         })
                         .children(design_connection_color.map(|color| {
                             div()

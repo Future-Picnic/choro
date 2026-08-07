@@ -14,14 +14,27 @@ use ide_core::{agents, AgentRecord, AgentRuntimeKind, AgentStatus, ProjectId};
 use uuid::Uuid;
 
 use crate::notifications;
-use crate::state::agent_chat::AgentChatStatus;
+use crate::state::agent_chat::{AgentChatMessage, AgentChatStatus};
 use crate::state::{AgentActivityCache, AgentChatState, AgentRecords, TerminalManager, Workspace};
 use crate::ui::agent_status_style::{status_accent, status_icon};
-use crate::ui::center::CenterArea;
+use crate::ui::center::{CenterArea, ProjectActivity};
 use crate::ui::logo_spinner::logo_spinner;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const LANE_PREVIEW_LIMIT: usize = 5;
+
+fn terminal_attention_category(
+    exited: bool,
+    exit_success: Option<bool>,
+) -> notifications::AttentionCategory {
+    if !exited {
+        notifications::AttentionCategory::NeedsAction
+    } else if exit_success == Some(false) {
+        notifications::AttentionCategory::Failed
+    } else {
+        notifications::AttentionCategory::Completed
+    }
+}
 
 fn compact_relative_time(updated_at: SystemTime) -> SharedString {
     let secs = SystemTime::now()
@@ -58,7 +71,7 @@ pub struct AgentsPanel {
     chats_project: Option<ProjectId>,
     collapsed: HashSet<AgentStatus>,
     expanded_lanes: HashSet<AgentStatus>,
-    waiting_notifications: HashSet<String>,
+    pending_notification_route: Option<notifications::NotificationRoute>,
 }
 
 impl AgentsPanel {
@@ -71,12 +84,33 @@ impl AgentsPanel {
         center: WeakEntity<CenterArea>,
         cx: &mut App,
     ) -> Entity<Self> {
-        cx.new(|cx| {
-            cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
-            cx.observe(&terminals, |_, _, cx| cx.notify()).detach();
-            cx.observe(&agent_chats, |_, _, cx| cx.notify()).detach();
-            cx.observe(&agents, |_, _, cx| cx.notify()).detach();
-            cx.observe(&agent_activity, |_, _, cx| cx.notify()).detach();
+        notifications::initialize();
+        let view = cx.new(|cx| {
+            cx.observe(&workspace, |this: &mut Self, _, cx| {
+                this.sync_notifications(cx);
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&terminals, |this: &mut Self, _, cx| {
+                this.sync_notifications(cx);
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&agent_chats, |this: &mut Self, _, cx| {
+                this.sync_notifications(cx);
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&agents, |this: &mut Self, _, cx| {
+                this.sync_notifications(cx);
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&agent_activity, |this: &mut Self, _, cx| {
+                this.sync_notifications(cx);
+                cx.notify();
+            })
+            .detach();
 
             // Poll CLI transcript stores only to adopt session ids and keep
             // runtime attention markers fresh for app-owned agents.
@@ -103,7 +137,7 @@ impl AgentsPanel {
                     })
                     .ok()
                     .flatten();
-                if let Some((project, project_name, paths)) = poll {
+                if let Some((project, _project_name, paths)) = poll {
                     let chats_by_cwd: HashMap<PathBuf, Vec<agents::AgentChat>> = cx
                         .background_executor()
                         .spawn(async move {
@@ -134,10 +168,23 @@ impl AgentsPanel {
                                 }
                             });
                             this.chats_project = Some(project);
-                            this.notify_waiting_agents(project, &project_name, cx);
+                            this.sync_notifications(cx);
                             cx.notify();
                         })
                         .ok();
+                }
+                if let Some(route) = notifications::take_clicked_route() {
+                    let _ = panel.update(cx, |this: &mut Self, cx| {
+                        let exists = this
+                            .agents
+                            .read(cx)
+                            .agent(route.agent_id)
+                            .is_some_and(|agent| agent.project_id == route.project_id);
+                        if exists {
+                            this.pending_notification_route = Some(route);
+                            cx.notify();
+                        }
+                    });
                 }
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
             })
@@ -155,122 +202,156 @@ impl AgentsPanel {
                     .into_iter()
                     .collect(),
                 expanded_lanes: HashSet::new(),
-                waiting_notifications: HashSet::new(),
+                pending_notification_route: None,
             }
-        })
+        });
+        view.update(cx, |this, cx| this.sync_notifications(cx));
+        view
     }
 
-    fn notify_waiting_agents(
-        &mut self,
-        project: ProjectId,
-        project_name: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let records = self.agents.read(cx).records_for_project(project);
-        let waiting = {
-            let manager = self.terminals.read(cx);
-            let chats = self.agent_chats.read(cx);
-            let mut waiting = Vec::new();
-            for agent in records {
-                if agent.runtime == AgentRuntimeKind::Chat {
-                    let (status, session_id, last_activity_at) = chats
-                        .session(agent.id)
-                        .map(|session| {
-                            (
-                                Some(session.status),
-                                session
-                                    .chat_session_id
-                                    .clone()
-                                    .or_else(|| session.cli_session_id.clone()),
-                                Some(session.last_activity_at),
-                            )
-                        })
-                        .unwrap_or((None, None, None));
-                    if matches!(
-                        status,
-                        Some(AgentChatStatus::WaitingForUser | AgentChatStatus::PlanReady)
-                    ) {
-                        waiting.push((format!("chat:{}", agent.id), agent.title));
-                        continue;
-                    }
-                    if !matches!(status, Some(AgentChatStatus::Idle)) || agent.started_at.is_none()
-                    {
-                        continue;
-                    }
-                    let Some(session_id) = session_id
-                        .as_deref()
-                        .or(agent.chat_session_id.as_deref())
-                        .or(agent.cli_session_id.as_deref())
-                    else {
-                        continue;
-                    };
-                    let Some(updated_at) = self
-                        .agent_activity
-                        .read(cx)
-                        .updated_at(agent.id)
-                        .or_else(|| {
-                            last_activity_at.map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
-                        })
-                    else {
-                        continue;
-                    };
-                    let working = std::time::SystemTime::now()
-                        .duration_since(updated_at)
-                        .map(|age| age < agents::WORKING_WINDOW)
-                        .unwrap_or(false);
-                    if working || manager.attention_suppressed(session_id, updated_at) {
-                        continue;
-                    }
-                    let updated_secs = updated_at
-                        .duration_since(UNIX_EPOCH)
-                        .map(|duration| duration.as_secs())
-                        .unwrap_or_default();
-                    waiting.push((
-                        format!("chat:{}:{session_id}:{updated_secs}", agent.id),
-                        agent.title,
-                    ));
-                    continue;
-                }
-                let Some(session) = manager.agent_record_session(project, agent.id) else {
-                    continue;
-                };
-                if session.exited {
-                    continue;
-                }
-                let Some(session_id) = session
-                    .agent_session_id
-                    .as_deref()
-                    .or(agent.cli_session_id.as_deref())
-                else {
-                    continue;
-                };
-                let Some(updated_at) = self.agent_activity.read(cx).updated_at(agent.id) else {
-                    continue;
-                };
-                let working = std::time::SystemTime::now()
-                    .duration_since(updated_at)
-                    .map(|age| age < agents::WORKING_WINDOW)
-                    .unwrap_or(false);
-                if working || manager.attention_suppressed(session_id, updated_at) {
-                    continue;
-                }
-                let updated_secs = updated_at
-                    .duration_since(UNIX_EPOCH)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or_default();
-                waiting.push((
-                    format!("{}:{session_id}:{updated_secs}", agent.id),
-                    agent.title,
-                ));
-            }
-            waiting
-        };
+    fn sync_notifications(&mut self, cx: &mut Context<Self>) {
+        let workspace = self.workspace.read(cx);
+        let project_names: HashMap<_, _> = workspace
+            .projects
+            .iter()
+            .map(|project| (project.id, project.name.clone()))
+            .collect();
+        let preferences = workspace.notifications;
+        let companion_enabled = workspace.companion_enabled;
+        let visible = workspace.active.and_then(|project_id| {
+            let agent_id = self
+                .agents
+                .read(cx)
+                .explicitly_selected_agent_id(project_id)?;
+            let conversation_visible = self
+                .center
+                .upgrade()
+                .is_some_and(|center| center.read(cx).activity() == ProjectActivity::Agents);
+            conversation_visible.then_some(notifications::VisibleConversation {
+                project_id,
+                agent_id,
+            })
+        });
+        let records = self.agents.read(cx).all_records();
+        let chats = self.agent_chats.read(cx);
+        let manager = self.terminals.read(cx);
+        let activity = self.agent_activity.read(cx);
+        let mut events = Vec::new();
 
-        for (key, title) in waiting {
-            if self.waiting_notifications.insert(key) {
-                notifications::notify_agent_waiting(&title, project_name);
+        for agent in records {
+            let Some(project_name) = project_names.get(&agent.project_id) else {
+                continue;
+            };
+            if agent.runtime == AgentRuntimeKind::Chat {
+                let Some(session) = chats.session(agent.id) else {
+                    continue;
+                };
+                if session.hidden_from_notifications {
+                    continue;
+                }
+                let (category, revision, created_at) = match session.status {
+                    AgentChatStatus::WaitingForUser => {
+                        let revision = session
+                            .pending_user_input
+                            .as_ref()
+                            .map(|pending| format!("question:{}", pending.request_id))
+                            .or_else(|| {
+                                session
+                                    .pending_approval
+                                    .as_ref()
+                                    .map(|pending| format!("approval:{}", pending.request_id))
+                            })
+                            .unwrap_or_else(|| format!("waiting:{}", session.last_activity_at));
+                        (
+                            notifications::AttentionCategory::NeedsAction,
+                            revision,
+                            session.last_activity_at,
+                        )
+                    }
+                    AgentChatStatus::PlanReady => {
+                        let revision = session
+                            .proposed_plan
+                            .as_ref()
+                            .map(|plan| format!("plan:{}", plan.id))
+                            .unwrap_or_else(|| format!("plan:{}", session.last_activity_at));
+                        (
+                            notifications::AttentionCategory::NeedsAction,
+                            revision,
+                            session.last_activity_at,
+                        )
+                    }
+                    AgentChatStatus::Failed => (
+                        notifications::AttentionCategory::Failed,
+                        format!("failed:{}", session.last_activity_at),
+                        session.last_activity_at,
+                    ),
+                    AgentChatStatus::Idle => {
+                        let completed_at = session.messages.iter().rev().find_map(|message| {
+                            if let AgentChatMessage::Assistant { created_at, .. } = message {
+                                Some(*created_at)
+                            } else {
+                                None
+                            }
+                        });
+                        let Some(completed_at) = completed_at else {
+                            continue;
+                        };
+                        (
+                            notifications::AttentionCategory::Completed,
+                            format!("completed:{completed_at}"),
+                            completed_at,
+                        )
+                    }
+                    AgentChatStatus::Running | AgentChatStatus::Cancelling => continue,
+                };
+                events.push(notifications::AttentionEvent::new(
+                    agent.project_id,
+                    agent.id,
+                    category,
+                    revision,
+                    created_at,
+                    agent.title,
+                    project_name,
+                ));
+                continue;
             }
+
+            let Some(session) = manager.agent_record_session(agent.project_id, agent.id) else {
+                continue;
+            };
+            let Some(session_id) = session
+                .agent_session_id
+                .as_deref()
+                .or(agent.cli_session_id.as_deref())
+            else {
+                continue;
+            };
+            let Some(updated_at) = activity.updated_at(agent.id) else {
+                continue;
+            };
+            let working = SystemTime::now()
+                .duration_since(updated_at)
+                .map(|age| age < agents::WORKING_WINDOW)
+                .unwrap_or(false);
+            if working || manager.attention_suppressed(session_id, updated_at) {
+                continue;
+            }
+            let updated_secs = updated_at
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or_default();
+            events.push(notifications::AttentionEvent::new(
+                agent.project_id,
+                agent.id,
+                terminal_attention_category(session.exited, session.exit_success),
+                format!("terminal:{session_id}:{updated_secs}"),
+                updated_secs,
+                agent.title,
+                project_name,
+            ));
         }
+
+        notifications::synchronize(events, visible, preferences, companion_enabled);
     }
 
     pub fn open_new_agent_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -632,7 +713,17 @@ impl AgentsPanel {
 }
 
 impl Render for AgentsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(route) = self.pending_notification_route.take() {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.set_active(route.project_id, cx)
+            });
+            if let Some(center) = self.center.upgrade() {
+                center.update(cx, |center, cx| {
+                    center.open_agent(route.agent_id, window, cx)
+                });
+            }
+        }
         let Some(project) = self.workspace.read(cx).active_project().map(|p| p.id) else {
             return v_flex()
                 .size_full()
@@ -716,5 +807,30 @@ impl Render for AgentsPanel {
             .child(header)
             .child(list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_terminal_agents_need_attention() {
+        assert_eq!(
+            terminal_attention_category(false, None),
+            notifications::AttentionCategory::NeedsAction
+        );
+    }
+
+    #[test]
+    fn exited_terminal_agents_report_their_outcome() {
+        assert_eq!(
+            terminal_attention_category(true, Some(false)),
+            notifications::AttentionCategory::Failed
+        );
+        assert_eq!(
+            terminal_attention_category(true, Some(true)),
+            notifications::AttentionCategory::Completed
+        );
     }
 }
