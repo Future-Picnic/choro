@@ -20,6 +20,10 @@ installs its distinctly named app in `/Applications`; set the matching
 
 The other files are not additional app modes:
 
+- `rebuild-and-relaunch.sh` opens an external macOS Terminal, asks for
+  confirmation, rebuilds the normal app, quits the installed Choro only after
+  a successful build, replaces `/Applications/Choro.app`, and reopens it. Run
+  it from any terminal with `./scripts/rebuild-and-relaunch.sh`.
 - `verify.sh` runs the local verification baseline.
 - `gen_themes.py` regenerates the Choro theme asset.
 - `collect-third-party-licenses.mjs` assembles release license material.
