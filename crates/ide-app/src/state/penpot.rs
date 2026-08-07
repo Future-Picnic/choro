@@ -166,7 +166,7 @@ pub enum PenpotEvent {
     DesignCreated {
         project: ProjectId,
         design_id: Uuid,
-        initial_prompt: Option<String>,
+        initial_draft: Option<String>,
     },
 }
 
@@ -1011,7 +1011,7 @@ impl PenpotState {
         project: ProjectId,
         name: String,
         source: Option<PenpotDesignSource>,
-        initial_prompt: Option<String>,
+        initial_draft: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if self.creating_design || self.assistant_busy(project) {
@@ -1135,7 +1135,7 @@ impl PenpotState {
                                 cx.emit(PenpotEvent::DesignCreated {
                                     project,
                                     design_id,
-                                    initial_prompt: initial_prompt.clone(),
+                                    initial_draft: initial_draft.clone(),
                                 });
                             }
                             Err(error) => {

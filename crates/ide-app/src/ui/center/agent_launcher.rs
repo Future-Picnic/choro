@@ -354,6 +354,13 @@ impl CenterArea {
         let implementation_design = composer.implementation_design;
         let design_browser_open_confirmed = composer.design_browser_open_confirmed;
         let doc = prompt_with_attached_files(&raw_doc, &attached_files);
+        let doc = if solo {
+            format!(
+                "{doc}\n\nChoro Docs available under `{DOCS_DIR_NAME}/` are read-only snapshots of the canonical project documents. Read them as source-of-truth context, but do not change their permissions or edit them in this Solo worktree. If a document itself should change, describe the proposed update explicitly so it can be reviewed against the canonical document."
+            )
+        } else {
+            doc
+        };
         let source_doc = composer
             .source_doc
             .clone()

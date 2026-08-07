@@ -63,7 +63,7 @@ pub use accounts::{
     repository_remotes, GitHubAccount, GitRemote,
 };
 pub use diff::{DiffHunk, DiffLine, FileDiff, LineOrigin};
-pub use ignore::ensure_local_dependency_excludes;
+pub use ignore::{ensure_local_choro_docs_exclude, ensure_local_dependency_excludes};
 pub use log::{ahead_behind, commit_diff, list_commits, worktree_diffs, CommitInfo};
 pub use read::{read_head, read_snapshot};
 pub use remote::{fetch, pull, push, RemoteOutput};

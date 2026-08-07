@@ -366,6 +366,66 @@ pub(super) fn humanize_item_type(item_type: &str) -> String {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CodexErrorDisposition {
+    Retry {
+        message: String,
+        detail: Option<String>,
+        turn_id: Option<String>,
+    },
+    Terminal {
+        message: String,
+    },
+}
+
+pub(super) fn codex_error_disposition(params: &Value) -> CodexErrorDisposition {
+    let error = params.get("error").unwrap_or(params);
+    let message = error
+        .as_str()
+        .or_else(|| error.get("message").and_then(Value::as_str))
+        .or_else(|| params.get("message").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .unwrap_or("Codex encountered an unexpected error.");
+    let detail = error
+        .get("additionalDetails")
+        .or_else(|| error.get("additional_details"))
+        .or_else(|| params.get("additionalDetails"))
+        .or_else(|| params.get("additional_details"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty());
+
+    if params
+        .get("willRetry")
+        .or_else(|| params.get("will_retry"))
+        .or_else(|| error.get("willRetry"))
+        .or_else(|| error.get("will_retry"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return CodexErrorDisposition::Retry {
+            message: message.to_string(),
+            detail: detail.map(str::to_string),
+            turn_id: params
+                .get("turnId")
+                .or_else(|| params.get("turn_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        };
+    }
+
+    let message = match detail {
+        Some(detail) if detail != message => format!("{message}\n\n{detail}"),
+        _ => message.to_string(),
+    };
+    CodexErrorDisposition::Terminal { message }
+}
+
+pub(super) fn codex_event_confirms_recovery(method: &str) -> bool {
+    method == "turn/completed" || method == "turn/plan/updated" || method.starts_with("item/")
+}
+
 pub(super) fn format_plan_summary(params: &Value) -> String {
     let count = params
         .get("plan")
@@ -645,5 +705,68 @@ mod approval_tests {
         let detail = pending.detail.unwrap();
         assert!(detail.contains("Network access"));
         assert!(detail.contains("2 paths"));
+    }
+}
+
+#[cfg(test)]
+mod codex_error_tests {
+    use super::*;
+
+    #[test]
+    fn retryable_disconnect_is_not_a_terminal_error() {
+        let disposition = codex_error_disposition(&json!({
+            "error": {
+                "message": "Reconnecting... 2/5",
+                "additionalDetails": "websocket closed before response.completed"
+            },
+            "willRetry": true,
+            "turnId": "turn-123"
+        }));
+
+        assert_eq!(
+            disposition,
+            CodexErrorDisposition::Retry {
+                message: "Reconnecting... 2/5".into(),
+                detail: Some("websocket closed before response.completed".into()),
+                turn_id: Some("turn-123".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn exhausted_retry_uses_a_readable_terminal_error() {
+        let disposition = codex_error_disposition(&json!({
+            "error": {
+                "message": "Unable to reconnect",
+                "additionalDetails": "websocket remained unavailable"
+            },
+            "willRetry": false
+        }));
+
+        assert_eq!(
+            disposition,
+            CodexErrorDisposition::Terminal {
+                message: "Unable to reconnect\n\nwebsocket remained unavailable".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn string_error_payload_remains_readable() {
+        assert_eq!(
+            codex_error_disposition(&json!({ "error": "connection refused" })),
+            CodexErrorDisposition::Terminal {
+                message: "connection refused".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn item_and_turn_events_confirm_recovery() {
+        assert!(codex_event_confirms_recovery("item/agentMessage/delta"));
+        assert!(codex_event_confirms_recovery("item/tool/requestUserInput"));
+        assert!(codex_event_confirms_recovery("turn/completed"));
+        assert!(!codex_event_confirms_recovery("thread/tokenUsage/updated"));
+        assert!(!codex_event_confirms_recovery("error"));
     }
 }

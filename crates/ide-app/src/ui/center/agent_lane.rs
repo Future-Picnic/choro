@@ -286,6 +286,7 @@ impl LaneSetup {
         Self {
             steps: [
                 LaneStep::Worktree,
+                LaneStep::ChoroDocs,
                 LaneStep::EnvFiles,
                 LaneStep::Dependencies,
             ]
@@ -436,6 +437,7 @@ impl CenterArea {
         }
 
         let project_root = agent.repository_root().to_path_buf();
+        let canonical_project_root = agent.project_path.clone();
         let profile = agent.lane_profile.unwrap_or(LaneProfile::Full);
         let base_hint = agent.solo_base_branch.clone();
         self.lane_setups.insert(agent_id, LaneSetup::begin());
@@ -494,8 +496,16 @@ impl CenterArea {
                 .background_executor()
                 .spawn({
                     let project_root = project_root.clone();
+                    let canonical_project_root = canonical_project_root.clone();
                     let lane_path = lane_path.clone();
-                    async move { lanes::prepare_extras(&project_root, &lane_path, profile) }
+                    async move {
+                        let mut results = vec![lanes::refresh_choro_docs_snapshot(
+                            &canonical_project_root,
+                            &lane_path,
+                        )];
+                        results.extend(lanes::prepare_extras(&project_root, &lane_path, profile));
+                        results
+                    }
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -517,6 +527,62 @@ impl CenterArea {
     pub(super) fn retry_lane_setup(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         self.lane_setups.remove(&agent_id);
         self.ensure_solo_lane_then_start(agent_id, CenterMode::Agents, cx);
+    }
+
+    /// Debounce canonical document saves into background refreshes of every
+    /// active Solo snapshot. A refresh never writes back into the canonical
+    /// project and only replaces files recorded in Choro's snapshot manifest.
+    pub(super) fn schedule_solo_docs_refresh(&mut self, cx: &mut Context<Self>) {
+        self.solo_docs_refresh_generation = self.solo_docs_refresh_generation.wrapping_add(1);
+        let generation = self.solo_docs_refresh_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(700))
+                .await;
+            let jobs = this
+                .update(cx, |this, cx| {
+                    if this.solo_docs_refresh_generation != generation {
+                        return Vec::new();
+                    }
+                    this.agents
+                        .read(cx)
+                        .all_records()
+                        .into_iter()
+                        .filter(|agent| {
+                            agent.is_solo()
+                                && agent.solo_rejoined_branch.is_none()
+                                && agent.lane_path.is_some()
+                        })
+                        .filter_map(|agent| Some((agent.id, agent.project_path, agent.lane_path?)))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if jobs.is_empty() {
+                return;
+            }
+            let results = cx
+                .background_executor()
+                .spawn(async move {
+                    jobs.into_iter()
+                        .map(|(agent_id, project_path, lane_path)| {
+                            (
+                                agent_id,
+                                lanes::refresh_choro_docs_snapshot(&project_path, &lane_path),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            for (agent_id, result) in results {
+                if !result.ok {
+                    eprintln!(
+                        "failed to refresh Choro Docs for Solo {agent_id}: {}",
+                        result.detail
+                    );
+                }
+            }
+        })
+        .detach();
     }
 
     /// Open the Rejoin dialog: pick the branch the Solo merges into. Defaults

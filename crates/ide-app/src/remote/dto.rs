@@ -110,12 +110,20 @@ pub struct PendingApprovalDto {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageImageDto {
+    pub path: String,
+    pub alt: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TimelineItemDto {
     Message {
         role: String,
         text: String,
         created_at: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<MessageImageDto>,
     },
     WorkLog {
         title: String,

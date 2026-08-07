@@ -1245,6 +1245,36 @@ mod imp {
                 .map_err(|error| format!("Could not reload Preview: {error}"))
         }
 
+        pub fn navigate_project_preview_url(
+            &self,
+            project_id: ProjectId,
+            url: &str,
+        ) -> Result<(), String> {
+            let Some(active) = self.active.as_ref() else {
+                return Err("The project Preview is still loading.".to_string());
+            };
+            if !matches!(
+                &active.intent,
+                WebPreviewIntent::ProjectPreview {
+                    project_id: active_project,
+                    ..
+                } if *active_project == project_id
+            ) {
+                return Err("That project's Preview is not active.".to_string());
+            }
+            let webview = active
+                .webview
+                .webkit()
+                .ok_or_else(|| "Project Preview requires the WebKit surface.".to_string())?;
+            if let Some(path) = project_preview_file_path(url) {
+                load_project_preview_file(webview, &path);
+                return Ok(());
+            }
+            webview
+                .load_url(url)
+                .map_err(|error| format!("Could not open Preview URL: {error}"))
+        }
+
         pub fn navigate_project_preview_history(&self, forward: bool) -> Result<(), String> {
             let Some(active) = self.active.as_ref() else {
                 return Err("The project preview is still loading.".to_string());
@@ -3553,6 +3583,13 @@ mod imp {
             Err("Project Preview is only available on macOS.".to_string())
         }
         pub fn reload_project_preview(&self) -> Result<(), String> {
+            Err("Project Preview is only available on macOS.".to_string())
+        }
+        pub fn navigate_project_preview_url(
+            &self,
+            _project_id: ide_core::project::ProjectId,
+            _url: &str,
+        ) -> Result<(), String> {
             Err("Project Preview is only available on macOS.".to_string())
         }
         pub fn navigate_project_preview_history(&self, _forward: bool) -> Result<(), String> {

@@ -114,6 +114,11 @@ pub enum RemoteCommand {
         path: String,
         response: oneshot::Sender<RemoteResult<Vec<u8>>>,
     },
+    CaptureGeneratedImage {
+        agent_id: String,
+        path: String,
+        response: oneshot::Sender<RemoteResult<Vec<u8>>>,
+    },
     RequestVerificationFix {
         agent_id: String,
         request: VerificationFixRequest,

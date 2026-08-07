@@ -124,3 +124,13 @@ pub(super) fn split_prompt_attached_files(prompt: &str) -> (String, Vec<PathBuf>
         (body.trim_end().to_string(), paths)
     }
 }
+
+pub(super) fn queued_turn_composer_draft(turn: &QueuedChatTurn) -> (String, Vec<PathBuf>) {
+    let visible_text = turn
+        .display_text
+        .clone()
+        .unwrap_or_else(|| visible_agent_chat_submission_text(&turn.text).to_string());
+    let (text, _) = split_prompt_attached_files(&visible_text);
+    let (_, attached_files) = split_prompt_attached_files(&turn.text);
+    (text, attached_files)
+}
