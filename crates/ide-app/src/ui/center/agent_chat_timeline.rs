@@ -225,8 +225,19 @@ impl CenterArea {
         {
             self.load_older_agent_chat_history(agent.id, cx);
         }
-        let list_state =
-            self.agent_chat_list_state(agent.id, row_count, newest_turn_len, top_down, cx);
+        let row_fingerprints = display_order
+            .iter()
+            .filter_map(|index| rows.get(*index))
+            .map(|row| agent_chat_row_fingerprint(row, &session))
+            .collect::<Vec<_>>();
+        let list_state = self.agent_chat_list_state(
+            agent.id,
+            row_count,
+            newest_turn_len,
+            top_down,
+            &row_fingerprints,
+            cx,
+        );
         let list_agent = agent.clone();
         let list_session = session.clone();
         let scrolled_up = !is_hydrating
@@ -684,73 +695,61 @@ impl CenterArea {
                                     .items_center()
                                     .when(compact_assistant_controls, |row| {
                                         row.child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .overflow_hidden()
-                                                .child(
-                                                    gpui_component::popover::Popover::new((
-                                                        "agent-chat-model-popover",
-                                                        agent.id.as_u128() as u64,
-                                                    ))
-                                                    .anchor(gpui::Corner::BottomLeft)
-                                                    .appearance(false)
-                                                    .open(self.composer_model_expanded)
-                                                    .on_open_change({
-                                                        let model_view = chat_view.clone();
-                                                        move |open, _, cx| {
-                                                            model_view.update(cx, |this, cx| {
-                                                                this.composer_model_expanded = *open;
-                                                                if *open {
-                                                                    this.composer_model_provider =
-                                                                        None;
-                                                                    this.refresh_open_code_models(
-                                                                        false, cx,
-                                                                    );
-                                                                }
-                                                                cx.notify();
-                                                            });
+                                            gpui_component::popover::Popover::new((
+                                                "agent-chat-model-popover",
+                                                agent.id.as_u128() as u64,
+                                            ))
+                                            .flex_none()
+                                            .anchor(gpui::Corner::BottomLeft)
+                                            .appearance(false)
+                                            .open(self.composer_model_expanded)
+                                            .on_open_change({
+                                                let model_view = chat_view.clone();
+                                                move |open, _, cx| {
+                                                    model_view.update(cx, |this, cx| {
+                                                        this.composer_model_expanded = *open;
+                                                        if *open {
+                                                            this.composer_model_provider = None;
+                                                            this.refresh_open_code_models(false, cx);
                                                         }
-                                                    })
-                                                    .trigger(
-                                                        crate::ui::style::composer_chip(
-                                                            (
-                                                                "agent-chat-model",
-                                                                agent.id.as_u128() as u64,
-                                                            ),
-                                                            compact_assistant_model_label(
-                                                                agent.model_short_label(),
-                                                            ),
-                                                            Some(
-                                                                provider_brand_icon(agent.provider)
-                                                                    .size(
-                                                                        crate::ui::design::icon_sm(),
-                                                                    )
-                                                                    .into_any_element(),
-                                                            ),
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            })
+                                            .trigger(
+                                                crate::ui::style::composer_chip(
+                                                    (
+                                                        "agent-chat-model",
+                                                        agent.id.as_u128() as u64,
+                                                    ),
+                                                    compact_assistant_model_label(
+                                                        agent.model_short_label(),
+                                                    ),
+                                                    Some(
+                                                        provider_brand_icon(agent.provider)
+                                                            .size(crate::ui::design::icon_sm())
+                                                            .into_any_element(),
+                                                    ),
+                                                    cx,
+                                                )
+                                                .tooltip(agent.model_label().to_string()),
+                                            )
+                                            .content({
+                                                let model_view = chat_view.clone();
+                                                let picker_agent = agent.clone();
+                                                let picker_surface = surface.clone();
+                                                move |_, _, cx| {
+                                                    model_view.update(cx, |this, cx| {
+                                                        this.render_agent_chat_model_picker(
+                                                            &picker_agent,
+                                                            picker_surface.clone(),
+                                                            provider_switch_locked,
                                                             cx,
                                                         )
-                                                        .tooltip(
-                                                            agent.model_label().to_string(),
-                                                        ),
-                                                    )
-                                                    .content({
-                                                        let model_view = chat_view.clone();
-                                                        let picker_agent = agent.clone();
-                                                        let picker_surface = surface.clone();
-                                                        move |_, _, cx| {
-                                                            model_view.update(cx, |this, cx| {
-                                                                this.render_agent_chat_model_picker(
-                                                                    &picker_agent,
-                                                                    picker_surface.clone(),
-                                                                    provider_switch_locked,
-                                                                    cx,
-                                                                )
-                                                                .into_any_element()
-                                                            })
-                                                        }
-                                                    }),
-                                                ),
+                                                        .into_any_element()
+                                                    })
+                                                }
+                                            }),
                                         )
                                     })
                                     .when(!compact_assistant_controls, |row| {
@@ -978,9 +977,7 @@ impl CenterArea {
                                             })),
                                         )
                                     })
-                                    .when(!compact_assistant_controls, |row| {
-                                        row.child(div().flex_1())
-                                    })
+                                    .child(div().flex_1().min_w(px(0.)))
                                     // "Remember…" detected: Choro will save
                                     // this to its shared memory. The chip
                                     // makes the capture visible before send.

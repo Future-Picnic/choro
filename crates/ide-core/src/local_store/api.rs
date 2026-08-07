@@ -37,11 +37,29 @@ impl LocalStore {
     }
 
     pub fn open_default() -> Result<Self> {
+        // One shared runtime + one schema initialization per process. Callers
+        // open the default store on every persisted message and on periodic
+        // polls; constructing a fresh tokio runtime and re-running migrations
+        // each time is a constant CPU cost. The init mutex keeps concurrent
+        // first calls from racing the migrations; failures are not cached so
+        // a transient error (e.g. disk full) can recover on a later call.
+        // Note the config root is resolved once — later changes to the data
+        // directory do not affect an already-opened process.
+        static SHARED: std::sync::OnceLock<LocalStore> = std::sync::OnceLock::new();
+        static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        if let Some(store) = SHARED.get() {
+            return Ok(store.clone());
+        }
+        let _init = INIT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(store) = SHARED.get() {
+            return Ok(store.clone());
+        }
         let root = AppConfig::config_path()
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        Self::open(root)
+        let store = Self::open(root)?;
+        Ok(SHARED.get_or_init(|| store).clone())
     }
 
     pub fn open(root: PathBuf) -> Result<Self> {

@@ -153,6 +153,21 @@ const IOS_SIMULATOR_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const TASK_BOARD_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const AGENT_SHIP_PR_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const AGENT_SHIP_PR_MISSING_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a chat may sit idle before its backend processes are retired.
+/// The conversation stays open and resumes transparently on the next message.
+const AGENT_CHAT_IDLE_RETIRE_AFTER: Duration = Duration::from_secs(10 * 60);
+const AGENT_CHAT_IDLE_RETIRE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Everything `maybe_auto_verify` reads to decide, captured per session so an
+/// unchanged session can be skipped without missing a state transition.
+type AgentVerifyScanKey = (
+    usize,
+    u64,
+    AgentChatStatus,
+    bool,
+    bool,
+    ide_core::config::VerificationMode,
+);
 const DESIGN_MCP_QUEUE_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn design_mcp_submission_expired(queued_at: Instant, now: Instant) -> bool {
@@ -1457,10 +1472,24 @@ pub struct CenterArea {
     /// Last chat status seen per agent, so the observer can detect a turn
     /// finishing (Running → Idle) and offer or fire verification.
     agent_status_seen: HashMap<Uuid, AgentChatStatus>,
+    /// What each session looked like when the verification observer last
+    /// scanned it. Sessions whose key hasn't changed are skipped, so one
+    /// streaming chat doesn't re-scan every other open conversation on each
+    /// flush. The key must cover every input of the verification decision:
+    /// timeline length + activity stamp + status for the session itself, and
+    /// the agent-record bits (record present, already marked complete) plus
+    /// the workspace verification mode for the surrounding policy.
+    agent_verify_scan_seen: HashMap<Uuid, AgentVerifyScanKey>,
     /// Eligible agents currently waiting for the user to decide whether the
     /// optional verification pass should consume more time and tokens.
     verification_prompt_pending: HashSet<Uuid>,
     agent_chat_list_states: HashMap<Uuid, ListState>,
+    /// Per-row content fingerprints, in display order, from the last render.
+    /// `ListState` caches a measured height per row and only invalidates it on
+    /// a splice, so a row whose *content* grows in place (a streaming answer)
+    /// keeps the height it had when it first appeared. Diffing these tells us
+    /// exactly which rows to re-measure.
+    agent_chat_row_fingerprints: HashMap<Uuid, Vec<u64>>,
     /// Layout used to construct each list state. Switching the global
     /// conversation preference recreates the state with the matching anchor.
     agent_chat_list_top_down: HashMap<Uuid, bool>,

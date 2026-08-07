@@ -7,30 +7,27 @@ impl ClaudeBridgeRuntime {
                 self.assistant_stream.flush(&self.events);
                 break;
             }
-            loop {
-                match self.commands.try_recv() {
-                    Ok(ChatBackendCommand::Shutdown) => {
-                        self.assistant_stream.flush(&self.events);
-                        return Ok(());
-                    }
-                    Ok(ChatBackendCommand::ForceShutdown) => {
-                        self.assistant_stream.flush(&self.events);
-                        return Err(anyhow!("Claude bridge force-stopped"));
-                    }
-                    Ok(command) => self.handle_command(command)?,
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            match next_backend_inbound(
+                &self.commands,
+                &self.messages,
+                self.assistant_stream.has_pending(),
+            ) {
+                BackendInbound::Command(ChatBackendCommand::Shutdown) => {
+                    self.assistant_stream.flush(&self.events);
+                    return Ok(());
                 }
-            }
-            match self.messages.recv_timeout(Duration::from_millis(40)) {
-                Ok(message) => {
+                BackendInbound::Command(ChatBackendCommand::ForceShutdown) => {
+                    self.assistant_stream.flush(&self.events);
+                    return Err(anyhow!("Claude bridge force-stopped"));
+                }
+                BackendInbound::Command(command) => self.handle_command(command)?,
+                BackendInbound::CommandsClosed => return Ok(()),
+                BackendInbound::Message(message) => {
                     self.handle_message(message)?;
                     self.assistant_stream.flush_due(&self.events);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.assistant_stream.flush_due(&self.events);
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                BackendInbound::FlushTick => self.assistant_stream.flush_due(&self.events),
+                BackendInbound::MessagesClosed => break,
             }
         }
         Ok(())
@@ -45,7 +42,7 @@ impl ClaudeBridgeRuntime {
             ChatBackendCommand::CancelTurn => {
                 self.assistant_stream.flush(&self.events);
                 self.events
-                    .send(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
+                    .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
                     .ok();
                 self.write_json(&json!({ "type": "cancel_turn" }))?;
             }
@@ -89,7 +86,7 @@ impl ClaudeBridgeRuntime {
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
         let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
         self.write_json(&json!({
@@ -136,7 +133,7 @@ impl ClaudeBridgeRuntime {
             "session_ready" => {
                 if let Some(session_id) = message.get("session_id").and_then(Value::as_str) {
                     self.events
-                        .send(ChatBackendEvent::SessionReady {
+                        .send_blocking(ChatBackendEvent::SessionReady {
                             session_id: session_id.to_string(),
                         })
                         .ok();
@@ -145,7 +142,7 @@ impl ClaudeBridgeRuntime {
             "thought_chunk" => {
                 if let Some(text) = message.get("text").and_then(Value::as_str) {
                     self.events
-                        .send(ChatBackendEvent::ThoughtChunk {
+                        .send_blocking(ChatBackendEvent::ThoughtChunk {
                             message_id: message
                                 .get("message_id")
                                 .and_then(Value::as_str)
@@ -157,13 +154,13 @@ impl ClaudeBridgeRuntime {
             }
             "work_log" => {
                 if let Some(entry) = work_log_from_bridge_event(&message) {
-                    self.events.send(ChatBackendEvent::WorkLog(entry)).ok();
+                    self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
                 }
             }
             "pending_user_input" => {
                 let pending = pending_user_input_from_bridge_event(&message);
                 self.events
-                    .send(ChatBackendEvent::PendingUserInput(pending))
+                    .send_blocking(ChatBackendEvent::PendingUserInput(pending))
                     .ok();
             }
             "pending_approval" => {
@@ -188,7 +185,7 @@ impl ClaudeBridgeRuntime {
                     .filter(|detail| !detail.is_empty())
                     .map(str::to_string);
                 self.events
-                    .send(ChatBackendEvent::PendingApproval(PendingApproval::new(
+                    .send_blocking(ChatBackendEvent::PendingApproval(PendingApproval::new(
                         request_id, kind, title, detail,
                     )))
                     .ok();
@@ -206,7 +203,7 @@ impl ClaudeBridgeRuntime {
                         .map(str::to_string)
                         .unwrap_or_else(next_request_id);
                     self.events
-                        .send(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
+                        .send_blocking(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
                             id, markdown,
                         )))
                         .ok();
@@ -238,14 +235,14 @@ impl ClaudeBridgeRuntime {
                     );
                     if !summary.files.is_empty() {
                         self.events
-                            .send(ChatBackendEvent::ChangedFiles(summary))
+                            .send_blocking(ChatBackendEvent::ChangedFiles(summary))
                             .ok();
                     }
                 }
             }
             "usage" => {
                 if let Some(usage) = conversation_usage_from_bridge_message(message) {
-                    self.events.send(ChatBackendEvent::Usage(usage)).ok();
+                    self.events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
                 }
             }
             "status" => {
@@ -261,7 +258,7 @@ impl ClaudeBridgeRuntime {
                 if status == AgentChatStatus::Idle {
                     self.emit_code_review_from_buffer();
                 }
-                self.events.send(ChatBackendEvent::Status(status)).ok();
+                self.events.send_blocking(ChatBackendEvent::Status(status)).ok();
             }
             "error" => {
                 let error = message
@@ -269,7 +266,7 @@ impl ClaudeBridgeRuntime {
                     .and_then(Value::as_str)
                     .unwrap_or("Claude bridge returned an error.")
                     .to_string();
-                self.events.send(ChatBackendEvent::Error(error)).ok();
+                self.events.send_blocking(ChatBackendEvent::Error(error)).ok();
             }
             _ => {}
         }
@@ -279,7 +276,7 @@ impl ClaudeBridgeRuntime {
     fn emit_code_review_from_buffer(&mut self) {
         if let Some(review) = extract_code_review(&self.assistant_buffer) {
             self.events
-                .send(ChatBackendEvent::CodeReview(CodeReview::new(
+                .send_blocking(ChatBackendEvent::CodeReview(CodeReview::new(
                     next_request_id(),
                     review,
                 )))
@@ -287,7 +284,7 @@ impl ClaudeBridgeRuntime {
         }
         if let Some(verification) = extract_verification(&self.assistant_buffer) {
             self.events
-                .send(ChatBackendEvent::Verification(Verification::new(
+                .send_blocking(ChatBackendEvent::Verification(Verification::new(
                     next_request_id(),
                     verification,
                 )))

@@ -301,6 +301,20 @@ impl CenterArea {
                 center.update(cx, |_, cx| cx.notify()).ok();
             })
             .detach();
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(AGENT_CHAT_IDLE_RETIRE_CHECK_INTERVAL)
+                    .await;
+                let Some(center) = this.upgrade() else {
+                    break;
+                };
+                center
+                    .update(cx, |this: &mut Self, cx| {
+                        this.retire_idle_agent_chat_backends(cx)
+                    })
+                    .ok();
+            })
+            .detach();
             cx.spawn(async move |this, cx| {
                 loop {
                     let Some(center) = this.upgrade() else {
@@ -618,8 +632,10 @@ impl CenterArea {
                 agent_chat_usage_expanded: HashSet::new(),
                 agent_chat_render_sessions: HashMap::new(),
                 agent_status_seen: HashMap::new(),
+                agent_verify_scan_seen: HashMap::new(),
                 verification_prompt_pending: HashSet::new(),
                 agent_chat_list_states: HashMap::new(),
+                agent_chat_row_fingerprints: HashMap::new(),
                 agent_chat_list_top_down: HashMap::new(),
                 agent_chat_hydrating: HashSet::new(),
                 agent_chat_hydration_generations: HashMap::new(),

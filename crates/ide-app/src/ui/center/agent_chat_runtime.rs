@@ -837,8 +837,29 @@ impl CenterArea {
         {
             let chats = self.agent_chats.read(cx);
             let agents = self.agents.read(cx);
+            self.agent_verify_scan_seen
+                .retain(|agent_id, _| chats.sessions.contains_key(agent_id));
             for (agent_id, session) in chats.sessions.iter() {
                 let agent = agents.agent(*agent_id);
+                // Skip sessions whose decision inputs haven't changed since
+                // the last scan: the lifecycle walk below reads the whole
+                // timeline, and this observer fires on every event from any
+                // chat. Timeline items relevant to the lifecycle (verification
+                // cards, marker user turns) are only ever appended — each
+                // carries a fresh id — so length + activity stamp track every
+                // mutation that could change the outcome.
+                let scan_key = (
+                    session.timeline.len(),
+                    session.last_activity_at,
+                    session.status,
+                    agent.is_some(),
+                    agent.is_some_and(|agent| agent.verification_completed_at.is_some()),
+                    verification_mode,
+                );
+                if self.agent_verify_scan_seen.get(agent_id) == Some(&scan_key) {
+                    continue;
+                }
+                self.agent_verify_scan_seen.insert(*agent_id, scan_key);
                 let lifecycle = verification_lifecycle(&session.timeline);
                 if lifecycle == VerificationLifecycle::Complete
                     && agent.is_some_and(|agent| agent.verification_completed_at.is_none())
@@ -906,6 +927,72 @@ impl CenterArea {
         for agent_id in fire {
             self.request_agent_verification(agent_id, cx);
         }
+    }
+
+    /// Retire the backend processes of chats that have been idle longer than
+    /// `AGENT_CHAT_IDLE_RETIRE_AFTER`. The conversation stays exactly as it
+    /// is; the next submission restarts the backend and resumes the provider
+    /// session from its saved id. The currently selected chat of every
+    /// project, hydrating chats, and the dedicated design/doc assistants are
+    /// left running, and `AgentChatState::retire_idle_backend` re-checks that
+    /// nothing in-flight (turns, questions, approvals) can be lost.
+    pub(super) fn retire_idle_agent_chat_backends(&mut self, cx: &mut Context<Self>) {
+        let now = unix_now_secs();
+        let selected: HashSet<Uuid> = {
+            let agents = self.agents.read(cx);
+            self.workspace
+                .read(cx)
+                .projects
+                .iter()
+                .filter_map(|project| agents.selected_agent_id(project.id))
+                .collect()
+        };
+        let candidates: Vec<Uuid> = {
+            let chats = self.agent_chats.read(cx);
+            let agents = self.agents.read(cx);
+            chats
+                .sessions
+                .iter()
+                .filter_map(|(agent_id, session)| {
+                    if !chats.has_backend(*agent_id)
+                        || selected.contains(agent_id)
+                        || self.agent_chat_hydrating.contains(agent_id)
+                    {
+                        return None;
+                    }
+                    let idle_for = now.saturating_sub(session.last_activity_at);
+                    if idle_for < AGENT_CHAT_IDLE_RETIRE_AFTER.as_secs() {
+                        return None;
+                    }
+                    // An untouched chat has nothing to resume; retiring it
+                    // would only regress the empty view to a resume prompt.
+                    if session.messages.is_empty() {
+                        return None;
+                    }
+                    let mut record = agents.agent(*agent_id)?.clone();
+                    if record.hidden_doc_assistant || record.design_context.is_some() {
+                        return None;
+                    }
+                    // Use the exact resume predicate the restart path enforces
+                    // (it is provider-specific), on the same merged record it
+                    // will see. Anything that cannot restart must keep its
+                    // backend, or the chat would strand behind the guard.
+                    self.apply_live_chat_session_ids(&mut record, cx);
+                    if !agent_has_backend_resume_id(&record) {
+                        return None;
+                    }
+                    Some(*agent_id)
+                })
+                .collect()
+        };
+        if candidates.is_empty() {
+            return;
+        }
+        self.agent_chats.update(cx, |chats, cx| {
+            for agent_id in candidates {
+                chats.retire_idle_backend(agent_id, cx);
+            }
+        });
     }
 
     /// Apply a Settings change to any verification decisions already waiting
