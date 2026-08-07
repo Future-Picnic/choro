@@ -119,6 +119,11 @@ impl CodexRuntime {
         let Some(thread_id) = self.thread_id.clone() else {
             return Err(anyhow!("Codex thread is not started"));
         };
+        self.finish_reconnect(
+            WorkLogStatus::Completed,
+            "Reconnect superseded by a new turn",
+            None,
+        );
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.plan_buffer.clear();
@@ -329,6 +334,7 @@ impl CodexRuntime {
 
     fn cancel_turn(&mut self) -> anyhow::Result<()> {
         self.assistant_stream.flush(&self.events);
+        self.finish_reconnect(WorkLogStatus::Completed, "Reconnect stopped", None);
         self.deny_all_pending_approvals()?;
         if let Some(thread_id) = self.thread_id.clone() {
             self.notify("turn/cancel", json!({ "threadId": thread_id }))?;
@@ -349,6 +355,13 @@ impl CodexRuntime {
 
     fn handle_message(&mut self, message: Value) -> anyhow::Result<()> {
         if message.get("method").is_some() && message.get("id").is_some() {
+            if message
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(codex_event_confirms_recovery)
+            {
+                self.finish_reconnect(WorkLogStatus::Completed, "Reconnected to Codex", None);
+            }
             return self.handle_server_request(message);
         }
 
@@ -356,6 +369,9 @@ impl CodexRuntime {
             return Ok(());
         };
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        if codex_event_confirms_recovery(method) {
+            self.finish_reconnect(WorkLogStatus::Completed, "Reconnected to Codex", None);
+        }
         if method != "item/agentMessage/delta" {
             self.assistant_stream.flush(&self.events);
         }
@@ -503,14 +519,67 @@ impl CodexRuntime {
                 }
             }
             "error" => {
-                self.pending_approvals.clear();
-                self.events
-                    .send(ChatBackendEvent::Error(params.to_string()))
-                    .ok();
+                match codex_error_disposition(&params) {
+                    CodexErrorDisposition::Retry {
+                        message,
+                        detail,
+                        turn_id,
+                    } => {
+                        let id = self
+                            .active_reconnect_work_log_id
+                            .get_or_insert_with(|| {
+                                turn_id
+                                    .map(|turn_id| format!("codex-reconnect-{turn_id}"))
+                                    .unwrap_or_else(|| {
+                                        format!("codex-reconnect-{}", next_request_id())
+                                    })
+                            })
+                            .clone();
+                        self.events
+                            .send(ChatBackendEvent::WorkLog(
+                                WorkLogEntry::new(
+                                    id.clone(),
+                                    id,
+                                    WorkLogEntryKind::System,
+                                    message,
+                                    WorkLogStatus::InProgress,
+                                )
+                                .detail(detail),
+                            ))
+                            .ok();
+                        // A retry notification is progress within the active turn,
+                        // not a terminal backend failure. Keeping Running makes new
+                        // composer submissions queue until this turn really ends.
+                        self.events
+                            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+                            .ok();
+                    }
+                    CodexErrorDisposition::Terminal { message } => {
+                        self.finish_reconnect(
+                            WorkLogStatus::Failed,
+                            "Could not reconnect to Codex",
+                            Some(message.clone()),
+                        );
+                        self.pending_approvals.clear();
+                        self.events.send(ChatBackendEvent::Error(message)).ok();
+                    }
+                }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    fn finish_reconnect(&mut self, status: WorkLogStatus, title: &str, detail: Option<String>) {
+        let Some(id) = self.active_reconnect_work_log_id.take() else {
+            return;
+        };
+        self.events
+            .send(ChatBackendEvent::WorkLog(
+                WorkLogEntry::new(id.clone(), id, WorkLogEntryKind::System, title, status)
+                    .detail(detail),
+            ))
+            .ok();
     }
 
     fn emit_pending_changed_files(&mut self) {

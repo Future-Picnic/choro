@@ -323,7 +323,7 @@ impl Render for CenterArea {
             .clamp(0.0, PROJECT_PREVIEW_PANEL_MAX_RATIO);
         let preview_layout_view = cx.entity().clone();
         let project_preview_panel =
-            show_project_preview.then(|| self.render_project_preview_panel(project, cx));
+            show_project_preview.then(|| self.render_project_preview_panel(project, window, cx));
 
         v_flex()
             .size_full()

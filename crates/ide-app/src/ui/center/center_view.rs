@@ -79,7 +79,7 @@ impl CenterArea {
                     (None, receiver)
                 }
             };
-        cx.new(move |cx| {
+        let center = cx.new(move |cx| {
             cx.observe(&workspace, |this: &mut Self, _, cx| {
                 this.refresh_open_code_models(false, cx);
                 this.reconcile_verification_mode(cx);
@@ -93,13 +93,13 @@ impl CenterArea {
                 if let PenpotEvent::DesignCreated {
                     project,
                     design_id,
-                    initial_prompt,
+                    initial_draft,
                 } = event
                 {
                     this.open_penpot_design_request(
                         *project,
                         *design_id,
-                        initial_prompt.clone(),
+                        initial_draft.clone(),
                         cx,
                     );
                 }
@@ -139,6 +139,9 @@ impl CenterArea {
                 if let DocsEvent::OpenReference { doc_path, target } = event {
                     this.pending_reference_open = Some((doc_path.clone(), target.clone()));
                     cx.notify();
+                }
+                if matches!(event, DocsEvent::Changed) {
+                    this.schedule_solo_docs_refresh(cx);
                 }
             })
             .detach();
@@ -561,6 +564,7 @@ impl CenterArea {
                 penpot_editing_settings: false,
                 penpot_assistant_open: false,
                 design_mcp_readiness: HashMap::new(),
+                pending_design_assistant_drafts: HashMap::new(),
                 pending_design_assistant_submissions: HashMap::new(),
                 design_mcp_disconnect_tokens: HashMap::new(),
                 penpot_compare_open: false,
@@ -585,6 +589,7 @@ impl CenterArea {
                 project_preview_available_width: 0.0,
                 project_preview_resize: None,
                 project_preview_selected_urls: HashMap::new(),
+                project_preview_url_inputs: HashMap::new(),
                 project_preview_project_urls: HashMap::new(),
                 project_preview_solo_urls: HashMap::new(),
                 project_preview_records: HashMap::new(),
@@ -656,6 +661,7 @@ impl CenterArea {
                 agent_title_edit: None,
                 agent_start_errors: HashMap::new(),
                 lane_setups: HashMap::new(),
+                solo_docs_refresh_generation: 0,
                 lane_exit_pending: HashSet::new(),
                 rejoin_ready_checks: HashMap::new(),
                 rejoin_ready_inflight: HashSet::new(),
@@ -705,6 +711,8 @@ impl CenterArea {
                 agents_panel_reset_epoch: 0,
                 git_diff_open_epoch: 0,
             }
-        })
+        });
+        center.update(cx, |this, cx| this.schedule_solo_docs_refresh(cx));
+        center
     }
 }

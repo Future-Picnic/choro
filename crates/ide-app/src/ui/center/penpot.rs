@@ -399,44 +399,15 @@ impl CenterArea {
         &mut self,
         project: ProjectId,
         design_id: Uuid,
-        initial_prompt: Option<String>,
+        initial_draft: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let prompt = initial_prompt.filter(|prompt| !prompt.trim().is_empty());
-        self.open_penpot_design_surface(project, design_id, prompt.is_some(), cx);
-        let Some(prompt) = prompt else {
-            return;
-        };
-        let Some((_, project_path)) = self.project_by_id(project, cx) else {
-            return;
-        };
-        let Some(design) = self.penpot.read(cx).design(project, design_id) else {
-            return;
-        };
-        let Some(conversation) = self.penpot.read(cx).current_conversation(project) else {
-            return;
-        };
-        let relative = penpot_assistant::conversation_record_path(design.id, conversation.id);
-        let record = penpot_conversation_record(project, relative, &conversation);
-        let record = self.doc_assistants.update(cx, |assistants, cx| {
-            assistants.upsert_external_record(record, cx)
-        });
-        self.hydrate_doc_assistant_chat_session(&record, &project_path, cx);
-        let design_url = self
-            .penpot
-            .read(cx)
-            .selected_design_url(project)
-            .unwrap_or_default();
-        let agent =
-            Self::penpot_assistant_agent_record(&record, project_path, &design, &design_url);
-        self.dispatch_agent_chat_submission_with_agent(
-            &agent,
-            prompt.clone(),
-            Some(prompt),
-            Vec::new(),
-            AgentInteractionMode::Default,
-            cx,
-        );
+        let draft = initial_draft.filter(|prompt| !prompt.trim().is_empty());
+        if let Some(draft) = draft.as_ref() {
+            self.pending_design_assistant_drafts
+                .insert(design_id, draft.clone());
+        }
+        self.open_penpot_design_surface(project, design_id, draft.is_some(), cx);
     }
 
     pub(super) fn create_penpot_design_for_doc(
@@ -2326,6 +2297,20 @@ impl CenterArea {
             conversation_id: conversation.id,
             relative_doc_path: relative.clone(),
         };
+        if let Some(draft) = self.pending_design_assistant_drafts.remove(&design.id) {
+            let input = self.agent_chat_input(&agent, surface.input_placeholder(), window, cx);
+            if input.read(cx).value().trim().is_empty() {
+                input.update(cx, |input, cx| {
+                    input.set_value(draft.clone(), window, cx);
+                    input.set_cursor_position(
+                        input_position_for_byte_offset(&draft, draft.len()),
+                        window,
+                        cx,
+                    );
+                    input.focus(window, cx);
+                });
+            }
+        }
         let conversations = self
             .penpot
             .read(cx)

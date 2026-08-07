@@ -171,18 +171,6 @@ impl CenterArea {
                             .child("Doc Assistant"),
                     )
                     .child(
-                        div()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_size(crate::ui::design::text_ui())
-                            .text_color(crate::ui::design::t3(cx))
-                            .child(format!(
-                                "{} · {}",
-                                agent.provider.label(),
-                                agent.model.label()
-                            )),
-                    )
-                    .child(
                         crate::ui::style::ghost_button_compact("reset-doc-assistant-chat", "Reset")
                             .on_click({
                                 let relative = relative_doc_path.clone();

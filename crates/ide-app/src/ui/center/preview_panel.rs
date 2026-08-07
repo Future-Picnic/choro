@@ -95,6 +95,26 @@ fn preview_label(url: &str) -> String {
         .to_string()
 }
 
+fn normalize_project_preview_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Enter a URL to open in Preview".to_string());
+    }
+    let candidate = if value.contains("://") || value.starts_with("file:") {
+        value.to_string()
+    } else {
+        format!("http://{value}")
+    };
+    let parsed = url::Url::parse(&candidate)
+        .map_err(|_| "Enter a valid http, https, or file URL".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" if parsed.host_str().is_some() => Ok(parsed.to_string()),
+        "file" if parsed.to_file_path().is_ok() => Ok(parsed.to_string()),
+        "http" | "https" => Err("The Preview URL needs a host".to_string()),
+        _ => Err("Preview supports http, https, and file URLs".to_string()),
+    }
+}
+
 type PreviewServerOrigin = (String, String, Option<u16>);
 
 fn preview_server_origin(value: &str) -> Option<PreviewServerOrigin> {
@@ -511,8 +531,10 @@ impl CenterArea {
         project_id: ProjectId,
         finished: bool,
         live_url: String,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.set_project_preview_url_input(project_id, &live_url, window, cx);
         let Some(barrier) = self.project_preview_control_navigation_barrier.as_mut() else {
             return;
         };
@@ -548,8 +570,10 @@ impl CenterArea {
         project_id: ProjectId,
         command_id: Uuid,
         live_url: String,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.set_project_preview_url_input(project_id, &live_url, window, cx);
         let matches_barrier =
             self.project_preview_control_navigation_barrier
                 .is_some_and(|barrier| {
@@ -1470,7 +1494,7 @@ impl CenterArea {
                     url,
                 } => {
                     self.project_preview_same_document_navigation_settled(
-                        project_id, command_id, url, cx,
+                        project_id, command_id, url, window, cx,
                     );
                 }
                 web_preview::ProjectPreviewMessage::AgentPageLoad {
@@ -1478,7 +1502,7 @@ impl CenterArea {
                     finished,
                     url,
                 } => {
-                    self.project_preview_page_load_changed(project_id, finished, url, cx);
+                    self.project_preview_page_load_changed(project_id, finished, url, window, cx);
                 }
                 web_preview::ProjectPreviewMessage::AgentSnapshotReady {
                     project_id,
@@ -1506,9 +1530,131 @@ impl CenterArea {
         }
     }
 
+    fn project_preview_url_input(
+        &mut self,
+        project: ProjectId,
+        initial_url: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(input) = self.project_preview_url_inputs.get(&project) {
+            return input.clone();
+        }
+        let initial_url = initial_url.unwrap_or_default().to_string();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enter a URL")
+                .default_value(initial_url)
+        });
+        cx.subscribe_in(
+            &input,
+            window,
+            move |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => {
+                    this.navigate_project_preview_from_url_input(project, window, cx)
+                }
+                InputEvent::Focus => {
+                    this.project_preview_ui
+                        .entry(project)
+                        .or_default()
+                        .url_editing = true;
+                }
+                InputEvent::Blur => {
+                    this.project_preview_ui
+                        .entry(project)
+                        .or_default()
+                        .url_editing = false;
+                    this.sync_project_preview_live_url(project, window, cx);
+                }
+                InputEvent::Change | InputEvent::SelectionChange => {}
+            },
+        )
+        .detach();
+        self.project_preview_url_inputs
+            .insert(project, input.clone());
+        input
+    }
+
+    fn set_project_preview_url_input(
+        &mut self,
+        project: ProjectId,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if url == "about:blank"
+            || self
+                .project_preview_selected_urls
+                .get(&project)
+                .is_some_and(|source| ios_simulator_preview::source_udid(source).is_some())
+        {
+            return;
+        }
+        let Some(input) = self.project_preview_url_inputs.get(&project).cloned() else {
+            return;
+        };
+        if input.read(cx).value().as_ref() != url {
+            let url = url.to_string();
+            input.update(cx, move |input, cx| input.set_value(url, window, cx));
+        }
+    }
+
+    fn sync_project_preview_live_url(
+        &mut self,
+        project: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(url) = self
+            .project_preview_host()
+            .update(cx, |host, _| host.project_preview_live_url(project))
+        else {
+            return;
+        };
+        self.set_project_preview_url_input(project, &url, window, cx);
+    }
+
+    fn navigate_project_preview_from_url_input(
+        &mut self,
+        project: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.project_preview_url_inputs.get(&project).cloned() else {
+            return;
+        };
+        let value = input.read(cx).value().to_string();
+        let url = match normalize_project_preview_url(&value) {
+            Ok(url) => url,
+            Err(message) => {
+                self.set_project_preview_status(project, Some(message));
+                cx.notify();
+                return;
+            }
+        };
+        match self.project_preview_host().update(cx, |host, _| {
+            host.navigate_project_preview_url(project, &url)
+        }) {
+            Ok(()) => {
+                input.update(cx, |input, cx| input.set_value(url.clone(), window, cx));
+                self.project_preview_inspecting = None;
+                let _ = self
+                    .project_preview_host()
+                    .update(cx, |host, _| host.set_project_preview_inspecting(false));
+                self.set_project_preview_status(
+                    project,
+                    Some(format!("Opening {}…", preview_label(&url))),
+                );
+            }
+            Err(message) => self.set_project_preview_status(project, Some(message)),
+        }
+        cx.notify();
+    }
+
     pub(super) fn render_project_preview_panel(
         &mut self,
         project: ProjectId,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let choices = self.project_preview_choices(project, cx);
@@ -1525,6 +1671,21 @@ impl CenterArea {
             self.agents.read(cx).selected_agent(project)
         };
         let active_is_simulator = active.as_ref().is_some_and(PreviewChoice::is_simulator);
+        let url_input = self.project_preview_url_input(
+            project,
+            (!active_is_simulator)
+                .then_some(active_url.as_deref())
+                .flatten(),
+            window,
+            cx,
+        );
+        let url_editing = self
+            .project_preview_ui
+            .get(&project)
+            .is_some_and(|ui| ui.url_editing);
+        if !active_is_simulator && !url_editing {
+            self.sync_project_preview_live_url(project, window, cx);
+        }
         let active_simulator_udid = active
             .as_ref()
             .filter(|choice| choice.is_simulator())
@@ -1701,7 +1862,26 @@ impl CenterArea {
                                     .size(crate::ui::design::icon_sm())
                                     .text_color(crate::ui::design::t3(cx)),
                             )
-                            .child(service_selector),
+                            .child(service_selector)
+                            .when(!active_is_simulator, |row| {
+                                row.child(
+                                    div()
+                                        .min_w(px(96.))
+                                        .flex_1()
+                                        .child(
+                                            Input::new(&url_input)
+                                                .small()
+                                                .h(crate::ui::design::control_h_sm())
+                                                .w_full()
+                                                .disabled(active.is_none())
+                                                .prefix(
+                                                    Icon::new(IconName::Globe)
+                                                        .size(crate::ui::design::icon_sm())
+                                                        .text_color(crate::ui::design::t3(cx)),
+                                                ),
+                                        ),
+                                )
+                            }),
                     )
                     .child(
                         style::header_icon_button(
@@ -2054,12 +2234,30 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        explicit_preview_choice, preview_choice_matches_agent, preview_control_policy_allows_url,
-        preview_control_security_policy, preview_server_origin, resized_project_preview_ratio,
-        stored_preview_is_available, take_latest_preview_scope, PreviewChoice, PreviewScope,
-        ProjectPreviewUiState, ProjectPreviewViewport, SoloPreviewOwner,
-        PROJECT_PREVIEW_PANEL_MAX_RATIO, PROJECT_PREVIEW_PANEL_MIN,
+        explicit_preview_choice, normalize_project_preview_url, preview_choice_matches_agent,
+        preview_control_policy_allows_url, preview_control_security_policy, preview_server_origin,
+        resized_project_preview_ratio, stored_preview_is_available, take_latest_preview_scope,
+        PreviewChoice, PreviewScope, ProjectPreviewUiState, ProjectPreviewViewport,
+        SoloPreviewOwner, PROJECT_PREVIEW_PANEL_MAX_RATIO, PROJECT_PREVIEW_PANEL_MIN,
     };
+
+    #[test]
+    fn preview_address_bar_normalizes_common_local_urls() {
+        assert_eq!(
+            normalize_project_preview_url(" localhost:5173/app ").unwrap(),
+            "http://localhost:5173/app"
+        );
+        assert_eq!(
+            normalize_project_preview_url("https://example.com/preview").unwrap(),
+            "https://example.com/preview"
+        );
+    }
+
+    #[test]
+    fn preview_address_bar_rejects_empty_and_unsupported_urls() {
+        assert!(normalize_project_preview_url(" ").is_err());
+        assert!(normalize_project_preview_url("ftp://localhost/file").is_err());
+    }
 
     #[test]
     fn mobile_viewport_is_scoped_to_one_project() {

@@ -509,6 +509,12 @@ impl AgentRecords {
             .iter_mut()
             .filter(|agent| agent.project_id == project)
         {
+            let next_doc = move_doc_mentions(&agent.doc, previous, next);
+            if next_doc != agent.doc {
+                agent.doc = next_doc;
+                agent.updated_at = agents::unix_now();
+                changed = true;
+            }
             if agent.source_doc.as_deref() == Some(previous) {
                 agent.source_doc = Some(next.to_path_buf());
                 agent.updated_at = agents::unix_now();
@@ -735,6 +741,12 @@ fn sort_implementation_history(agents: &mut [AgentRecord]) {
     });
 }
 
+fn move_doc_mentions(prompt: &str, previous: &std::path::Path, next: &std::path::Path) -> String {
+    let previous = format!("@@{}", previous.to_string_lossy());
+    let next = format!("@@{}", next.to_string_lossy());
+    prompt.replace(&previous, &next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -867,6 +879,19 @@ mod tests {
                 .map(|agent| agent.id)
                 .collect::<Vec<_>>(),
             vec![newest.id, older.id]
+        );
+    }
+
+    #[test]
+    fn moving_a_doc_reference_updates_mentions_in_the_stored_launch_prompt() {
+        let prompt = "Read @@choro_docs/old-name.choro first.\n\nRelevant docs:\n- choro_docs/old-name.choro\n";
+        assert_eq!(
+            move_doc_mentions(
+                prompt,
+                std::path::Path::new("choro_docs/old-name.choro"),
+                std::path::Path::new("choro_docs/new-name.choro"),
+            ),
+            "Read @@choro_docs/new-name.choro first.\n\nRelevant docs:\n- choro_docs/old-name.choro\n"
         );
     }
 }

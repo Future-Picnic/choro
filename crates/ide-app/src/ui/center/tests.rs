@@ -302,6 +302,42 @@ fn preview_attachment_is_saved_as_a_message_tag() {
 }
 
 #[test]
+fn editing_a_queued_turn_restores_its_image_attachment() {
+    let image = PathBuf::from("/tmp/choro-queued-image.png");
+    let turn = QueuedChatTurn {
+        id: Uuid::new_v4(),
+        text: prompt_with_attached_files("Describe this image", std::slice::from_ref(&image)),
+        display_text: Some("Describe this image".to_string()),
+        tags: Vec::new(),
+        mode: AgentInteractionMode::Default,
+        created_at: 1,
+    };
+
+    let (text, attached_files) = queued_turn_composer_draft(&turn);
+
+    assert_eq!(text, "Describe this image");
+    assert_eq!(attached_files, vec![image]);
+}
+
+#[test]
+fn editing_a_legacy_queued_turn_keeps_attachment_metadata_out_of_the_input() {
+    let image = PathBuf::from("/tmp/choro-legacy-image.png");
+    let turn = QueuedChatTurn {
+        id: Uuid::new_v4(),
+        text: prompt_with_attached_files("Review", std::slice::from_ref(&image)),
+        display_text: None,
+        tags: Vec::new(),
+        mode: AgentInteractionMode::Default,
+        created_at: 1,
+    };
+
+    let (text, attached_files) = queued_turn_composer_draft(&turn);
+
+    assert_eq!(text, "Review");
+    assert_eq!(attached_files, vec![image]);
+}
+
+#[test]
 fn removed_visual_tag_values_do_not_drop_historical_messages() {
     let tag: AgentChatMessageTag = serde_json::from_str(
         r#"{"kind":"retired_visual_runtime","label":"Old review","detail":null}"#,

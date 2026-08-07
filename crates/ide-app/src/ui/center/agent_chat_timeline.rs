@@ -198,6 +198,11 @@ impl CenterArea {
         let provider_switch_locked = has_saved_session
             || !session.messages.is_empty()
             || self.agent_chats.read(cx).has_backend(agent.id);
+        let is_initial_design_turn = should_show_design_start(
+            compact_design_surface,
+            provider_switch_locked,
+            !session.messages.is_empty(),
+        );
         let is_hydrating = self.agent_chat_hydrating.contains(&agent.id)
             && session.messages.is_empty()
             && session.timeline.is_empty();
@@ -286,7 +291,7 @@ impl CenterArea {
                     .when(top_down, |composer| composer.flex_col_reverse())
                     .w_full()
                     .px(crate::ui::design::agent_chat_gutter_x())
-                    .when(compact_design_surface, |composer| composer.px_2())
+                    .when(compact_assistant_controls, |composer| composer.px_2())
                     // Tight bottom padding drops the composer to sit just above
                     // the Terminal/Files/Notes bar, level with the commit box.
                     .pt_3()
@@ -527,7 +532,7 @@ impl CenterArea {
                             .px_3p5()
                             .pt_3p5()
                             .pb_3()
-                            .when(compact_design_surface, |frame| {
+                            .when(compact_assistant_controls, |frame| {
                                 frame.px_2().pt_2().pb_2()
                             })
                             .can_drop(|dragged, _, _| dragged.is::<ExternalPaths>())
@@ -1137,6 +1142,43 @@ impl CenterArea {
                                                     }
                                                 }))
                                                 .into_any_element()
+                                        } else if is_initial_design_turn {
+                                            let button = crate::ui::style::primary_button_compact(
+                                                (
+                                                    "agent-chat-start-design",
+                                                    agent.id.as_u128() as u64,
+                                                ),
+                                                "Start",
+                                                cx,
+                                            )
+                                            .icon(IconName::ArrowUp)
+                                            .disabled(!can_send)
+                                            .tooltip(if can_send {
+                                                "Start designing with the selected model"
+                                            } else {
+                                                "Enter a design request before starting"
+                                            });
+                                            if can_send {
+                                                button
+                                                    .on_click(cx.listener({
+                                                        let agent = agent.clone();
+                                                        let input = input.clone();
+                                                        let surface = surface.clone();
+                                                        move |this, _, window, cx| {
+                                                            this.submit_agent_chat_message_for_surface(
+                                                                &agent,
+                                                                input.clone(),
+                                                                false,
+                                                                &surface,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }))
+                                                    .into_any_element()
+                                            } else {
+                                                button.into_any_element()
+                                            }
                                         } else {
                                             // A Solo sends in sky — the lane
                                             // color rides the act itself.
@@ -1222,6 +1264,14 @@ fn compact_assistant_model_label(label: &str) -> String {
     }
 }
 
+fn should_show_design_start(
+    is_design_surface: bool,
+    provider_switch_locked: bool,
+    has_messages: bool,
+) -> bool {
+    is_design_surface && !provider_switch_locked && !has_messages
+}
+
 fn assistant_open_code_effort(variants: &[String], current: AgentEffort) -> AgentEffort {
     let supported = AgentEffort::supported_variants(variants);
     if supported.is_empty() || supported.contains(&current) {
@@ -1259,6 +1309,14 @@ mod assistant_control_tests {
             assistant_open_code_effort(&variants, AgentEffort::Max),
             AgentEffort::High
         );
+    }
+
+    #[test]
+    fn design_start_is_only_shown_before_the_first_explicit_turn() {
+        assert!(should_show_design_start(true, false, false));
+        assert!(!should_show_design_start(false, false, false));
+        assert!(!should_show_design_start(true, true, false));
+        assert!(!should_show_design_start(true, false, true));
     }
 
     #[test]

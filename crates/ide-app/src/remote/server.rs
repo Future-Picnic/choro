@@ -294,6 +294,10 @@ fn router(state: ServerState) -> Router {
             "/v1/agents/{agent_id}/visualizations/snapshot",
             get(visualization_snapshot),
         )
+        .route(
+            "/v1/agents/{agent_id}/images/preview",
+            get(generated_image_preview),
+        )
         .route("/v1/events", get(events))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -638,6 +642,41 @@ async fn visualization_snapshot(
         Ok(Ok(Err(error))) => api_error(error),
         Ok(Err(_)) => api_error(RemoteError::internal("desktop capture was cancelled")),
         Err(_) => api_error(RemoteError::internal("desktop capture timed out")),
+    }
+}
+
+async fn generated_image_preview(
+    State(state): State<ServerState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<VisualizationSnapshotQuery>,
+) -> Response {
+    let (response_tx, response_rx) = oneshot::channel();
+    if state
+        .commands
+        .send(RemoteCommand::CaptureGeneratedImage {
+            agent_id,
+            path: query.path,
+            response: response_tx,
+        })
+        .await
+        .is_err()
+    {
+        return api_error(RemoteError::internal(
+            "desktop command bridge is unavailable",
+        ));
+    }
+    match tokio::time::timeout(COMMAND_TIMEOUT, response_rx).await {
+        Ok(Ok(Ok(jpeg))) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "private, max-age=300"),
+            ],
+            jpeg,
+        )
+            .into_response(),
+        Ok(Ok(Err(error))) => api_error(error),
+        Ok(Err(_)) => api_error(RemoteError::internal("image preview was cancelled")),
+        Err(_) => api_error(RemoteError::internal("image preview timed out")),
     }
 }
 

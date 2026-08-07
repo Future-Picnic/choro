@@ -1672,8 +1672,8 @@ impl CenterArea {
     }
 
     /// Pull a queued turn back into the composer for editing: its visible text
-    /// is loaded into the input with the cursor at the end, and the turn is
-    /// removed from the queue so re-sending it re-queues a fresh copy.
+    /// and attachments are restored, the cursor moves to the end, and the turn
+    /// is removed from the queue so re-sending it re-queues a fresh copy.
     pub(super) fn edit_queued_turn_into_composer(
         &mut self,
         agent_id: Uuid,
@@ -1684,22 +1684,24 @@ impl CenterArea {
         let Some(input) = self.agent_chat_inputs.get(&agent_id).cloned() else {
             return;
         };
-        let Some(text) = self
+        let Some((text, attached_files)) = self
             .agent_chats
             .read(cx)
             .session(agent_id)
             .and_then(|session| session.queued_turns.iter().find(|turn| turn.id == turn_id))
-            .map(|turn| {
-                turn.display_text
-                    .clone()
-                    .unwrap_or_else(|| visible_agent_chat_submission_text(&turn.text).to_string())
-            })
+            .map(queued_turn_composer_draft)
         else {
             return;
         };
         self.agent_chats.update(cx, |chats, cx| {
             chats.remove_queued_turn(agent_id, turn_id, cx)
         });
+        if attached_files.is_empty() {
+            self.agent_chat_attached_files.remove(&agent_id);
+        } else {
+            self.agent_chat_attached_files
+                .insert(agent_id, attached_files);
+        }
         input.update(cx, |input, cx| {
             input.set_value(text.clone(), window, cx);
             input.set_cursor_position(

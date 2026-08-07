@@ -1309,6 +1309,7 @@ struct ProjectPreviewUiState {
     open: bool,
     status: Option<String>,
     viewport: ProjectPreviewViewport,
+    url_editing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1344,6 +1345,10 @@ pub struct CenterArea {
     /// Exact remote-file readiness for each dedicated Design Assistant.
     /// A backend is never launched until its live canvas proves this identity.
     design_mcp_readiness: HashMap<Uuid, DesignMcpReadiness>,
+    /// Generated first-turn prompts waiting to be placed in a newly created
+    /// design's composer. Creation only stages the draft; the user chooses the
+    /// assistant model and explicitly starts the turn from the design sidebar.
+    pending_design_assistant_drafts: HashMap<Uuid, String>,
     pending_design_assistant_submissions: HashMap<Uuid, VecDeque<PendingDesignAssistantSubmission>>,
     /// Debounce tokens for transient live-canvas disconnects. A reconnect
     /// invalidates the token before an active assistant is stopped.
@@ -1396,6 +1401,9 @@ pub struct CenterArea {
     project_preview_resize: Option<ProjectPreviewResizeState>,
     /// Source currently mounted in the project's Preview panel.
     project_preview_selected_urls: HashMap<ProjectId, String>,
+    /// Browser-style address fields for open web previews, scoped per project
+    /// so switching workspaces preserves each in-progress edit.
+    project_preview_url_inputs: HashMap<ProjectId, Entity<InputState>>,
     /// Last explicitly viewed project-wide web source, retained while a Solo
     /// temporarily owns the visible Preview.
     project_preview_project_urls: HashMap<ProjectId, String>,
@@ -1525,6 +1533,9 @@ pub struct CenterArea {
     /// Live "Preparing lane" state per Solo agent; entries disappear once
     /// setup fully succeeds and stay visible on failure (with retry).
     lane_setups: HashMap<Uuid, agent_lane::LaneSetup>,
+    /// Debounces canonical Choro Doc saves into refreshes of active Solo
+    /// snapshots. The snapshots remain read-only and outside Git history.
+    solo_docs_refresh_generation: u64,
     /// Rejoin/Ship/Discard are destructive lifecycle transitions. One in-flight
     /// action per Solo prevents double merges and overlapping worktree removal.
     lane_exit_pending: HashSet<Uuid>,

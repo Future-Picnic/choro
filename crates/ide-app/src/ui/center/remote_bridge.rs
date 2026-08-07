@@ -3,9 +3,10 @@ use super::*;
 use crate::remote::dto::{
     AccessModeConfigurationDto, AgentListItemDto, AgentSnapshotDto, ApprovalDecisionDto,
     ChangedFileDto, CommandAcceptedResponse, ConfigurationCatalogDto, DiffHunkDto, DiffLineDto,
-    EffortConfigurationDto, FileDiffDto, InteractionModeDto, ModelConfigurationDto,
-    PendingApprovalDto, PendingOptionDto, PendingQuestionDto, PendingUserInputDto, ProjectDto,
-    ProviderConfigurationDto, ShipStateDto, TimelineItemDto, VerificationItemDto,
+    EffortConfigurationDto, FileDiffDto, InteractionModeDto, MessageImageDto,
+    ModelConfigurationDto, PendingApprovalDto, PendingOptionDto, PendingQuestionDto,
+    PendingUserInputDto, ProjectDto, ProviderConfigurationDto, ShipStateDto, TimelineItemDto,
+    VerificationItemDto,
 };
 use crate::remote::{RemoteCommand, RemoteError, RemoteResult};
 use crate::state::agent_chat::VerificationStatus;
@@ -340,6 +341,26 @@ impl CenterArea {
                     });
                 });
             }
+            RemoteCommand::CaptureGeneratedImage {
+                agent_id,
+                path,
+                response,
+            } => {
+                let result = parse_agent_id(&agent_id)
+                    .and_then(|agent_id| self.remote_generated_image_path(agent_id, &path, cx));
+                let path = match result {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                        return;
+                    }
+                };
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = response.send(encode_generated_image_preview(&path));
+                    })
+                    .detach();
+            }
             RemoteCommand::RequestVerificationFix {
                 agent_id,
                 request,
@@ -591,6 +612,59 @@ impl CenterArea {
             solo: agent.is_solo(),
             solo_branch: agent.solo_branch.clone(),
         }
+    }
+
+    fn remote_generated_image_path(
+        &self,
+        agent_id: Uuid,
+        requested: &str,
+        cx: &App,
+    ) -> RemoteResult<std::path::PathBuf> {
+        let agent = self
+            .agents
+            .read(cx)
+            .agent(agent_id)
+            .cloned()
+            .filter(|agent| !agent.hidden_doc_assistant)
+            .ok_or_else(|| RemoteError::not_found("agent not found"))?;
+        let live_session = self.agent_chats.read(cx).session(agent_id).cloned();
+        let hydration = if live_session
+            .as_ref()
+            .is_none_or(|session| session.timeline.is_empty())
+        {
+            Self::load_chat_session_hydration(&agent)
+        } else {
+            None
+        };
+        let timeline = live_session
+            .as_ref()
+            .filter(|session| !session.timeline.is_empty())
+            .map(|session| session.timeline.clone())
+            .or_else(|| hydration.map(|hydration| hydration.timeline))
+            .unwrap_or_default();
+        let requested = std::path::Path::new(requested);
+        let requested = requested
+            .canonicalize()
+            .map_err(|_| RemoteError::not_found("generated image is not available"))?;
+        let remains_generated = requested.components().any(|component| {
+            matches!(component, std::path::Component::Normal(value) if value == "generated_images")
+        });
+        if !remains_generated {
+            return Err(RemoteError::not_found("generated image is not available"));
+        }
+        let advertised = timeline.iter().any(|item| match item {
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant { text, .. }) => {
+                message_image_dtos(text).iter().any(|image| {
+                    std::path::Path::new(&image.path)
+                        .canonicalize()
+                        .is_ok_and(|path| path == requested)
+                })
+            }
+            _ => false,
+        });
+        advertised
+            .then_some(requested)
+            .ok_or_else(|| RemoteError::not_found("generated image is not available"))
     }
 
     fn remote_create_agent(
@@ -894,6 +968,7 @@ fn timeline_item_dto(
             role: "user".into(),
             text: text.clone(),
             created_at: *created_at,
+            images: Vec::new(),
         }),
         AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
             text, created_at, ..
@@ -901,6 +976,7 @@ fn timeline_item_dto(
             role: "assistant".into(),
             text: text.clone(),
             created_at: *created_at,
+            images: message_image_dtos(text),
         }),
         AgentChatTimelineItem::Message(AgentChatMessage::Thought {
             text, created_at, ..
@@ -908,6 +984,7 @@ fn timeline_item_dto(
             role: "thought".into(),
             text: text.clone(),
             created_at: *created_at,
+            images: Vec::new(),
         }),
         AgentChatTimelineItem::WorkLog(entry) => Some(TimelineItemDto::WorkLog {
             title: entry.title.clone(),
@@ -973,6 +1050,92 @@ fn timeline_item_dto(
         // actions the remote protocol doesn't carry yet.
         AgentChatTimelineItem::MemoryProposal(_) => None,
     }
+}
+
+fn message_image_dtos(text: &str) -> Vec<MessageImageDto> {
+    text.lines()
+        .filter_map(markdown_generated_image)
+        .map(|(alt, path)| MessageImageDto {
+            path: path.to_string_lossy().to_string(),
+            alt,
+        })
+        .collect()
+}
+
+fn markdown_generated_image(line: &str) -> Option<(String, std::path::PathBuf)> {
+    let line = line.trim();
+    let after_open = line.strip_prefix("![")?;
+    let alt_end = after_open.find(']')?;
+    let alt = after_open[..alt_end].trim();
+    let raw_target = after_open[alt_end + 1..]
+        .strip_prefix('(')?
+        .strip_suffix(')')?
+        .trim();
+    let target = raw_target.strip_prefix("file://").unwrap_or(raw_target);
+    let path = std::path::PathBuf::from(target);
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let supported = matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "tif" | "tiff"
+    );
+    let generated = path.components().any(|component| {
+        matches!(component, std::path::Component::Normal(value) if value == "generated_images")
+    });
+    (path.is_absolute() && path.is_file() && supported && generated).then(|| {
+        (
+            if alt.is_empty() {
+                "Generated image".to_string()
+            } else {
+                alt.to_string()
+            },
+            path,
+        )
+    })
+}
+
+fn encode_generated_image_preview(path: &std::path::Path) -> RemoteResult<Vec<u8>> {
+    const MAX_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+    const MAX_SOURCE_PIXELS: u64 = 64 * 1024 * 1024;
+    const PREVIEW_EDGE: u32 = 1_600;
+
+    let metadata = std::fs::metadata(path)
+        .map_err(|_| RemoteError::not_found("generated image is not available"))?;
+    if metadata.len() > MAX_SOURCE_BYTES {
+        return Err(RemoteError::bad_request(
+            "generated image is too large to preview",
+        ));
+    }
+    let dimensions = image::ImageReader::open(path)
+        .and_then(|reader| reader.with_guessed_format())
+        .map_err(|_| RemoteError::bad_request("generated image format is invalid"))?
+        .into_dimensions()
+        .map_err(|_| RemoteError::bad_request("generated image could not be decoded"))?;
+    if u64::from(dimensions.0) * u64::from(dimensions.1) > MAX_SOURCE_PIXELS {
+        return Err(RemoteError::bad_request(
+            "generated image dimensions are too large",
+        ));
+    }
+    let image = image::ImageReader::open(path)
+        .and_then(|reader| reader.with_guessed_format())
+        .map_err(|_| RemoteError::bad_request("generated image format is invalid"))?
+        .decode()
+        .map_err(|_| RemoteError::bad_request("generated image could not be decoded"))?;
+    let preview = image.resize(
+        PREVIEW_EDGE,
+        PREVIEW_EDGE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let rgb = preview.to_rgb8();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 82)
+        .encode(
+            &rgb,
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|_| RemoteError::internal("generated image preview could not be encoded"))?;
+    Ok(jpeg)
 }
 
 /// Resolve one file's diff for the phone: live worktree changes first, then
@@ -1169,6 +1332,39 @@ mod tests {
     fn invalid_ids_are_bad_requests() {
         assert_eq!(parse_agent_id("not-a-uuid").unwrap_err().status, 400);
         assert_eq!(parse_project_id("not-a-uuid").unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn generated_image_markdown_only_advertises_existing_generated_rasters() {
+        let root = std::env::temp_dir().join(format!("choro-remote-image-{}", Uuid::new_v4()));
+        let generated = root.join("generated_images");
+        std::fs::create_dir_all(&generated).unwrap();
+        let image_path = generated.join("result.png");
+        image::RgbImage::new(8, 6)
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+        let text = format!("Generated image:\n\n![A result]({})", image_path.display());
+        let images = message_image_dtos(&text);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].alt, "A result");
+        assert_eq!(images[0].path, image_path.to_string_lossy());
+        assert!(message_image_dtos("![Nope](/etc/passwd)").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generated_image_preview_is_bounded_jpeg() {
+        let root = std::env::temp_dir().join(format!("choro-remote-preview-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("source.png");
+        image::RgbImage::new(2_000, 1_000)
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encode_generated_image_preview(&image_path).unwrap();
+        let decoded =
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (1_600, 800));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -6,19 +6,23 @@
 //! and only the branch survives; recreation lands at the same path so
 //! provider session resume (which is cwd-sensitive for Claude) keeps working.
 //!
-//! Setup is profile-aware: `Full` also copies env files (they're gitignored,
-//! so a raw worktree starts without them) and clones dependency folders via
-//! APFS copy-on-write (`cp -c`), falling back to a plain copy off APFS. The
-//! first agent turn waits for every requested setup step.
+//! Every lane receives a read-only snapshot of canonical Choro Docs because
+//! those files are normally gitignored. Setup is otherwise profile-aware:
+//! `Full` also copies env files and clones dependency folders via APFS
+//! copy-on-write (`cp -c`), falling back to a plain copy off APFS. The first
+//! agent turn waits for every requested setup step.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::agents::LaneProfile;
+use crate::branding::DOCS_DIR_NAME;
 use crate::config::AppConfig;
 use crate::git::remote::{self, RemoteOutput};
 use crate::git::{read_head, read_snapshot};
@@ -29,6 +33,7 @@ use crate::services::detect_project_services;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaneStep {
     Worktree,
+    ChoroDocs,
     EnvFiles,
     Dependencies,
 }
@@ -37,6 +42,7 @@ impl LaneStep {
     pub fn label(self) -> &'static str {
         match self {
             Self::Worktree => "Branch & folder",
+            Self::ChoroDocs => "Choro Docs",
             Self::EnvFiles => "Env files",
             Self::Dependencies => "Dependencies",
         }
@@ -233,7 +239,325 @@ pub fn prepare_extras(
     ]
 }
 
-/// Materialize a lane end to end: worktree, then env/deps per profile.
+const SOLO_DOCS_MANIFEST: &str = ".solo-snapshot.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SoloDocsSnapshotManifest {
+    version: u32,
+    revision: String,
+    files: Vec<PathBuf>,
+}
+
+/// Refresh the read-only Choro Docs context inside a Solo lane.
+///
+/// Choro Docs are normally ignored and therefore absent from a Git worktree.
+/// The canonical project directory remains the only editable copy; the lane
+/// receives generated snapshots at the same relative paths used by prompts.
+/// Only files recorded in Choro's own manifest are ever removed on refresh.
+pub fn refresh_choro_docs_snapshot(
+    canonical_project_root: &Path,
+    lane_path: &Path,
+) -> LaneStepResult {
+    match refresh_choro_docs_snapshot_inner(canonical_project_root, lane_path) {
+        Ok(detail) => LaneStepResult::ok(LaneStep::ChoroDocs, detail),
+        Err(error) => LaneStepResult::failed(LaneStep::ChoroDocs, format!("{error:#}")),
+    }
+}
+
+fn refresh_choro_docs_snapshot_inner(
+    canonical_project_root: &Path,
+    lane_path: &Path,
+) -> Result<String> {
+    if lane_tracks_choro_docs(lane_path)? {
+        return Ok("tracked by Git".to_string());
+    }
+    crate::git::ensure_local_choro_docs_exclude(lane_path)
+        .context("failed to protect the Solo document snapshot from Git")?;
+
+    let source_root = canonical_project_root.join(DOCS_DIR_NAME);
+    let destination_root = lane_path.join(DOCS_DIR_NAME);
+    let manifest_path = destination_root.join(SOLO_DOCS_MANIFEST);
+    let previous = read_solo_docs_manifest(&manifest_path)?;
+    if destination_root.exists() && previous.is_none() {
+        let is_empty = fs::read_dir(&destination_root)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        anyhow::ensure!(
+            is_empty,
+            "{} already contains files not managed by Choro; the snapshot was not replaced",
+            destination_root.display()
+        );
+    }
+
+    let mut files = Vec::new();
+    if source_root.is_dir() {
+        collect_choro_docs_snapshot_files(&source_root, &source_root, false, &mut files)?;
+    }
+    files.sort();
+    let revision = snapshot_revision(&source_root, &files)?;
+
+    fs::create_dir_all(&destination_root)
+        .with_context(|| format!("failed to create {}", destination_root.display()))?;
+    set_directory_writable(&destination_root)?;
+    if let Some(previous) = previous.as_ref() {
+        set_snapshot_directories_writable(&destination_root, &previous.files)?;
+    }
+
+    let current = files
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    if let Some(previous) = previous {
+        for relative in previous.files {
+            if current.contains(&relative) || !safe_snapshot_relative_path(&relative) {
+                continue;
+            }
+            let stale = destination_root.join(&relative);
+            if let Some(parent) = stale.parent() {
+                set_directory_writable(parent)?;
+            }
+            if stale.is_file() {
+                fs::remove_file(&stale).with_context(|| {
+                    format!("failed to replace stale snapshot {}", stale.display())
+                })?;
+            }
+        }
+    }
+
+    for relative in &files {
+        let source = source_root.join(relative);
+        let destination = destination_root.join(relative);
+        let parent = destination
+            .parent()
+            .context("snapshot destination has no parent")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        set_directory_writable(parent)?;
+        if destination.is_file() {
+            set_file_writable(&destination)?;
+        }
+        fs::copy(&source, &destination).with_context(|| {
+            format!(
+                "failed to snapshot {} into {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+        set_file_read_only(&destination)?;
+    }
+
+    let manifest = SoloDocsSnapshotManifest {
+        version: 1,
+        revision: revision.clone(),
+        files: files.clone(),
+    };
+    if manifest_path.is_file() {
+        set_file_writable(&manifest_path)?;
+    }
+    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)
+        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+    set_file_read_only(&manifest_path)?;
+    set_snapshot_directories_read_only(&destination_root, &files)?;
+
+    let short_revision = revision.get(..8).unwrap_or(&revision);
+    Ok(format!("{} files · {short_revision}", files.len()))
+}
+
+fn lane_tracks_choro_docs(lane_path: &Path) -> Result<bool> {
+    let repository =
+        git2::Repository::open(lane_path).context("Solo lane is not a Git worktree")?;
+    let index = repository
+        .index()
+        .context("failed to read Solo Git index")?;
+    Ok(index.iter().any(|entry| {
+        std::str::from_utf8(&entry.path)
+            .ok()
+            .is_some_and(|path| Path::new(path).starts_with(DOCS_DIR_NAME))
+    }))
+}
+
+fn read_solo_docs_manifest(path: &Path) -> Result<Option<SoloDocsSnapshotManifest>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let manifest: SoloDocsSnapshotManifest = serde_json::from_slice(&bytes)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            anyhow::ensure!(
+                manifest.version == 1,
+                "unsupported Solo docs snapshot version"
+            );
+            Ok(Some(manifest))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn collect_choro_docs_snapshot_files(
+    root: &Path,
+    directory: &Path,
+    inside_assets: bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("failed to read {}", directory.display()))?
+    {
+        let entry = entry.context("failed to inspect Choro Docs entry")?;
+        let file_type = entry
+            .file_type()
+            .context("failed to inspect Choro Docs entry type")?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            let is_assets =
+                path.extension().and_then(|extension| extension.to_str()) == Some("assets");
+            collect_choro_docs_snapshot_files(root, &path, inside_assets || is_assets, files)?;
+        } else if file_type.is_file()
+            && (inside_assets
+                || path.extension().and_then(|extension| extension.to_str()) == Some("choro"))
+        {
+            files.push(
+                path.strip_prefix(root)
+                    .context("snapshot file escaped Choro Docs root")?
+                    .to_path_buf(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_revision(root: &Path, files: &[PathBuf]) -> Result<String> {
+    let mut digest = Sha256::new();
+    for relative in files {
+        digest.update(relative.to_string_lossy().as_bytes());
+        digest.update([0]);
+        digest.update(
+            fs::read(root.join(relative))
+                .with_context(|| format!("failed to hash {}", relative.display()))?,
+        );
+        digest.update([0]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn safe_snapshot_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn snapshot_directories(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut directories = files
+        .iter()
+        .filter_map(|relative| relative.parent())
+        .map(|relative| root.join(relative))
+        .collect::<Vec<_>>();
+    directories.push(root.to_path_buf());
+    directories.sort();
+    directories.dedup();
+    directories
+}
+
+fn set_snapshot_directories_writable(root: &Path, files: &[PathBuf]) -> Result<()> {
+    for directory in snapshot_directories(root, files) {
+        set_directory_writable(&directory)?;
+    }
+    Ok(())
+}
+
+fn set_snapshot_directories_read_only(root: &Path, files: &[PathBuf]) -> Result<()> {
+    let mut directories = snapshot_directories(root, files);
+    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in directories {
+        set_directory_read_only(&directory)?;
+    }
+    Ok(())
+}
+
+fn unlock_choro_docs_snapshot(lane_path: &Path) -> Result<()> {
+    let root = lane_path.join(DOCS_DIR_NAME);
+    let manifest = read_solo_docs_manifest(&root.join(SOLO_DOCS_MANIFEST))?;
+    if let Some(manifest) = manifest {
+        set_snapshot_directories_writable(&root, &manifest.files)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_directory_writable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if path.is_dir() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to unlock {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_directory_read_only(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if path.is_dir() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o555))
+            .with_context(|| format!("failed to protect {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_directory_read_only(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_directory_writable(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_read_only(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o444))
+        .with_context(|| format!("failed to protect {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_writable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("failed to unlock {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_file_writable(path: &Path) -> Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_file_read_only(path: &Path) -> Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+/// Materialize a lane end to end: worktree, Choro Docs, then env/deps per profile.
 /// Returns per-step results for the "Preparing lane" UI; stops after a failed
 /// worktree step (nothing to prepare into).
 pub fn create_lane(
@@ -248,6 +572,7 @@ pub fn create_lane(
         return vec![worktree];
     }
     let mut results = vec![worktree];
+    results.push(refresh_choro_docs_snapshot(project_root, lane_path));
     results.extend(prepare_extras(project_root, lane_path, profile));
     results
 }
@@ -397,6 +722,10 @@ pub fn teardown_lane(project_root: &Path, lane_path: &Path, force: bool) -> Resu
             stderr: String::new(),
         });
     }
+    // Generated doc snapshots are protected from accidental agent edits while
+    // the lane is live. Unlock only those managed directories so Git can tear
+    // the disposable worktree down normally.
+    let _ = unlock_choro_docs_snapshot(lane_path);
     let output = remote::worktree_remove(project_root, lane_path, force)?;
     if output.success {
         let _ = remote::worktree_prune(project_root);
@@ -606,11 +935,55 @@ mod tests {
             Some(&base),
             LaneProfile::CodeOnly,
         );
-        assert_eq!(results.len(), 3);
+        assert_eq!(results.len(), 4);
         assert!(results.iter().all(|result| result.ok), "{results:?}");
-        assert_eq!(results[1].detail, "skipped");
         assert_eq!(results[2].detail, "skipped");
+        assert_eq!(results[3].detail, "skipped");
         assert!(lane.join("README.md").exists());
+        assert!(!lane_is_dirty(&lane).unwrap());
+    }
+
+    #[test]
+    fn solo_docs_snapshot_is_read_only_refreshable_and_git_invisible() {
+        let dir = tempfile::tempdir().unwrap();
+        let _repo = repo_with_commit(dir.path());
+        let docs = dir.path().join(DOCS_DIR_NAME);
+        std::fs::create_dir_all(docs.join("feature.assets")).unwrap();
+        std::fs::write(docs.join("feature.choro"), "version one\n").unwrap();
+        std::fs::write(docs.join("feature.assets/mock.png"), b"png").unwrap();
+        std::fs::write(docs.join(".metadata.json"), "{}\n").unwrap();
+
+        let base = crate::git::read_head(dir.path()).unwrap().branch.unwrap();
+        let (_keep, lane) = lane_dir();
+        let results = create_lane(
+            dir.path(),
+            &lane,
+            "solo/docs",
+            Some(&base),
+            LaneProfile::CodeOnly,
+        );
+        assert!(results.iter().all(|result| result.ok), "{results:?}");
+        assert_eq!(
+            std::fs::read_to_string(lane.join("choro_docs/feature.choro")).unwrap(),
+            "version one\n"
+        );
+        assert!(lane.join("choro_docs/feature.assets/mock.png").is_file());
+        assert!(!lane.join("choro_docs/.metadata.json").exists());
+        assert!(std::fs::metadata(lane.join("choro_docs/feature.choro"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert!(!lane_is_dirty(&lane).unwrap());
+
+        std::fs::write(docs.join("renamed.choro"), "version two\n").unwrap();
+        std::fs::remove_file(docs.join("feature.choro")).unwrap();
+        let refreshed = refresh_choro_docs_snapshot(dir.path(), &lane);
+        assert!(refreshed.ok, "{refreshed:?}");
+        assert!(!lane.join("choro_docs/feature.choro").exists());
+        assert_eq!(
+            std::fs::read_to_string(lane.join("choro_docs/renamed.choro")).unwrap(),
+            "version two\n"
+        );
         assert!(!lane_is_dirty(&lane).unwrap());
     }
 
