@@ -16,6 +16,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "net", "time"] }
 axum = { version = "0.8", features = ["ws"] }
 async-channel = "2"
+crossbeam-channel = "0.5"
 turso = { version = "=0.7.0-pre.14", default-features = false }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"

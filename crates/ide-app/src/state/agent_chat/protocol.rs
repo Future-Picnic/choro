@@ -35,8 +35,9 @@ use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
+
+use crossbeam_channel::{Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -56,9 +57,63 @@ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CHAT_STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
 const CHAT_STREAM_MAX_BUFFER_BYTES: usize = 160;
 
+/// Events flow to the GPUI foreground through an awaitable channel so the
+/// per-chat consumer task sleeps until a backend actually produces something,
+/// instead of polling on a timer.
+pub(crate) type EventSender = async_channel::Sender<ChatBackendEvent>;
+
 pub struct ChatBackendController {
     tx: Sender<ChatBackendCommand>,
     shutdown: Arc<AtomicBool>,
+}
+
+/// The next thing a backend run loop should react to. Commands are drained
+/// with priority; otherwise the loop blocks on both channels at once and only
+/// takes a timed tick while streamed text is waiting to be flushed.
+enum BackendInbound {
+    Command(ChatBackendCommand),
+    CommandsClosed,
+    Message(Value),
+    MessagesClosed,
+    FlushTick,
+}
+
+fn next_backend_inbound(
+    commands: &Receiver<ChatBackendCommand>,
+    messages: &Receiver<Value>,
+    flush_pending: bool,
+) -> BackendInbound {
+    match commands.try_recv() {
+        Ok(command) => return BackendInbound::Command(command),
+        Err(crossbeam_channel::TryRecvError::Empty) => {}
+        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            return BackendInbound::CommandsClosed
+        }
+    }
+    if flush_pending {
+        crossbeam_channel::select! {
+            recv(commands) -> command => match command {
+                Ok(command) => BackendInbound::Command(command),
+                Err(_) => BackendInbound::CommandsClosed,
+            },
+            recv(messages) -> message => match message {
+                Ok(message) => BackendInbound::Message(message),
+                Err(_) => BackendInbound::MessagesClosed,
+            },
+            default(CHAT_STREAM_FLUSH_INTERVAL) => BackendInbound::FlushTick,
+        }
+    } else {
+        crossbeam_channel::select! {
+            recv(commands) -> command => match command {
+                Ok(command) => BackendInbound::Command(command),
+                Err(_) => BackendInbound::CommandsClosed,
+            },
+            recv(messages) -> message => match message {
+                Ok(message) => BackendInbound::Message(message),
+                Err(_) => BackendInbound::MessagesClosed,
+            },
+        }
+    }
 }
 
 pub enum ChatBackendCommand {
@@ -118,7 +173,7 @@ impl ChatBackendController {
     pub fn send(
         &self,
         command: ChatBackendCommand,
-    ) -> Result<(), mpsc::SendError<ChatBackendCommand>> {
+    ) -> Result<(), crossbeam_channel::SendError<ChatBackendCommand>> {
         self.tx.send(command)
     }
 
@@ -146,7 +201,7 @@ impl Drop for ChatBackendController {
 pub fn spawn_chat_backend(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
-) -> anyhow::Result<(ChatBackendController, Receiver<ChatBackendEvent>)> {
+) -> anyhow::Result<(ChatBackendController, async_channel::Receiver<ChatBackendEvent>)> {
     if is_design_assistant(&agent) {
         if agent.provider == AgentKind::OpenCode {
             return Err(anyhow!(
@@ -158,8 +213,8 @@ pub fn spawn_chat_backend(
         crate::state::penpot::configured_mcp_url()
             .context("The Design MCP connection is unavailable")?;
     }
-    let (command_tx, command_rx) = mpsc::channel();
-    let (event_tx, event_rx) = mpsc::channel();
+    let (command_tx, command_rx) = crossbeam_channel::unbounded();
+    let (event_tx, event_rx) = async_channel::unbounded();
     let shutdown = Arc::new(AtomicBool::new(false));
     match agent.provider {
         AgentKind::Codex => {
@@ -189,7 +244,7 @@ fn spawn_claude_bridge(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
@@ -198,7 +253,7 @@ fn spawn_claude_bridge(
             if let Err(error) =
                 run_claude_bridge(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
-                let _ = event_tx.send(ChatBackendEvent::Error(format!(
+                let _ = event_tx.send_blocking(ChatBackendEvent::Error(format!(
                     "Claude chat bridge failed: {error:#}"
                 )));
             }
@@ -210,7 +265,7 @@ fn spawn_codex_app_server(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
@@ -219,7 +274,7 @@ fn spawn_codex_app_server(
             if let Err(error) =
                 run_codex_app_server(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
-                let _ = event_tx.send(ChatBackendEvent::Error(format!(
+                let _ = event_tx.send_blocking(ChatBackendEvent::Error(format!(
                     "Codex app-server failed: {error:#}"
                 )));
             }
@@ -232,7 +287,7 @@ struct CodexRuntime {
     stdin: Arc<Mutex<ChildStdin>>,
     messages: Receiver<Value>,
     commands: Receiver<ChatBackendCommand>,
-    events: Sender<ChatBackendEvent>,
+    events: EventSender,
     shutdown: Arc<AtomicBool>,
     agent: AgentRecord,
     thread_id: Option<String>,
@@ -270,7 +325,7 @@ struct ClaudeBridgeRuntime {
     stdin: Arc<Mutex<ChildStdin>>,
     messages: Receiver<Value>,
     commands: Receiver<ChatBackendCommand>,
-    events: Sender<ChatBackendEvent>,
+    events: EventSender,
     shutdown: Arc<AtomicBool>,
     agent: AgentRecord,
     model: Option<String>,
@@ -298,13 +353,13 @@ impl StreamChunkBuffer {
         }
     }
 
-    fn reset(&mut self, events: &Sender<ChatBackendEvent>) {
+    fn reset(&mut self, events: &EventSender) {
         self.flush(events);
         self.message_id = None;
         self.generated_message_id = None;
     }
 
-    fn push(&mut self, message_id: Option<String>, text: &str, events: &Sender<ChatBackendEvent>) {
+    fn push(&mut self, message_id: Option<String>, text: &str, events: &EventSender) {
         if text.is_empty() {
             return;
         }
@@ -334,19 +389,25 @@ impl StreamChunkBuffer {
         }
     }
 
-    fn flush_due(&mut self, events: &Sender<ChatBackendEvent>) {
+    fn flush_due(&mut self, events: &EventSender) {
         if !self.text.is_empty() && self.last_flush.elapsed() >= CHAT_STREAM_FLUSH_INTERVAL {
             self.flush(events);
         }
     }
 
-    fn flush(&mut self, events: &Sender<ChatBackendEvent>) {
+    /// Whether buffered stream text is waiting on a timed flush. While false,
+    /// run loops can block on their channels instead of ticking.
+    fn has_pending(&self) -> bool {
+        !self.text.is_empty()
+    }
+
+    fn flush(&mut self, events: &EventSender) {
         if self.text.is_empty() {
             return;
         }
 
         events
-            .send(ChatBackendEvent::AssistantChunk {
+            .send_blocking(ChatBackendEvent::AssistantChunk {
                 message_id: self.message_id.clone(),
                 text: std::mem::take(&mut self.text),
             })
@@ -359,7 +420,7 @@ fn run_claude_bridge(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let bridge_path = claude_bridge_script_path()?;
@@ -404,7 +465,7 @@ fn run_claude_bridge(
         .take()
         .context("Claude bridge stderr unavailable")?;
 
-    let (message_tx, message_rx) = mpsc::channel();
+    let (message_tx, message_rx) = crossbeam_channel::unbounded();
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "Claude bridge");
 
@@ -710,7 +771,7 @@ fn claude_bridge_script_path() -> anyhow::Result<PathBuf> {
 fn ensure_claude_bridge_dependencies(
     bridge_dir: &Path,
     npm_path: &Path,
-    event_tx: &Sender<ChatBackendEvent>,
+    event_tx: &EventSender,
 ) -> anyhow::Result<()> {
     if bridge_dir
         .join("node_modules/@anthropic-ai/claude-agent-sdk")
@@ -720,7 +781,7 @@ fn ensure_claude_bridge_dependencies(
     }
 
     event_tx
-        .send(ChatBackendEvent::WorkLog(
+        .send_blocking(ChatBackendEvent::WorkLog(
             WorkLogEntry::new(
                 "claude-bridge-install",
                 "claude-bridge-install",
@@ -740,7 +801,7 @@ fn ensure_claude_bridge_dependencies(
         .context("failed to run npm install for Claude bridge")?;
     if output.status.success() {
         event_tx
-            .send(ChatBackendEvent::WorkLog(WorkLogEntry::new(
+            .send_blocking(ChatBackendEvent::WorkLog(WorkLogEntry::new(
                 "claude-bridge-install",
                 "claude-bridge-install",
                 WorkLogEntryKind::System,
@@ -761,7 +822,7 @@ fn run_codex_app_server(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let path_env = command_path_env();
@@ -824,7 +885,7 @@ fn run_codex_app_server(
         .take()
         .context("codex app-server stderr unavailable")?;
 
-    let (message_tx, message_rx) = mpsc::channel();
+    let (message_tx, message_rx) = crossbeam_channel::unbounded();
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "Codex app-server");
 
@@ -907,7 +968,7 @@ fn run_codex_app_server(
             Err(error) => {
                 let _ = runtime
                     .events
-                    .send(ChatBackendEvent::WorkLog(WorkLogEntry::new(
+                    .send_blocking(ChatBackendEvent::WorkLog(WorkLogEntry::new(
                         "codex-resume-fallback",
                         "codex-resume-fallback",
                         WorkLogEntryKind::System,
@@ -930,7 +991,7 @@ fn run_codex_app_server(
     if let Some(thread_id) = runtime.thread_id.clone() {
         runtime
             .events
-            .send(ChatBackendEvent::ChatSessionReady {
+            .send_blocking(ChatBackendEvent::ChatSessionReady {
                 session_id: thread_id,
             })
             .ok();
@@ -954,7 +1015,7 @@ fn spawn_json_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<Val
 
 fn spawn_stderr_reader(
     stderr: impl std::io::Read + Send + 'static,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     label: &'static str,
 ) {
     thread::spawn(move || {
@@ -967,7 +1028,7 @@ fn spawn_stderr_reader(
             let safe_detail = ide_core::redact_sensitive_text(trimmed);
             eprintln!("{label}: {safe_detail}");
             if should_surface_stderr(trimmed) {
-                let _ = event_tx.send(ChatBackendEvent::WorkLog(
+                let _ = event_tx.send_blocking(ChatBackendEvent::WorkLog(
                     WorkLogEntry::new(
                         next_request_id(),
                         format!("{label}-stderr"),
@@ -1081,8 +1142,58 @@ mod tests {
     }
 
     #[test]
+    fn backend_inbound_prefers_commands_over_messages() {
+        let (command_tx, command_rx) = crossbeam_channel::unbounded();
+        let (message_tx, message_rx) = crossbeam_channel::unbounded();
+        message_tx.send(json!({"type": "noise"})).unwrap();
+        command_tx.send(ChatBackendCommand::CancelTurn).unwrap();
+
+        match next_backend_inbound(&command_rx, &message_rx, false) {
+            BackendInbound::Command(ChatBackendCommand::CancelTurn) => {}
+            _ => panic!("queued command should win over a queued message"),
+        }
+        match next_backend_inbound(&command_rx, &message_rx, false) {
+            BackendInbound::Message(message) => {
+                assert_eq!(message.get("type").and_then(Value::as_str), Some("noise"));
+            }
+            _ => panic!("message should be delivered once commands are drained"),
+        }
+    }
+
+    #[test]
+    fn backend_inbound_reports_closed_channels() {
+        let (command_tx, command_rx) = crossbeam_channel::unbounded::<ChatBackendCommand>();
+        let (message_tx, message_rx) = crossbeam_channel::unbounded::<Value>();
+
+        drop(message_tx);
+        match next_backend_inbound(&command_rx, &message_rx, false) {
+            BackendInbound::MessagesClosed => {}
+            _ => panic!("closed message channel must surface, not block"),
+        }
+
+        drop(command_tx);
+        match next_backend_inbound(&command_rx, &message_rx, false) {
+            BackendInbound::CommandsClosed => {}
+            _ => panic!("closed command channel must surface, not block"),
+        }
+    }
+
+    #[test]
+    fn backend_inbound_ticks_only_while_a_flush_is_pending() {
+        let (_command_tx, command_rx) = crossbeam_channel::unbounded::<ChatBackendCommand>();
+        let (_message_tx, message_rx) = crossbeam_channel::unbounded::<Value>();
+
+        let start = Instant::now();
+        match next_backend_inbound(&command_rx, &message_rx, true) {
+            BackendInbound::FlushTick => {}
+            _ => panic!("pending flush must produce a timed tick"),
+        }
+        assert!(start.elapsed() >= CHAT_STREAM_FLUSH_INTERVAL);
+    }
+
+    #[test]
     fn stream_chunk_buffer_flushes_exact_text_batch() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = async_channel::unbounded();
         let mut buffer = StreamChunkBuffer::new();
 
         buffer.push(Some("msg-1".into()), "hel", &tx);
@@ -1090,7 +1201,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
 
         buffer.flush(&tx);
-        match rx.recv().expect("buffer should flush one event") {
+        match rx.recv_blocking().expect("buffer should flush one event") {
             ChatBackendEvent::AssistantChunk { message_id, text } => {
                 assert_eq!(message_id.as_deref(), Some("msg-1"));
                 assert_eq!(text, "hello ");
@@ -1101,15 +1212,15 @@ mod tests {
 
     #[test]
     fn stream_chunk_buffer_flushes_before_switching_message_ids() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = async_channel::unbounded();
         let mut buffer = StreamChunkBuffer::new();
 
         buffer.push(Some("msg-1".into()), "first", &tx);
         buffer.push(Some("msg-2".into()), "second", &tx);
         buffer.flush(&tx);
 
-        let first = rx.recv().expect("first message should flush on id switch");
-        let second = rx.recv().expect("second message should flush explicitly");
+        let first = rx.recv_blocking().expect("first message should flush on id switch");
+        let second = rx.recv_blocking().expect("second message should flush explicitly");
 
         match first {
             ChatBackendEvent::AssistantChunk { message_id, text } => {
@@ -1129,13 +1240,13 @@ mod tests {
 
     #[test]
     fn stream_chunk_buffer_generates_ids_for_anonymous_chunks_per_turn() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = async_channel::unbounded();
         let mut buffer = StreamChunkBuffer::new();
 
         buffer.push(None, "first ", &tx);
         buffer.push(None, "turn", &tx);
         buffer.flush(&tx);
-        let first_id = match rx.recv().expect("anonymous chunks should flush") {
+        let first_id = match rx.recv_blocking().expect("anonymous chunks should flush") {
             ChatBackendEvent::AssistantChunk { message_id, text } => {
                 assert_eq!(text, "first turn");
                 message_id.expect("anonymous chunks should receive a generated id")
@@ -1146,7 +1257,7 @@ mod tests {
         buffer.reset(&tx);
         buffer.push(None, "second turn", &tx);
         buffer.flush(&tx);
-        let second_id = match rx.recv().expect("next turn should flush") {
+        let second_id = match rx.recv_blocking().expect("next turn should flush") {
             ChatBackendEvent::AssistantChunk { message_id, text } => {
                 assert_eq!(text, "second turn");
                 message_id.expect("anonymous chunks should receive a generated id")

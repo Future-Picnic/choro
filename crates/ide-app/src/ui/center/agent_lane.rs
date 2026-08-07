@@ -1240,6 +1240,10 @@ impl CenterArea {
                     if self.rejoin_ready_checks.get(agent_id) == Some(&session.last_activity_at) {
                         return None;
                     }
+                    // Only lane-based agents can carry a rejoin-conflict card.
+                    // Checking the lane first keeps this 650ms poll from
+                    // walking the full timeline of every ordinary chat.
+                    let lane = agents.agent(*agent_id)?.lane_path.clone()?;
                     let card = session.timeline.iter().rev().find_map(|item| match item {
                         AgentChatTimelineItem::RejoinConflict(card)
                             if card.requested_at.is_some()
@@ -1250,7 +1254,6 @@ impl CenterArea {
                         }
                         _ => None,
                     })?;
-                    let lane = agents.agent(*agent_id)?.lane_path.clone()?;
                     Some(Candidate {
                         agent_id: *agent_id,
                         card_id: card.id.clone(),

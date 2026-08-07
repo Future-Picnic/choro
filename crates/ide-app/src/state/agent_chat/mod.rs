@@ -17,7 +17,6 @@ mod verification;
 mod work_log;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{Context, EventEmitter};
@@ -539,28 +538,44 @@ impl AgentChatState {
         let (controller, event_rx) = spawn_chat_backend(agent.clone(), initial_mode)?;
         self.controllers.insert(agent.id, controller);
         let agent_id = agent.id;
+        // Await the channel instead of polling on a timer: an idle chat costs
+        // zero wake-ups, and the task ends when the backend's senders drop.
         cx.spawn(async move |this, cx| loop {
+            let Ok(event) = event_rx.recv().await else {
+                break;
+            };
             let Some(this) = this.upgrade() else {
                 break;
             };
-            let mut did_work = false;
-            loop {
-                match event_rx.try_recv() {
-                    Ok(event) => {
-                        did_work = true;
-                        this.update(cx, |state, cx| {
-                            state.apply_backend_event(agent_id, generation, event, cx)
-                        })
-                        .ok();
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => return,
-                }
+            if this
+                .update(cx, |state, cx| {
+                    state.apply_backend_event(agent_id, generation, event, cx)
+                })
+                .is_err()
+            {
+                break;
             }
-            if !did_work {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(40))
-                    .await;
+            // Drain what queued up behind the first event so a streaming
+            // burst is applied in one foreground pass — but bounded, with a
+            // yield after the cap, so a flooding backend cannot monopolize
+            // the main thread.
+            let mut drained = 0usize;
+            while let Ok(event) = event_rx.try_recv() {
+                if this
+                    .update(cx, |state, cx| {
+                        state.apply_backend_event(agent_id, generation, event, cx)
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                drained += 1;
+                if drained >= 128 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(1))
+                        .await;
+                    drained = 0;
+                }
             }
         })
         .detach();
@@ -824,6 +839,41 @@ impl AgentChatState {
         }
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
+    }
+
+    /// Quietly shut down the backend processes of a chat that has been idle
+    /// long enough, without touching the visible conversation. The session,
+    /// its timeline, and its resume ids stay in place, so the next submission
+    /// restarts the backend and resumes the provider session transparently.
+    ///
+    /// Refuses to retire anything that could lose state: a running or
+    /// cancelling turn, queued turns, a pending question or approval, or a
+    /// chat whose provider resume id was never captured (restarting those is
+    /// blocked by the resume-safety guard, so killing the backend would strand
+    /// the chat). A proposed plan awaiting the user is covered by the status
+    /// check: it forces `PlanReady`, which is not `Idle`.
+    pub fn retire_idle_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) -> bool {
+        if !self.controllers.contains_key(&agent_id) {
+            return false;
+        }
+        if self.cancellation_requested.contains(&agent_id) {
+            return false;
+        }
+        let Some(session) = self.sessions.get(&agent_id) else {
+            return false;
+        };
+        if !session_safe_to_retire(session) {
+            return false;
+        }
+        // Bump the generation so trailing events from the dying backend cannot
+        // flip the session's status or append late output.
+        self.next_backend_generation(agent_id);
+        // Dropping the controller sends Shutdown; the backend thread exits its
+        // run loop and its Drop impl terminates the whole process group.
+        self.controllers.remove(&agent_id);
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+        true
     }
 
     pub fn reset_session(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -1295,6 +1345,104 @@ impl AgentChatState {
 
 fn is_real_cli_session_id(agent_id: Uuid, session_id: &str) -> bool {
     !session_id.trim().is_empty() && session_id != agent_id.to_string()
+}
+
+/// Structural half of the idle-retirement guard: nothing in-flight that a
+/// backend kill would lose, and at least one provider session id so the next
+/// submission can resume. The caller layers policy on top (idle duration,
+/// selection, special assistants, provider-specific resume rules).
+fn session_safe_to_retire(session: &AgentChatSession) -> bool {
+    session.status == AgentChatStatus::Idle
+        && session.queued_turns.is_empty()
+        && session.pending_user_input.is_none()
+        && session.pending_approval.is_none()
+        && (session.chat_session_id.is_some() || session.cli_session_id.is_some())
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    fn retirable_session() -> AgentChatSession {
+        AgentChatSession {
+            agent_id: Uuid::new_v4(),
+            title: "Chat".to_string(),
+            chat_session_id: None,
+            cli_session_id: Some("claude-session-1".to_string()),
+            hidden_from_notifications: false,
+            status: AgentChatStatus::Idle,
+            interaction_mode: AgentInteractionMode::Default,
+            composer_text: String::new(),
+            messages: Vec::new(),
+            timeline: Vec::new(),
+            queued_turns: Vec::new(),
+            work_log: Vec::new(),
+            pending_user_input: None,
+            pending_approval: None,
+            proposed_plan: None,
+            changed_files: ChangedFilesSummary::default(),
+            usage: None,
+            started_running_at: None,
+            last_activity_at: 0,
+        }
+    }
+
+    #[test]
+    fn idle_session_with_resume_id_is_retirable() {
+        assert!(session_safe_to_retire(&retirable_session()));
+        let mut codex = retirable_session();
+        codex.cli_session_id = None;
+        codex.chat_session_id = Some("codex-thread-1".to_string());
+        assert!(session_safe_to_retire(&codex));
+    }
+
+    #[test]
+    fn any_in_flight_state_blocks_retirement() {
+        for status in [
+            AgentChatStatus::Running,
+            AgentChatStatus::Cancelling,
+            AgentChatStatus::WaitingForUser,
+            AgentChatStatus::PlanReady,
+            AgentChatStatus::Failed,
+        ] {
+            let mut session = retirable_session();
+            session.status = status;
+            assert!(!session_safe_to_retire(&session), "status {status:?}");
+        }
+
+        let mut queued = retirable_session();
+        queued.queued_turns.push(QueuedChatTurn {
+            id: Uuid::new_v4(),
+            text: "next".to_string(),
+            display_text: None,
+            tags: Vec::new(),
+            mode: AgentInteractionMode::Default,
+            created_at: 0,
+        });
+        assert!(!session_safe_to_retire(&queued));
+
+        let mut asking = retirable_session();
+        asking.pending_user_input = Some(PendingUserInput::new("q-1", Vec::new()));
+        assert!(!session_safe_to_retire(&asking));
+
+        let mut approving = retirable_session();
+        approving.pending_approval = Some(PendingApproval::new(
+            "a-1",
+            PendingApprovalKind::Command,
+            "Allow?",
+            None,
+        ));
+        assert!(!session_safe_to_retire(&approving));
+    }
+
+    #[test]
+    fn missing_resume_id_blocks_retirement() {
+        let mut session = retirable_session();
+        session.cli_session_id = None;
+        session.chat_session_id = None;
+        assert!(!session_safe_to_retire(&session));
+    }
+
 }
 
 #[cfg(test)]

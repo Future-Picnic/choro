@@ -6,6 +6,17 @@ struct OpenCodePermission {
     reject_option: Option<String>,
 }
 
+/// The next thing the OpenCode run loop should react to.
+enum OpenCodeInbound {
+    Command(ChatBackendCommand),
+    CommandsClosed,
+    Message(Value),
+    MessagesClosed,
+    Question(Value),
+    QuestionsClosed,
+    FlushTick,
+}
+
 #[derive(Clone)]
 struct OpenCodeQuestionBridge {
     client: reqwest::blocking::Client,
@@ -21,7 +32,7 @@ struct OpenCodeRuntime {
     messages: Receiver<Value>,
     questions: Receiver<Value>,
     commands: Receiver<ChatBackendCommand>,
-    events: Sender<ChatBackendEvent>,
+    events: EventSender,
     shutdown: Arc<AtomicBool>,
     agent: AgentRecord,
     session_id: Option<String>,
@@ -38,13 +49,17 @@ struct OpenCodeRuntime {
     queued_questions: VecDeque<Value>,
     changed_paths: HashSet<PathBuf>,
     deferred_turns: VecDeque<(String, AgentInteractionMode)>,
+    /// True while a `session/prompt` is in flight. The question poller only
+    /// needs its fast cadence during a turn — questions are asked by a running
+    /// prompt — so an idle chat drops to a slow safety poll.
+    turn_active: Arc<AtomicBool>,
 }
 
 pub(super) fn spawn_open_code_acp(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
@@ -53,7 +68,7 @@ pub(super) fn spawn_open_code_acp(
             if let Err(error) =
                 run_open_code_acp(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
-                let _ = event_tx.send(ChatBackendEvent::Error(format!(
+                let _ = event_tx.send_blocking(ChatBackendEvent::Error(format!(
                     "OpenCode ACP failed: {error:#}"
                 )));
             }
@@ -65,7 +80,7 @@ fn run_open_code_acp(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
-    event_tx: Sender<ChatBackendEvent>,
+    event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let executable = find_opencode_executable().ok_or_else(|| {
@@ -120,10 +135,10 @@ fn run_open_code_acp(
         .stderr
         .take()
         .context("OpenCode ACP stderr unavailable")?;
-    let (message_tx, message_rx) = mpsc::channel();
+    let (message_tx, message_rx) = crossbeam_channel::unbounded();
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "OpenCode ACP");
-    let (question_tx, question_rx) = mpsc::channel();
+    let (question_tx, question_rx) = crossbeam_channel::unbounded();
 
     let mut runtime = OpenCodeRuntime {
         child,
@@ -147,6 +162,7 @@ fn run_open_code_acp(
         queued_questions: VecDeque::new(),
         changed_paths: HashSet::new(),
         deferred_turns: VecDeque::new(),
+        turn_active: Arc::new(AtomicBool::new(false)),
         agent,
     };
 
@@ -193,10 +209,11 @@ fn run_open_code_acp(
         runtime.question_bridge.clone(),
         question_tx,
         runtime.shutdown.clone(),
+        runtime.turn_active.clone(),
     );
     runtime
         .events
-        .send(ChatBackendEvent::SessionReady {
+        .send_blocking(ChatBackendEvent::SessionReady {
             session_id: session_id.clone(),
         })
         .ok();
@@ -234,23 +251,22 @@ impl OpenCodeRuntime {
                 self.send_turn(text, mode)?;
                 continue;
             }
-            loop {
-                match self.commands.try_recv() {
-                    Ok(ChatBackendCommand::Shutdown) => return Ok(()),
-                    Ok(ChatBackendCommand::ForceShutdown) => {
-                        return Err(anyhow!("OpenCode ACP force-stopped"));
-                    }
-                    Ok(command) => self.handle_command(command)?,
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            match self.next_inbound() {
+                OpenCodeInbound::Command(ChatBackendCommand::Shutdown) => return Ok(()),
+                OpenCodeInbound::Command(ChatBackendCommand::ForceShutdown) => {
+                    return Err(anyhow!("OpenCode ACP force-stopped"));
                 }
-            }
-            match self.messages.recv_timeout(Duration::from_millis(40)) {
-                Ok(message) => self.handle_message(message)?,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.assistant_stream.flush_due(&self.events)
+                OpenCodeInbound::Command(command) => self.handle_command(command)?,
+                OpenCodeInbound::CommandsClosed => return Ok(()),
+                OpenCodeInbound::Message(message) => self.handle_message(message)?,
+                OpenCodeInbound::Question(question) => self.enqueue_question(question)?,
+                OpenCodeInbound::QuestionsClosed => {
+                    // The poller thread is gone; stop selecting on its closed
+                    // channel so the loop can keep blocking instead of spinning.
+                    self.questions = crossbeam_channel::never();
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                OpenCodeInbound::FlushTick => self.assistant_stream.flush_due(&self.events),
+                OpenCodeInbound::MessagesClosed => {
                     let detail = match self.child.try_wait() {
                         Ok(Some(status)) => format!("OpenCode ACP exited with status {status}"),
                         Ok(None) => "OpenCode ACP stdout closed unexpectedly".to_string(),
@@ -258,6 +274,51 @@ impl OpenCodeRuntime {
                     };
                     return Err(anyhow!(detail));
                 }
+            }
+        }
+    }
+
+    /// Block on commands, server messages, and bridged questions at once;
+    /// commands drain with priority and a timed tick only exists while
+    /// streamed text waits on a flush. An idle OpenCode chat parks here.
+    fn next_inbound(&self) -> OpenCodeInbound {
+        match self.commands.try_recv() {
+            Ok(command) => return OpenCodeInbound::Command(command),
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                return OpenCodeInbound::CommandsClosed
+            }
+        }
+        if self.assistant_stream.has_pending() {
+            crossbeam_channel::select! {
+                recv(self.commands) -> command => match command {
+                    Ok(command) => OpenCodeInbound::Command(command),
+                    Err(_) => OpenCodeInbound::CommandsClosed,
+                },
+                recv(self.messages) -> message => match message {
+                    Ok(message) => OpenCodeInbound::Message(message),
+                    Err(_) => OpenCodeInbound::MessagesClosed,
+                },
+                recv(self.questions) -> question => match question {
+                    Ok(question) => OpenCodeInbound::Question(question),
+                    Err(_) => OpenCodeInbound::QuestionsClosed,
+                },
+                default(CHAT_STREAM_FLUSH_INTERVAL) => OpenCodeInbound::FlushTick,
+            }
+        } else {
+            crossbeam_channel::select! {
+                recv(self.commands) -> command => match command {
+                    Ok(command) => OpenCodeInbound::Command(command),
+                    Err(_) => OpenCodeInbound::CommandsClosed,
+                },
+                recv(self.messages) -> message => match message {
+                    Ok(message) => OpenCodeInbound::Message(message),
+                    Err(_) => OpenCodeInbound::MessagesClosed,
+                },
+                recv(self.questions) -> question => match question {
+                    Ok(question) => OpenCodeInbound::Question(question),
+                    Err(_) => OpenCodeInbound::QuestionsClosed,
+                },
             }
         }
     }
@@ -286,11 +347,11 @@ impl OpenCodeRuntime {
             self.handle_commands_while_blocked()?;
             let message = match self.messages.recv_timeout(Duration::from_millis(40)) {
                 Ok(message) => message,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     self.assistant_stream.flush_due(&self.events);
                     continue;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     return Err(anyhow!("OpenCode ACP stdout closed"));
                 }
             };
@@ -328,7 +389,7 @@ impl OpenCodeRuntime {
         self.interaction_mode = mode;
         let is_plan = mode == AgentInteractionMode::Plan;
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
         let mode = match mode {
             AgentInteractionMode::Default => "build",
@@ -337,13 +398,16 @@ impl OpenCodeRuntime {
         // OpenCode exposes Build/Plan as a session config option. Older ACP
         // builds may not expose it, so a failed mode switch must not block chat.
         let _ = self.set_config_option("mode", mode.to_string());
+        self.turn_active.store(true, Ordering::SeqCst);
         let result = self.request(
             "session/prompt",
             json!({
                 "sessionId": session_id,
                 "prompt": [{ "type": "text", "text": text }]
             }),
-        )?;
+        );
+        self.turn_active.store(false, Ordering::SeqCst);
+        let result = result?;
         self.assistant_stream.flush(&self.events);
         let stop_reason = result
             .get("stopReason")
@@ -356,7 +420,7 @@ impl OpenCodeRuntime {
         };
         if let Some(markdown) = proposed_plan.as_deref() {
             self.events
-                .send(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
+                .send_blocking(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
                     next_request_id(),
                     markdown,
                 )))
@@ -364,7 +428,7 @@ impl OpenCodeRuntime {
         } else {
             if let Some(review) = extract_code_review(&self.assistant_buffer) {
                 self.events
-                    .send(ChatBackendEvent::CodeReview(CodeReview::new(
+                    .send_blocking(ChatBackendEvent::CodeReview(CodeReview::new(
                         next_request_id(),
                         review,
                     )))
@@ -372,7 +436,7 @@ impl OpenCodeRuntime {
             }
             if let Some(verification) = extract_verification(&self.assistant_buffer) {
                 self.events
-                    .send(ChatBackendEvent::Verification(Verification::new(
+                    .send_blocking(ChatBackendEvent::Verification(Verification::new(
                         next_request_id(),
                         verification,
                     )))
@@ -387,18 +451,18 @@ impl OpenCodeRuntime {
         if !changed.files.is_empty() {
             let changed = capture_changed_files_snapshot(&self.agent, changed, "opencode-acp");
             self.events
-                .send(ChatBackendEvent::ChangedFiles(changed))
+                .send_blocking(ChatBackendEvent::ChangedFiles(changed))
                 .ok();
         }
         if stop_reason == "refusal" {
             self.events
-                .send(ChatBackendEvent::Error(
+                .send_blocking(ChatBackendEvent::Error(
                     "OpenCode declined to continue this turn.".to_string(),
                 ))
                 .ok();
         } else if proposed_plan.is_none() {
             self.events
-                .send(ChatBackendEvent::Status(AgentChatStatus::Idle))
+                .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Idle))
                 .ok();
         }
         // Usage is supplementary and the provider endpoint returns the full
@@ -419,7 +483,7 @@ impl OpenCodeRuntime {
             .spawn(move || match bridge.session_messages(&session_id) {
                 Ok(messages) => {
                     if let Some(usage) = open_code_usage_from_messages(&session_id, &messages) {
-                        events.send(ChatBackendEvent::Usage(usage)).ok();
+                        events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
                     }
                 }
                 Err(error) => {
@@ -437,7 +501,7 @@ impl OpenCodeRuntime {
         };
         let messages = self.question_bridge.session_messages(session_id)?;
         if let Some(usage) = open_code_usage_from_messages(session_id, &messages) {
-            self.events.send(ChatBackendEvent::Usage(usage)).ok();
+            self.events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
         }
         Ok(())
     }
@@ -501,8 +565,8 @@ impl OpenCodeRuntime {
                     request_id,
                     answers,
                 }) => self.submit_user_input(request_id, answers)?,
-                Err(mpsc::TryRecvError::Empty) => return Ok(()),
-                Err(mpsc::TryRecvError::Disconnected) => {
+                Err(crossbeam_channel::TryRecvError::Empty) => return Ok(()),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     return Err(anyhow!("chat command channel closed"));
                 }
             }
@@ -513,8 +577,8 @@ impl OpenCodeRuntime {
         loop {
             match self.questions.try_recv() {
                 Ok(question) => self.enqueue_question(question)?,
-                Err(mpsc::TryRecvError::Empty) => return Ok(()),
-                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                Err(crossbeam_channel::TryRecvError::Empty) => return Ok(()),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => return Ok(()),
             }
         }
     }
@@ -543,10 +607,10 @@ impl OpenCodeRuntime {
             };
             self.active_question = Some(question);
             self.events
-                .send(ChatBackendEvent::PendingUserInput(pending))
+                .send_blocking(ChatBackendEvent::PendingUserInput(pending))
                 .ok();
             self.events
-                .send(ChatBackendEvent::Status(AgentChatStatus::WaitingForUser))
+                .send_blocking(ChatBackendEvent::Status(AgentChatStatus::WaitingForUser))
                 .ok();
             break;
         }
@@ -568,7 +632,7 @@ impl OpenCodeRuntime {
         self.question_bridge.reply(&request_id, &answers)?;
         self.active_question = None;
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
         self.show_next_question()
     }
@@ -601,7 +665,7 @@ impl OpenCodeRuntime {
             self.notify("session/cancel", json!({ "sessionId": session_id }))?;
         }
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
             .ok();
         Ok(())
     }
@@ -651,7 +715,7 @@ impl OpenCodeRuntime {
                     .and_then(Value::as_str)
                 {
                     self.events
-                        .send(ChatBackendEvent::ThoughtChunk {
+                        .send_blocking(ChatBackendEvent::ThoughtChunk {
                             message_id: update
                                 .get("messageId")
                                 .and_then(Value::as_str)
@@ -664,7 +728,7 @@ impl OpenCodeRuntime {
             "tool_call" | "tool_call_update" => {
                 self.track_changed_paths(update);
                 self.events
-                    .send(ChatBackendEvent::WorkLog(open_code_tool_entry(update)))
+                    .send_blocking(ChatBackendEvent::WorkLog(open_code_tool_entry(update)))
                     .ok();
             }
             "plan" => {
@@ -689,7 +753,7 @@ impl OpenCodeRuntime {
                         entry.get("status").and_then(Value::as_str) == Some("completed")
                     });
                 self.events
-                    .send(ChatBackendEvent::WorkLog(
+                    .send_blocking(ChatBackendEvent::WorkLog(
                         WorkLogEntry::new(
                             "opencode-plan",
                             "opencode-plan",
@@ -784,12 +848,12 @@ impl OpenCodeRuntime {
             _ => PendingApprovalKind::Permissions,
         };
         self.events
-            .send(ChatBackendEvent::PendingApproval(PendingApproval::new(
+            .send_blocking(ChatBackendEvent::PendingApproval(PendingApproval::new(
                 request_id, kind, title, detail,
             )))
             .ok();
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::WaitingForUser))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::WaitingForUser))
             .ok();
         Ok(())
     }
@@ -805,7 +869,7 @@ impl OpenCodeRuntime {
         };
         self.respond_permission(permission.jsonrpc_id, option)?;
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
         Ok(())
     }
@@ -1103,10 +1167,14 @@ fn available_local_port() -> anyhow::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
+const OPEN_CODE_QUESTION_POLL_ACTIVE: Duration = Duration::from_millis(120);
+const OPEN_CODE_QUESTION_POLL_IDLE: Duration = Duration::from_millis(1_500);
+
 fn spawn_open_code_question_poller(
     bridge: OpenCodeQuestionBridge,
     questions: Sender<Value>,
     shutdown: Arc<AtomicBool>,
+    turn_active: Arc<AtomicBool>,
 ) {
     let _ = thread::Builder::new()
         .name("choro-opencode-questions".into())
@@ -1124,7 +1192,14 @@ fn spawn_open_code_question_poller(
                         }
                     }
                 }
-                thread::sleep(Duration::from_millis(120));
+                // Questions are raised by an in-flight prompt: poll fast during
+                // a turn, and keep only a slow safety poll while the chat idles.
+                let interval = if turn_active.load(Ordering::SeqCst) {
+                    OPEN_CODE_QUESTION_POLL_ACTIVE
+                } else {
+                    OPEN_CODE_QUESTION_POLL_IDLE
+                };
+                thread::sleep(interval);
             }
         });
 }

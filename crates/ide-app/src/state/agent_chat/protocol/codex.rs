@@ -7,34 +7,31 @@ impl CodexRuntime {
                 self.assistant_stream.flush(&self.events);
                 break;
             }
-            loop {
-                if let Some((text, mode)) = self.deferred_turns.pop_front() {
-                    self.send_turn(text, mode)?;
-                    continue;
-                }
-                match self.commands.try_recv() {
-                    Ok(ChatBackendCommand::Shutdown) => {
-                        self.assistant_stream.flush(&self.events);
-                        return Ok(());
-                    }
-                    Ok(ChatBackendCommand::ForceShutdown) => {
-                        self.assistant_stream.flush(&self.events);
-                        return Err(anyhow!("Codex app-server force-stopped"));
-                    }
-                    Ok(command) => self.handle_command(command)?,
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
-                }
+            if let Some((text, mode)) = self.deferred_turns.pop_front() {
+                self.send_turn(text, mode)?;
+                continue;
             }
-            match self.messages.recv_timeout(Duration::from_millis(40)) {
-                Ok(message) => {
+            match next_backend_inbound(
+                &self.commands,
+                &self.messages,
+                self.assistant_stream.has_pending(),
+            ) {
+                BackendInbound::Command(ChatBackendCommand::Shutdown) => {
+                    self.assistant_stream.flush(&self.events);
+                    return Ok(());
+                }
+                BackendInbound::Command(ChatBackendCommand::ForceShutdown) => {
+                    self.assistant_stream.flush(&self.events);
+                    return Err(anyhow!("Codex app-server force-stopped"));
+                }
+                BackendInbound::Command(command) => self.handle_command(command)?,
+                BackendInbound::CommandsClosed => return Ok(()),
+                BackendInbound::Message(message) => {
                     self.handle_message(message)?;
                     self.assistant_stream.flush_due(&self.events);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.assistant_stream.flush_due(&self.events);
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                BackendInbound::FlushTick => self.assistant_stream.flush_due(&self.events),
+                BackendInbound::MessagesClosed => {
                     let detail = match self.child.try_wait() {
                         Ok(Some(status)) => format!("Codex app-server exited with status {status}"),
                         Ok(None) => {
@@ -79,11 +76,11 @@ impl CodexRuntime {
             self.handle_commands_while_blocked()?;
             let message = match self.messages.recv_timeout(Duration::from_millis(40)) {
                 Ok(message) => message,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     self.assistant_stream.flush_due(&self.events);
                     continue;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     return Err(anyhow!("Codex app-server stdout closed"));
                 }
             };
@@ -129,7 +126,7 @@ impl CodexRuntime {
         self.plan_buffer.clear();
         self.pending_changed_files = None;
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
         let mode_name = match mode {
             AgentInteractionMode::Default => "default",
@@ -243,7 +240,7 @@ impl CodexRuntime {
                 Ok(ChatBackendCommand::SendTurn { text, mode }) => {
                     self.deferred_turns.push_back((text, mode));
                     self.events
-                        .send(ChatBackendEvent::WorkLog(
+                        .send_blocking(ChatBackendEvent::WorkLog(
                             WorkLogEntry::new(
                                 next_request_id(),
                                 "codex-startup-queued",
@@ -258,8 +255,8 @@ impl CodexRuntime {
                         ))
                         .ok();
                 }
-                Err(mpsc::TryRecvError::Empty) => return Ok(()),
-                Err(mpsc::TryRecvError::Disconnected) => {
+                Err(crossbeam_channel::TryRecvError::Empty) => return Ok(()),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     return Err(anyhow!("chat command channel closed"));
                 }
             }
@@ -285,7 +282,7 @@ impl CodexRuntime {
             }))?;
         } else {
             self.events
-                .send(ChatBackendEvent::WorkLog(
+                .send_blocking(ChatBackendEvent::WorkLog(
                     WorkLogEntry::new(
                         next_request_id(),
                         "codex-user-input-missing",
@@ -303,7 +300,7 @@ impl CodexRuntime {
     fn resolve_approval(&mut self, request_id: String, approved: bool) -> anyhow::Result<()> {
         let Some(pending) = self.pending_approvals.remove(&request_id) else {
             self.events
-                .send(ChatBackendEvent::WorkLog(
+                .send_blocking(ChatBackendEvent::WorkLog(
                     WorkLogEntry::new(
                         next_request_id(),
                         "codex-approval-missing",
@@ -340,7 +337,7 @@ impl CodexRuntime {
             self.notify("turn/cancel", json!({ "threadId": thread_id }))?;
         }
         self.events
-            .send(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
             .ok();
         Ok(())
     }
@@ -386,7 +383,7 @@ impl CodexRuntime {
             "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
                 if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                     self.events
-                        .send(ChatBackendEvent::ThoughtChunk {
+                        .send_blocking(ChatBackendEvent::ThoughtChunk {
                             message_id: item_id_from_params(&params),
                             text: delta.to_string(),
                         })
@@ -402,7 +399,7 @@ impl CodexRuntime {
                     WorkLogStatus::InProgress,
                 )
                 .detail(format_plan_detail(&params));
-                self.events.send(ChatBackendEvent::WorkLog(entry)).ok();
+                self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
             }
             "item/started" => {
                 if params
@@ -414,7 +411,7 @@ impl CodexRuntime {
                     self.plan_buffer.clear();
                 }
                 if let Some(entry) = work_log_from_item(&params, WorkLogStatus::InProgress) {
-                    self.events.send(ChatBackendEvent::WorkLog(entry)).ok();
+                    self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
                 }
             }
             "item/completed" => {
@@ -422,7 +419,7 @@ impl CodexRuntime {
                     (!self.plan_buffer.trim().is_empty()).then(|| self.plan_buffer.clone())
                 }) {
                     self.events
-                        .send(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
+                        .send_blocking(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
                             next_request_id(),
                             plan,
                         )))
@@ -434,14 +431,14 @@ impl CodexRuntime {
                         .map(|id| format!("generated-image-{id}"))
                         .unwrap_or_else(|| format!("generated-image-{}", next_request_id()));
                     self.events
-                        .send(ChatBackendEvent::AssistantChunk {
+                        .send_blocking(ChatBackendEvent::AssistantChunk {
                             message_id: Some(message_id),
                             text: markdown,
                         })
                         .ok();
                 }
                 if let Some(entry) = work_log_from_item(&params, WorkLogStatus::Completed) {
-                    self.events.send(ChatBackendEvent::WorkLog(entry)).ok();
+                    self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
                 }
             }
             "item/plan/delta" => {
@@ -477,7 +474,7 @@ impl CodexRuntime {
             }
             "thread/tokenUsage/updated" => {
                 if let Some(usage) = codex_conversation_usage(&params, self.model.as_deref()) {
-                    self.events.send(ChatBackendEvent::Usage(usage)).ok();
+                    self.events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
                 }
             }
             "turn/completed" => {
@@ -488,7 +485,7 @@ impl CodexRuntime {
                 if review.is_some() || verification.is_some() {
                     if let Some(review) = review {
                         self.events
-                            .send(ChatBackendEvent::CodeReview(CodeReview::new(
+                            .send_blocking(ChatBackendEvent::CodeReview(CodeReview::new(
                                 next_request_id(),
                                 review,
                             )))
@@ -496,25 +493,25 @@ impl CodexRuntime {
                     }
                     if let Some(verification) = verification {
                         self.events
-                            .send(ChatBackendEvent::Verification(Verification::new(
+                            .send_blocking(ChatBackendEvent::Verification(Verification::new(
                                 next_request_id(),
                                 verification,
                             )))
                             .ok();
                     }
                     self.events
-                        .send(ChatBackendEvent::Status(AgentChatStatus::Idle))
+                        .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Idle))
                         .ok();
                 } else if let Some(plan) = extract_proposed_plan(&self.assistant_buffer) {
                     self.events
-                        .send(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
+                        .send_blocking(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
                             next_request_id(),
                             plan,
                         )))
                         .ok();
                 } else {
                     self.events
-                        .send(ChatBackendEvent::Status(AgentChatStatus::Idle))
+                        .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Idle))
                         .ok();
                 }
             }
@@ -536,7 +533,7 @@ impl CodexRuntime {
                             })
                             .clone();
                         self.events
-                            .send(ChatBackendEvent::WorkLog(
+                            .send_blocking(ChatBackendEvent::WorkLog(
                                 WorkLogEntry::new(
                                     id.clone(),
                                     id,
@@ -551,7 +548,7 @@ impl CodexRuntime {
                         // not a terminal backend failure. Keeping Running makes new
                         // composer submissions queue until this turn really ends.
                         self.events
-                            .send(ChatBackendEvent::Status(AgentChatStatus::Running))
+                            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
                             .ok();
                     }
                     CodexErrorDisposition::Terminal { message } => {
@@ -561,7 +558,7 @@ impl CodexRuntime {
                             Some(message.clone()),
                         );
                         self.pending_approvals.clear();
-                        self.events.send(ChatBackendEvent::Error(message)).ok();
+                        self.events.send_blocking(ChatBackendEvent::Error(message)).ok();
                     }
                 }
             }
@@ -575,7 +572,7 @@ impl CodexRuntime {
             return;
         };
         self.events
-            .send(ChatBackendEvent::WorkLog(
+            .send_blocking(ChatBackendEvent::WorkLog(
                 WorkLogEntry::new(id.clone(), id, WorkLogEntryKind::System, title, status)
                     .detail(detail),
             ))
@@ -588,7 +585,7 @@ impl CodexRuntime {
                 capture_changed_files_snapshot(&self.agent, summary, "agent_changed_files");
             if !summary.files.is_empty() {
                 self.events
-                    .send(ChatBackendEvent::ChangedFiles(summary))
+                    .send_blocking(ChatBackendEvent::ChangedFiles(summary))
                     .ok();
             }
         }
@@ -616,7 +613,7 @@ impl CodexRuntime {
                     },
                 );
                 self.events
-                    .send(ChatBackendEvent::PendingUserInput(pending))
+                    .send_blocking(ChatBackendEvent::PendingUserInput(pending))
                     .ok();
             }
             "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
@@ -630,7 +627,7 @@ impl CodexRuntime {
                     },
                 );
                 self.events
-                    .send(ChatBackendEvent::PendingApproval(pending))
+                    .send_blocking(ChatBackendEvent::PendingApproval(pending))
                     .ok();
             }
             "item/permissions/requestApproval" => {
@@ -648,7 +645,7 @@ impl CodexRuntime {
                     },
                 );
                 self.events
-                    .send(ChatBackendEvent::PendingApproval(pending))
+                    .send_blocking(ChatBackendEvent::PendingApproval(pending))
                     .ok();
             }
             _ => {

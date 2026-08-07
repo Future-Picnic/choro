@@ -261,6 +261,57 @@ pub(super) fn agent_chat_rows(
     rows
 }
 
+/// A cheap fingerprint of everything that can change a row's rendered height
+/// while the row count stays the same — chiefly an answer whose text grows token
+/// by token, and a work-log group that gains steps. `ListState` caches a
+/// measured height per row and only invalidates it on a splice, so without this
+/// a row that grows in place keeps the height it had when it first appeared:
+/// prose merely overflows, but a markdown table ends up hundreds of pixels
+/// taller than its slot and paints over whatever follows.
+///
+/// Deliberately length-based rather than a content hash. This runs for every row
+/// on every frame, and streaming growth is monotonic, so a length notices it
+/// without walking the text.
+pub(super) fn agent_chat_row_fingerprint(row: &AgentChatRow, session: &AgentChatSession) -> u64 {
+    fn message_len(message: &AgentChatMessage) -> u64 {
+        match message {
+            AgentChatMessage::User {
+                text,
+                display_text,
+                tags,
+                ..
+            } => (text.len() + display_text.as_ref().map_or(0, String::len) + tags.len()) as u64,
+            AgentChatMessage::Assistant { text, .. } | AgentChatMessage::Thought { text, .. } => {
+                text.len() as u64
+            }
+        }
+    }
+
+    fn mix(kind: u64, index: usize, value: u64) -> u64 {
+        kind.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (index as u64).wrapping_mul(1_000_003)
+            ^ value
+    }
+
+    match row {
+        AgentChatRow::Message(index) => mix(
+            1,
+            *index,
+            session.messages.get(*index).map_or(0, message_len),
+        ),
+        AgentChatRow::TimelineItem(index) => match session.timeline.get(*index) {
+            Some(AgentChatTimelineItem::Message(message)) => mix(2, *index, message_len(message)),
+            // Cards only change height through an explicit user action (expand,
+            // collapse, apply), and every one of those paths already calls
+            // `remeasure_agent_chat_list`.
+            _ => mix(3, *index, 0),
+        },
+        AgentChatRow::WorkLogGroup { start, end } => mix(4, *start, *end as u64),
+        AgentChatRow::ResumeSavedSession => mix(5, 0, 0),
+        AgentChatRow::Activity => mix(6, 0, 0),
+    }
+}
+
 /// Map visual list positions to chronological row positions. Top-down chat
 /// reverses complete user turns rather than individual rows, so a prompt still
 /// appears before the work and answer it produced.

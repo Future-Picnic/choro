@@ -680,6 +680,7 @@ impl CenterArea {
         row_count: usize,
         newest_turn_len: usize,
         top_down: bool,
+        row_fingerprints: &[u64],
         cx: &mut Context<Self>,
     ) -> ListState {
         let layout_changed = self
@@ -688,6 +689,7 @@ impl CenterArea {
             .is_some_and(|previous| *previous != top_down);
         if layout_changed {
             self.agent_chat_list_states.remove(&agent_id);
+            self.agent_chat_row_fingerprints.remove(&agent_id);
             self.agent_chat_scrolled_up.insert(agent_id, false);
             self.agent_chat_prepended_rows.remove(&agent_id);
         }
@@ -808,6 +810,35 @@ impl CenterArea {
                 }
             }
             std::cmp::Ordering::Equal => {}
+        }
+
+        // A row whose content grew in place (a streaming answer, a work-log
+        // group gaining steps) never splices, so `ListState` would keep serving
+        // the height it measured when that row first appeared. Re-measure only
+        // the rows that actually changed — a blanket re-measure would relayout
+        // every visible row on every token.
+        let previous = self
+            .agent_chat_row_fingerprints
+            .insert(agent_id, row_fingerprints.to_vec());
+        if old_count == row_count && state.item_count() == row_fingerprints.len() {
+            if let Some(previous) = previous.filter(|prev| prev.len() == row_fingerprints.len()) {
+                let changed = previous
+                    .iter()
+                    .zip(row_fingerprints)
+                    .enumerate()
+                    .filter_map(|(index, (before, after))| (before != after).then_some(index))
+                    .collect::<Vec<_>>();
+                if !changed.is_empty() {
+                    // Splicing collapses any scroll anchor inside the spliced
+                    // range, which would snap the view; restore it afterwards
+                    // exactly as `remeasure_agent_chat_list` does.
+                    let anchor = state.logical_scroll_top();
+                    for index in changed {
+                        state.splice(index..index + 1, 1);
+                    }
+                    state.scroll_to(anchor);
+                }
+            }
         }
         state
     }
