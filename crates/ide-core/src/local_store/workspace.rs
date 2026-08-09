@@ -131,6 +131,136 @@ pub(super) async fn save_projects_async(conn: &Connection, projects: &[Project])
             )
             .await?;
         }
+        save_project_git_workflows(conn, project).await?;
+    }
+    Ok(())
+}
+
+async fn delete_missing_project_rows(
+    conn: &Connection,
+    table: &str,
+    project_id: ProjectId,
+    ids: &HashSet<String>,
+) -> Result<()> {
+    let project_id = project_id.0.to_string();
+    let mut rows = conn
+        .query(
+            format!("SELECT id FROM {table} WHERE project_id = ?1"),
+            [project_id.clone()],
+        )
+        .await?;
+    let mut delete = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let id: String = row.get(0)?;
+        if !ids.contains(&id) {
+            delete.push(id);
+        }
+    }
+    drop(rows);
+    for id in delete {
+        conn.execute(
+            format!("DELETE FROM {table} WHERE project_id = ?1 AND id = ?2"),
+            params![project_id.clone(), id],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn save_project_git_workflows(conn: &Connection, project: &Project) -> Result<()> {
+    for workflow in &project.git_workflows {
+        project.validate_git_workflow(workflow)?;
+    }
+    let workflow_ids: HashSet<String> = project
+        .git_workflows
+        .iter()
+        .map(|workflow| workflow.id.to_string())
+        .collect();
+    delete_missing_project_rows(conn, "project_git_workflows", project.id, &workflow_ids).await?;
+    for (sort_order, workflow) in project.git_workflows.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO project_git_workflows
+             (id, project_id, repository_path, name, source, destination,
+              completion_policy, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                project_id = excluded.project_id,
+                repository_path = excluded.repository_path,
+                name = excluded.name,
+                source = excluded.source,
+                destination = excluded.destination,
+                completion_policy = excluded.completion_policy,
+                sort_order = excluded.sort_order",
+            params![
+                workflow.id.to_string(),
+                project.id.0.to_string(),
+                path_to_string(&workflow.repository_path),
+                workflow.name.trim(),
+                workflow.source_branch.trim(),
+                workflow.destination_branch.trim(),
+                workflow.completion_policy.as_str(),
+                sort_order as i64,
+            ],
+        )
+        .await?;
+    }
+
+    let mut terminal: Vec<&GitWorkflowRun> = project
+        .git_workflow_runs
+        .iter()
+        .filter(|run| run.state.is_terminal())
+        .collect();
+    terminal.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
+    let retained_terminal: HashSet<Uuid> =
+        terminal.into_iter().take(30).map(|run| run.id).collect();
+    let retained_runs: Vec<&GitWorkflowRun> = project
+        .git_workflow_runs
+        .iter()
+        .filter(|run| !run.state.is_terminal() || retained_terminal.contains(&run.id))
+        .collect();
+    let run_ids: HashSet<String> = retained_runs.iter().map(|run| run.id.to_string()).collect();
+    delete_missing_project_rows(conn, "project_git_workflow_runs", project.id, &run_ids).await?;
+    for run in retained_runs {
+        run.validate()?;
+        let workflow_id = run.workflow_id.filter(|workflow_id| {
+            project
+                .git_workflows
+                .iter()
+                .any(|workflow| workflow.id == *workflow_id)
+        });
+        conn.execute(
+            "INSERT INTO project_git_workflow_runs
+             (id, project_id, workflow_id, repository_path, source, destination,
+              pull_request_number, expected_head_sha, state, error, started_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+                project_id = excluded.project_id,
+                workflow_id = excluded.workflow_id,
+                repository_path = excluded.repository_path,
+                source = excluded.source,
+                destination = excluded.destination,
+                pull_request_number = excluded.pull_request_number,
+                expected_head_sha = excluded.expected_head_sha,
+                state = excluded.state,
+                error = excluded.error,
+                started_at = excluded.started_at,
+                updated_at = excluded.updated_at",
+            params![
+                run.id.to_string(),
+                project.id.0.to_string(),
+                workflow_id.map(|id| id.to_string()),
+                path_to_string(&run.repository_path),
+                run.source_branch.trim(),
+                run.destination_branch.trim(),
+                run.pull_request_number.map(u64_to_i64).transpose()?,
+                run.expected_head_sha.clone(),
+                run.state.as_str(),
+                run.error.clone(),
+                u64_to_i64(run.started_at)?,
+                u64_to_i64(run.updated_at)?,
+            ],
+        )
+        .await?;
     }
     Ok(())
 }
@@ -157,6 +287,8 @@ pub(super) async fn load_projects_async(conn: &Connection) -> Result<Vec<Project
     let presets = load_project_presets(conn).await?;
     let db_connections = load_project_db_connections(conn).await?;
     let task_tracker_connections = load_project_task_tracker_connections(conn).await?;
+    let git_workflows = load_project_git_workflows(conn).await?;
+    let git_workflow_runs = load_project_git_workflow_runs(conn).await?;
     let mut rows = conn
         .query(
             "SELECT id, name, path, icon, icon_color, icon_image_path, section_id, is_favorite
@@ -185,9 +317,82 @@ pub(super) async fn load_projects_async(conn: &Connection) -> Result<Vec<Project
                 .get(&id)
                 .cloned()
                 .unwrap_or_default(),
+            git_workflows: git_workflows.get(&id).cloned().unwrap_or_default(),
+            git_workflow_runs: git_workflow_runs.get(&id).cloned().unwrap_or_default(),
         });
     }
     Ok(projects)
+}
+
+async fn load_project_git_workflows(
+    conn: &Connection,
+) -> Result<HashMap<ProjectId, Vec<GitWorkflow>>> {
+    let mut rows = conn
+        .query(
+            "SELECT id, project_id, repository_path, name, source, destination,
+                    completion_policy
+             FROM project_git_workflows
+             ORDER BY project_id ASC, repository_path ASC, sort_order ASC",
+            (),
+        )
+        .await?;
+    let mut workflows: HashMap<ProjectId, Vec<GitWorkflow>> = HashMap::new();
+    while let Some(row) = rows.next().await? {
+        let project_id = ProjectId(parse_uuid(&row.get::<String>(1)?)?);
+        let workflow = GitWorkflow {
+            id: parse_uuid(&row.get::<String>(0)?)?,
+            repository_path: PathBuf::from(row.get::<String>(2)?),
+            name: row.get(3)?,
+            source_branch: row.get(4)?,
+            destination_branch: row.get(5)?,
+            completion_policy: row.get::<String>(6)?.parse()?,
+        };
+        workflow.validate()?;
+        workflows.entry(project_id).or_default().push(workflow);
+    }
+    Ok(workflows)
+}
+
+async fn load_project_git_workflow_runs(
+    conn: &Connection,
+) -> Result<HashMap<ProjectId, Vec<GitWorkflowRun>>> {
+    let mut rows = conn
+        .query(
+            "SELECT id, project_id, workflow_id, repository_path, source,
+                    destination, pull_request_number, expected_head_sha, state, error,
+                    started_at, updated_at
+             FROM project_git_workflow_runs
+             ORDER BY project_id ASC, updated_at DESC",
+            (),
+        )
+        .await?;
+    let mut runs: HashMap<ProjectId, Vec<GitWorkflowRun>> = HashMap::new();
+    while let Some(row) = rows.next().await? {
+        let project_id = ProjectId(parse_uuid(&row.get::<String>(1)?)?);
+        let pull_request_number = opt_i64(&row, 6)?
+            .map(|value| u64::try_from(value).context("negative pull request number"))
+            .transpose()?;
+        let started_at =
+            u64::try_from(row.get::<i64>(10)?).context("negative Git workflow start time")?;
+        let updated_at =
+            u64::try_from(row.get::<i64>(11)?).context("negative Git workflow update time")?;
+        let run = GitWorkflowRun {
+            id: parse_uuid(&row.get::<String>(0)?)?,
+            workflow_id: opt_text(&row, 2)?.map(|id| parse_uuid(&id)).transpose()?,
+            repository_path: PathBuf::from(row.get::<String>(3)?),
+            source_branch: row.get(4)?,
+            destination_branch: row.get(5)?,
+            pull_request_number,
+            expected_head_sha: opt_text(&row, 7)?,
+            state: row.get::<String>(8)?.parse()?,
+            error: opt_text(&row, 9)?,
+            started_at,
+            updated_at,
+        };
+        run.validate()?;
+        runs.entry(project_id).or_default().push(run);
+    }
+    Ok(runs)
 }
 
 pub(super) async fn load_project_presets(

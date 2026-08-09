@@ -399,7 +399,9 @@ impl CodexRuntime {
                     WorkLogStatus::InProgress,
                 )
                 .detail(format_plan_detail(&params));
-                self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
+                self.events
+                    .send_blocking(ChatBackendEvent::WorkLog(entry))
+                    .ok();
             }
             "item/started" => {
                 if params
@@ -411,7 +413,9 @@ impl CodexRuntime {
                     self.plan_buffer.clear();
                 }
                 if let Some(entry) = work_log_from_item(&params, WorkLogStatus::InProgress) {
-                    self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
+                    self.events
+                        .send_blocking(ChatBackendEvent::WorkLog(entry))
+                        .ok();
                 }
             }
             "item/completed" => {
@@ -438,7 +442,9 @@ impl CodexRuntime {
                         .ok();
                 }
                 if let Some(entry) = work_log_from_item(&params, WorkLogStatus::Completed) {
-                    self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
+                    self.events
+                        .send_blocking(ChatBackendEvent::WorkLog(entry))
+                        .ok();
                 }
             }
             "item/plan/delta" => {
@@ -474,7 +480,9 @@ impl CodexRuntime {
             }
             "thread/tokenUsage/updated" => {
                 if let Some(usage) = codex_conversation_usage(&params, self.model.as_deref()) {
-                    self.events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
+                    self.events
+                        .send_blocking(ChatBackendEvent::Usage(usage))
+                        .ok();
                 }
             }
             "turn/completed" => {
@@ -558,7 +566,9 @@ impl CodexRuntime {
                             Some(message.clone()),
                         );
                         self.pending_approvals.clear();
-                        self.events.send_blocking(ChatBackendEvent::Error(message)).ok();
+                        self.events
+                            .send_blocking(ChatBackendEvent::Error(message))
+                            .ok();
                     }
                 }
             }

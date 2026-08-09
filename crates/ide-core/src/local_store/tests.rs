@@ -5,7 +5,7 @@ use crate::agents::{
 use crate::git::read::fixtures::{commit_all, repo_with_commit, workdir};
 use crate::git::{DiffHunk, DiffLine};
 use crate::task_tracker::{IssueTrackerProvider, TaskTrackerConnection};
-use crate::DbProvider;
+use crate::{DbProvider, GitWorkflowCompletionPolicy, GitWorkflowRunState};
 use std::fs;
 
 fn sample_project() -> Project {
@@ -17,6 +17,186 @@ fn sample_project() -> Project {
         .db_connections
         .push(DbConnection::new("local", "mongodb://localhost:27017"));
     project
+}
+
+#[test]
+fn migrates_v25_to_git_workflow_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DROP TABLE project_git_workflow_runs", ())
+                    .await?;
+                conn.execute("DROP TABLE project_git_workflows", ()).await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 26", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 25);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    store
+        .rt
+        .block_on(async {
+            let conn = store.connect().await?;
+            assert_eq!(schema_version(&conn).await?, 26);
+            assert!(table_exists(&conn, "project_git_workflows").await?);
+            assert!(table_exists(&conn, "project_git_workflow_runs").await?);
+            assert!(column_exists(&conn, "project_git_workflows", "source").await?);
+            assert!(column_exists(&conn, "project_git_workflow_runs", "destination").await?);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn empty_v25_workspace_migrates_with_empty_workflow_collections() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DELETE FROM projects", ()).await?;
+                conn.execute("DROP TABLE project_git_workflow_runs", ())
+                    .await?;
+                conn.execute("DROP TABLE project_git_workflows", ()).await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 26", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 25);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let loaded = store.load_workspace_config(AppConfig::default()).unwrap();
+    assert!(loaded.projects.is_empty());
+    store
+        .rt
+        .block_on(async {
+            let conn = store.connect().await?;
+            assert_eq!(schema_version(&conn).await?, 26);
+            let mut workflow_rows = conn
+                .query("SELECT COUNT(*) FROM project_git_workflows", ())
+                .await?;
+            let workflows: i64 = workflow_rows.next().await?.unwrap().get(0)?;
+            let mut run_rows = conn
+                .query("SELECT COUNT(*) FROM project_git_workflow_runs", ())
+                .await?;
+            let runs: i64 = run_rows.next().await?.unwrap().get(0)?;
+            assert_eq!(workflows, 0);
+            assert_eq!(runs, 0);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn git_workflows_and_runs_round_trip_and_delete_keeps_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let mut config = AppConfig::default();
+    let mut project = sample_project();
+    let workflow = GitWorkflow::new(
+        PathBuf::from("apps/api"),
+        "Promote staging",
+        "staging",
+        "production",
+        GitWorkflowCompletionPolicy::AutoMergeWhenReady,
+    )
+    .unwrap();
+    let workflow_id = workflow.id;
+    project.git_workflows.push(workflow.clone());
+    project.git_workflow_runs.push(GitWorkflowRun {
+        id: Uuid::new_v4(),
+        workflow_id: Some(workflow_id),
+        repository_path: PathBuf::from("apps/api"),
+        source_branch: "staging".into(),
+        destination_branch: "production".into(),
+        pull_request_number: Some(42),
+        expected_head_sha: Some("0123456789abcdef".into()),
+        state: GitWorkflowRunState::AutoMergeEnabled,
+        error: None,
+        started_at: 100,
+        updated_at: 200,
+    });
+    config.projects.push(project);
+    store.save_workspace_config(&config).unwrap();
+
+    let loaded = store.load_workspace_config(AppConfig::default()).unwrap();
+    assert_eq!(loaded.projects[0].git_workflows, vec![workflow]);
+    assert_eq!(loaded.projects[0].git_workflow_runs.len(), 1);
+    assert_eq!(
+        loaded.projects[0].git_workflow_runs[0].pull_request_number,
+        Some(42)
+    );
+
+    config.projects[0].git_workflows.clear();
+    store.save_workspace_config(&config).unwrap();
+    let loaded = store.load_workspace_config(AppConfig::default()).unwrap();
+    assert!(loaded.projects[0].git_workflows.is_empty());
+    assert_eq!(loaded.projects[0].git_workflow_runs.len(), 1);
+    assert_eq!(loaded.projects[0].git_workflow_runs[0].workflow_id, None);
+}
+
+#[test]
+fn git_workflow_persistence_prunes_old_terminal_runs_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let mut config = AppConfig::default();
+    let mut project = sample_project();
+    for updated_at in 0..35 {
+        project.git_workflow_runs.push(GitWorkflowRun {
+            id: Uuid::new_v4(),
+            workflow_id: None,
+            repository_path: PathBuf::from("."),
+            source_branch: "staging".into(),
+            destination_branch: "production".into(),
+            pull_request_number: None,
+            expected_head_sha: None,
+            state: GitWorkflowRunState::Merged,
+            error: None,
+            started_at: updated_at,
+            updated_at,
+        });
+    }
+    project.git_workflow_runs.push(GitWorkflowRun {
+        id: Uuid::new_v4(),
+        workflow_id: None,
+        repository_path: PathBuf::from("."),
+        source_branch: "release".into(),
+        destination_branch: "main".into(),
+        pull_request_number: Some(99),
+        expected_head_sha: None,
+        state: GitWorkflowRunState::WaitingForRequirements,
+        error: None,
+        started_at: 1,
+        updated_at: 1,
+    });
+    config.projects.push(project);
+    store.save_workspace_config(&config).unwrap();
+
+    let loaded = store.load_workspace_config(AppConfig::default()).unwrap();
+    assert_eq!(loaded.projects[0].git_workflow_runs.len(), 31);
+    assert_eq!(
+        loaded.projects[0]
+            .git_workflow_runs
+            .iter()
+            .filter(|run| run.state == GitWorkflowRunState::Merged)
+            .count(),
+        30
+    );
+    assert!(loaded.projects[0]
+        .git_workflow_runs
+        .iter()
+        .any(|run| run.state == GitWorkflowRunState::WaitingForRequirements));
 }
 
 fn sample_agent(project: &Project) -> AgentRecord {

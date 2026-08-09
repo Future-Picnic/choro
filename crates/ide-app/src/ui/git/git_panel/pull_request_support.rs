@@ -114,7 +114,7 @@ pub(super) fn existing_pull_request_url_for_base(
             "--base",
             base_branch,
             "--state",
-            "all",
+            "open",
             "--limit",
             "1",
             "--json",
@@ -332,6 +332,7 @@ pub(super) fn branch_pull_request_from_github(
         merge_state_status: pr.merge_state_status,
         review_decision: pr.review_decision,
         check_state: pull_request_check_state(&pr.status_check_rollup),
+        auto_merge_enabled: pr.auto_merge_request.is_some(),
     }
 }
 
@@ -347,7 +348,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
             "view",
             branch,
             "--json",
-            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -372,7 +373,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
             "--limit",
             "1",
             "--json",
-            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -400,7 +401,7 @@ pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRe
             "--limit",
             "30",
             "--json",
-            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -423,18 +424,26 @@ pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRe
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GithubMergeMethod {
+pub(super) enum GithubMergeMethod {
     Merge,
     Rebase,
     Squash,
 }
 
 impl GithubMergeMethod {
-    fn api_value(self) -> &'static str {
+    pub(super) fn api_value(self) -> &'static str {
         match self {
             Self::Merge => "merge",
             Self::Rebase => "rebase",
             Self::Squash => "squash",
+        }
+    }
+
+    pub(super) fn cli_flag(self) -> &'static str {
+        match self {
+            Self::Merge => "--merge",
+            Self::Rebase => "--rebase",
+            Self::Squash => "--squash",
         }
     }
 }
@@ -485,6 +494,37 @@ fn preferred_merge_method(settings: &GithubRepoMergeSettings) -> Option<GithubMe
         })
 }
 
+pub(super) fn repository_identity_and_merge_method(
+    repo: &Path,
+) -> anyhow::Result<(String, GithubMergeMethod)> {
+    let settings_output = gh_command_for_repo(repo)?
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,viewerDefaultMergeMethod,mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
+        ])
+        .current_dir(repo)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()?;
+    if !settings_output.status.success() {
+        let stderr = String::from_utf8_lossy(&settings_output.stderr)
+            .trim()
+            .to_string();
+        anyhow::bail!(if stderr.is_empty() {
+            "Could not read the repository's allowed merge methods".to_string()
+        } else {
+            stderr
+        });
+    }
+    let settings = serde_json::from_slice::<GithubRepoMergeSettings>(&settings_output.stdout)?;
+    let method = preferred_merge_method(&settings).ok_or_else(|| {
+        anyhow::anyhow!("This repository has no allowed pull request merge method")
+    })?;
+    Ok((settings.name_with_owner, method))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MergePullRequestOutcome {
     pub(crate) number: u64,
@@ -500,6 +540,7 @@ pub(crate) fn merge_pull_request_with_gh(
     repo: &Path,
     branch: &str,
     expected_base_branch: Option<&str>,
+    expected_head_sha: Option<&str>,
 ) -> anyhow::Result<MergePullRequestOutcome> {
     let output = gh_command_for_repo(repo)?
         .args([
@@ -507,7 +548,7 @@ pub(crate) fn merge_pull_request_with_gh(
             "view",
             branch,
             "--json",
-            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup",
+            "number,title,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup,autoMergeRequest",
         ])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
@@ -525,7 +566,7 @@ pub(crate) fn merge_pull_request_with_gh(
         serde_json::from_slice::<GithubPullRequest>(&output.stdout)?,
         branch,
     );
-    if pr.state.to_ascii_uppercase() != "OPEN" {
+    if !pr.state.eq_ignore_ascii_case("OPEN") {
         anyhow::bail!(
             "Pull request #{} is already {}",
             pr.number,
@@ -553,37 +594,20 @@ pub(crate) fn merge_pull_request_with_gh(
         .as_deref()
         .filter(|oid| !oid.is_empty())
         .ok_or_else(|| anyhow::anyhow!("GitHub did not return the PR head commit"))?;
-
-    let settings_output = gh_command_for_repo(repo)?
-        .args([
-            "repo",
-            "view",
-            "--json",
-            "nameWithOwner,viewerDefaultMergeMethod,mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
-        ])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
-    if !settings_output.status.success() {
-        let stderr = String::from_utf8_lossy(&settings_output.stderr)
-            .trim()
-            .to_string();
-        anyhow::bail!(if stderr.is_empty() {
-            "Could not read the repository's allowed merge methods".to_string()
-        } else {
-            stderr
-        });
+    if let Some(expected) = expected_head_sha.filter(|sha| !sha.is_empty()) {
+        if head_oid != expected {
+            anyhow::bail!(
+                "Pull request #{} source changed from {} to {}; refresh before merging",
+                pr.number,
+                expected,
+                head_oid
+            );
+        }
     }
-    let settings = serde_json::from_slice::<GithubRepoMergeSettings>(&settings_output.stdout)?;
-    let method = preferred_merge_method(&settings).ok_or_else(|| {
-        anyhow::anyhow!("This repository has no allowed pull request merge method")
-    })?;
 
-    let endpoint = format!(
-        "repos/{}/pulls/{}/merge",
-        settings.name_with_owner, pr.number
-    );
+    let (name_with_owner, method) = repository_identity_and_merge_method(repo)?;
+
+    let endpoint = format!("repos/{name_with_owner}/pulls/{}/merge", pr.number);
     let sha_field = format!("sha={head_oid}");
     let method_field = format!("merge_method={}", method.api_value());
     let merge_output = gh_command_for_repo(repo)?
@@ -630,6 +654,7 @@ impl GitPanel {
         let route = format!("{} → {}", pr.branch, pr.base_branch);
         let title = format!("Merge pull request #{}?", pr.number);
         let panel = cx.entity();
+        let expected_head_sha = pr.head_oid.clone();
         ConfirmDialog::new(
             title,
             "Choro will attempt the merge now using the repository's preferred allowed method. Required reviews, checks, and branch protections still apply.",
@@ -647,6 +672,7 @@ impl GitPanel {
             let git_for_task = git.clone();
             let git_for_result = git.clone();
             let pr_number = pr.number;
+            let expected_head_sha = expected_head_sha.clone();
             panel.update(cx, |_panel, cx| {
                 if git_for_task.read(cx).is_busy {
                     window.push_notification(
@@ -667,7 +693,12 @@ impl GitPanel {
                     let result = cx
                         .background_executor()
                         .spawn(async move {
-                            merge_pull_request_with_gh(&repo, &branch, Some(&base_branch))
+                            merge_pull_request_with_gh(
+                                &repo,
+                                &branch,
+                                Some(&base_branch),
+                                expected_head_sha.as_deref(),
+                            )
                         })
                         .await;
                     git_for_result

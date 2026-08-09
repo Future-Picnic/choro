@@ -50,7 +50,9 @@ impl LocalStore {
         if let Some(store) = SHARED.get() {
             return Ok(store.clone());
         }
-        let _init = INIT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _init = INIT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(store) = SHARED.get() {
             return Ok(store.clone());
         }

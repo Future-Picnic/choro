@@ -23,15 +23,15 @@ use crate::agents::{AgentChangedFile, AgentRecord, AgentStoreFile, LaneProfile};
 use crate::config::AppConfig;
 use crate::git::{FileDiff, LineOrigin};
 use crate::project::{
-    DbConnection, Project, ProjectId, ProjectReference, ProjectReferenceKind, ProjectSection,
-    ProjectSectionId, ScriptPreset,
+    DbConnection, GitWorkflow, GitWorkflowRun, Project, ProjectId, ProjectReference,
+    ProjectReferenceKind, ProjectSection, ProjectSectionId, ScriptPreset,
 };
 use crate::task_tracker::{
     PersonalTaskComment, PersonalTaskPriority, PersonalTaskRecord, PersonalTaskStatus, TaskRef,
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 25;
+const STORE_SCHEMA_VERSION: u32 = 26;
 const EXPORT_FORMAT_VERSION: u32 = 4;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;

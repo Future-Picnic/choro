@@ -1464,7 +1464,6 @@ mod retirement_tests {
         session.chat_session_id = None;
         assert!(!session_safe_to_retire(&session));
     }
-
     #[test]
     fn lane_exit_stops_without_claiming_the_user_pressed_stop() {
         let mut session = retirable_session();

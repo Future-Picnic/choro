@@ -39,8 +39,10 @@ pub use doc_assistant::{
     DocAssistantTranscriptMessage,
 };
 pub use project::{
-    DbConnection, DbProvider, Project, ProjectId, ProjectReference, ProjectReferenceKind,
-    ProjectSection, ProjectSectionId, ScriptPreset, CUSTOM_PROJECT_SVG_ICON,
+    validate_repository_relative_path, DbConnection, DbProvider, GitWorkflow,
+    GitWorkflowCompletionPolicy, GitWorkflowRun, GitWorkflowRunState, Project, ProjectId,
+    ProjectReference, ProjectReferenceKind, ProjectSection, ProjectSectionId, ScriptPreset,
+    CUSTOM_PROJECT_SVG_ICON,
 };
 pub use redaction::{redact_sensitive_text, redact_sensitive_text_with};
 pub use services::{

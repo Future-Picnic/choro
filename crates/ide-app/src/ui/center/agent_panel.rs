@@ -620,6 +620,7 @@ impl AgentShipDialog {
                                         merge_state_status: Some("CLEAN".into()),
                                         review_decision: None,
                                         check_state: crate::ui::git::git_panel::PullRequestCheckState::Unknown,
+                                        auto_merge_enabled: false,
                                     },
                                 );
                                 cx.notify();

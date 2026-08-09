@@ -17,12 +17,14 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     spinner::Spinner,
+    tooltip::Tooltip,
     v_flex, Disableable, IconName, Sizable, WindowExt,
 };
 use ide_core::{
     config::{GenerationAgent, GitStatusGroupMode, GitStatusViewMode},
     git::{BranchInfo, FileDiff, GitHubAccount, GitRemote},
-    AgentKind, ProjectId,
+    AgentKind, GitWorkflow, GitWorkflowCompletionPolicy, GitWorkflowRun, GitWorkflowRunState,
+    ProjectId,
 };
 
 use crate::notifications;
@@ -43,6 +45,9 @@ mod pull_requests_view;
 mod render;
 mod repository_setup;
 mod solo_strip;
+mod workflow_dialog;
+mod workflow_support;
+mod workflows_view;
 
 use generation::git_output;
 pub(crate) use generation::run_safe_text_generation;
@@ -65,6 +70,7 @@ use repository_setup::open_publish_repository_dialog;
 const CODEX_GENERATION_REASONING_EFFORT: &str = "low";
 const PULL_REQUEST_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const PULL_REQUEST_MISSING_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const WORKFLOW_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
 static GH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 fn resolved_gh_path() -> Option<PathBuf> {
@@ -239,6 +245,7 @@ pub(crate) enum GitTab {
     Changes,
     Commits,
     PullRequests,
+    Workflows,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -288,6 +295,7 @@ pub(crate) struct BranchPullRequest {
     pub(crate) merge_state_status: Option<String>,
     pub(crate) review_decision: Option<String>,
     pub(crate) check_state: PullRequestCheckState,
+    pub(crate) auto_merge_enabled: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -310,6 +318,8 @@ struct GithubPullRequest {
     review_decision: Option<String>,
     #[serde(default, rename = "statusCheckRollup")]
     status_check_rollup: Vec<serde_json::Value>,
+    #[serde(default, rename = "autoMergeRequest")]
+    auto_merge_request: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -368,6 +378,9 @@ pub struct GitPanel {
     repo_prs_fetching: bool,
     repo_prs_checked_at: Option<Instant>,
     repo_prs_error: Option<String>,
+    workflow_runs_refreshing: bool,
+    workflow_runs_checked_at: Option<Instant>,
+    workflow_runs_error: Option<String>,
     /// Cached `(ahead, behind)` per Solo branch for the scope flip row,
     /// refreshed in the background — never computed during render.
     pub(super) solo_ahead: HashMap<uuid::Uuid, (usize, usize)>,
@@ -393,6 +406,12 @@ impl GitPanel {
     pub(crate) fn set_active_tab(&mut self, tab: GitTab, cx: &mut Context<Self>) {
         if self.tab != tab {
             self.tab = tab;
+            if matches!(tab, GitTab::Workflows | GitTab::PullRequests) {
+                self.workflow_runs_checked_at = None;
+                if let Some(git) = self.active_git(cx) {
+                    self.sync_workflow_runs(git, cx);
+                }
+            }
             cx.notify();
         }
     }

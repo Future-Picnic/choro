@@ -501,7 +501,9 @@ impl OpenCodeRuntime {
         };
         let messages = self.question_bridge.session_messages(session_id)?;
         if let Some(usage) = open_code_usage_from_messages(session_id, &messages) {
-            self.events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
+            self.events
+                .send_blocking(ChatBackendEvent::Usage(usage))
+                .ok();
         }
         Ok(())
     }
