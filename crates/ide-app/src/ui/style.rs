@@ -13,7 +13,7 @@ use gpui::{
 };
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
-    h_flex, v_flex, Icon, IconName, Sizable,
+    h_flex, v_flex, Icon, IconName, Selectable, Sizable,
 };
 
 use crate::ui::design;
@@ -565,6 +565,45 @@ pub fn secondary_button_compact(
 
 pub fn ghost_button_compact(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     base_button_compact(id, label).ghost()
+}
+
+/// A compact selectable option used by Settings for choices such as themes.
+/// The builder owns the control geometry while the caller supplies selection
+/// state and behavior.
+pub fn settings_option_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> Button {
+    Button::new(id)
+        .small()
+        .h(crate::ui::design::control_h())
+        .text_size(crate::ui::design::text_ui())
+        .outline()
+        .selected(selected)
+        .label(label)
+}
+
+/// The standard low-emphasis labelled action used inside Settings cards.
+/// This preserves the established Settings geometry while keeping feature
+/// modules on the shared builder path.
+pub fn settings_ghost_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    Button::new(id).ghost().small().label(label)
+}
+
+/// The standard compact icon-only action used inside Settings rows.
+pub fn settings_inline_icon_button(id: impl Into<ElementId>, icon: IconName) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(crate::ui::design::control_h_xs())
+        .icon(icon)
+}
+
+/// The established default action treatment used by Settings data controls.
+pub fn settings_action_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    Button::new(id).label(label)
 }
 
 /// Recorder chip used by Settings → Keyboard shortcuts. It keeps keycaps on
