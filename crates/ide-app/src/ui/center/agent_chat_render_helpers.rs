@@ -73,6 +73,8 @@ pub(super) fn code_review_request_chip(text: &str) -> Option<(&'static str, Icon
         Some(("Sent for verification", IconName::CircleCheck))
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_FIX_PREFIX) {
         Some(("Addressing verification gaps", IconName::Replace))
+    } else if text.starts_with(super::agent_chat_runtime::AGENT_REVERIFY_DISMISS_MARKER) {
+        Some(("Re-verification skipped", IconName::CircleX))
     } else {
         None
     }
@@ -259,5 +261,16 @@ mod tests {
     #[test]
     fn ordinary_user_message_is_not_mistaken_for_a_review_request() {
         assert!(code_review_request_chip("Please review this code").is_none());
+    }
+
+    #[test]
+    fn declined_reverification_renders_as_a_compact_chip() {
+        assert_eq!(
+            code_review_request_chip(
+                super::super::agent_chat_runtime::AGENT_REVERIFY_DISMISS_MARKER
+            )
+            .map(|(label, _)| label),
+            Some("Re-verification skipped")
+        );
     }
 }

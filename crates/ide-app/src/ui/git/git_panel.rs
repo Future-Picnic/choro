@@ -375,9 +375,9 @@ pub struct GitPanel {
     pub(super) solo_ahead_fetching: bool,
     /// The Solo agent the panel is currently scoped around, if any.
     pub(super) scope_agent: Option<uuid::Uuid>,
-    /// User flipped back to Main while a Solo is open. Resets to the Solo
-    /// default whenever the focused Solo changes.
-    pub(super) scope_main: bool,
+    /// User flipped back to the project branch while a Solo is open. Resets to
+    /// the Solo default whenever the focused Solo changes.
+    pub(super) scope_project: bool,
     /// Lane GitState for the focused Solo — the substitution `active_git`
     /// serves while scoped to the lane.
     pub(super) lane_git: Option<(uuid::Uuid, Entity<GitState>)>,

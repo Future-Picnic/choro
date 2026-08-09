@@ -164,6 +164,7 @@ impl Render for GitPanel {
         let project = self.workspace.read(cx).active;
         let center = self.center.clone();
         let view_diff_center = center.clone();
+        let view_diff_git = git.clone();
         let stage_all_git = git.clone();
         let (line_add, line_remove) = git
             .read(cx)
@@ -189,6 +190,7 @@ impl Render for GitPanel {
         let top_pop_stash_git = git.clone();
         let top_apply_stash_git = git.clone();
         let top_open_diff_center = center.clone();
+        let top_open_diff_git = git.clone();
         let discard_icon_color = crate::ui::design::rose(cx);
         let view_settings_button = {
             let list_workspace = self.workspace.clone();
@@ -272,6 +274,7 @@ impl Render for GitPanel {
                 let apply = top_apply_stash_git.clone();
                 let pop_stash_detail = pop_stash_detail.clone();
                 let open_diff_center = top_open_diff_center.clone();
+                let open_diff_git = top_open_diff_git.clone();
                 menu = menu
                     .item(
                         PopupMenuItem::new("Stage all")
@@ -364,6 +367,7 @@ impl Render for GitPanel {
                                 .update(cx, |center, cx| {
                                     center.open_diff_from_git(
                                         project,
+                                        open_diff_git.clone(),
                                         crate::ui::git::diff_pane::DiffKind::Project,
                                         "All Changes".into(),
                                         cx,
@@ -504,6 +508,7 @@ impl Render for GitPanel {
                                         .update(cx, |center, cx| {
                                             center.open_diff_from_git(
                                                 project,
+                                                view_diff_git.clone(),
                                                 crate::ui::git::diff_pane::DiffKind::Project,
                                                 "All Changes".into(),
                                                 cx,

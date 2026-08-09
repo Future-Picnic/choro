@@ -46,6 +46,10 @@ impl DiffKind {
             },
         }
     }
+
+    pub fn key_for_repo(&self, repo: &Path) -> String {
+        format!("repo:{}:{}", repo.display(), self.key())
+    }
 }
 
 /// Editor-style diff view shown as a tab in the center area: collapsible
@@ -448,6 +452,24 @@ fn load_agent_snapshot_diffs(
         })
         .map(|snapshot_file| snapshot_file.diff)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_tab_keys_are_scoped_to_the_repository() {
+        let kind = DiffKind::File {
+            path: PathBuf::from("src/new.rs"),
+            staged: false,
+        };
+
+        assert_ne!(
+            kind.key_for_repo(Path::new("/project")),
+            kind.key_for_repo(Path::new("/project-solo"))
+        );
+    }
 }
 
 fn normalize_snapshot_path(repo_path: &Path, path: &Path) -> PathBuf {

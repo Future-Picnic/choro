@@ -3,8 +3,8 @@
 //! The panel shows nothing Solo-related — until the agent you have open is a
 //! Solo with a live lane. Then a scope flip appears at the top, defaulting to
 //! the Solo: the whole panel (changes, staging, commit, history, PRs) reads
-//! from the lane's own GitState. Flip to Main and it's the ordinary project
-//! panel again. Close the agent and the flip vanishes.
+//! from the lane's own GitState. Flip to the current project branch and it's
+//! the ordinary project panel again. Close the agent and the flip vanishes.
 
 use super::*;
 
@@ -43,16 +43,16 @@ impl GitPanel {
         let Some((agent, lane)) = context else {
             self.scope_agent = None;
             self.lane_git = None;
-            self.scope_main = false;
+            self.scope_project = false;
             return;
         };
 
         if self.scope_agent != Some(agent.id) {
             // A newly focused Solo: scope defaults to it — focus follows you.
             self.scope_agent = Some(agent.id);
-            self.scope_main = false;
+            self.scope_project = false;
             self.lane_git = None;
-            // A branch picker left open on Main must not survive into lane
+            // A branch picker left open in project scope must not survive into lane
             // scope, where switching branches isn't a thing.
             self.branches_expanded = false;
         }
@@ -84,7 +84,7 @@ impl GitPanel {
 
     /// True while the panel reads from the lane rather than the project.
     pub(super) fn scoped_to_lane(&self) -> bool {
-        self.lane_git.is_some() && !self.scope_main
+        self.lane_git.is_some() && !self.scope_project
     }
 
     /// The scope flip row — rendered only while a Solo is the open agent.
@@ -93,6 +93,14 @@ impl GitPanel {
         let lane_active = self.scoped_to_lane();
         let sky = crate::ui::design::sky(cx);
         let agent_id = scope.agent_id;
+        let project_branch: SharedString = self
+            .workspace
+            .read(cx)
+            .active
+            .and_then(|project| self.git_states.read(cx).get(project))
+            .and_then(|git| git.read(cx).branch_label())
+            .unwrap_or_else(|| "…".to_string())
+            .into();
         let ahead = self
             .solo_ahead
             .get(&agent_id)
@@ -111,21 +119,21 @@ impl GitPanel {
                     crate::ui::style::segmented_container_quiet(cx)
                         .child(
                             crate::ui::style::segment_with_leading(
-                                "git-scope-main",
+                                "git-scope-project",
                                 crate::ui::design::indicator::lucide_icon(
                                     lucide_icons::Icon::GitBranch,
                                     crate::ui::design::t3(cx),
                                     crate::ui::design::icon_sm(),
                                 )
                                 .into_any_element(),
-                                "Main",
+                                project_branch,
                                 !lane_active,
                                 cx,
                             )
                             .flex_1()
                             .justify_center()
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.scope_main = true;
+                                this.scope_project = true;
                                 cx.notify();
                             })),
                         )
@@ -154,7 +162,7 @@ impl GitPanel {
                             .flex_1()
                             .justify_center()
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.scope_main = false;
+                                this.scope_project = false;
                                 cx.notify();
                             })),
                         ),
