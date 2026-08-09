@@ -10,7 +10,8 @@ BUNDLE="target/release/bundle/$APP_NAME.app"
 INSTALL_BUNDLE="/Applications/$APP_NAME.app"
 ENTITLEMENTS="scripts/choro.entitlements"
 INSTALL_TO_APPLICATIONS="${CHORO_DEMO_INSTALL_TO_APPLICATIONS:-1}"
-SIGN_IDENTITY="${CHORO_CODESIGN_IDENTITY:-${MY_IDE_CODESIGN_IDENTITY:-}}"
+source scripts/resolve-codesign-identity.zsh
+SIGN_IDENTITY="$(resolve_choro_codesign_identity)"
 BUILD_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short HEAD)"
 
 CHORO_INSTALL_TO_APPLICATIONS=0 scripts/bundle.sh
@@ -49,27 +50,13 @@ chmod +x "$BUNDLE/Contents/MacOS/choro-demo"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$BUNDLE/Contents/Info.plist"
 
-if [[ -z "$SIGN_IDENTITY" ]]; then
-  SIGN_IDENTITY="$(
-    security find-identity -v -p codesigning 2>/dev/null \
-      | awk -F '"' '/Apple Development/ { print $2; exit }'
-  )"
-fi
-
-if [[ -n "$SIGN_IDENTITY" ]]; then
-  codesign --force --options runtime --timestamp=none \
-    --entitlements "$ENTITLEMENTS" \
-    --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/choro-bin"
-  codesign --force --options runtime --timestamp=none \
-    --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/choro-mcp"
-  codesign --force --options runtime --timestamp=none \
-    --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BUNDLE"
-else
-  codesign --force --entitlements "$ENTITLEMENTS" \
-    --sign - "$BUNDLE/Contents/MacOS/choro-bin"
-  codesign --force --sign - "$BUNDLE/Contents/MacOS/choro-mcp"
-  codesign --force --entitlements "$ENTITLEMENTS" --sign - "$BUNDLE"
-fi
+codesign --force --options runtime --timestamp=none \
+  --entitlements "$ENTITLEMENTS" \
+  --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/choro-bin"
+codesign --force --options runtime --timestamp=none \
+  --sign "$SIGN_IDENTITY" "$BUNDLE/Contents/MacOS/choro-mcp"
+codesign --force --options runtime --timestamp=none \
+  --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BUNDLE"
 codesign --verify --deep --strict "$BUNDLE"
 
 echo "Bundled: $BUNDLE"

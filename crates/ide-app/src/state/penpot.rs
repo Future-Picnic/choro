@@ -22,6 +22,8 @@ const DEFAULT_PENPOT_KEYCHAIN_SERVICE: &str = "com.ritmus.choro.penpot.mcp";
 const DEFAULT_INSTALLATION_KEYCHAIN_SERVICE: &str = "com.ritmus.choro.installation";
 const INSTALLATION_ID_ACCOUNT: &str = "installation-id";
 const INSTALLATION_SECRET_ACCOUNT: &str = "installation-secret";
+#[cfg(target_os = "macos")]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 const LEGACY_KEYCHAIN_ACCOUNT: &str = "default";
 const LEGACY_KEYCHAIN_ACCESS_TOKEN_ACCOUNT: &str = "access-token";
 const NO_WORKSPACE_ERROR: &str =
@@ -410,6 +412,10 @@ impl PenpotState {
         self.is_configured()
             && instance_matches_managed_service(&connection.instance_url)
             && load_session_token(connection.id).is_some()
+            // Besides validating the guest identity, this writes the redundant
+            // non-secret local marker for installations created by older Choro
+            // builds. A Keychain loss can then never look like first launch.
+            && load_or_create_installation_identity().is_ok()
     }
 
     fn apply_managed_provisioning(&mut self, provisioned: ManagedPenpotBootstrap) -> Result<()> {
@@ -422,7 +428,13 @@ impl PenpotState {
             .or_else(|| {
                 self.connection
                     .clone()
-                    .filter(|connection| connection.instance_url == config.instance_url)
+                    // A legacy connection may not have resolved its profile yet.
+                    // Once a profile is known, never reuse that connection for a
+                    // different account: its designs and credentials belong to
+                    // the original profile.
+                    .filter(|connection| {
+                        can_reuse_unresolved_managed_connection(connection, &config.instance_url)
+                    })
             });
         let connection_id = existing
             .as_ref()
@@ -1818,10 +1830,89 @@ fn camel_case_penpot_key(value: &str) -> String {
     result
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct InstallationIdentity {
     id: Uuid,
     secret: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InstallationIdentityPlan {
+    Existing {
+        identity: InstallationIdentity,
+        write_local_id: bool,
+        write_keychain_id: bool,
+    },
+    Create,
+}
+
+fn plan_installation_identity(
+    local_id: Option<Uuid>,
+    credential_id: Option<Uuid>,
+    credential_secret: Option<String>,
+) -> Result<InstallationIdentityPlan> {
+    match (local_id, credential_id, credential_secret) {
+        (Some(local_id), Some(credential_id), Some(secret)) => {
+            anyhow::ensure!(
+                local_id == credential_id,
+                "Choro's saved Design identity does not match its secure credential. Reconnect the existing Design account instead of creating a new one."
+            );
+            Ok(InstallationIdentityPlan::Existing {
+                identity: InstallationIdentity {
+                    id: local_id,
+                    secret,
+                },
+                write_local_id: false,
+                write_keychain_id: false,
+            })
+        }
+        (None, Some(id), Some(secret)) => Ok(InstallationIdentityPlan::Existing {
+            identity: InstallationIdentity { id, secret },
+            write_local_id: true,
+            write_keychain_id: false,
+        }),
+        (Some(id), None, Some(secret)) => Ok(InstallationIdentityPlan::Existing {
+            identity: InstallationIdentity { id, secret },
+            write_local_id: false,
+            write_keychain_id: true,
+        }),
+        (None, None, None) => Ok(InstallationIdentityPlan::Create),
+        (Some(_), None, None) => anyhow::bail!(
+            "Choro found your existing Design identity, but its secure credential is unavailable. Allow Choro to access Keychain and retry; no replacement account was created."
+        ),
+        (_, Some(_), None) => anyhow::bail!(
+            "Choro found an incomplete Design credential in Keychain. Restore the existing credential and retry; no replacement account was created."
+        ),
+        (_, None, Some(_)) => anyhow::bail!(
+            "Choro found an incomplete Design credential in Keychain. Restore the existing credential and retry; no replacement account was created."
+        ),
+    }
+}
+
+fn can_reuse_unresolved_managed_connection(
+    connection: &StoredPenpotConnection,
+    instance_url: &str,
+) -> bool {
+    connection.instance_url == instance_url && connection.profile_id.is_none()
+}
+
+fn installation_id_path() -> PathBuf {
+    ide_core::AppConfig::config_root().join("installation-id")
+}
+
+fn load_local_installation_id() -> Result<Option<Uuid>> {
+    match fs::read_to_string(installation_id_path()) {
+        Ok(value) => Uuid::parse_str(value.trim())
+            .map(Some)
+            .context("Choro's saved Design identity is invalid"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("Could not read Choro's saved Design identity"),
+    }
+}
+
+fn save_local_installation_id(id: Uuid) -> Result<()> {
+    write_private_file(&installation_id_path(), id.to_string().as_bytes())
+        .context("Could not save Choro's Design identity")
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2104,40 +2195,101 @@ fn penpot_keychain_service() -> String {
 #[cfg(target_os = "macos")]
 fn load_or_create_installation_identity() -> Result<InstallationIdentity> {
     let keychain_service = installation_keychain_service();
-    let existing_id = security_framework::passwords::get_generic_password(
-        &keychain_service,
-        INSTALLATION_ID_ACCOUNT,
-    )
-    .ok()
-    .and_then(|value| String::from_utf8(value).ok())
-    .and_then(|value| Uuid::parse_str(&value).ok());
-    let existing_secret = security_framework::passwords::get_generic_password(
+    let local_id = load_local_installation_id()?;
+    let credential_id =
+        load_installation_keychain_value(&keychain_service, INSTALLATION_ID_ACCOUNT, "identity")?
+            .map(|value| {
+                Uuid::parse_str(value.trim()).context("Choro's secure Design identity is invalid")
+            })
+            .transpose()?;
+    let credential_secret = load_installation_keychain_value(
         &keychain_service,
         INSTALLATION_SECRET_ACCOUNT,
-    )
-    .ok()
-    .and_then(|value| String::from_utf8(value).ok())
-    .filter(|value| value.len() >= 32);
-    if let (Some(id), Some(secret)) = (existing_id, existing_secret) {
-        return Ok(InstallationIdentity { id, secret });
+        "credential",
+    )?
+    .map(|value| {
+        anyhow::ensure!(
+            value.len() >= 32,
+            "Choro's secure Design credential is invalid"
+        );
+        Ok::<_, anyhow::Error>(value)
+    })
+    .transpose()?;
+
+    match plan_installation_identity(local_id, credential_id, credential_secret)? {
+        InstallationIdentityPlan::Existing {
+            identity,
+            write_local_id,
+            write_keychain_id,
+        } => {
+            if write_keychain_id {
+                save_installation_keychain_value(
+                    &keychain_service,
+                    INSTALLATION_ID_ACCOUNT,
+                    identity.id.to_string().as_bytes(),
+                    "identity",
+                )?;
+            }
+            if write_local_id {
+                save_local_installation_id(identity.id)?;
+            }
+            Ok(identity)
+        }
+        InstallationIdentityPlan::Create => {
+            let identity = InstallationIdentity {
+                id: Uuid::new_v4(),
+                secret: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+            };
+            save_installation_keychain_value(
+                &keychain_service,
+                INSTALLATION_SECRET_ACCOUNT,
+                identity.secret.as_bytes(),
+                "credential",
+            )?;
+            if let Err(error) = save_installation_keychain_value(
+                &keychain_service,
+                INSTALLATION_ID_ACCOUNT,
+                identity.id.to_string().as_bytes(),
+                "identity",
+            ) {
+                let _ = security_framework::passwords::delete_generic_password(
+                    &keychain_service,
+                    INSTALLATION_SECRET_ACCOUNT,
+                );
+                return Err(error);
+            }
+            save_local_installation_id(identity.id)?;
+            Ok(identity)
+        }
     }
-    let identity = InstallationIdentity {
-        id: Uuid::new_v4(),
-        secret: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
-    };
-    security_framework::passwords::set_generic_password(
-        &keychain_service,
-        INSTALLATION_ID_ACCOUNT,
-        identity.id.to_string().as_bytes(),
-    )
-    .map_err(|error| anyhow!("Could not save the Choro installation identity: {error}"))?;
-    security_framework::passwords::set_generic_password(
-        &keychain_service,
-        INSTALLATION_SECRET_ACCOUNT,
-        identity.secret.as_bytes(),
-    )
-    .map_err(|error| anyhow!("Could not save the Choro installation credential: {error}"))?;
-    Ok(identity)
+}
+
+#[cfg(target_os = "macos")]
+fn load_installation_keychain_value(
+    service: &str,
+    account: &str,
+    label: &str,
+) -> Result<Option<String>> {
+    match security_framework::passwords::get_generic_password(service, account) {
+        Ok(value) => String::from_utf8(value)
+            .map(Some)
+            .with_context(|| format!("Choro's secure Design {label} is invalid")),
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+        Err(error) => Err(anyhow!(
+            "Could not access Choro's secure Design {label} in Keychain: {error}"
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn save_installation_keychain_value(
+    service: &str,
+    account: &str,
+    value: &[u8],
+    label: &str,
+) -> Result<()> {
+    security_framework::passwords::set_generic_password(service, account, value)
+        .map_err(|error| anyhow!("Could not save Choro's secure Design {label}: {error}"))
 }
 
 #[cfg(target_os = "macos")]
@@ -2196,19 +2348,31 @@ fn fallback_session_token_path(connection_id: Uuid) -> PathBuf {
 
 #[cfg(not(target_os = "macos"))]
 fn load_or_create_installation_identity() -> Result<InstallationIdentity> {
-    let id_path = ide_core::AppConfig::config_root().join("installation-id");
+    let id_path = installation_id_path();
     let secret_path = ide_core::AppConfig::config_root().join("installation-secret");
-    let existing_id = fs::read_to_string(&id_path)
-        .ok()
-        .and_then(|value| Uuid::parse_str(value.trim()).ok());
-    let existing_secret = fs::read_to_string(&secret_path)
-        .ok()
-        .filter(|value| value.trim().len() >= 32);
-    if let (Some(id), Some(secret)) = (existing_id, existing_secret) {
-        return Ok(InstallationIdentity {
-            id,
-            secret: secret.trim().to_string(),
-        });
+    let existing_id = load_local_installation_id()?;
+    let existing_secret = match fs::read_to_string(&secret_path) {
+        Ok(value) => {
+            anyhow::ensure!(
+                value.trim().len() >= 32,
+                "Choro's saved Design credential is invalid"
+            );
+            Some(value)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("Could not read Choro's saved Design credential"),
+    };
+    match (existing_id, existing_secret) {
+        (Some(id), Some(secret)) => {
+            return Ok(InstallationIdentity {
+                id,
+                secret: secret.trim().to_string(),
+            });
+        }
+        (None, None) => {}
+        _ => anyhow::bail!(
+            "Choro found an incomplete Design identity. Restore its credential instead of creating a new account."
+        ),
     }
     let identity = InstallationIdentity {
         id: Uuid::new_v4(),
@@ -2292,7 +2456,6 @@ fn migrate_legacy_designs(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -2314,6 +2477,113 @@ fn write_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_installation_identity_is_reused_without_writes() {
+        let id = Uuid::from_u128(1);
+        let secret = "s".repeat(64);
+
+        let plan = plan_installation_identity(Some(id), Some(id), Some(secret.clone())).unwrap();
+
+        assert_eq!(
+            plan,
+            InstallationIdentityPlan::Existing {
+                identity: InstallationIdentity { id, secret },
+                write_local_id: false,
+                write_keychain_id: false,
+            }
+        );
+    }
+
+    #[test]
+    fn secure_identity_repairs_missing_local_marker() {
+        let id = Uuid::from_u128(2);
+        let secret = "s".repeat(64);
+
+        let plan = plan_installation_identity(None, Some(id), Some(secret.clone())).unwrap();
+
+        assert_eq!(
+            plan,
+            InstallationIdentityPlan::Existing {
+                identity: InstallationIdentity { id, secret },
+                write_local_id: true,
+                write_keychain_id: false,
+            }
+        );
+    }
+
+    #[test]
+    fn local_marker_repairs_missing_secure_identity_id() {
+        let id = Uuid::from_u128(3);
+        let secret = "s".repeat(64);
+
+        let plan = plan_installation_identity(Some(id), None, Some(secret.clone())).unwrap();
+
+        assert_eq!(
+            plan,
+            InstallationIdentityPlan::Existing {
+                identity: InstallationIdentity { id, secret },
+                write_local_id: false,
+                write_keychain_id: true,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_identity_is_created_only_on_provable_first_launch() {
+        assert_eq!(
+            plan_installation_identity(None, None, None).unwrap(),
+            InstallationIdentityPlan::Create
+        );
+        assert!(plan_installation_identity(Some(Uuid::from_u128(4)), None, None).is_err());
+        assert!(plan_installation_identity(None, Some(Uuid::from_u128(4)), None).is_err());
+        assert!(plan_installation_identity(None, None, Some("s".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn mismatched_local_and_secure_identities_fail_closed() {
+        let error = plan_installation_identity(
+            Some(Uuid::from_u128(5)),
+            Some(Uuid::from_u128(6)),
+            Some("s".repeat(64)),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn resolved_design_account_connection_is_never_reused_for_another_profile() {
+        let now = ide_core::agents::unix_now();
+        let resolved = StoredPenpotConnection {
+            id: Uuid::from_u128(10),
+            instance_url: "https://design.example".into(),
+            mcp_url: "https://design.example/mcp/stream".into(),
+            profile_id: Some(Uuid::from_u128(11)),
+            profile_email: Some("guest@example.test".into()),
+            default_team_id: Some(Uuid::from_u128(12)),
+            default_project_id: Some(Uuid::from_u128(13)),
+            is_active: true,
+            verified_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        };
+        let mut unresolved = resolved.clone();
+        unresolved.profile_id = None;
+
+        assert!(!can_reuse_unresolved_managed_connection(
+            &resolved,
+            "https://design.example"
+        ));
+        assert!(can_reuse_unresolved_managed_connection(
+            &unresolved,
+            "https://design.example"
+        ));
+        assert!(!can_reuse_unresolved_managed_connection(
+            &unresolved,
+            "https://another.example"
+        ));
+    }
 
     #[test]
     fn managed_bootstrap_accepts_optional_starter_design() {

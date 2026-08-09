@@ -211,7 +211,7 @@ impl GitPanel {
                                     if let Some(git) = this.active_git(cx) {
                                         git.update(cx, |git, cx| {
                                             git.last_message = Some(
-                                                "This is the Solo's own branch — flip to Main to switch branches."
+                                                "This is the Solo's own branch — switch to the project branch to change branches."
                                                     .to_string(),
                                             );
                                             git.last_error = None;

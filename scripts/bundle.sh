@@ -7,8 +7,9 @@ APP_NAME="Choro"
 BUNDLE="target/release/bundle/$APP_NAME.app"
 INSTALL_BUNDLE="/Applications/$APP_NAME.app"
 ENTITLEMENTS="scripts/choro.entitlements"
-SIGN_IDENTITY="${CHORO_CODESIGN_IDENTITY:-${MY_IDE_CODESIGN_IDENTITY:-}}"
 INSTALL_TO_APPLICATIONS="${CHORO_INSTALL_TO_APPLICATIONS:-${MY_IDE_INSTALL_TO_APPLICATIONS:-1}}"
+source scripts/resolve-codesign-identity.zsh
+SIGN_IDENTITY="$(resolve_choro_codesign_identity)"
 
 # The document editor is compiled into the Rust binary with `include_bytes!`.
 # Always refresh it before Cargo so a normal app bundle can never ship a stale
@@ -84,21 +85,10 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-if [[ -z "$SIGN_IDENTITY" ]]; then
-  SIGN_IDENTITY="$(
-    security find-identity -v -p codesigning 2>/dev/null \
-      | awk -F '"' '/Apple Development/ { print $2; exit }'
-  )"
-fi
-
-if [[ -n "$SIGN_IDENTITY" ]]; then
-  codesign --force --options runtime --timestamp=none \
-    --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BUNDLE"
-  codesign --verify --deep --strict "$BUNDLE"
-  echo "Signed: $SIGN_IDENTITY"
-else
-  echo "Warning: no Apple Development signing identity found; macOS privacy prompts may repeat for unsigned rebuilds." >&2
-fi
+codesign --force --options runtime --timestamp=none \
+  --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$BUNDLE"
+codesign --verify --deep --strict "$BUNDLE"
+echo "Signed: $SIGN_IDENTITY"
 
 echo "Bundled: $BUNDLE"
 

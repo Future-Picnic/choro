@@ -48,6 +48,7 @@ impl GitPanel {
                         let mut rows = Vec::with_capacity(visible_commits.len());
                         for (ix, commit) in visible_commits {
                             let center = center.clone();
+                            let row_git = list_git.clone();
                             let sha = commit.sha.clone();
                             let short = commit.sha_short.clone();
                             let detail: SharedString = format!(
@@ -78,7 +79,13 @@ impl GitPanel {
                                         let title: SharedString = short.clone().into();
                                         center
                                             .update(cx, |center, cx| {
-                                                center.open_diff_from_git(project, kind, title, cx);
+                                                center.open_diff_from_git(
+                                                    project,
+                                                    row_git.clone(),
+                                                    kind,
+                                                    title,
+                                                    cx,
+                                                );
                                             })
                                             .ok();
                                     })

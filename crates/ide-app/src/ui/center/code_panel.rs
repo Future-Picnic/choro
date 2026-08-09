@@ -205,12 +205,13 @@ impl CenterArea {
     pub fn open_diff_from_git(
         &mut self,
         project: ProjectId,
+        git: Entity<GitState>,
         kind: DiffKind,
         title: SharedString,
         cx: &mut Context<Self>,
     ) {
         self.git_diff_open_epoch = self.git_diff_open_epoch.wrapping_add(1);
-        self.open_diff(project, kind, title, cx);
+        self.open_diff_with_git(project, git, kind, title, cx);
     }
 
     /// Opens (or focuses) a diff view tab for the project.
@@ -221,7 +222,22 @@ impl CenterArea {
         title: SharedString,
         cx: &mut Context<Self>,
     ) {
-        let key = kind.key();
+        let Some(git) = self.git_states.read(cx).get(project) else {
+            return;
+        };
+        self.open_diff_with_git(project, git, kind, title, cx);
+    }
+
+    fn open_diff_with_git(
+        &mut self,
+        project: ProjectId,
+        git: Entity<GitState>,
+        kind: DiffKind,
+        title: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        let repo = git.read(cx).repo_path.clone();
+        let key = kind.key_for_repo(&repo);
         if self
             .diffs
             .iter()
@@ -242,10 +258,6 @@ impl CenterArea {
             cx.notify();
             return;
         }
-        let Some(git) = self.git_states.read(cx).get(project) else {
-            return;
-        };
-        let repo = git.read(cx).repo_path.clone();
         let center = cx.weak_entity();
         let view = cx.new(|cx| DiffPane::new(project, repo, kind, Some(git.clone()), center, cx));
         self.diffs.push(DiffItem {
