@@ -1,5 +1,9 @@
 use super::*;
 
+fn can_create_pull_request(has_url: bool, base_branch: &str, generating: bool) -> bool {
+    has_url && !base_branch.trim().is_empty() && !generating
+}
+
 pub(super) struct GitConfirmation {
     pub(super) title: &'static str,
     pub(super) description: &'static str,
@@ -102,6 +106,7 @@ impl PullRequestDialog {
     /// inline, searchable branch list. Select-only.
     fn render_base_branch_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let expanded = self.base_branch_expanded;
+        let has_selection = !self.base_branch.trim().is_empty();
         v_flex()
             .w_full()
             .gap_1()
@@ -138,8 +143,16 @@ impl PullRequestDialog {
                             .min_w(px(0.))
                             .text_size(crate::ui::design::text_body())
                             .truncate()
-                            .text_color(crate::ui::design::t1(cx))
-                            .child(SharedString::from(self.base_branch.clone())),
+                            .text_color(if has_selection {
+                                crate::ui::design::t1(cx)
+                            } else {
+                                crate::ui::design::t3(cx)
+                            })
+                            .child(if has_selection {
+                                SharedString::from(self.base_branch.clone())
+                            } else {
+                                SharedString::from("Choose a target branch")
+                            }),
                     )
                     .child(
                         gpui_component::Icon::new(if expanded {
@@ -232,7 +245,11 @@ impl PullRequestDialog {
                                 .py_1()
                                 .text_size(crate::ui::design::text_body())
                                 .text_color(crate::ui::design::t3(cx))
-                                .child("No matching branches"),
+                                .child(if needle.is_empty() {
+                                    "No target branches available"
+                                } else {
+                                    "No matching branches"
+                                }),
                         )
                     })
                     .children(rows.into_iter().enumerate().map(
@@ -322,7 +339,11 @@ impl PullRequestDialog {
 
 impl Render for PullRequestDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_create = self.notice.url.is_some() && !self.generating;
+        let can_create = can_create_pull_request(
+            self.notice.url.is_some(),
+            &self.base_branch,
+            self.generating,
+        );
         v_flex()
             .w_full()
             .gap_4()
@@ -366,7 +387,13 @@ impl Render for PullRequestDialog {
                             .text_size(crate::ui::design::text_ui())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(crate::ui::design::t1(cx))
-                            .child("Base branch"),
+                            .child("Target branch"),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child("Choose the branch this pull request should merge into."),
                     )
                     .child(self.render_base_branch_selector(cx)),
             )
@@ -468,5 +495,19 @@ impl Render for PullRequestDialog {
                         })),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_create_pull_request;
+
+    #[test]
+    fn creating_a_pull_request_requires_an_explicit_target_branch() {
+        assert!(!can_create_pull_request(true, "", false));
+        assert!(!can_create_pull_request(true, "   ", false));
+        assert!(can_create_pull_request(true, "release", false));
+        assert!(!can_create_pull_request(false, "release", false));
+        assert!(!can_create_pull_request(true, "release", true));
     }
 }

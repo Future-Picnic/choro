@@ -1,5 +1,12 @@
 use super::*;
 
+fn pull_request_target_branch_options(source: &str, options: Vec<String>) -> Vec<String> {
+    options
+        .into_iter()
+        .filter(|candidate| candidate != source)
+        .collect()
+}
+
 impl GitPanel {
     pub fn view(
         workspace: Entity<Workspace>,
@@ -404,6 +411,8 @@ impl GitPanel {
         if push.branch == default_branch || matches!(push.branch.as_str(), "main" | "master") {
             return;
         }
+        let base_branch_options =
+            pull_request_target_branch_options(&push.branch, base_branch_options);
 
         let Some(url) = github_pull_request_url(&repo_path, &push.branch, &default_branch) else {
             return;
@@ -449,9 +458,11 @@ impl GitPanel {
                                 notice,
                                 git,
                                 generation_agent,
-                                base_branch: default_branch.clone(),
+                                // Publishing must not silently target the remote default.
+                                // Make the destination an explicit choice in the dialog.
+                                base_branch: String::new(),
                                 base_branch_options: base_branch_options.clone(),
-                                base_branch_expanded: false,
+                                base_branch_expanded: true,
                                 base_branch_query: base_branch_query.clone(),
                                 ai_enabled: true,
                                 generating: false,
@@ -649,5 +660,20 @@ impl GitPanel {
             .ok();
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pull_request_target_branch_options;
+
+    #[test]
+    fn pull_request_targets_exclude_the_published_source_branch() {
+        let options = vec!["main".into(), "feature/demo".into(), "release".into()];
+
+        assert_eq!(
+            pull_request_target_branch_options("feature/demo", options),
+            vec!["main".to_string(), "release".to_string()]
+        );
     }
 }
