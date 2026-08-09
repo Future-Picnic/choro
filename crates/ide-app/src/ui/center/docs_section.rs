@@ -382,10 +382,12 @@ impl CenterArea {
                 .child(
                     crate::ui::style::implement_button("implement-doc", label, cx).on_click({
                         let relative_doc_path = doc.relative_path.clone();
+                        let doc_title = doc.title.clone();
                         cx.listener(move |this, _, window, cx| {
                             this.open_implementation_agent_for_doc(
                                 project,
                                 relative_doc_path.clone(),
+                                doc_title.clone(),
                                 window,
                                 cx,
                             );

@@ -24,6 +24,12 @@ pub(super) const AGENT_CODE_REVIEW_FIX_PREFIX: &str =
 /// timeline collapses the turn to a "Sent for verification" chip.
 pub(super) const AGENT_VERIFY_REQUEST_MARKER: &str = "<!-- choro:verify -->";
 
+/// Records that the user declined the one optional follow-up verification for
+/// this conversation. Unlike the transient decision panel, this marker is
+/// persisted with the timeline so later turns and app restarts do not revive
+/// the same prompt.
+pub(super) const AGENT_REVERIFY_DISMISS_MARKER: &str = "<!-- choro:reverify-dismissed -->";
+
 /// Stable opening of the "Ask to fix" turn that lists a verification's unmet
 /// requirements back to the agent. Recognised by prefix, rendered as a chip.
 pub(super) const AGENT_VERIFY_FIX_PREFIX: &str =
@@ -898,6 +904,7 @@ impl CenterArea {
                     VerificationLifecycle::Fixing => {}
                     VerificationLifecycle::Verifying
                     | VerificationLifecycle::NeedsFix
+                    | VerificationLifecycle::ReverificationDeclined
                     | VerificationLifecycle::Complete => continue,
                 }
                 match verification_mode {
@@ -2346,12 +2353,13 @@ pub(super) enum VerificationLifecycle {
     Verifying,
     NeedsFix,
     Fixing,
+    ReverificationDeclined,
     Complete,
 }
 
 /// The latest meaningful state in this agent's one verification lifecycle.
 /// Ordinary user turns do not reset it: only a fix request advances a failed
-/// verification, and an all-met card closes it permanently.
+/// verification. An all-met card or a declined follow-up closes it permanently.
 pub(super) fn verification_lifecycle(timeline: &[AgentChatTimelineItem]) -> VerificationLifecycle {
     for (index, item) in timeline.iter().enumerate().rev() {
         match item {
@@ -2370,6 +2378,9 @@ pub(super) fn verification_lifecycle(timeline: &[AgentChatTimelineItem]) -> Veri
                 };
             }
             AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
+                if text.starts_with(AGENT_REVERIFY_DISMISS_MARKER) {
+                    return VerificationLifecycle::ReverificationDeclined;
+                }
                 if text.starts_with(AGENT_VERIFY_REQUEST_MARKER) {
                     return VerificationLifecycle::Verifying;
                 }
@@ -2541,6 +2552,23 @@ mod verification_trigger_tests {
         assert_eq!(
             verification_lifecycle(&timeline),
             VerificationLifecycle::Fixing
+        );
+    }
+
+    #[test]
+    fn declining_reverification_closes_it_for_later_turns() {
+        let timeline = vec![
+            user_turn("build the thing"),
+            verification_card(false),
+            user_turn(&format!("{AGENT_VERIFY_FIX_PREFIX}:\n- missed thing")),
+            assistant_turn("fixed"),
+            user_turn(AGENT_REVERIFY_DISMISS_MARKER),
+            user_turn("make one more adjustment"),
+            assistant_turn("done"),
+        ];
+        assert_eq!(
+            verification_lifecycle(&timeline),
+            VerificationLifecycle::ReverificationDeclined
         );
     }
 

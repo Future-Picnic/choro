@@ -16,6 +16,12 @@ Each builder creates its app under `target/release/bundle/`. By default it also
 installs its distinctly named app in `/Applications`; set the matching
 `CHORO_*_INSTALL_TO_APPLICATIONS=0` variable to build without installing.
 
+By default, all app modes use an ad-hoc macOS signature for local development,
+so contributors can build without an Apple Developer identity. Release or CI
+builds can set `CHORO_CODESIGN_IDENTITY` to a complete signing identity name or
+hash in their private environment. The repository does not contain or
+automatically select an organization or contributor identity.
+
 ## Support utilities
 
 The other files are not additional app modes:

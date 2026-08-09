@@ -370,6 +370,7 @@ fn render_file_row(
     let deletions = entry.stats.deletions;
     let row_id: SharedString = format!("git-status-{scope}-{ix}").into();
     let checkbox_id: SharedString = format!("stage-check-{scope}-{ix}").into();
+    let diff_git = git.clone();
 
     h_flex()
         .id(row_id)
@@ -405,7 +406,13 @@ fn render_file_row(
             };
             row_center
                 .update(cx, |center, cx| {
-                    center.open_diff_from_git(project, kind, diff_title.clone(), cx);
+                    center.open_diff_from_git(
+                        project,
+                        diff_git.clone(),
+                        kind,
+                        diff_title.clone(),
+                        cx,
+                    );
                 })
                 .ok();
         })

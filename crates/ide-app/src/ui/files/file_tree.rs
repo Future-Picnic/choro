@@ -70,9 +70,9 @@ pub struct FileTree {
     load_seq: u64,
     /// The Solo agent the tree is currently scoped around, if any.
     scope_agent: Option<uuid::Uuid>,
-    /// User flipped the tree back to Main while a Solo is open. Resets to the
-    /// Solo default whenever the focused Solo changes.
-    scope_main: bool,
+    /// User flipped the tree back to the project branch while a Solo is open.
+    /// Resets to the Solo default whenever the focused Solo changes.
+    scope_project: bool,
     /// Git state for the focused Solo's worktree.
     lane_git: Option<(uuid::Uuid, Entity<GitState>)>,
 }
@@ -103,7 +103,7 @@ impl FileTree {
                 error: None,
                 load_seq: 0,
                 scope_agent: None,
-                scope_main: false,
+                scope_project: false,
                 lane_git: None,
             }
         })
@@ -887,7 +887,7 @@ impl Render for FileTree {
             Some((agent_id, lane, _)) => {
                 if self.scope_agent != Some(*agent_id) {
                     self.scope_agent = Some(*agent_id);
-                    self.scope_main = false;
+                    self.scope_project = false;
                     self.lane_git = None;
                 }
                 if self
@@ -902,11 +902,18 @@ impl Render for FileTree {
             }
             None => {
                 self.scope_agent = None;
-                self.scope_main = false;
+                self.scope_project = false;
                 self.lane_git = None;
             }
         }
-        let lane_active = lane_context.is_some() && !self.scope_main;
+        let lane_active = lane_context.is_some() && !self.scope_project;
+        let project_branch: SharedString = self
+            .git_states
+            .read(cx)
+            .get(project)
+            .and_then(|git| git.read(cx).branch_label())
+            .unwrap_or_else(|| "…".to_string())
+            .into();
         let (repository_roots, active_repository) = if lane_active {
             (HashSet::new(), None)
         } else {
@@ -976,14 +983,14 @@ impl Render for FileTree {
                             crate::ui::style::segmented_container_quiet(cx)
                                 .child(
                                     crate::ui::style::segment_with_leading(
-                                        "files-scope-main",
+                                        "files-scope-project",
                                         crate::ui::design::indicator::lucide_icon(
                                             lucide_icons::Icon::GitBranch,
                                             crate::ui::design::t3(cx),
                                             crate::ui::design::icon_sm(),
                                         )
                                         .into_any_element(),
-                                        "Main",
+                                        project_branch,
                                         !lane_active,
                                         cx,
                                     )
@@ -991,7 +998,7 @@ impl Render for FileTree {
                                     .justify_center()
                                     .on_click(cx.listener(
                                         |this, _, _, cx| {
-                                            this.scope_main = true;
+                                            this.scope_project = true;
                                             cx.notify();
                                         },
                                     )),
@@ -1016,7 +1023,7 @@ impl Render for FileTree {
                                     .justify_center()
                                     .on_click(cx.listener(
                                         |this, _, _, cx| {
-                                            this.scope_main = false;
+                                            this.scope_project = false;
                                             cx.notify();
                                         },
                                     )),

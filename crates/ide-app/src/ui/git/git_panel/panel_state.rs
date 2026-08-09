@@ -106,7 +106,7 @@ impl GitPanel {
                 solo_ahead_checked_at: None,
                 solo_ahead_fetching: false,
                 scope_agent: None,
-                scope_main: false,
+                scope_project: false,
                 lane_git: None,
             }
         });

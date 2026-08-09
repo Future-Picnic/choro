@@ -94,6 +94,20 @@ impl CenterArea {
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
                                         this.verification_prompt_pending.remove(&agent_id);
+                                        if is_reverification {
+                                            this.agent_chats.update(cx, |chats, cx| {
+                                                chats.append_message(
+                                                    agent_id,
+                                                    AgentChatMessage::User {
+                                                        text: super::agent_chat_runtime::AGENT_REVERIFY_DISMISS_MARKER.to_string(),
+                                                        display_text: None,
+                                                        tags: Vec::new(),
+                                                        created_at: unix_now_secs(),
+                                                    },
+                                                    cx,
+                                                );
+                                            });
+                                        }
                                         cx.notify();
                                     },
                                 )),
