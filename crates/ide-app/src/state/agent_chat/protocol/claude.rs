@@ -154,7 +154,9 @@ impl ClaudeBridgeRuntime {
             }
             "work_log" => {
                 if let Some(entry) = work_log_from_bridge_event(&message) {
-                    self.events.send_blocking(ChatBackendEvent::WorkLog(entry)).ok();
+                    self.events
+                        .send_blocking(ChatBackendEvent::WorkLog(entry))
+                        .ok();
                 }
             }
             "pending_user_input" => {
@@ -242,7 +244,9 @@ impl ClaudeBridgeRuntime {
             }
             "usage" => {
                 if let Some(usage) = conversation_usage_from_bridge_message(message) {
-                    self.events.send_blocking(ChatBackendEvent::Usage(usage)).ok();
+                    self.events
+                        .send_blocking(ChatBackendEvent::Usage(usage))
+                        .ok();
                 }
             }
             "status" => {
@@ -258,7 +262,9 @@ impl ClaudeBridgeRuntime {
                 if status == AgentChatStatus::Idle {
                     self.emit_code_review_from_buffer();
                 }
-                self.events.send_blocking(ChatBackendEvent::Status(status)).ok();
+                self.events
+                    .send_blocking(ChatBackendEvent::Status(status))
+                    .ok();
             }
             "error" => {
                 let error = message
@@ -266,7 +272,9 @@ impl ClaudeBridgeRuntime {
                     .and_then(Value::as_str)
                     .unwrap_or("Claude bridge returned an error.")
                     .to_string();
-                self.events.send_blocking(ChatBackendEvent::Error(error)).ok();
+                self.events
+                    .send_blocking(ChatBackendEvent::Error(error))
+                    .ok();
             }
             _ => {}
         }

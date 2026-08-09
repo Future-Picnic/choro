@@ -9,7 +9,8 @@ use ide_core::config::{
     VerificationMode, VoiceSettings,
 };
 use ide_core::local_store::LocalStore;
-use ide_core::{Project, ProjectId, ProjectSection, ProjectSectionId};
+use ide_core::{GitWorkflow, GitWorkflowRun, Project, ProjectId, ProjectSection, ProjectSectionId};
+use uuid::Uuid;
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const LEGACY_CODE_REVIEW_OUTPUT_PREFIX: &str =
@@ -654,6 +655,217 @@ impl Workspace {
     ) {
         if let Some(project) = self.projects.iter_mut().find(|p| p.id == id) {
             project.task_tracker_connections = connections;
+            cx.emit(WorkspaceEvent::ProjectsChanged);
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn add_git_workflow(
+        &mut self,
+        project_id: ProjectId,
+        workflow: GitWorkflow,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Uuid> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+        project.validate_git_workflow(&workflow)?;
+        let id = workflow.id;
+        project.git_workflows.push(workflow);
+        cx.emit(WorkspaceEvent::ProjectsChanged);
+        self.schedule_save(cx);
+        cx.notify();
+        Ok(id)
+    }
+
+    pub fn update_git_workflow(
+        &mut self,
+        project_id: ProjectId,
+        workflow: GitWorkflow,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+        project.validate_git_workflow(&workflow)?;
+        let existing = project
+            .git_workflows
+            .iter_mut()
+            .find(|existing| existing.id == workflow.id)
+            .ok_or_else(|| anyhow::anyhow!("Workflow not found"))?;
+        *existing = workflow;
+        cx.emit(WorkspaceEvent::ProjectsChanged);
+        self.schedule_save(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn duplicate_git_workflow(
+        &mut self,
+        project_id: ProjectId,
+        workflow_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Uuid> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+        let mut workflow = project
+            .git_workflows
+            .iter()
+            .find(|workflow| workflow.id == workflow_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Workflow not found"))?;
+        workflow.id = Uuid::new_v4();
+        let base = format!("{} copy", workflow.name.trim());
+        workflow.name = base.clone();
+        for suffix in 2.. {
+            if !project.git_workflows.iter().any(|existing| {
+                existing.repository_path == workflow.repository_path
+                    && existing.name.eq_ignore_ascii_case(&workflow.name)
+            }) {
+                break;
+            }
+            workflow.name = format!("{base} {suffix}");
+        }
+        let id = workflow.id;
+        project.validate_git_workflow(&workflow)?;
+        project.git_workflows.push(workflow);
+        cx.emit(WorkspaceEvent::ProjectsChanged);
+        self.schedule_save(cx);
+        cx.notify();
+        Ok(id)
+    }
+
+    pub fn delete_git_workflow(
+        &mut self,
+        project_id: ProjectId,
+        workflow_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            return false;
+        };
+        let before = project.git_workflows.len();
+        project
+            .git_workflows
+            .retain(|workflow| workflow.id != workflow_id);
+        if project.git_workflows.len() == before {
+            return false;
+        }
+        for run in &mut project.git_workflow_runs {
+            if run.workflow_id == Some(workflow_id) {
+                run.workflow_id = None;
+            }
+        }
+        cx.emit(WorkspaceEvent::ProjectsChanged);
+        self.schedule_save(cx);
+        cx.notify();
+        true
+    }
+
+    pub fn reorder_git_workflows(
+        &mut self,
+        project_id: ProjectId,
+        repository_path: &std::path::Path,
+        ordered_ids: &[Uuid],
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+        let existing_ids: HashSet<Uuid> = project
+            .git_workflows
+            .iter()
+            .filter(|workflow| workflow.repository_path == repository_path)
+            .map(|workflow| workflow.id)
+            .collect();
+        let requested_ids: HashSet<Uuid> = ordered_ids.iter().copied().collect();
+        if existing_ids != requested_ids || ordered_ids.len() != requested_ids.len() {
+            anyhow::bail!("Workflow order must contain each repository workflow exactly once");
+        }
+        let selected: std::collections::HashMap<Uuid, GitWorkflow> = project
+            .git_workflows
+            .iter()
+            .filter(|workflow| workflow.repository_path == repository_path)
+            .cloned()
+            .map(|workflow| (workflow.id, workflow))
+            .collect();
+        let mut ordered = ordered_ids.iter().map(|id| selected[id].clone());
+        for workflow in &mut project.git_workflows {
+            if workflow.repository_path == repository_path {
+                *workflow = ordered.next().expect("validated workflow order");
+            }
+        }
+        cx.emit(WorkspaceEvent::ProjectsChanged);
+        self.schedule_save(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    pub fn upsert_git_workflow_run(
+        &mut self,
+        project_id: ProjectId,
+        mut run: GitWorkflowRun,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        run.validate()?;
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+        if run.workflow_id.is_some_and(|workflow_id| {
+            !project
+                .git_workflows
+                .iter()
+                .any(|workflow| workflow.id == workflow_id)
+        }) {
+            run.workflow_id = None;
+        }
+        if let Some(existing) = project
+            .git_workflow_runs
+            .iter_mut()
+            .find(|existing| existing.id == run.id)
+        {
+            *existing = run;
+        } else {
+            project.git_workflow_runs.push(run);
+        }
+        project.prune_git_workflow_runs(30);
+        cx.emit(WorkspaceEvent::ProjectsChanged);
+        self.schedule_save(cx);
+        cx.notify();
+        Ok(())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "used by maintenance and future explicit pruning UI"
+    )]
+    pub fn prune_git_workflow_runs(&mut self, project_id: ProjectId, cx: &mut Context<Self>) {
+        let Some(project) = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+        else {
+            return;
+        };
+        let before = project.git_workflow_runs.len();
+        project.prune_git_workflow_runs(30);
+        if project.git_workflow_runs.len() != before {
             cx.emit(WorkspaceEvent::ProjectsChanged);
             self.schedule_save(cx);
             cx.notify();

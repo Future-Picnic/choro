@@ -70,10 +70,26 @@ impl GitPanel {
             .py_1()
             .children(prs.into_iter().map(|pr| {
                 let (status_label, accent) = pull_request_status_style(&pr, cx);
+                let workflow_run =
+                    self.workflow_data_for_selected_repo(cx)
+                        .and_then(|(_, _, _, runs)| {
+                            runs.into_iter()
+                                .find(|run| run.pull_request_number == Some(pr.number))
+                        });
                 let url = pr.url.clone();
                 let title: SharedString = pr.title.clone().into();
-                let meta: SharedString =
-                    format!("{} · #{} · {}", status_label, pr.number, pr.branch).into();
+                let workflow_status = workflow_run
+                    .as_ref()
+                    .map(|run| workflows_view::workflow_state_style(run.state, cx).0);
+                let mut meta = format!(
+                    "{} · #{} · {} → {}",
+                    status_label, pr.number, pr.branch, pr.base_branch
+                );
+                if let Some(workflow_status) = workflow_status {
+                    meta.push_str(" · Workflow: ");
+                    meta.push_str(workflow_status);
+                }
+                let meta: SharedString = meta.into();
 
                 h_flex()
                     .id(("git-pr-row", pr.number as usize))

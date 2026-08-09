@@ -48,6 +48,24 @@ impl GitPanel {
                 }
             })
             .detach();
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(WORKFLOW_REFRESH_INTERVAL)
+                    .await;
+                if this
+                    .update(cx, |panel, cx| {
+                        if matches!(panel.tab, GitTab::Workflows | GitTab::PullRequests) {
+                            if let Some(git) = panel.active_git(cx) {
+                                panel.sync_workflow_runs(git, cx);
+                            }
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            })
+            .detach();
             Self {
                 workspace,
                 git_states,
@@ -81,6 +99,9 @@ impl GitPanel {
                 repo_prs_fetching: false,
                 repo_prs_checked_at: None,
                 repo_prs_error: None,
+                workflow_runs_refreshing: false,
+                workflow_runs_checked_at: None,
+                workflow_runs_error: None,
                 solo_ahead: HashMap::new(),
                 solo_ahead_checked_at: None,
                 solo_ahead_fetching: false,
@@ -267,6 +288,12 @@ impl GitPanel {
         self.git_states.update(cx, |states, cx| {
             states.set_active_repository(project_id, path, cx)
         });
+        self.workflow_runs_checked_at = None;
+        if matches!(self.tab, GitTab::Workflows | GitTab::PullRequests) {
+            if let Some(git) = self.active_git(cx) {
+                self.sync_workflow_runs(git, cx);
+            }
+        }
         cx.notify();
     }
 

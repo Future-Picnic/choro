@@ -240,10 +240,12 @@ impl Render for RightPanel {
             GitTab::Changes => "Changes",
             GitTab::Commits => "Commits",
             GitTab::PullRequests => "PRs",
+            GitTab::Workflows => "Workflows",
         };
         let changes_panel = self.git_panel.clone();
         let commits_panel = self.git_panel.clone();
         let prs_panel = self.git_panel.clone();
+        let workflows_panel = self.git_panel.clone();
         let git_view_selector = style::header_dropdown_button("git-view-selector", cx)
             .label(git_tab_label)
             .text_size(crate::ui::design::text_ui())
@@ -274,6 +276,18 @@ impl Render for RightPanel {
                             prs_panel.update(cx, |panel, cx| {
                                 panel.set_active_tab(GitTab::PullRequests, cx)
                             });
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Workflows")
+                        .checked(git_tab == GitTab::Workflows)
+                        .on_click({
+                            let workflows_panel = workflows_panel.clone();
+                            move |_, _, cx| {
+                                workflows_panel.update(cx, |panel, cx| {
+                                    panel.set_active_tab(GitTab::Workflows, cx)
+                                });
+                            }
                         }),
                 )
             });

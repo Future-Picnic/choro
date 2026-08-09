@@ -201,7 +201,10 @@ impl Drop for ChatBackendController {
 pub fn spawn_chat_backend(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
-) -> anyhow::Result<(ChatBackendController, async_channel::Receiver<ChatBackendEvent>)> {
+) -> anyhow::Result<(
+    ChatBackendController,
+    async_channel::Receiver<ChatBackendEvent>,
+)> {
     if is_design_assistant(&agent) {
         if agent.provider == AgentKind::OpenCode {
             return Err(anyhow!(
@@ -1219,8 +1222,12 @@ mod tests {
         buffer.push(Some("msg-2".into()), "second", &tx);
         buffer.flush(&tx);
 
-        let first = rx.recv_blocking().expect("first message should flush on id switch");
-        let second = rx.recv_blocking().expect("second message should flush explicitly");
+        let first = rx
+            .recv_blocking()
+            .expect("first message should flush on id switch");
+        let second = rx
+            .recv_blocking()
+            .expect("second message should flush explicitly");
 
         match first {
             ChatBackendEvent::AssistantChunk { message_id, text } => {

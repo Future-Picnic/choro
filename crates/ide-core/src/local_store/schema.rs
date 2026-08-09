@@ -35,6 +35,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_penpot_conversation_model_columns(conn).await?;
         ensure_voice_schema(conn).await?;
         ensure_agent_repository_column(conn).await?;
+        ensure_git_workflow_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -468,6 +469,30 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 26 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_git_workflow_schema_inner(conn).await?;
+                record_schema_version(conn, 26).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_git_workflow_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_git_workflow_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_git_workflow_schema_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V26 {
+        conn.execute(statement, ()).await?;
+    }
     Ok(())
 }
 
@@ -709,6 +734,44 @@ const SCHEMA_V16: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_memories_scope_project
         ON memories(scope, project_id, updated_at DESC)",
+];
+
+const SCHEMA_V26: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS project_git_workflows (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        repository_path TEXT NOT NULL,
+        name TEXT NOT NULL COLLATE NOCASE,
+        source TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        completion_policy TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_git_workflows_unique_name
+        ON project_git_workflows(project_id, repository_path, name COLLATE NOCASE)",
+    "CREATE INDEX IF NOT EXISTS idx_project_git_workflows_project_order
+        ON project_git_workflows(project_id, repository_path, sort_order)",
+    "CREATE TABLE IF NOT EXISTS project_git_workflow_runs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        workflow_id TEXT,
+        repository_path TEXT NOT NULL,
+        source TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        pull_request_number INTEGER,
+        expected_head_sha TEXT,
+        state TEXT NOT NULL,
+        error TEXT,
+        started_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(workflow_id) REFERENCES project_git_workflows(id) ON DELETE SET NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_project_git_workflow_runs_project_updated
+        ON project_git_workflow_runs(project_id, repository_path, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_project_git_workflow_runs_workflow
+        ON project_git_workflow_runs(workflow_id, updated_at DESC)",
 ];
 
 pub(super) async fn schema_version(conn: &Connection) -> Result<u32> {

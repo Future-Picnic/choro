@@ -27,6 +27,9 @@ impl Render for GitPanel {
             self.repo_prs_fetching = false;
             self.repo_prs_checked_at = None;
             self.repo_prs_error = None;
+            self.workflow_runs_refreshing = false;
+            self.workflow_runs_checked_at = None;
+            self.workflow_runs_error = None;
             self.collapsed_status_folders.clear();
             self.hovered_status_file = None;
             self.branch_row_hovered = false;
@@ -474,6 +477,7 @@ impl Render for GitPanel {
         let body: gpui::AnyElement = match tab {
             GitTab::Commits => self.render_history(git.clone(), cx).into_any_element(),
             GitTab::PullRequests => self.render_pull_requests(cx).into_any_element(),
+            GitTab::Workflows => self.render_workflows(git.clone(), window, cx),
             GitTab::Changes => v_flex()
                 .flex_1()
                 .min_h(px(0.))

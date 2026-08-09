@@ -474,6 +474,7 @@ impl CenterArea {
                                     &repo_path,
                                     &branch,
                                     Some(&base_branch),
+                                    None,
                                 )
                             })
                             .await;

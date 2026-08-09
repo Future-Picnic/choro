@@ -1439,7 +1439,6 @@ mod retirement_tests {
         session.chat_session_id = None;
         assert!(!session_safe_to_retire(&session));
     }
-
 }
 
 #[cfg(test)]

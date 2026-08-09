@@ -419,7 +419,8 @@ mod tests {
         let staged = stage_all(dir.path()).unwrap();
         assert!(staged.success, "stage-all failed: {}", staged.message());
 
-        let index = repo.index().unwrap();
+        let mut index = repo.index().unwrap();
+        index.read(true).unwrap();
         assert!(index.get_path(Path::new("source.ts"), 0).is_some());
         assert!(index
             .get_path(Path::new("node_modules/pkg/index.js"), 0)

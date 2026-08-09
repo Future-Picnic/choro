@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,186 @@ pub struct ScriptPreset {
     pub id: Uuid,
     pub name: String,
     pub command: String,
+}
+
+/// What Choro should do after GitHub reports that a workflow pull request is
+/// eligible to merge. Confirmation remains the safe default for newly-created
+/// and legacy values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GitWorkflowCompletionPolicy {
+    #[default]
+    ConfirmBeforeMerge,
+    AutoMergeWhenReady,
+}
+
+impl GitWorkflowCompletionPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfirmBeforeMerge => "confirm_before_merge",
+            Self::AutoMergeWhenReady => "auto_merge_when_ready",
+        }
+    }
+}
+
+impl std::str::FromStr for GitWorkflowCompletionPolicy {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "confirm_before_merge" => Ok(Self::ConfirmBeforeMerge),
+            "auto_merge_when_ready" => Ok(Self::AutoMergeWhenReady),
+            _ => anyhow::bail!("unknown Git workflow completion policy: {value}"),
+        }
+    }
+}
+
+/// A reusable remote source-to-destination route. `repository_path` is always
+/// relative to the owning project; `.` identifies the project root repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorkflow {
+    pub id: Uuid,
+    pub repository_path: PathBuf,
+    pub name: String,
+    pub source_branch: String,
+    pub destination_branch: String,
+    #[serde(default)]
+    pub completion_policy: GitWorkflowCompletionPolicy,
+}
+
+impl GitWorkflow {
+    pub fn new(
+        repository_path: PathBuf,
+        name: impl Into<String>,
+        source_branch: impl Into<String>,
+        destination_branch: impl Into<String>,
+        completion_policy: GitWorkflowCompletionPolicy,
+    ) -> Result<Self> {
+        let workflow = Self {
+            id: Uuid::new_v4(),
+            repository_path,
+            name: name.into().trim().to_string(),
+            source_branch: source_branch.into(),
+            destination_branch: destination_branch.into(),
+            completion_policy,
+        };
+        workflow.validate()?;
+        Ok(workflow)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        validate_repository_relative_path(&self.repository_path)?;
+        if self.name.trim().is_empty() {
+            anyhow::bail!("Workflow name is required");
+        }
+        if self.source_branch.trim().is_empty() || self.destination_branch.trim().is_empty() {
+            anyhow::bail!("Choose both a source and destination branch");
+        }
+        if self.source_branch.trim().eq(self.destination_branch.trim()) {
+            anyhow::bail!("Source and destination branches must be different");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitWorkflowRunState {
+    CreatingPullRequest,
+    WaitingForRequirements,
+    AwaitingConfirmation,
+    AutoMergeEnabled,
+    Merged,
+    Blocked,
+    Closed,
+    NeedsAttention,
+    Failed,
+}
+
+impl GitWorkflowRunState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CreatingPullRequest => "creating_pull_request",
+            Self::WaitingForRequirements => "waiting_for_requirements",
+            Self::AwaitingConfirmation => "awaiting_confirmation",
+            Self::AutoMergeEnabled => "auto_merge_enabled",
+            Self::Merged => "merged",
+            Self::Blocked => "blocked",
+            Self::Closed => "closed",
+            Self::NeedsAttention => "needs_attention",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Merged | Self::Closed | Self::Failed)
+    }
+}
+
+impl std::str::FromStr for GitWorkflowRunState {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "creating_pull_request" => Ok(Self::CreatingPullRequest),
+            "waiting_for_requirements" => Ok(Self::WaitingForRequirements),
+            "awaiting_confirmation" => Ok(Self::AwaitingConfirmation),
+            "auto_merge_enabled" => Ok(Self::AutoMergeEnabled),
+            "merged" => Ok(Self::Merged),
+            "blocked" => Ok(Self::Blocked),
+            "closed" => Ok(Self::Closed),
+            "needs_attention" => Ok(Self::NeedsAttention),
+            "failed" => Ok(Self::Failed),
+            _ => anyhow::bail!("unknown Git workflow run state: {value}"),
+        }
+    }
+}
+
+/// Durable local activity for either a saved workflow or a one-time route.
+/// GitHub remains authoritative; these records let Choro resume reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorkflowRun {
+    pub id: Uuid,
+    pub workflow_id: Option<Uuid>,
+    pub repository_path: PathBuf,
+    pub source_branch: String,
+    pub destination_branch: String,
+    pub pull_request_number: Option<u64>,
+    pub expected_head_sha: Option<String>,
+    pub state: GitWorkflowRunState,
+    pub error: Option<String>,
+    pub started_at: u64,
+    pub updated_at: u64,
+}
+
+impl GitWorkflowRun {
+    pub fn validate(&self) -> Result<()> {
+        validate_repository_relative_path(&self.repository_path)?;
+        if self.source_branch.trim().is_empty() || self.destination_branch.trim().is_empty() {
+            anyhow::bail!("Workflow run requires both source and destination branches");
+        }
+        if self.source_branch.trim().eq(self.destination_branch.trim()) {
+            anyhow::bail!("Workflow run source and destination must be different");
+        }
+        Ok(())
+    }
+}
+
+/// Reject paths that could escape the project boundary before they reach a Git
+/// or GitHub helper. The root repository has the explicit portable value `.`.
+pub fn validate_repository_relative_path(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        anyhow::bail!("Repository path must be relative to the project root");
+    }
+    for component in path.components() {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            anyhow::bail!("Repository path cannot leave the project root");
+        }
+    }
+    Ok(())
 }
 
 impl ScriptPreset {
@@ -285,6 +465,10 @@ pub struct Project {
     pub db_connections: Vec<DbConnection>,
     #[serde(default)]
     pub task_tracker_connections: Vec<TaskTrackerConnection>,
+    #[serde(default)]
+    pub git_workflows: Vec<GitWorkflow>,
+    #[serde(default)]
+    pub git_workflow_runs: Vec<GitWorkflowRun>,
 }
 
 impl Project {
@@ -305,7 +489,50 @@ impl Project {
             presets: Vec::new(),
             db_connections: Vec::new(),
             task_tracker_connections: Vec::new(),
+            git_workflows: Vec::new(),
+            git_workflow_runs: Vec::new(),
         }
+    }
+
+    pub fn validate_git_workflow(&self, workflow: &GitWorkflow) -> Result<()> {
+        workflow.validate()?;
+        if self.git_workflows.iter().any(|existing| {
+            existing.id != workflow.id
+                && existing.repository_path == workflow.repository_path
+                && existing
+                    .name
+                    .trim()
+                    .eq_ignore_ascii_case(workflow.name.trim())
+        }) {
+            anyhow::bail!(
+                "A workflow named '{}' already exists for this repository",
+                workflow.name.trim()
+            );
+        }
+        Ok(())
+    }
+
+    /// Retains every actionable run and only the newest terminal history.
+    pub fn prune_git_workflow_runs(&mut self, terminal_limit: usize) {
+        let mut terminal: Vec<(usize, u64)> = self
+            .git_workflow_runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.state.is_terminal())
+            .map(|(index, run)| (index, run.updated_at))
+            .collect();
+        terminal.sort_by_key(|(_, updated_at)| std::cmp::Reverse(*updated_at));
+        let retained: std::collections::HashSet<Uuid> = terminal
+            .into_iter()
+            .take(terminal_limit)
+            .map(|(index, _)| self.git_workflow_runs[index].id)
+            .collect();
+        self.git_workflow_runs.retain(|run| {
+            if !run.state.is_terminal() {
+                return true;
+            }
+            retained.contains(&run.id)
+        });
     }
 
     /// Replaces images saved by the retired arbitrary-image picker with the
@@ -337,6 +564,8 @@ mod tests {
         assert!(!project.is_favorite);
         assert!(project.presets.is_empty());
         assert!(project.task_tracker_connections.is_empty());
+        assert!(project.git_workflows.is_empty());
+        assert!(project.git_workflow_runs.is_empty());
     }
 
     #[test]
@@ -457,5 +686,120 @@ mod tests {
         assert_eq!(back.provider, DbProvider::Supabase);
         assert!(back.provider.is_postgres());
         assert!(back.read_only);
+    }
+
+    #[test]
+    fn git_workflow_enums_use_stable_snake_case_values() {
+        assert_eq!(
+            serde_json::to_string(&GitWorkflowCompletionPolicy::AutoMergeWhenReady).unwrap(),
+            "\"auto_merge_when_ready\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GitWorkflowRunState::AwaitingConfirmation).unwrap(),
+            "\"awaiting_confirmation\""
+        );
+        assert_eq!(
+            serde_json::from_str::<GitWorkflowRunState>("\"needs_attention\"").unwrap(),
+            GitWorkflowRunState::NeedsAttention
+        );
+    }
+
+    #[test]
+    fn legacy_project_json_defaults_git_workflow_collections() {
+        let json = format!(
+            r#"{{"id":"{}","name":"Legacy","path":"/tmp/legacy"}}"#,
+            Uuid::new_v4()
+        );
+        let project: Project = serde_json::from_str(&json).unwrap();
+        assert!(project.git_workflows.is_empty());
+        assert!(project.git_workflow_runs.is_empty());
+    }
+
+    #[test]
+    fn repository_relative_paths_cannot_escape_the_project() {
+        assert!(validate_repository_relative_path(Path::new(".")).is_ok());
+        assert!(validate_repository_relative_path(Path::new("apps/api")).is_ok());
+        assert!(validate_repository_relative_path(Path::new("../api")).is_err());
+        assert!(validate_repository_relative_path(Path::new("apps/../../api")).is_err());
+        assert!(validate_repository_relative_path(Path::new("/tmp/api")).is_err());
+    }
+
+    #[test]
+    fn workflow_names_are_unique_per_repository_case_insensitively() {
+        let mut project = Project::from_path(PathBuf::from("/tmp/app"));
+        let workflow = GitWorkflow::new(
+            PathBuf::from("."),
+            "  Promote  ",
+            "staging",
+            "production",
+            GitWorkflowCompletionPolicy::ConfirmBeforeMerge,
+        )
+        .unwrap();
+        assert_eq!(workflow.name, "Promote");
+        project.git_workflows.push(workflow);
+        let duplicate = GitWorkflow::new(
+            PathBuf::from("."),
+            "promote",
+            "preview",
+            "production",
+            GitWorkflowCompletionPolicy::ConfirmBeforeMerge,
+        )
+        .unwrap();
+        assert!(project.validate_git_workflow(&duplicate).is_err());
+
+        let another_repo = GitWorkflow::new(
+            PathBuf::from("apps/api"),
+            "promote",
+            "preview",
+            "production",
+            GitWorkflowCompletionPolicy::ConfirmBeforeMerge,
+        )
+        .unwrap();
+        assert!(project.validate_git_workflow(&another_repo).is_ok());
+    }
+
+    #[test]
+    fn run_pruning_keeps_active_and_newest_terminal_records() {
+        let mut project = Project::from_path(PathBuf::from("/tmp/app"));
+        for updated_at in 0..35 {
+            project.git_workflow_runs.push(GitWorkflowRun {
+                id: Uuid::new_v4(),
+                workflow_id: None,
+                repository_path: PathBuf::from("."),
+                source_branch: "staging".into(),
+                destination_branch: "production".into(),
+                pull_request_number: None,
+                expected_head_sha: None,
+                state: GitWorkflowRunState::Merged,
+                error: None,
+                started_at: updated_at,
+                updated_at,
+            });
+        }
+        project.git_workflow_runs.push(GitWorkflowRun {
+            id: Uuid::new_v4(),
+            workflow_id: None,
+            repository_path: PathBuf::from("."),
+            source_branch: "staging".into(),
+            destination_branch: "production".into(),
+            pull_request_number: Some(42),
+            expected_head_sha: None,
+            state: GitWorkflowRunState::AwaitingConfirmation,
+            error: None,
+            started_at: 0,
+            updated_at: 0,
+        });
+
+        project.prune_git_workflow_runs(30);
+        assert_eq!(project.git_workflow_runs.len(), 31);
+        assert!(project
+            .git_workflow_runs
+            .iter()
+            .any(|run| run.state == GitWorkflowRunState::AwaitingConfirmation));
+        assert!(project
+            .git_workflow_runs
+            .iter()
+            .filter(|run| run.state == GitWorkflowRunState::Merged)
+            .all(|run| run.updated_at >= 5));
     }
 }
