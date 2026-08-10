@@ -93,6 +93,24 @@ fn render_saved_message_tag(
                 .into_any_element(),
             "Design",
         ),
+        AgentChatMessageTagKind::Project => (
+            crate::ui::design::rose(cx),
+            gpui_component::Icon::new(IconName::FolderOpen)
+                .size(crate::ui::design::icon_sm())
+                .text_color(crate::ui::design::rose(cx))
+                .into_any_element(),
+            "Project",
+        ),
+        AgentChatMessageTagKind::Brain => (
+            crate::ui::design::sage(cx),
+            crate::ui::design::indicator::lucide_icon(
+                lucide_icons::Icon::Brain,
+                crate::ui::design::sage(cx),
+                crate::ui::design::icon_sm(),
+            )
+            .into_any_element(),
+            "Choro Brain",
+        ),
         AgentChatMessageTagKind::LegacyVisual => (
             crate::ui::design::t3(cx),
             crate::ui::design::indicator::lucide_icon(
@@ -1062,6 +1080,10 @@ impl CenterArea {
             AgentChatTimelineItem::MemoryProposal(card) => {
                 self.render_memory_proposal_card(agent.id, card, cx)
             }
+            AgentChatTimelineItem::AgentSummary(card) => {
+                self.render_agent_summary_card(agent.id, card, cx)
+            }
+            AgentChatTimelineItem::AgentMessage(card) => self.render_agent_message_card(card, cx),
         }
     }
 }

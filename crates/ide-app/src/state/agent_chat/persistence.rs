@@ -239,6 +239,23 @@ impl StoredTimelinePayload {
                     created_at: card.created_at,
                 })
             }
+            AgentChatTimelineItem::AgentSummary(card) => Some(Self::AgentSummary {
+                summary_text: card.summary_text.clone(),
+                last_summarized_sequence: card.last_summarized_sequence,
+                updated_at: card.updated_at,
+                edited_by_user: card.edited_by_user,
+                expanded: card.expanded,
+            }),
+            AgentChatTimelineItem::AgentMessage(card) => Some(Self::AgentMessage {
+                id: card.id,
+                source_agent_id: card.source_agent_id,
+                source_title: card.source_title.clone(),
+                target_agent_id: card.target_agent_id,
+                target_title: card.target_title.clone(),
+                text: card.text.clone(),
+                kind: card.kind.clone(),
+                created_at: card.created_at,
+            }),
             AgentChatTimelineItem::ShipResult(result) => Some(Self::ShipResult {
                 id: result.id.clone(),
                 action: result.action.clone(),
@@ -464,6 +481,38 @@ impl StoredTimelinePayload {
                     created_at,
                 }))
             }
+            Self::AgentSummary {
+                summary_text,
+                last_summarized_sequence,
+                updated_at,
+                edited_by_user,
+                expanded,
+            } => Some(AgentChatTimelineItem::AgentSummary(AgentSummaryCard {
+                summary_text,
+                last_summarized_sequence,
+                updated_at,
+                edited_by_user,
+                expanded,
+            })),
+            Self::AgentMessage {
+                id,
+                source_agent_id,
+                source_title,
+                target_agent_id,
+                target_title,
+                text,
+                kind,
+                created_at,
+            } => Some(AgentChatTimelineItem::AgentMessage(AgentMessageCard {
+                id,
+                source_agent_id,
+                source_title,
+                target_agent_id,
+                target_title,
+                text,
+                kind,
+                created_at,
+            })),
         }
     }
 
@@ -481,6 +530,8 @@ impl StoredTimelinePayload {
             Self::RejoinConflict { .. } => "rejoin_conflict",
             Self::Memorized { .. } => "memorized",
             Self::MemoryProposal { .. } => "memory_proposal",
+            Self::AgentSummary { .. } => "agent_summary",
+            Self::AgentMessage { .. } => "agent_message",
         }
     }
 
@@ -521,6 +572,8 @@ impl StoredTimelinePayload {
             Self::RejoinConflict { id, .. } => Some(format!("rejoin_conflict:{id}")),
             Self::Memorized { memory_id, .. } => Some(format!("memorized:{memory_id}")),
             Self::MemoryProposal { id, .. } => Some(format!("memory_proposal:{id}")),
+            Self::AgentSummary { .. } => Some("agent_summary:living".to_string()),
+            Self::AgentMessage { id, .. } => Some(format!("agent_message:{id}")),
         }
     }
 
@@ -534,6 +587,8 @@ impl StoredTimelinePayload {
             Self::RejoinConflict { created_at, .. } => *created_at,
             Self::Memorized { created_at, .. } => *created_at,
             Self::MemoryProposal { created_at, .. } => *created_at,
+            Self::AgentSummary { updated_at, .. } => *updated_at,
+            Self::AgentMessage { created_at, .. } => *created_at,
             _ => unix_now(),
         }
     }
@@ -572,6 +627,102 @@ mod tests {
             Some(format!("memorized:{memory_id}").as_str())
         );
         assert_eq!(created_at, 42);
+    }
+
+    #[test]
+    fn living_summary_uses_one_stable_timeline_identity() {
+        let item = AgentChatTimelineItem::AgentSummary(AgentSummaryCard {
+            summary_text: "Implemented indexed recall.".to_string(),
+            last_summarized_sequence: 42,
+            updated_at: 100,
+            edited_by_user: true,
+            expanded: false,
+        });
+
+        let (kind, event_key, payload, created_at) =
+            stored_timeline_event_parts(&item).expect("summary event");
+        assert_eq!(kind, "agent_summary");
+        assert_eq!(event_key.as_deref(), Some("agent_summary:living"));
+        assert_eq!(created_at, 100);
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        assert!(matches!(
+            restored,
+            AgentChatTimelineItem::AgentSummary(AgentSummaryCard {
+                last_summarized_sequence: 42,
+                edited_by_user: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn incoming_agent_message_round_trips_with_source_identity() {
+        let source_agent_id = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let item = AgentChatTimelineItem::AgentMessage(AgentMessageCard {
+            id,
+            source_agent_id,
+            source_title: "API lane".to_string(),
+            target_agent_id: None,
+            target_title: None,
+            text: "I am changing routes.rs".to_string(),
+            kind: "collision".to_string(),
+            created_at: 77,
+        });
+        let (kind, event_key, payload, created_at) =
+            stored_timeline_event_parts(&item).expect("agent message event");
+        assert_eq!(kind, "agent_message");
+        assert_eq!(
+            event_key.as_deref(),
+            Some(format!("agent_message:{id}").as_str())
+        );
+        assert_eq!(created_at, 77);
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        assert!(matches!(
+            restored,
+            AgentChatTimelineItem::AgentMessage(AgentMessageCard {
+                id: restored_id,
+                source_agent_id: restored_source,
+                ..
+            }) if restored_id == id && restored_source == source_agent_id
+        ));
+    }
+
+    #[test]
+    fn outgoing_agent_message_round_trips_with_stable_target_identity() {
+        let source_agent_id = Uuid::new_v4();
+        let target_agent_id = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let item = AgentChatTimelineItem::AgentMessage(AgentMessageCard {
+            id,
+            source_agent_id,
+            source_title: "Current lane".to_string(),
+            target_agent_id: Some(target_agent_id),
+            target_title: Some("Storage lane".to_string()),
+            text: "Please verify the migration.".to_string(),
+            kind: "user".to_string(),
+            created_at: 88,
+        });
+        let (_, _, payload, _) =
+            stored_timeline_event_parts(&item).expect("outgoing agent message event");
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        assert!(matches!(
+            restored,
+            AgentChatTimelineItem::AgentMessage(AgentMessageCard {
+                target_agent_id: Some(restored_target),
+                target_title: Some(restored_title),
+                ..
+            }) if restored_target == target_agent_id && restored_title == "Storage lane"
+        ));
     }
 
     #[test]

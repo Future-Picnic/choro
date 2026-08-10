@@ -45,6 +45,65 @@ fn slash_matches_filter_enabled_commands() {
 }
 
 #[test]
+fn hash_mentions_are_boundary_safe_and_remove_into_a_stable_target_chip() {
+    let mention = active_composer_agent_mention_in_text("ask #stor", "ask #stor".len())
+        .expect("agent mention");
+    assert_eq!(mention.query, "stor");
+    assert_eq!(mention.range, 4..9);
+    assert!(active_composer_agent_mention_in_text("issue#123", 9).is_none());
+    assert!(active_composer_agent_mention_in_text("#agent continue", 15).is_none());
+    let (next, cursor) = remove_composer_agent_mention("ask #stor please", &mention);
+    assert_eq!(next, "ask please");
+    assert_eq!(cursor, 4);
+}
+
+#[test]
+fn agent_picker_matches_name_status_and_project() {
+    let entry = ComposerAgentEntry {
+        id: Uuid::new_v4(),
+        title: "Storage migration".into(),
+        status: AgentStatus::InProgress,
+        project_name: "Choro".into(),
+        active: true,
+    };
+    assert!(composer_agent_matches(&entry, "storage"));
+    assert!(composer_agent_matches(&entry, "progress"));
+    assert!(composer_agent_matches(&entry, "choro"));
+    assert!(!composer_agent_matches(&entry, "billing"));
+}
+
+#[test]
+fn double_hash_mentions_projects_without_opening_the_agent_grammar() {
+    let text = "compare with ##back";
+    let mention =
+        active_composer_project_mention_in_text(text, text.len()).expect("project mention");
+    assert_eq!(mention.range, 13..19);
+    assert_eq!(mention.query, "back");
+    assert!(active_composer_agent_mention_in_text(text, text.len()).is_none());
+    assert!(active_composer_project_mention_in_text("issue##123", 10).is_none());
+    assert!(active_composer_project_mention_in_text("##backend continue", 18).is_none());
+
+    let removable = active_composer_project_mention_in_text("use ##back", "use ##back".len())
+        .expect("removable project mention");
+    let (next, cursor) = remove_composer_project_mention("use ##back please", &removable);
+    assert_eq!(next, "use please");
+    assert_eq!(cursor, 4);
+}
+
+#[test]
+fn project_picker_matches_name_and_path() {
+    let entry = ComposerProjectEntry {
+        id: ProjectId::new(),
+        name: "Backend API".into(),
+        path: PathBuf::from("/work/services/backend"),
+        is_favorite: false,
+    };
+    assert!(composer_project_matches(&entry, "backend"));
+    assert!(composer_project_matches(&entry, "services"));
+    assert!(!composer_project_matches(&entry, "frontend"));
+}
+
+#[test]
 fn slash_matches_put_choro_riffs_before_agent_skills() {
     let matches = agent_chat_slash_matches(
         &[
@@ -440,25 +499,31 @@ fn selected_mentions_prepend_native_tokens_on_submit() {
             title: "main.rs".to_string(),
             path_label: "src/main.rs".to_string(),
             context: None,
+            project_id: None,
         },
         ComposerMentionToken {
             kind: ComposerMentionKind::Doc,
             title: "Spec".to_string(),
             path_label: "docs/spec.md".to_string(),
             context: None,
+            project_id: None,
         },
     ];
 
     assert_eq!(
-        composer_mentions_submission_text("summarize this", &mentions),
+        composer_mentions_submission_text("summarize this", &mentions, &[]),
         "@src/main.rs @@docs/spec.md summarize this"
     );
     assert_eq!(
-        composer_mentions_submission_text("", &mentions),
+        composer_mentions_submission_text("", &mentions, &[]),
         "@src/main.rs @@docs/spec.md"
     );
     assert_eq!(
-        composer_mentions_submission_text("summarize @src/main.rs and @@docs/spec.md", &mentions),
+        composer_mentions_submission_text(
+            "summarize @src/main.rs and @@docs/spec.md",
+            &mentions,
+            &[],
+        ),
         "summarize @src/main.rs and @@docs/spec.md"
     );
 }
@@ -491,7 +556,7 @@ fn penpot_design_mention_keeps_durable_identity_and_url() {
     };
 
     let token = ComposerMentionToken::penpot_design(&reference).unwrap();
-    let submission = composer_mentions_submission_text("review accessibility", &[token]);
+    let submission = composer_mentions_submission_text("review accessibility", &[token], &[]);
     assert!(submission.contains(&format!("local-id=\"{design_id}\"")));
     assert!(submission.contains(&format!("file-id=\"{file_id}\"")));
     assert!(submission.contains("https://design.penpot.app"));
@@ -499,6 +564,49 @@ fn penpot_design_mention_keeps_durable_identity_and_url() {
     assert!(submission.contains("instead of silently substituting another visual source"));
     assert!(!submission.contains("Penpot"));
     assert!(submission.ends_with("review accessibility"));
+}
+
+#[test]
+fn project_mentions_resolve_the_live_path_from_the_stable_project_id() {
+    let project_id = ProjectId::new();
+    let entry = ComposerProjectEntry {
+        id: project_id,
+        name: "Backend".into(),
+        path: PathBuf::from("/old/backend"),
+        is_favorite: false,
+    };
+    let token = ComposerMentionToken::project_entry(&entry);
+    let mut current = Project::from_path(PathBuf::from("/work/backend-renamed"));
+    current.id = project_id;
+    current.name = "Backend Service".into();
+
+    let submission = composer_mentions_submission_text("port its auth flow", &[token], &[current]);
+    assert!(submission.starts_with("<choro-project-context>"));
+    assert!(submission.contains(&project_id.0.to_string()));
+    assert!(submission.contains("Backend Service"));
+    assert!(submission.contains("/work/backend-renamed"));
+    assert!(!submission.contains("/old/backend"));
+    assert!(submission.contains("pointer, not an access-control grant or restriction"));
+    assert!(submission.contains("read-only reference context unless the user explicitly asks"));
+    assert_eq!(
+        visible_agent_chat_submission_text(&submission),
+        "port its auth flow"
+    );
+}
+
+#[test]
+fn project_mentions_create_a_distinct_saved_message_tag() {
+    let entry = ComposerProjectEntry {
+        id: ProjectId::new(),
+        name: "Backend".into(),
+        path: PathBuf::from("/work/backend"),
+        is_favorite: false,
+    };
+    let tags = composer_message_tags(None, &[ComposerMentionToken::project_entry(&entry)], false);
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].kind, AgentChatMessageTagKind::Project);
+    assert_eq!(tags[0].label, "##Backend");
+    assert_eq!(tags[0].detail.as_deref(), Some("/work/backend"));
 }
 
 #[test]

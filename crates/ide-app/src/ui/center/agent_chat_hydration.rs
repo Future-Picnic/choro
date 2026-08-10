@@ -77,9 +77,10 @@ impl CenterArea {
         let runtime_cwd = agent.runtime_path().to_path_buf();
 
         let resume_command = agent.resume_command();
+        let connected_context = self.agent_connected_context_extras(&agent, cx);
         let command = resume_command
             .clone()
-            .unwrap_or_else(|| agent.start_command());
+            .unwrap_or_else(|| agent.start_command_with_connected_context(&connected_context));
         let cli_session_id = if resume_command.is_some() {
             agent.cli_session_id.clone()
         } else {
@@ -718,6 +719,8 @@ impl CenterArea {
                 AgentChatTimelineItem::RejoinConflict(_) => {}
                 AgentChatTimelineItem::Memorized(_) => {}
                 AgentChatTimelineItem::MemoryProposal(_) => {}
+                AgentChatTimelineItem::AgentSummary(_) => {}
+                AgentChatTimelineItem::AgentMessage(_) => {}
             }
         }
         session.messages = messages;
@@ -782,6 +785,8 @@ impl CenterArea {
             .session(agent_id)
             .map(|session| session.interaction_mode)
             .unwrap_or(AgentInteractionMode::Default);
+        let connected_context = self.agent_connected_context_extras(&agent, cx);
+        agent.doc = ide_core::prompt_with_connected_context(&agent.doc, &agent, &connected_context);
         if let Err(error) = self.agent_chats.update(cx, |chats, cx| {
             chats.start_backend(agent.clone(), initial_mode, cx)
         }) {

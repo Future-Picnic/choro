@@ -44,7 +44,7 @@ fn migrates_v25_to_git_workflow_schema() {
         .rt
         .block_on(async {
             let conn = store.connect().await?;
-            assert_eq!(schema_version(&conn).await?, 26);
+            assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
             assert!(table_exists(&conn, "project_git_workflows").await?);
             assert!(table_exists(&conn, "project_git_workflow_runs").await?);
             assert!(column_exists(&conn, "project_git_workflows", "source").await?);
@@ -82,7 +82,7 @@ fn empty_v25_workspace_migrates_with_empty_workflow_collections() {
         .rt
         .block_on(async {
             let conn = store.connect().await?;
-            assert_eq!(schema_version(&conn).await?, 26);
+            assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
             let mut workflow_rows = conn
                 .query("SELECT COUNT(*) FROM project_git_workflows", ())
                 .await?;
@@ -219,6 +219,217 @@ fn sample_agent(project: &Project) -> AgentRecord {
         deletions: 1,
     });
     agent
+}
+
+#[test]
+fn brain_summary_search_recall_and_message_bus_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+
+    let mut requester = sample_agent(&project);
+    requester.title = "Current agent".into();
+    let mut target = sample_agent(&project);
+    target.title = "Storage migration".into();
+    target.id = Uuid::new_v4();
+    store
+        .save_agents(&[requester.clone(), target.clone()])
+        .unwrap();
+
+    store
+        .append_chat_message(target.id, "user", "Move the cache into SQLite", 10, None)
+        .unwrap();
+    store
+        .append_chat_message(
+            target.id,
+            "assistant",
+            "Implemented the storage layer",
+            11,
+            None,
+        )
+        .unwrap();
+    let summary = store
+        .save_agent_summary(
+            target.id,
+            "Migrated cache storage to SQLite. Touched src/storage.rs and verified restart behavior.",
+            false,
+        )
+        .unwrap();
+    assert_eq!(summary.last_summarized_sequence, 1);
+
+    let results = store
+        .search_agents(requester.id, "SQLite storage", false, 10)
+        .unwrap();
+    assert!(results.iter().any(|result| result.agent_id == target.id));
+    assert!(store
+        .search_agents_for_files(requester.id, "SQLite storage", false, None, 10)
+        .unwrap()
+        .iter()
+        .any(|result| result.agent_id == target.id));
+    assert!(store
+        .search_agents_for_files(
+            requester.id,
+            "SQLite storage",
+            false,
+            Some(&["src/not-touched.rs".to_string()]),
+            10,
+        )
+        .unwrap()
+        .is_empty());
+
+    store
+        .append_chat_message(
+            target.id,
+            "assistant",
+            "The unique quokka-checkpoint appears only in the transcript.",
+            12,
+            None,
+        )
+        .unwrap();
+    assert!(store
+        .search_agents(requester.id, "quokka-checkpoint", false, 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .search_agents(requester.id, "quokka-checkpoint", true, 10)
+            .unwrap()[0]
+            .agent_id,
+        target.id
+    );
+    // Penpot conversations share chat_messages but have no matching agents
+    // row, so they must never enter the cross-agent full-text index.
+    store
+        .append_chat_message(
+            Uuid::new_v4(),
+            "assistant",
+            "penpotplatypusunique",
+            13,
+            None,
+        )
+        .unwrap();
+    assert!(store
+        .search_agents(requester.id, "penpotplatypusunique", true, 10)
+        .unwrap()
+        .is_empty());
+
+    for index in 0..19 {
+        store
+            .append_chat_message(
+                target.id,
+                "assistant",
+                &format!("checkpoint message {index}"),
+                20 + index,
+                None,
+            )
+            .unwrap();
+    }
+    assert!(store.agent_summary_refresh_due(target.id, 20, 0).unwrap());
+
+    let page = store
+        .recall_agent(requester.id, target.id, None, 1)
+        .unwrap();
+    assert_eq!(page.summary.as_ref(), Some(&summary));
+    assert_eq!(page.messages.len(), 1);
+    assert!(page.has_more);
+    assert_eq!(page.next_before_sequence, Some(21));
+
+    let edited = store
+        .save_agent_summary(target.id, "User-verified SQLite migration.", true)
+        .unwrap();
+    assert!(edited.edited_by_user);
+    assert_eq!(edited.last_summarized_sequence, 1);
+
+    let message = store
+        .send_agent_message(
+            requester.id,
+            target.id,
+            "Check the restart edge case.",
+            "agent",
+            Some("handoff:restart".into()),
+        )
+        .unwrap();
+    let duplicate = store
+        .send_agent_message(
+            requester.id,
+            target.id,
+            "Check the restart edge case.",
+            "agent",
+            Some("handoff:restart".into()),
+        )
+        .unwrap();
+    assert_eq!(message.id, duplicate.id);
+    assert_eq!(store.load_pending_agent_messages().unwrap().len(), 1);
+    store.mark_agent_message_delivered(message.id).unwrap();
+    assert!(store.load_pending_agent_messages().unwrap().is_empty());
+}
+
+#[test]
+fn brain_cross_agent_reads_are_available_without_a_per_agent_toggle() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+    let requester = sample_agent(&project);
+    let mut target = sample_agent(&project);
+    target.id = Uuid::new_v4();
+    target.title = "Storage indexing".into();
+    store
+        .save_agents(&[requester.clone(), target.clone()])
+        .unwrap();
+    store
+        .save_agent_summary(target.id, "Implemented indexed storage recall.", false)
+        .unwrap();
+
+    let results = store
+        .search_agents(requester.id, "storage", false, 10)
+        .unwrap();
+    assert!(results.iter().any(|result| result.agent_id == target.id));
+}
+
+#[test]
+fn migrates_v26_to_brain_schema_and_fts_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                conn_cleanup_brain_v27(&store.connect().await?).await?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    store
+        .rt
+        .block_on(async {
+            let conn = store.connect().await?;
+            assert_eq!(schema_version(&conn).await?, 27);
+            assert!(table_exists(&conn, "agent_summaries").await?);
+            assert!(table_exists(&conn, "agent_search_fts").await?);
+            assert!(table_exists(&conn, "chat_messages_fts").await?);
+            assert!(table_exists(&conn, "agent_messages").await?);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+}
+
+async fn conn_cleanup_brain_v27(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute("DROP TABLE agent_messages", ()).await?;
+    conn.execute("DROP TABLE agent_search_fts", ()).await?;
+    conn.execute("DROP TABLE chat_messages_fts", ()).await?;
+    conn.execute("DROP TABLE agent_summaries", ()).await?;
+    conn.execute("DELETE FROM schema_migrations WHERE version = 27", ())
+        .await?;
+    assert_eq!(schema_version(conn).await?, 26);
+    Ok(())
 }
 
 fn sample_task_connection() -> TaskTrackerConnection {

@@ -1401,6 +1401,8 @@ impl CenterArea {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
                 eprintln!("failed to persist rejoin card: {error:#}");
             }
+            self.agent_summary_requests_pending.remove(&agent_id);
+            self.request_agent_summary(agent_id, cx);
         }
     }
 
@@ -2341,9 +2343,10 @@ impl CenterArea {
 
         let runtime_cwd = agent.runtime_path().to_path_buf();
         let resume_command = agent.resume_command();
+        let connected_context = self.agent_connected_context_extras(&agent, cx);
         let command = resume_command
             .clone()
-            .unwrap_or_else(|| agent.start_command());
+            .unwrap_or_else(|| agent.start_command_with_connected_context(&connected_context));
         let cli_session_id = if resume_command.is_some() {
             agent.cli_session_id.clone()
         } else {

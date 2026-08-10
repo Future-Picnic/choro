@@ -9,6 +9,23 @@ use super::*;
 /// Rows shown under the composer. Enough to recognise what you were doing,
 /// short enough that the composer stays the subject of the screen.
 const RECENT_AGENTS: usize = 4;
+const WEEK_SECS: u64 = 7 * 24 * 60 * 60;
+
+fn weekly_digest_excerpt(summary: &str) -> String {
+    let flattened = summary
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if flattened.chars().count() <= 220 {
+        return flattened;
+    }
+    format!(
+        "{}…",
+        flattened.chars().take(219).collect::<String>().trim_end()
+    )
+}
 
 impl CenterArea {
     pub(super) fn render_new_agent_recent_agents(
@@ -40,6 +57,118 @@ impl CenterArea {
                         .text_size(crate::ui::design::text_label())
                         .text_color(crate::ui::design::t4(cx))
                         .child("Latest agents"),
+                )
+                .children(rows)
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn render_fleet_weekly_digest(
+        &self,
+        project: ProjectId,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let cutoff = unix_now_secs().saturating_sub(WEEK_SECS);
+        let records = self.agents.read(cx);
+        let mut entries = self
+            .agent_summaries
+            .values()
+            .filter(|summary| summary.updated_at >= cutoff)
+            .filter_map(|summary| {
+                let agent = records.agent(summary.agent_id)?.clone();
+                (agent.project_id == project).then(|| (agent, summary.clone()))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(_, summary)| std::cmp::Reverse(summary.updated_at));
+        if entries.is_empty() {
+            return None;
+        }
+        let count = entries.len();
+        let rows = entries.into_iter().map(|(agent, summary)| {
+            let agent_id = agent.id;
+            h_flex()
+                .id(SharedString::from(format!("weekly-brain-agent-{agent_id}")))
+                .w_full()
+                .min_w(px(0.))
+                .items_start()
+                .gap_2()
+                .px_1p5()
+                .py_2()
+                .rounded(crate::ui::design::r_sm())
+                .cursor_pointer()
+                .hover(|row| row.bg(crate::ui::design::hover(cx)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_agent(agent_id, window, cx);
+                }))
+                .child(
+                    div()
+                        .mt(px(5.))
+                        .child(crate::ui::agent_status_style::status_dot(
+                            agent.status,
+                            6.,
+                            cx,
+                        )),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .gap_0p5()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .min_w(px(0.))
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .truncate()
+                                        .text_size(crate::ui::design::text_ui())
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(crate::ui::design::t1(cx))
+                                        .child(agent.title),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::ui::design::text_label())
+                                        .text_color(crate::ui::design::t4(cx))
+                                        .child(branch_relative_time(summary.updated_at as i64)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(crate::ui::design::text_label())
+                                .line_height(gpui::relative(1.35))
+                                .text_color(crate::ui::design::t3(cx))
+                                .child(weekly_digest_excerpt(&summary.summary_text)),
+                        ),
+                )
+        });
+
+        Some(
+            v_flex()
+                .w_full()
+                .pt_6()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .px_1()
+                        .pb_1()
+                        .child(
+                            div()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::t4(cx))
+                                .child("This week in Choro Brain"),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::t4(cx))
+                                .child(format!("{count} summarized agents")),
+                        ),
                 )
                 .children(rows)
                 .into_any_element(),
@@ -139,5 +268,18 @@ impl CenterArea {
             .map(|session| session.last_activity_at)
             .filter(|activity| *activity > 0)
             .unwrap_or(agent.updated_at)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::weekly_digest_excerpt;
+
+    #[test]
+    fn weekly_digest_excerpt_flattens_and_bounds_summaries() {
+        assert_eq!(weekly_digest_excerpt("Done\n\nVerified"), "Done Verified");
+        let excerpt = weekly_digest_excerpt(&"x".repeat(400));
+        assert_eq!(excerpt.chars().count(), 220);
+        assert!(excerpt.ends_with('…'));
     }
 }

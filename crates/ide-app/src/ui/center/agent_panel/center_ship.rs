@@ -166,6 +166,8 @@ impl CenterArea {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
                 eprintln!("failed to persist agent ship result: {error:#}");
             }
+            self.agent_summary_requests_pending.remove(&agent_id);
+            self.request_agent_summary(agent_id, cx);
         }
 
         // Pre-seed the post-ship "update the task" card and warm up its status
