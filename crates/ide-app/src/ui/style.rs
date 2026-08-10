@@ -935,6 +935,20 @@ pub fn composer_icon_action(id: impl Into<ElementId>, icon: impl IntoElement, cx
         .child(icon)
 }
 
+/// Compact remove affordance over attachment previews and inside attachment
+/// chips. Keeping this treatment here prevents each composer from inventing
+/// its own close-button geometry.
+pub fn attachment_remove_button(id: impl Into<ElementId>, cx: &App) -> Button {
+    composer_icon_action(
+        id,
+        gpui_component::Icon::new(IconName::Close).size(design::icon_sm()),
+        cx,
+    )
+    .w(px(20.))
+    .h(px(20.))
+    .tooltip("Remove attachment")
+}
+
 /// Important repository action in the composer rail. Sits on the accent wash
 /// tier — see [`ship_action_variant`] — and collapses to a square GitHub icon
 /// without losing that emphasis at narrow widths.

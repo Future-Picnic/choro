@@ -1,3 +1,4 @@
+use super::agent_chat_attachments::AttachmentRemoval;
 use super::*;
 
 impl CenterArea {
@@ -1672,65 +1673,20 @@ impl CenterArea {
                                         .w_full()
                                         .px_4()
                                         .pb_2()
-                                        .gap_1()
+                                        .gap_2()
                                         .flex_wrap()
                                         .children(attached_files.iter().enumerate().map(
                                             |(index, path)| {
-                                                let label = path
-                                                    .file_name()
-                                                    .and_then(|name| name.to_str())
-                                                    .unwrap_or("attached file")
-                                                    .to_string();
-                                                let remove_path = path.clone();
-                                                let icon = if image_format_for_path(path).is_some()
-                                                {
-                                                    IconName::Frame
-                                                } else {
-                                                    IconName::File
-                                                };
-                                                h_flex()
-                                                    .id(("composer-attachment-chip", index))
-                                                    .gap_1()
-                                                    .items_center()
-                                                    .rounded(crate::ui::design::r_sm())
-                                                    .border_1()
-                                                    .border_color(crate::ui::style::border(cx))
-                                                    .bg(crate::ui::design::surface(cx))
-                                                    .px_2()
-                                                    .py_1()
-                                                    .text_size(crate::ui::design::text_ui())
-                                                    .text_color(crate::ui::design::t1(cx))
-                                                    .child(
-                                                        gpui_component::Icon::new(icon)
-                                                            .size(crate::ui::design::icon_sm()),
-                                                    )
-                                                    .child(label)
-                                                    .child(
-                                                        Button::new((
-                                                            "remove-composer-attachment",
-                                                            index,
-                                                        ))
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .compact()
-                                                        .h(px(18.))
-                                                        .icon(IconName::Close)
-                                                        .tooltip("Remove attachment")
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                if let Some(composer) =
-                                                                    this.new_agent_composer.as_mut()
-                                                                {
-                                                                    composer.attached_files.retain(
-                                                                        |path| path != &remove_path,
-                                                                    );
-                                                                    composer.error = None;
-                                                                }
-                                                                cx.notify();
-                                                            },
-                                                        )),
-                                                    )
-                                                    .into_any_element()
+                                                self.render_agent_attachment_preview(
+                                                    ("new-agent-composer-attachment", index),
+                                                    path.clone(),
+                                                    Some(AttachmentRemoval::NewAgent {
+                                                        path: path.clone(),
+                                                    }),
+                                                    58.,
+                                                    58.,
+                                                    cx,
+                                                )
                                             },
                                         )),
                                 )

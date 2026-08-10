@@ -1,11 +1,38 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) enum AttachmentRemoval {
+    AgentChat { agent_id: Uuid, path: PathBuf },
+    NewAgent { path: PathBuf },
+}
+
 impl CenterArea {
+    fn remove_composer_attachment(&mut self, removal: &AttachmentRemoval) {
+        match removal {
+            AttachmentRemoval::AgentChat { agent_id, path } => {
+                if let Some(files) = self.agent_chat_attached_files.get_mut(agent_id) {
+                    files.retain(|candidate| candidate != path);
+                    if files.is_empty() {
+                        self.agent_chat_attached_files.remove(agent_id);
+                    }
+                }
+            }
+            AttachmentRemoval::NewAgent { path } => {
+                if let Some(composer) = self.new_agent_composer.as_mut() {
+                    composer
+                        .attached_files
+                        .retain(|candidate| candidate != path);
+                    composer.error = None;
+                }
+            }
+        }
+    }
+
     pub(super) fn render_agent_attachment_preview(
         &self,
         id: (&'static str, usize),
         path: PathBuf,
-        removable: Option<(Uuid, PathBuf)>,
+        removable: Option<AttachmentRemoval>,
         width: f32,
         height: f32,
         cx: &mut Context<Self>,
@@ -57,29 +84,18 @@ impl CenterArea {
                             .into_any_element()
                     }),
             )
-            .when_some(removable, |thumb, (agent_id, remove_path)| {
+            .when_some(removable, |thumb, removal| {
                 thumb.child(
                     div().absolute().top_1().right_1().child(
-                        Button::new(("remove-agent-chat-attachment", id.1))
-                            .ghost()
-                            .xsmall()
-                            .compact()
-                            .h(px(20.))
-                            .w(px(20.))
-                            .icon(IconName::Close)
-                            .tooltip("Remove attachment")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(files) =
-                                    this.agent_chat_attached_files.get_mut(&agent_id)
-                                {
-                                    files.retain(|path| path != &remove_path);
-                                    if files.is_empty() {
-                                        this.agent_chat_attached_files.remove(&agent_id);
-                                    }
-                                }
-                                cx.notify();
-                            })),
+                        crate::ui::style::attachment_remove_button(
+                            ("remove-agent-chat-attachment", id.1),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.remove_composer_attachment(&removal);
+                            cx.notify();
+                        })),
                     ),
                 )
             })
@@ -90,7 +106,7 @@ impl CenterArea {
         &self,
         id: (&'static str, usize),
         path: PathBuf,
-        removable: Option<(Uuid, PathBuf)>,
+        removable: Option<AttachmentRemoval>,
         width: f32,
         height: f32,
         cx: &mut Context<Self>,
@@ -129,26 +145,17 @@ impl CenterArea {
                     .text_color(crate::ui::design::sage(cx)),
             )
             .child(div().min_w(px(0.)).truncate().child(file_name))
-            .when_some(removable, |chip, (agent_id, remove_path)| {
+            .when_some(removable, |chip, removal| {
                 chip.child(
-                    Button::new(("remove-agent-chat-file-attachment", id.1))
-                        .ghost()
-                        .xsmall()
-                        .compact()
-                        .h(px(20.))
-                        .w(px(20.))
-                        .icon(IconName::Close)
-                        .tooltip("Remove attachment")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(files) = this.agent_chat_attached_files.get_mut(&agent_id) {
-                                files.retain(|path| path != &remove_path);
-                                if files.is_empty() {
-                                    this.agent_chat_attached_files.remove(&agent_id);
-                                }
-                            }
-                            cx.notify();
-                        })),
+                    crate::ui::style::attachment_remove_button(
+                        ("remove-agent-chat-file-attachment", id.1),
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.remove_composer_attachment(&removal);
+                        cx.notify();
+                    })),
                 )
             })
             .into_any_element()

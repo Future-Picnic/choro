@@ -1,3 +1,4 @@
+use super::agent_chat_attachments::AttachmentRemoval;
 use super::agent_chat_runtime::{verification_lifecycle, VerificationLifecycle};
 use super::*;
 
@@ -647,7 +648,10 @@ impl CenterArea {
                                                             self.render_agent_attachment_preview(
                                                                 ("agent-chat-composer-attachment", index),
                                                                 path.clone(),
-                                                                Some((agent.id, path.clone())),
+                                                                Some(AttachmentRemoval::AgentChat {
+                                                                    agent_id: agent.id,
+                                                                    path: path.clone(),
+                                                                }),
                                                                 58.,
                                                                 58.,
                                                                 cx,
