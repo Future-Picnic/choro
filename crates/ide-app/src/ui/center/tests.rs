@@ -302,6 +302,26 @@ fn preview_attachment_is_saved_as_a_message_tag() {
 }
 
 #[test]
+fn composer_attachment_preview_recognizes_supported_image_paths() {
+    for path in [
+        "/tmp/reference.PNG",
+        "/tmp/reference.jpeg",
+        "/tmp/reference.webp",
+        "/tmp/reference.gif",
+        "/tmp/reference.svg",
+        "/tmp/reference.bmp",
+        "/tmp/reference.tiff",
+    ] {
+        assert!(
+            image_format_for_path(Path::new(path)).is_some(),
+            "expected {path} to render as an image preview"
+        );
+    }
+
+    assert!(image_format_for_path(Path::new("/tmp/brief.pdf")).is_none());
+}
+
+#[test]
 fn editing_a_queued_turn_restores_its_image_attachment() {
     let image = PathBuf::from("/tmp/choro-queued-image.png");
     let turn = QueuedChatTurn {
