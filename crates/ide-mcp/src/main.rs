@@ -17,6 +17,7 @@ mod tools;
 fn main() {
     let mut project_id = None;
     let mut agent_id = None;
+    let mut data_root = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -30,6 +31,12 @@ fn main() {
                 agent_id = args
                     .next()
                     .and_then(|value| uuid::Uuid::parse_str(value.trim()).ok());
+            }
+            "--data-root" => {
+                data_root = args
+                    .next()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(Into::into);
             }
             "--version" | "-V" => {
                 println!("ide-mcp {}", env!("CARGO_PKG_VERSION"));
@@ -56,7 +63,7 @@ fn main() {
             "ide-mcp: warning: no --project-id / IDE_MCP_PROJECT_ID; task tools will refuse to read"
         );
     }
-    let mut server = mcp::Server::new(project_id, agent_id);
+    let mut server = mcp::Server::new(project_id, agent_id, data_root);
     if let Err(error) = server.run() {
         eprintln!("ide-mcp: fatal: {error:#}");
         std::process::exit(1);

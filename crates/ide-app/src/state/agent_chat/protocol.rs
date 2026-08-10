@@ -43,7 +43,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context as _};
 use ide_core::local_store::LocalStore;
-use ide_core::{AgentAccessMode, AgentEffort, AgentKind, AgentModel, AgentRecord};
+use ide_core::{
+    prompt_with_connected_context, AgentAccessMode, AgentConnectedContextExtras, AgentEffort,
+    AgentKind, AgentModel, AgentRecord, AppConfig,
+};
 use serde_json::{json, Value};
 
 use super::{
@@ -199,12 +202,14 @@ impl Drop for ChatBackendController {
 }
 
 pub fn spawn_chat_backend(
-    agent: AgentRecord,
+    mut agent: AgentRecord,
     initial_mode: AgentInteractionMode,
 ) -> anyhow::Result<(
     ChatBackendController,
     async_channel::Receiver<ChatBackendEvent>,
 )> {
+    agent.doc =
+        prompt_with_connected_context(&agent.doc, &agent, &AgentConnectedContextExtras::default());
     if is_design_assistant(&agent) {
         if agent.provider == AgentKind::OpenCode {
             return Err(anyhow!(
@@ -539,6 +544,31 @@ fn codex_penpot_config_arg(url: &str) -> String {
     codex_mcp_url_config_arg("penpot", url)
 }
 
+fn choro_mcp_scope_args(project_id: &str, agent_id: &str, data_root: &Path) -> Vec<String> {
+    vec![
+        "--project-id".to_string(),
+        project_id.to_string(),
+        "--agent-id".to_string(),
+        agent_id.to_string(),
+        "--data-root".to_string(),
+        data_root.display().to_string(),
+    ]
+}
+
+fn agent_choro_mcp_scope_args(agent: &AgentRecord) -> Vec<String> {
+    choro_mcp_scope_args(
+        &agent.project_id.0.to_string(),
+        &agent.id.to_string(),
+        &AppConfig::config_root(),
+    )
+}
+
+fn codex_mcp_args_config_arg(name: &str, agent: &AgentRecord) -> String {
+    let args = serde_json::to_string(&agent_choro_mcp_scope_args(agent))
+        .unwrap_or_else(|_| "[]".to_string());
+    format!("mcp_servers.{name}.args={args}")
+}
+
 fn codex_penpot_approval_config_arg(name: &str) -> String {
     // The dedicated assistant is already file-bound and can only write through
     // this isolated Design MCP server. Without this server-level override,
@@ -659,10 +689,7 @@ fn append_codex_design_assistant_config(
             mcp.display()
         ))
         .arg("-c")
-        .arg(format!(
-            "mcp_servers.{choro_name}.args=[\"--project-id\", \"{}\", \"--agent-id\", \"{}\"]",
-            agent.project_id.0, agent.id
-        ))
+        .arg(codex_mcp_args_config_arg(&choro_name, agent))
         .arg("-c")
         .arg(format!(
             "mcp_servers.{choro_name}.enabled_tools=[\"task_read\",\"task_list\",\"task_image\"]"
@@ -693,12 +720,7 @@ fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
             json!({
                 "type": "stdio",
                 "command": mcp.display().to_string(),
-                "args": [
-                    "--project-id",
-                    agent.project_id.0.to_string(),
-                    "--agent-id",
-                    agent.id.to_string()
-                ],
+                "args": agent_choro_mcp_scope_args(agent),
             }),
         );
     }
@@ -723,6 +745,7 @@ fn choro_acp_mcp_servers_json(agent: &AgentRecord) -> Value {
             &mcp,
             &agent.project_id.0.to_string(),
             &agent.id.to_string(),
+            &AppConfig::config_root(),
         )
         .as_array()
         .cloned()
@@ -737,16 +760,16 @@ fn choro_acp_mcp_servers_json(agent: &AgentRecord) -> Value {
     Value::Array(servers)
 }
 
-fn choro_acp_mcp_servers_json_at(mcp: &Path, project_id: &str, agent_id: &str) -> Value {
+fn choro_acp_mcp_servers_json_at(
+    mcp: &Path,
+    project_id: &str,
+    agent_id: &str,
+    data_root: &Path,
+) -> Value {
     json!([{
         "name": "choro",
         "command": mcp.display().to_string(),
-        "args": [
-            "--project-id",
-            project_id,
-            "--agent-id",
-            agent_id,
-        ],
+        "args": choro_mcp_scope_args(project_id, agent_id, data_root),
         "env": [],
     }])
 }
@@ -851,10 +874,9 @@ fn run_codex_app_server(
             command
                 .arg("-c")
                 .arg(format!("mcp_servers.ide.command={}", mcp.display()));
-            command.arg("-c").arg(format!(
-                "mcp_servers.ide.args=[\"--project-id\", \"{}\", \"--agent-id\", \"{}\"]",
-                agent.project_id.0, agent.id
-            ));
+            command
+                .arg("-c")
+                .arg(codex_mcp_args_config_arg("ide", &agent));
         }
         if agent_requires_design_mcp(&agent) {
             if let Some(url) = crate::state::penpot::configured_mcp_url() {
@@ -1281,6 +1303,7 @@ mod tests {
             Path::new("/Applications/Choro.app/Contents/MacOS/choro-mcp"),
             "project-123",
             "agent-456",
+            Path::new("/tmp/choro isolated"),
         );
 
         assert_eq!(
@@ -1293,6 +1316,8 @@ mod tests {
                     "project-123",
                     "--agent-id",
                     "agent-456",
+                    "--data-root",
+                    "/tmp/choro isolated",
                 ],
                 "env": [],
             }])

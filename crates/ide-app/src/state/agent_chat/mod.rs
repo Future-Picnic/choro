@@ -181,6 +181,8 @@ pub enum AgentChatMessageTagKind {
     File,
     Doc,
     Design,
+    Project,
+    Brain,
     /// Keeps older or third-party tag values readable after capabilities are removed.
     #[serde(other)]
     LegacyVisual,
@@ -207,6 +209,30 @@ pub enum AgentChatTimelineItem {
     RejoinConflict(RejoinConflictCard),
     Memorized(MemorizedCard),
     MemoryProposal(MemoryProposalCard),
+    AgentSummary(AgentSummaryCard),
+    AgentMessage(AgentMessageCard),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSummaryCard {
+    pub summary_text: String,
+    pub last_summarized_sequence: i64,
+    pub updated_at: u64,
+    pub edited_by_user: bool,
+    pub expanded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentMessageCard {
+    pub id: Uuid,
+    pub source_agent_id: Uuid,
+    pub source_title: String,
+    /// Present for the sender's audit card; absent for the recipient's card.
+    pub target_agent_id: Option<Uuid>,
+    pub target_title: Option<String>,
+    pub text: String,
+    pub kind: String,
+    pub created_at: u64,
 }
 
 /// A memory the agent just saved via `memory_save` — surfaced in the chat so
@@ -401,6 +427,25 @@ enum StoredTimelinePayload {
         accepted_global: Option<bool>,
         #[serde(default)]
         source: String,
+        created_at: u64,
+    },
+    AgentSummary {
+        summary_text: String,
+        last_summarized_sequence: i64,
+        updated_at: u64,
+        edited_by_user: bool,
+        expanded: bool,
+    },
+    AgentMessage {
+        id: Uuid,
+        source_agent_id: Uuid,
+        source_title: String,
+        #[serde(default)]
+        target_agent_id: Option<Uuid>,
+        #[serde(default)]
+        target_title: Option<String>,
+        text: String,
+        kind: String,
         created_at: u64,
     },
 }

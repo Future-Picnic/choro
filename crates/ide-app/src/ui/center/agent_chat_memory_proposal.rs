@@ -66,6 +66,23 @@ impl CenterArea {
         );
     }
 
+    pub(super) fn maybe_propose_memory_from_summary(
+        &mut self,
+        agent_id: Uuid,
+        summary: String,
+        cx: &mut Context<Self>,
+    ) {
+        if summary.trim().chars().count() < MIN_SIGNAL_CHARS {
+            return;
+        }
+        self.spawn_memory_distillation(
+            agent_id,
+            MemoryDecisionContext::AgentSummary { summary },
+            "agent_summary",
+            cx,
+        );
+    }
+
     fn spawn_memory_distillation(
         &mut self,
         agent_id: Uuid,

@@ -188,9 +188,11 @@ impl CenterArea {
         &self,
         agent: &AgentRecord,
         notes_input: Entity<InputState>,
+        summary_input: Option<Entity<InputState>>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
+        let has_summary = summary_input.is_some();
         let prompt_lines = if agent.doc.is_empty() {
             vec![String::from("No prompt saved.")]
         } else {
@@ -273,6 +275,84 @@ impl CenterArea {
                                     .h_full(),
                             ),
                     ),
+            )
+            .child(
+                v_flex()
+                    .gap_1p5()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_ui())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child("Agent summary"),
+                            )
+                            .child(div().flex_1())
+                            .when_some(summary_input.clone(), |row, input| {
+                                row.child(
+                                    crate::ui::style::primary_button_compact(
+                                        ("save-agent-summary", agent_id.as_u128() as u64),
+                                        "Save edit",
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.save_agent_summary_edit(
+                                                agent_id,
+                                                input.clone(),
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                )
+                            })
+                            .child(
+                                crate::ui::style::secondary_button_compact(
+                                    ("refresh-agent-summary", agent_id.as_u128() as u64),
+                                    if has_summary {
+                                        "Update summary"
+                                    } else {
+                                        "Add summary"
+                                    },
+                                )
+                                .disabled(
+                                    self.agent_summary_requests_pending.contains_key(&agent_id),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.request_agent_summary(agent_id, cx);
+                                    },
+                                )),
+                            ),
+                    )
+                    .when_some(summary_input, |section, input| {
+                        section.child(
+                            div()
+                                .min_h(px(120.))
+                                .rounded(crate::ui::design::r_sm())
+                                .border_1()
+                                .border_color(crate::ui::style::border(cx))
+                                .bg(crate::ui::style::surface(cx))
+                                .p_2()
+                                .child(
+                                    Input::new(&input)
+                                        .appearance(false)
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .h_full(),
+                                ),
+                        )
+                    })
+                    .when(!has_summary, |section| {
+                        section.child(
+                            div()
+                                .text_size(crate::ui::design::text_ui())
+                                .text_color(crate::ui::design::t4(cx))
+                                .child("No summary has been saved yet."),
+                        )
+                    }),
             )
             .into_any_element();
 

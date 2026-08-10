@@ -205,6 +205,27 @@ impl AgentChatState {
         cx.notify();
     }
 
+    pub fn toggle_agent_summary_expanded(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return;
+        };
+        let Some(card) = session.timeline.iter_mut().find_map(|item| match item {
+            AgentChatTimelineItem::AgentSummary(card) => Some(card),
+            _ => None,
+        }) else {
+            return;
+        };
+        card.expanded = !card.expanded;
+        persist_timeline_item(
+            agent_id,
+            AgentChatTimelineItem::AgentSummary(card.clone()),
+            cx,
+        );
+        session.last_activity_at = unix_now();
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+    }
+
     /// The requirement titles a verification fix turn should target: the
     /// clearly Missed items with no fix requested yet. Empty if the
     /// verification is gone or everything was met.

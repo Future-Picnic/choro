@@ -36,6 +36,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_voice_schema(conn).await?;
         ensure_agent_repository_column(conn).await?;
         ensure_git_workflow_schema(conn).await?;
+        ensure_brain_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -479,6 +480,57 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 27 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_brain_schema_inner(conn).await?;
+                record_schema_version(conn, 27).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_brain_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_brain_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_brain_schema_inner(conn: &Connection) -> Result<()> {
+    let rebuild_agent_search = !table_exists(conn, "agent_search_fts").await?;
+    let rebuild_message_search = !table_exists(conn, "chat_messages_fts").await?;
+    for statement in SCHEMA_V27 {
+        conn.execute(statement, ()).await?;
+    }
+    // These projection tables are derived indexes. Populate them once when
+    // introduced; normal agent, summary, and message writes keep them current.
+    if rebuild_agent_search {
+        conn.execute(
+            "INSERT INTO agent_search_fts
+             (agent_id, project_id, title, status, summary_text, updated_at)
+             SELECT agents.id, agents.project_id, agents.title, agents.status,
+                    COALESCE(agent_summaries.summary_text, ''),
+                    COALESCE(agent_summaries.updated_at, agents.updated_at)
+             FROM agents
+             LEFT JOIN agent_summaries ON agent_summaries.agent_id = agents.id",
+            (),
+        )
+        .await?;
+    }
+    if rebuild_message_search {
+        conn.execute(
+            "INSERT INTO chat_messages_fts(message_id, agent_id, text)
+             SELECT chat_messages.id, chat_messages.agent_id, chat_messages.text
+             FROM chat_messages
+             INNER JOIN agents ON agents.id = chat_messages.agent_id",
+            (),
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -774,6 +826,58 @@ const SCHEMA_V26: &[&str] = &[
         ON project_git_workflow_runs(workflow_id, updated_at DESC)",
 ];
 
+const SCHEMA_V27: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS agent_summaries (
+        agent_id TEXT PRIMARY KEY,
+        summary_text TEXT NOT NULL,
+        last_summarized_sequence INTEGER NOT NULL DEFAULT -1,
+        updated_at INTEGER NOT NULL,
+        edited_by_user INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_agent_summaries_updated
+        ON agent_summaries(updated_at DESC)",
+    "CREATE TABLE IF NOT EXISTS agent_search_fts (
+        agent_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_agent_search_project
+        ON agent_search_fts(project_id, updated_at DESC)",
+    // Turso's embedded engine exposes its FTS5-equivalent index through
+    // `USING fts`; it does not support SQLite `CREATE VIRTUAL TABLE ... fts5`
+    // syntax. This remains a real inverted full-text index, not a LIKE scan.
+    "CREATE INDEX IF NOT EXISTS idx_agent_search_fts_text
+        ON agent_search_fts USING fts (title, summary_text)",
+    "CREATE TABLE IF NOT EXISTS chat_messages_fts (
+        message_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        text TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_chat_messages_fts_text
+        ON chat_messages_fts USING fts (text)",
+    "CREATE TABLE IF NOT EXISTS agent_messages (
+        id TEXT PRIMARY KEY,
+        source_agent_id TEXT NOT NULL,
+        target_agent_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'agent',
+        event_key TEXT,
+        created_at INTEGER NOT NULL,
+        delivered_at INTEGER,
+        FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY(target_agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_agent_messages_target_delivery
+        ON agent_messages(target_agent_id, delivered_at, created_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_target_event_key
+        ON agent_messages(target_agent_id, event_key)
+        WHERE event_key IS NOT NULL",
+];
+
 pub(super) async fn schema_version(conn: &Connection) -> Result<u32> {
     let mut rows = conn
         .query(
@@ -809,7 +913,6 @@ pub(super) async fn column_exists(conn: &Connection, table: &str, column: &str) 
     Ok(false)
 }
 
-#[cfg(test)]
 pub(super) async fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let mut rows = conn
         .query(

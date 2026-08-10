@@ -31,8 +31,8 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 26;
-const EXPORT_FORMAT_VERSION: u32 = 4;
+const STORE_SCHEMA_VERSION: u32 = 27;
+const EXPORT_FORMAT_VERSION: u32 = 5;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
 
@@ -138,6 +138,55 @@ pub struct StoredMemory {
     pub last_used_at: Option<u64>,
 }
 
+/// The living Brain summary for one real project agent. Summaries are replaced
+/// in place; `last_summarized_sequence` is the chat-message cursor covered by
+/// the current text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentSummary {
+    pub agent_id: Uuid,
+    pub summary_text: String,
+    pub last_summarized_sequence: i64,
+    pub updated_at: u64,
+    pub edited_by_user: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentSearchResult {
+    pub agent_id: Uuid,
+    pub title: String,
+    pub status: String,
+    pub snippet: String,
+    pub summary_text: Option<String>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentRecallPage {
+    pub agent_id: Uuid,
+    pub title: String,
+    pub summary: Option<StoredAgentSummary>,
+    /// Returned oldest-to-newest within this page.
+    pub messages: Vec<StoredChatMessage>,
+    pub next_before_sequence: Option<i64>,
+    pub has_more: bool,
+}
+
+/// A durable Choro-native delivery queued by one agent for another. The GUI
+/// marks the row delivered only after it has surfaced the incoming card and
+/// queued the quarantined prompt into the target session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentMessage {
+    pub id: Uuid,
+    pub source_agent_id: Uuid,
+    pub target_agent_id: Uuid,
+    pub source_title: String,
+    pub text: String,
+    pub kind: String,
+    pub event_key: Option<String>,
+    pub created_at: u64,
+    pub delivered_at: Option<u64>,
+}
+
 impl StoredMemory {
     pub fn is_global(&self) -> bool {
         self.scope == "global"
@@ -233,6 +282,10 @@ struct ExportCounts {
     timeline_events: usize,
     #[serde(default)]
     memories: usize,
+    #[serde(default)]
+    agent_summaries: usize,
+    #[serde(default)]
+    agent_messages: usize,
     attachments: usize,
     #[serde(default)]
     diff_snapshots: usize,
@@ -257,6 +310,7 @@ struct ExportChecksum {
 mod agents;
 mod api;
 mod archive;
+mod brain;
 mod chat;
 mod diffs;
 mod maintenance;
@@ -272,6 +326,7 @@ mod workspace;
 
 use agents::*;
 use archive::*;
+use brain::*;
 use chat::*;
 use diffs::*;
 pub use memories::MAX_MEMORY_TEXT_CHARS;

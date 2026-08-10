@@ -86,6 +86,13 @@ impl LocalStore {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+        Self::open_existing(root)
+    }
+
+    /// Open an existing store at an explicit app-data root without migrating
+    /// it. Helper processes receive this root from the GUI so isolated app
+    /// bundles never silently fall back to the main Choro database.
+    pub fn open_existing(root: PathBuf) -> Result<Self> {
         let rt = Runtime::new().context("failed to create local store runtime")?;
         let store = Self {
             db_path: root.join("state.db"),

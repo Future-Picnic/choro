@@ -47,6 +47,20 @@ impl LocalStore {
         write_zip_jsonl(
             &mut zip,
             options,
+            "agent_summaries.jsonl",
+            &snapshot.agent_summaries,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "agent_messages.jsonl",
+            &snapshot.agent_messages,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
             "attachments.jsonl",
             &snapshot.attachments,
             &mut checksums,
@@ -173,6 +187,8 @@ impl LocalStore {
                 messages: snapshot.messages.len(),
                 timeline_events: snapshot.timeline_events.len(),
                 memories: snapshot.memories.len(),
+                agent_summaries: snapshot.agent_summaries.len(),
+                agent_messages: snapshot.agent_messages.len(),
                 attachments: snapshot.attachments.len(),
                 diff_snapshots: diff_snapshot_rows.len(),
                 diff_files: diff_files.len(),
@@ -205,6 +221,10 @@ impl LocalStore {
         let messages: Vec<StoredChatMessage> = read_zip_jsonl(&mut zip, "messages.jsonl")?;
         let timeline_events: Vec<StoredTimelineEvent> = read_zip_jsonl(&mut zip, "timeline.jsonl")?;
         let memories: Vec<StoredMemory> = read_zip_jsonl_optional(&mut zip, "memories.jsonl")?;
+        let agent_summaries: Vec<StoredAgentSummary> =
+            read_zip_jsonl_optional(&mut zip, "agent_summaries.jsonl")?;
+        let agent_messages: Vec<StoredAgentMessage> =
+            read_zip_jsonl_optional(&mut zip, "agent_messages.jsonl")?;
         let attachments: Vec<StoredAttachment> = read_zip_jsonl(&mut zip, "attachments.jsonl")?;
         let project_references: Vec<ProjectReference> =
             read_zip_jsonl_optional(&mut zip, "project_references.jsonl")?;
@@ -284,6 +304,12 @@ impl LocalStore {
                     for memory in &memories {
                         insert_stored_memory_async(conn, memory).await?;
                     }
+                    for summary in &agent_summaries {
+                        insert_stored_agent_summary_async(conn, summary).await?;
+                    }
+                    for message in &agent_messages {
+                        insert_stored_agent_message_async(conn, message).await?;
+                    }
                     for attachment in &attachments {
                         insert_attachment_async(conn, attachment).await?;
                     }
@@ -351,7 +377,11 @@ impl LocalStore {
         let db_path = self.db_path.to_string_lossy().to_string();
         let mut attempt = 0_u8;
         let db = loop {
-            match Builder::new_local(&db_path).build().await {
+            match Builder::new_local(&db_path)
+                .experimental_index_method(true)
+                .build()
+                .await
+            {
                 Ok(db) => break db,
                 Err(error)
                     if attempt < 40 && error.to_string().to_ascii_lowercase().contains("lock") =>
@@ -410,6 +440,8 @@ impl LocalStore {
                 messages: load_all_messages_async(&conn).await?,
                 timeline_events: load_all_timeline_events_async(&conn).await?,
                 memories: load_all_memories_async(&conn).await?,
+                agent_summaries: load_all_agent_summaries_async(&conn).await?,
+                agent_messages: load_all_agent_messages_async(&conn).await?,
                 attachments: load_all_attachments_async(&conn).await?,
                 project_references: load_all_project_references_async(&conn).await?,
                 personal_tasks: load_personal_tasks_async(&conn, None).await?,
@@ -459,6 +491,8 @@ pub(super) struct ExportSnapshot {
     messages: Vec<StoredChatMessage>,
     timeline_events: Vec<StoredTimelineEvent>,
     memories: Vec<StoredMemory>,
+    agent_summaries: Vec<StoredAgentSummary>,
+    agent_messages: Vec<StoredAgentMessage>,
     attachments: Vec<StoredAttachment>,
     diff_snapshots: Vec<StoredAgentDiffSnapshot>,
     penpot_connections: Vec<StoredPenpotConnection>,

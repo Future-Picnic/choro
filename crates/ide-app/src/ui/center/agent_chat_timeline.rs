@@ -107,6 +107,10 @@ impl CenterArea {
             .get(&agent.id)
             .cloned()
             .unwrap_or_default();
+        let selected_agent_target = self
+            .agent_chat_selected_agent_targets
+            .get(&agent.id)
+            .and_then(|target_id| self.agents.read(cx).agent(*target_id).cloned());
         let has_attachments = !attached_files.is_empty();
         let has_pasted_text_blocks = !pasted_text_blocks.is_empty();
         let has_draft = !input.read(cx).value().trim().is_empty()
@@ -663,6 +667,7 @@ impl CenterArea {
                                         .when(
                                                 selected_command.is_some()
                                                 || !selected_mentions.is_empty()
+                                                || selected_agent_target.is_some()
                                                 || preview_armed
                                                 || preview_suggested,
                                             |col| {
@@ -671,6 +676,7 @@ impl CenterArea {
                                                     input.clone(),
                                                     selected_command.as_ref(),
                                                     &selected_mentions,
+                                                    selected_agent_target.as_ref(),
                                                     preview_armed,
                                                     preview_suggested,
                                                     cx,

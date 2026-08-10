@@ -36,6 +36,12 @@ impl CenterArea {
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),
+            ComposerMentionKind::Project => (IconName::FolderOpen, crate::ui::design::rose(cx)),
+        };
+        let label = if mention.kind == ComposerMentionKind::Project {
+            format!("##{}", mention.chip_label())
+        } else {
+            mention.chip_label().to_string()
         };
         h_flex()
             .id(("new-agent-selected-mention-token", index))
@@ -77,7 +83,7 @@ impl CenterArea {
                     .text_size(crate::ui::design::text_head())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(color)
-                    .child(mention.chip_label().to_string()),
+                    .child(label),
             )
             .child(
                 gpui_component::Icon::new(IconName::Close)
@@ -496,6 +502,14 @@ impl CenterArea {
                                                     composer.source_doc = None;
                                                     composer.linked_tasks.clear();
                                                     composer.source_task = None;
+                                                    composer.selected_mentions.retain(|mention| {
+                                                        mention.kind
+                                                            != ComposerMentionKind::Project
+                                                            || mention.project_id
+                                                                != Some(project_id)
+                                                    });
+                                                    composer.project_mention_selected = 0;
+                                                    composer.project_mention_dismissed_query = None;
                                                     composer.error = None;
                                                 }
                                                 this.workspace.update(cx, |workspace, cx| {
@@ -922,16 +936,23 @@ impl CenterArea {
         let selected_project = composer.project;
         let selected_repository = composer.repository_path.clone();
         let slash_view = self.active_composer_slash_view(cx);
-        let doc_mention_view = if slash_view.is_none() {
+        let project_mention_view = if slash_view.is_none() {
+            self.active_composer_project_mention_view(cx)
+        } else {
+            None
+        };
+        let doc_mention_view = if slash_view.is_none() && project_mention_view.is_none() {
             self.active_composer_doc_mention_view(cx)
         } else {
             None
         };
-        let file_mention_view = if slash_view.is_none() && doc_mention_view.is_none() {
-            self.active_composer_file_mention_view(cx)
-        } else {
-            None
-        };
+        let file_mention_view =
+            if slash_view.is_none() && project_mention_view.is_none() && doc_mention_view.is_none()
+            {
+                self.active_composer_file_mention_view(cx)
+            } else {
+                None
+            };
         let project_entries = self
             .workspace
             .read(cx)
@@ -978,6 +999,11 @@ impl CenterArea {
         let mention_picker = slash_view
             .as_ref()
             .map(|view| self.render_composer_slash_picker(view, cx))
+            .or_else(|| {
+                project_mention_view
+                    .as_ref()
+                    .map(|view| self.render_composer_project_mention_picker(view, cx))
+            })
             .or_else(|| {
                 doc_mention_view
                     .as_ref()
@@ -1051,6 +1077,22 @@ impl CenterArea {
                                     cx.notify();
                                     return;
                                 }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    if view.matches.is_empty() {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    let next = if view.selected + 1 >= view.matches.len() {
+                                        0
+                                    } else {
+                                        view.selected + 1
+                                    };
+                                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                                        composer.project_mention_selected = next;
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
                                 if let Some(view) = this.active_composer_doc_mention_view(cx) {
                                     if view.total() == 0 {
                                         return;
@@ -1103,6 +1145,22 @@ impl CenterArea {
                                     cx.notify();
                                     return;
                                 }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    if view.matches.is_empty() {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    let prev = if view.selected == 0 {
+                                        view.matches.len() - 1
+                                    } else {
+                                        view.selected - 1
+                                    };
+                                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                                        composer.project_mention_selected = prev;
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
                                 if let Some(view) = this.active_composer_doc_mention_view(cx) {
                                     if view.total() == 0 {
                                         return;
@@ -1148,6 +1206,15 @@ impl CenterArea {
                                     cx.notify();
                                     return;
                                 }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    cx.stop_propagation();
+                                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                                        composer.project_mention_dismissed_query =
+                                            Some(view.mention.query.clone());
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
                                 if let Some(view) = this.active_composer_doc_mention_view(cx) {
                                     cx.stop_propagation();
                                     if let Some(composer) = this.new_agent_composer.as_mut() {
@@ -1176,6 +1243,20 @@ impl CenterArea {
                                     cx.stop_propagation();
                                     this.insert_slash_command_into_composer(
                                         command, view.query, window, cx,
+                                    );
+                                    return;
+                                }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    let Some(project) = view.matches.get(view.selected).cloned()
+                                    else {
+                                        return;
+                                    };
+                                    cx.stop_propagation();
+                                    this.insert_project_mention_into_composer(
+                                        project,
+                                        view.mention,
+                                        window,
+                                        cx,
                                     );
                                     return;
                                 }
@@ -1233,6 +1314,20 @@ impl CenterArea {
                                     cx.stop_propagation();
                                     this.insert_slash_command_into_composer(
                                         command, view.query, window, cx,
+                                    );
+                                    return;
+                                }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    let Some(project) = view.matches.get(view.selected).cloned()
+                                    else {
+                                        return;
+                                    };
+                                    cx.stop_propagation();
+                                    this.insert_project_mention_into_composer(
+                                        project,
+                                        view.mention,
+                                        window,
+                                        cx,
                                     );
                                     return;
                                 }
@@ -1714,7 +1809,8 @@ impl CenterArea {
                     })
                     // The project's recent conversations, under the composer:
                     // close enough to step back into without going looking.
-                    .children(self.render_new_agent_recent_agents(project, cx)),
+                    .children(self.render_new_agent_recent_agents(project, cx))
+                    .children(self.render_fleet_weekly_digest(project, cx)),
             )
             .into_any_element()
     }
