@@ -272,21 +272,48 @@ pub(super) fn agent_chat_rows(
 /// Deliberately length-based rather than a content hash. This runs for every row
 /// on every frame, and streaming growth is monotonic, so a length notices it
 /// without walking the text.
-pub(super) fn agent_chat_row_fingerprint(row: &AgentChatRow, session: &AgentChatSession) -> u64 {
-    fn message_len(message: &AgentChatMessage) -> u64 {
-        match message {
-            AgentChatMessage::User {
-                text,
-                display_text,
-                tags,
-                ..
-            } => (text.len() + display_text.as_ref().map_or(0, String::len) + tags.len()) as u64,
-            AgentChatMessage::Assistant { text, .. } | AgentChatMessage::Thought { text, .. } => {
-                text.len() as u64
-            }
-        }
+fn agent_chat_message_fingerprint_value(
+    message: &AgentChatMessage,
+    active_reveal: Option<&agent_chat_reveal::ActiveReveal>,
+) -> u64 {
+    match message {
+        AgentChatMessage::User {
+            text,
+            display_text,
+            tags,
+            ..
+        } => (text.len() + display_text.as_ref().map_or(0, String::len) + tags.len()) as u64,
+        AgentChatMessage::Assistant {
+            message_id,
+            text,
+            created_at,
+        } => active_reveal
+            .filter(|reveal| {
+                reveal.key.0.as_ref() == message_id.as_ref() && reveal.key.1 == *created_at
+            })
+            .map_or_else(
+                || (text.len() as u64).wrapping_mul(2),
+                |reveal| {
+                    // The stored answer can already be complete while the
+                    // paced renderer is still revealing it. Fingerprint what
+                    // is actually visible so ListState remeasures the row as
+                    // the reveal grows, plus one state bit for the final live
+                    // -> Markdown renderer transition.
+                    let visible = agent_chat_reveal::char_byte_offset(text, reveal.revealed);
+                    (visible as u64)
+                        .wrapping_mul(2)
+                        .wrapping_add(u64::from(reveal.is_animating()))
+                },
+            ),
+        AgentChatMessage::Thought { text, .. } => text.len() as u64,
     }
+}
 
+pub(super) fn agent_chat_row_fingerprint(
+    row: &AgentChatRow,
+    session: &AgentChatSession,
+    active_reveal: Option<&agent_chat_reveal::ActiveReveal>,
+) -> u64 {
     fn mix(kind: u64, index: usize, value: u64) -> u64 {
         kind.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64).wrapping_mul(1_000_003) ^ value
     }
@@ -295,10 +322,16 @@ pub(super) fn agent_chat_row_fingerprint(row: &AgentChatRow, session: &AgentChat
         AgentChatRow::Message(index) => mix(
             1,
             *index,
-            session.messages.get(*index).map_or(0, message_len),
+            session.messages.get(*index).map_or(0, |message| {
+                agent_chat_message_fingerprint_value(message, active_reveal)
+            }),
         ),
         AgentChatRow::TimelineItem(index) => match session.timeline.get(*index) {
-            Some(AgentChatTimelineItem::Message(message)) => mix(2, *index, message_len(message)),
+            Some(AgentChatTimelineItem::Message(message)) => mix(
+                2,
+                *index,
+                agent_chat_message_fingerprint_value(message, active_reveal),
+            ),
             // Cards only change height through an explicit user action (expand,
             // collapse, apply), and every one of those paths already calls
             // `remeasure_agent_chat_list`.
@@ -365,7 +398,7 @@ pub(super) fn agent_changed_file_key(agent_id: Uuid, path: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::newest_turn_first_order;
+    use super::*;
 
     #[test]
     fn newest_turns_reverse_but_each_turn_keeps_reading_order() {
@@ -374,5 +407,43 @@ mod tests {
 
         assert_eq!(order, vec![5, 6, 7, 3, 4, 0, 1, 2]);
         assert_eq!(newest_len, 3);
+    }
+
+    #[test]
+    fn assistant_fingerprint_tracks_visible_reveal_and_final_transition() {
+        let message = AgentChatMessage::Assistant {
+            message_id: Some("m1".to_string()),
+            text: "one two three".to_string(),
+            created_at: 7,
+        };
+        let partial = agent_chat_reveal::ActiveReveal {
+            agent: Uuid::nil(),
+            key: (Some("m1".to_string()), 7),
+            revealed: 3,
+            full: 13,
+            warmth: 1.0,
+        };
+        let complete_but_warm = agent_chat_reveal::ActiveReveal {
+            revealed: 13,
+            full: 13,
+            warmth: 0.5,
+            ..partial.clone()
+        };
+        let finalized = agent_chat_reveal::ActiveReveal {
+            warmth: 0.0,
+            ..complete_but_warm.clone()
+        };
+
+        let partial_value = agent_chat_message_fingerprint_value(&message, Some(&partial));
+        let complete_value =
+            agent_chat_message_fingerprint_value(&message, Some(&complete_but_warm));
+        let finalized_value = agent_chat_message_fingerprint_value(&message, Some(&finalized));
+
+        assert_ne!(partial_value, complete_value);
+        assert_ne!(complete_value, finalized_value);
+        assert_eq!(
+            finalized_value,
+            agent_chat_message_fingerprint_value(&message, None)
+        );
     }
 }

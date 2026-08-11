@@ -124,6 +124,18 @@ fn agent_message_should_wake_target(kind: &str) -> bool {
     matches!(kind, "ask" | "delegate")
 }
 
+fn replied_request_id(message: &StoredAgentMessage) -> Option<Uuid> {
+    if message.kind != "reply" {
+        return None;
+    }
+    message
+        .event_key
+        .as_deref()?
+        .strip_prefix("reply:")?
+        .parse()
+        .ok()
+}
+
 fn agent_message_target_status(kind: &str, current: AgentStatus) -> AgentStatus {
     if agent_message_should_wake_target(kind) {
         AgentStatus::InProgress
@@ -486,6 +498,9 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         for message in messages {
+            if let Some(request_id) = replied_request_id(message) {
+                self.agent_messages_inflight.remove(&request_id);
+            }
             if self.agent_messages_inflight.contains(&message.id) {
                 continue;
             }
@@ -583,7 +598,12 @@ impl CenterArea {
                     agents.update_status(message.target_agent_id, target_status, cx)
                 });
             }
-            self.finish_agent_message_delivery(message.id, cx);
+            // Requests require a durable `agent_reply`. Keep the database row
+            // pending until that reply is saved, while suppressing duplicate
+            // dispatches in this process. If Choro closes during hydration or
+            // while this turn is queued, the in-memory guard disappears and
+            // the still-pending request is safely delivered again on restart.
+            self.agent_messages_inflight.insert(message.id);
         }
     }
 
@@ -902,6 +922,19 @@ mod tests {
             agent_message_target_status("collision", AgentStatus::Done),
             AgentStatus::Done
         );
+    }
+
+    #[test]
+    fn durable_reply_identifies_the_request_whose_dispatch_guard_can_close() {
+        let request_id = Uuid::new_v4();
+        let mut reply = stored_message("reply", "Finished");
+        reply.event_key = Some(format!("reply:{request_id}"));
+
+        assert_eq!(replied_request_id(&reply), Some(request_id));
+        assert_eq!(replied_request_id(&stored_message("ask", "Question")), None);
+
+        reply.event_key = Some("reply:not-a-uuid".to_string());
+        assert_eq!(replied_request_id(&reply), None);
     }
 
     #[test]

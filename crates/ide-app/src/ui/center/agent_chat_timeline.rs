@@ -233,7 +233,9 @@ impl CenterArea {
         let row_fingerprints = display_order
             .iter()
             .filter_map(|index| rows.get(*index))
-            .map(|row| agent_chat_row_fingerprint(row, &session))
+            .map(|row| {
+                agent_chat_row_fingerprint(row, &session, self.agent_chat_active_reveal.as_ref())
+            })
             .collect::<Vec<_>>();
         let list_state = self.agent_chat_list_state(
             agent.id,
@@ -1096,29 +1098,6 @@ impl CenterArea {
                                                 )),
                                         )
                                     })
-                                    .child(
-                                        crate::ui::style::composer_icon_action(
-                                            (
-                                                "agent-chat-dictate",
-                                                agent.id.as_u128() as u64,
-                                            ),
-                                            svg()
-                                                .path("icons/microphone.svg")
-                                                .size(crate::ui::design::icon_sm())
-                                                .text_color(crate::ui::design::t3(cx)),
-                                            cx,
-                                        )
-                                        .tooltip("Dictate editable text")
-                                        .on_click({
-                                            let voice = self.voice.clone();
-                                            let agent_id = agent.id;
-                                            move |_, _, cx| {
-                                                voice.update(cx, |voice, cx| {
-                                                    voice.activate_dictation_for(agent_id, cx)
-                                                });
-                                            }
-                                        }),
-                                    )
                                     .child({
                                         let can_send = has_draft || has_attachments;
                                         if is_running && !can_send {

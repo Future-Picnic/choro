@@ -622,6 +622,13 @@ impl CenterArea {
                     }))
                     .child(
                         div()
+                            // Keep the live and final Markdown paths on the same
+                            // geometry. Without an explicit width this wrapper
+                            // can fall back to the final table's min-content
+                            // width when the paced reveal ends, making a table
+                            // visibly shrink after it was already shown full-size.
+                            .w_full()
+                            .min_w(px(0.))
                             .text_size(crate::ui::design::text_body())
                             .line_height(gpui::relative(crate::ui::design::CHAT_PROSE_LINE_HEIGHT))
                             .text_color(crate::ui::design::chat_body(cx))

@@ -7,6 +7,8 @@ use gpui_component::{
 
 const CHAT_CODE_HIGHLIGHT_MAX_BYTES: usize = 50 * 1024;
 const CHAT_CODE_HIGHLIGHT_MAX_LINES: usize = 500;
+const CHAT_LIST_INDENT_PX: f32 = 16.0;
+const CHAT_LIST_MAX_DEPTH: usize = 6;
 
 pub(super) fn chat_message_text_style() -> TextViewStyle {
     TextViewStyle::default().paragraph_gap(rems(crate::ui::design::CHAT_PARAGRAPH_GAP_REMS))
@@ -16,6 +18,12 @@ pub(super) fn chat_message_text_style() -> TextViewStyle {
 enum ChatTextRole {
     Body,
     Heading,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ChatListItem {
+    markdown: String,
+    depth: usize,
 }
 
 pub(super) fn chat_message_display_markdown(text: &str) -> String {
@@ -204,6 +212,7 @@ fn render_chat_blocks(
 ) -> gpui::AnyElement {
     let normalized = chat_message_display_markdown(text);
     let lines = normalized.lines().collect::<Vec<_>>();
+    let list_indent_unit = markdown_list_indent_unit(&lines);
     let mut elements = Vec::new();
     let mut ix = 0;
 
@@ -256,15 +265,27 @@ fn render_chat_blocks(
             continue;
         }
 
-        if let Some((header, rows, consumed)) = markdown_table(&lines, ix) {
+        if let Some((header, mut rows, consumed)) = markdown_table(&lines, ix) {
+            let mut next_ix = ix + consumed;
+            let mut live_table = warm.filter(|_| trailing_lines_are_empty(&lines, next_ix));
+            if live_table.is_none() {
+                if let Some((partial_row, live)) =
+                    streaming_table_row(header.len(), &lines, next_ix, warm)
+                {
+                    rows.push(partial_row);
+                    next_ix += 1;
+                    live_table = Some(live);
+                }
+            }
             elements.push(render_markdown_table(
                 &header,
                 &rows,
+                live_table,
                 element_seed.wrapping_add(elements.len() as u64),
                 window,
                 cx,
             ));
-            ix += consumed;
+            ix = next_ix;
             continue;
         }
 
@@ -281,30 +302,35 @@ fn render_chat_blocks(
         }
 
         if let Some((_, heading)) = markdown_heading(line) {
-            elements.push(render_chat_text_block(
-                format!("**{}**", strip_inline_markdown(heading)),
-                ChatTextRole::Heading,
-                element_seed,
-                elements.len(),
-                window,
-                cx,
-            ));
             ix += 1;
+            let markdown = format!("**{}**", strip_inline_markdown(heading));
+            match warm.filter(|_| trailing_lines_are_empty(&lines, ix)) {
+                Some((warm_chars, warmth)) => {
+                    elements.push(render_warm_heading_block(markdown, warm_chars, warmth, cx))
+                }
+                None => elements.push(render_chat_text_block(
+                    markdown,
+                    ChatTextRole::Heading,
+                    element_seed,
+                    elements.len(),
+                    window,
+                    cx,
+                )),
+            }
             continue;
         }
 
         if markdown_list_item(line).is_some() {
-            let mut items = Vec::new();
-            while ix < lines.len() {
-                let next = lines[ix].trim();
-                let Some(item) = markdown_list_item(next) else {
-                    break;
-                };
-                items.push(item.to_string());
-                ix += 1;
-            }
+            let (items, next_ix) = collect_chat_list_items(&lines, ix, list_indent_unit);
+            ix = next_ix;
+            // Only the final item in the final visible list is still being
+            // written. Paint it directly so it follows the reveal every frame;
+            // earlier items switch once to their complete Markdown view as soon
+            // as the next bullet begins.
+            let live_item = streaming_list_item(items.len(), &lines, ix, warm);
             elements.push(render_chat_list_block(
                 items,
+                live_item,
                 element_seed,
                 elements.len(),
                 window,
@@ -333,7 +359,7 @@ fn render_chat_blocks(
         }
         // The trailing paragraph of a streaming message gets the warm live edge;
         // everything else renders as normal markdown.
-        let is_final = lines[ix..].iter().all(|line| line.trim().is_empty());
+        let is_final = trailing_lines_are_empty(&lines, ix);
         match warm.filter(|_| is_final) {
             Some((warm_chars, warmth)) => elements.push(render_warm_text_block(
                 paragraph.join(" "),
@@ -440,6 +466,45 @@ fn render_warm_text_block(
     warmth: f32,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
+    let text_color = crate::ui::design::chat_body(cx);
+
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .text_size(crate::ui::design::text_body())
+        .line_height(gpui::relative(crate::ui::design::CHAT_PROSE_LINE_HEIGHT))
+        .text_color(text_color)
+        .child(warm_styled_text(&markdown, warm_chars, warmth, cx))
+        .into_any_element()
+}
+
+/// A heading that is still being revealed must not reuse a keyed Markdown
+/// parser: its delayed updates can leave the first few letters painted after
+/// the rest of the heading is already available. Once another block appears,
+/// the completed heading mounts its normal Markdown view exactly once.
+fn render_warm_heading_block(
+    markdown: String,
+    warm_chars: usize,
+    warmth: f32,
+    cx: &mut Context<CenterArea>,
+) -> gpui::AnyElement {
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .text_size(crate::ui::design::text_body())
+        .line_height(gpui::relative(crate::ui::design::CHAT_PROSE_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(crate::ui::design::t1(cx))
+        .child(warm_styled_text(&markdown, warm_chars, warmth, cx))
+        .into_any_element()
+}
+
+fn warm_styled_text(
+    markdown: &str,
+    warm_chars: usize,
+    warmth: f32,
+    cx: &mut Context<CenterArea>,
+) -> StyledText {
     const WARM_MAX: f32 = 0.9;
     let plain = strip_inline_markdown(&markdown);
     let text_color = crate::ui::design::chat_body(cx);
@@ -470,14 +535,7 @@ fn render_warm_text_block(
         ));
     }
 
-    div()
-        .w_full()
-        .min_w(px(0.))
-        .text_size(crate::ui::design::text_body())
-        .line_height(gpui::relative(crate::ui::design::CHAT_PROSE_LINE_HEIGHT))
-        .text_color(text_color)
-        .child(StyledText::new(plain).with_highlights(highlights))
-        .into_any_element()
+    StyledText::new(plain).with_highlights(highlights)
 }
 
 /// Linear blend from `a` toward `b` by `t` (0..=1) in RGB — avoids hue-wrap
@@ -496,7 +554,8 @@ fn blend(a: gpui::Hsla, b: gpui::Hsla, t: f32) -> gpui::Hsla {
 }
 
 fn render_chat_list_block(
-    items: Vec<String>,
+    items: Vec<ChatListItem>,
+    live_item: Option<(usize, usize, f32)>,
     element_seed: u64,
     block_index: usize,
     window: &mut Window,
@@ -504,9 +563,29 @@ fn render_chat_list_block(
 ) -> gpui::AnyElement {
     let mut rows = Vec::new();
     for (item_index, item) in items.into_iter().enumerate() {
+        let body = match live_item.filter(|live| should_render_live_list_item(item_index, *live)) {
+            Some((_, warm_chars, warmth)) => {
+                warm_styled_text(&item.markdown, warm_chars, warmth, cx).into_any_element()
+            }
+            None => TextView::markdown(
+                (
+                    "agent-chat-message-list-item",
+                    element_seed
+                        .wrapping_add((block_index as u64).saturating_mul(1000))
+                        .wrapping_add(item_index as u64),
+                ),
+                soften_file_code_spans(&item.markdown),
+                window,
+                cx,
+            )
+            .selectable(true)
+            .style(chat_message_text_style())
+            .into_any_element(),
+        };
         rows.push(
             h_flex()
                 .w_full()
+                .pl(px(item.depth as f32 * CHAT_LIST_INDENT_PX))
                 .items_start()
                 .gap_2()
                 .child(
@@ -524,21 +603,7 @@ fn render_chat_list_block(
                         .text_size(crate::ui::design::text_body())
                         .line_height(gpui::relative(crate::ui::design::CHAT_LIST_LINE_HEIGHT))
                         .text_color(crate::ui::design::chat_body(cx))
-                        .child(
-                            TextView::markdown(
-                                (
-                                    "agent-chat-message-list-item",
-                                    element_seed
-                                        .wrapping_add((block_index as u64).saturating_mul(1000))
-                                        .wrapping_add(item_index as u64),
-                                ),
-                                soften_file_code_spans(&item),
-                                window,
-                                cx,
-                            )
-                            .selectable(true)
-                            .style(chat_message_text_style()),
-                        ),
+                        .child(body),
                 )
                 .into_any_element(),
         );
@@ -550,6 +615,116 @@ fn render_chat_list_block(
         .gap_2()
         .children(rows)
         .into_any_element()
+}
+
+fn trailing_lines_are_empty(lines: &[&str], start: usize) -> bool {
+    lines
+        .get(start..)
+        .map_or(true, |rest| rest.iter().all(|line| line.trim().is_empty()))
+}
+
+fn markdown_list_indent_columns(line: &str) -> usize {
+    line.chars()
+        .take_while(|ch| matches!(ch, ' ' | '\t'))
+        .map(|ch| if ch == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+/// Infer the document's nesting unit from its smallest non-zero list indent.
+/// Models commonly emit either two- or four-space Markdown; treating both as
+/// one level keeps the visual hierarchy faithful without hard-coding one style.
+fn markdown_list_indent_unit(lines: &[&str]) -> usize {
+    lines
+        .iter()
+        .filter(|line| markdown_list_item(line.trim_start()).is_some())
+        .map(|line| markdown_list_indent_columns(line))
+        .filter(|columns| *columns > 0)
+        .min()
+        .unwrap_or(2)
+}
+
+fn markdown_list_depth(line: &str, indent_unit: usize) -> usize {
+    markdown_list_indent_columns(line)
+        .checked_div(indent_unit.max(1))
+        .unwrap_or(0)
+        .min(CHAT_LIST_MAX_DEPTH)
+}
+
+/// Collect one visual list across blank separator lines. Markdown authors often
+/// place an empty line before a nested group; keeping those rows in one block
+/// preserves the compact parent/child rhythm instead of introducing a section
+/// gap at every level.
+fn collect_chat_list_items(
+    lines: &[&str],
+    start: usize,
+    indent_unit: usize,
+) -> (Vec<ChatListItem>, usize) {
+    let mut items = Vec::new();
+    let mut cursor = start;
+    while cursor < lines.len() {
+        let raw = lines[cursor];
+        if raw.trim().is_empty() {
+            let mut next = cursor + 1;
+            while next < lines.len() && lines[next].trim().is_empty() {
+                next += 1;
+            }
+            if next < lines.len() && markdown_list_item(lines[next].trim()).is_some() {
+                cursor = next;
+                continue;
+            }
+            break;
+        }
+
+        let Some(markdown) = markdown_list_item(raw.trim()) else {
+            break;
+        };
+        items.push(ChatListItem {
+            markdown: markdown.to_string(),
+            depth: markdown_list_depth(raw, indent_unit),
+        });
+        cursor += 1;
+    }
+    (items, cursor)
+}
+
+fn streaming_list_item(
+    item_count: usize,
+    lines: &[&str],
+    next_line: usize,
+    warm: Option<(usize, f32)>,
+) -> Option<(usize, usize, f32)> {
+    let (warm_chars, warmth) = warm?;
+    if !trailing_lines_are_empty(lines, next_line) {
+        return None;
+    }
+    Some((item_count.checked_sub(1)?, warm_chars, warmth))
+}
+
+/// Recognise the single unfinished row at the live edge of a table. A model
+/// stream commonly ends mid-cell, so the normal table parser (which accepts
+/// only complete rows) would otherwise finalise the table too early and mount
+/// keyed Markdown cells that keep repainting stale fragments.
+fn streaming_table_row(
+    header_len: usize,
+    lines: &[&str],
+    next_line: usize,
+    warm: Option<(usize, f32)>,
+) -> Option<(Vec<String>, (usize, f32))> {
+    let live = warm?;
+    let line = lines.get(next_line)?.trim();
+    if !line.contains('|') || !trailing_lines_are_empty(lines, next_line + 1) {
+        return None;
+    }
+    let mut cells = markdown_table_cells(line);
+    if cells.is_empty() || cells.len() > header_len {
+        return None;
+    }
+    cells.resize(header_len, String::new());
+    Some((cells, live))
+}
+
+fn should_render_live_list_item(item_index: usize, live_item: (usize, usize, f32)) -> bool {
+    item_index == live_item.0
 }
 
 fn render_chat_code_block(
@@ -808,6 +983,7 @@ pub(super) fn render_plan_markdown(
         hasher.finish()
     };
     let lines = markdown.lines().collect::<Vec<_>>();
+    let list_indent_unit = markdown_list_indent_unit(&lines);
     let mut elements = Vec::new();
     let mut ix = 0;
 
@@ -853,6 +1029,7 @@ pub(super) fn render_plan_markdown(
             elements.push(render_markdown_table(
                 &header,
                 &rows,
+                None,
                 element_seed.wrapping_add(elements.len() as u64),
                 window,
                 cx,
@@ -881,6 +1058,9 @@ pub(super) fn render_plan_markdown(
             elements.push(
                 h_flex()
                     .w_full()
+                    .pl(px(
+                        markdown_list_depth(raw, list_indent_unit) as f32 * CHAT_LIST_INDENT_PX
+                    ))
                     .items_start()
                     .gap_2()
                     .text_size(crate::ui::design::text_body())
@@ -1021,6 +1201,8 @@ fn render_markdown_table_row(
     cells: &[String],
     is_header: bool,
     is_last: bool,
+    streaming: bool,
+    live_cell: Option<(usize, usize, f32)>,
     seed: u64,
     row_index: usize,
     window: &mut Window,
@@ -1061,6 +1243,33 @@ fn render_markdown_table_row(
             gpui::FontWeight::NORMAL
         };
 
+        let cell_body = if streaming {
+            match live_cell.filter(|(cell_index, _, _)| *cell_index == index) {
+                Some((_, warm_chars, warmth)) => {
+                    warm_styled_text(cell, warm_chars, warmth, cx).into_any_element()
+                }
+                None => StyledText::new(strip_inline_markdown(cell)).into_any_element(),
+            }
+        } else {
+            TextView::markdown(
+                (
+                    "agent-chat-table-cell",
+                    // The seed is scattered first so two tables a few
+                    // blocks apart can't land on each other's cell ids.
+                    seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(
+                        (row_index as u64)
+                            .wrapping_mul(1024)
+                            .wrapping_add(index as u64),
+                    ),
+                ),
+                table_cell_markdown(&soften_file_code_spans(cell)),
+                window,
+                cx,
+            )
+            .selectable(true)
+            .into_any_element()
+        };
+
         row = row.child(
             div()
                 // A definite width, not `flex_1`. Under `flex: 1 1 0%` a cell's
@@ -1082,24 +1291,7 @@ fn render_markdown_table_row(
                 .when(index + 1 < cell_count, |cell| {
                     cell.border_r_1().border_color(divider)
                 })
-                .child(
-                    TextView::markdown(
-                        (
-                            "agent-chat-table-cell",
-                            // The seed is scattered first so two tables a few
-                            // blocks apart can't land on each other's cell ids.
-                            seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(
-                                (row_index as u64)
-                                    .wrapping_mul(1024)
-                                    .wrapping_add(index as u64),
-                            ),
-                        ),
-                        table_cell_markdown(&soften_file_code_spans(cell)),
-                        window,
-                        cx,
-                    )
-                    .selectable(true),
-                ),
+                .child(cell_body),
         );
     }
 
@@ -1109,10 +1301,21 @@ fn render_markdown_table_row(
 pub(super) fn render_markdown_table(
     header: &[String],
     rows: &[Vec<String>],
+    live: Option<(usize, f32)>,
     seed: u64,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
+    let streaming = live.is_some();
+    let live_row = if rows.is_empty() { 0 } else { rows.len() };
+    let live_cell = live.map(|(warm_chars, warmth)| {
+        let cells = rows.last().map_or(header, Vec::as_slice);
+        let index = cells
+            .iter()
+            .rposition(|cell| !cell.trim().is_empty())
+            .unwrap_or(0);
+        (index, warm_chars, warmth)
+    });
     let mut table = v_flex()
         .w_full()
         .min_w(px(0.))
@@ -1123,16 +1326,16 @@ pub(super) fn render_markdown_table(
         .bg(crate::ui::style::surface(cx))
         // No `overflow_*` here, deliberately. A gpui `ContentMask` is a rect, so
         // any non-`Visible` overflow clips on *both* axes — there is no x-only
-        // clip. The chat list measures each row once at `MinContent` and caches
-        // the height, and cells parse their markdown on a background task, so a
-        // row can be measured before its text has height. Every other chat block
-        // paints through that harmlessly; a masked table instead ate its last
-        // row. Rows round their own corners (see `render_markdown_table_row`),
-        // which is what the mask was for.
+        // clip. The chat list measures each row at `MinContent` and caches the
+        // height; masking a row while its live text changes can therefore hide
+        // its last line until the next measurement. Rows round their own corners
+        // (see `render_markdown_table_row`), which is what the mask was for.
         .child(render_markdown_table_row(
             header,
             true,
             rows.is_empty(),
+            streaming,
+            (live_row == 0).then_some(live_cell).flatten(),
             seed,
             0,
             window,
@@ -1144,6 +1347,8 @@ pub(super) fn render_markdown_table(
             row,
             false,
             index + 1 == rows.len(),
+            streaming,
+            (live_row == index + 1).then_some(live_cell).flatten(),
             seed,
             index + 1,
             window,
@@ -1180,4 +1385,132 @@ pub(super) fn strip_inline_markdown(text: &str) -> String {
         .replace('`', "")
         .replace("\\(", "(")
         .replace("\\)", ")")
+}
+
+#[cfg(test)]
+mod streaming_list_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_last_item_of_the_trailing_list_streams_live() {
+        let lines = ["- First bullet", "- Second bullet"];
+
+        assert_eq!(
+            streaming_list_item(2, &lines, lines.len(), Some((16, 1.0))),
+            Some((1, 16, 1.0))
+        );
+        assert_eq!(streaming_list_item(2, &lines, lines.len(), None), None);
+    }
+
+    #[test]
+    fn a_list_finalizes_when_later_content_becomes_visible() {
+        let lines = ["- Finished bullet", "", "Next paragraph"];
+
+        assert_eq!(streaming_list_item(1, &lines, 1, Some((16, 1.0))), None);
+    }
+
+    #[test]
+    fn the_live_item_advances_once_per_new_bullet() {
+        let mut live_indices = Vec::new();
+        for item_count in 1..=3 {
+            let lines = vec!["- bullet"; item_count];
+            let live =
+                streaming_list_item(item_count, &lines, lines.len(), Some((16, 1.0))).unwrap();
+            live_indices.push(live.0);
+            for item_index in 0..item_count {
+                assert_eq!(
+                    should_render_live_list_item(item_index, live),
+                    item_index + 1 == item_count
+                );
+            }
+        }
+
+        assert_eq!(live_indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn an_out_of_range_trailing_cursor_degrades_to_no_remaining_content() {
+        assert!(trailing_lines_are_empty(&["- bullet"], 2));
+    }
+
+    #[test]
+    fn nested_bullets_preserve_depth_across_blank_separator_lines() {
+        let lines = [
+            "- Parent",
+            "",
+            "  - Child",
+            "    - Grandchild",
+            "",
+            "- Next parent",
+            "Paragraph",
+        ];
+        let indent_unit = markdown_list_indent_unit(&lines);
+        let (items, next) = collect_chat_list_items(&lines, 0, indent_unit);
+
+        assert_eq!(indent_unit, 2);
+        assert_eq!(
+            items,
+            vec![
+                ChatListItem {
+                    markdown: "Parent".to_string(),
+                    depth: 0,
+                },
+                ChatListItem {
+                    markdown: "Child".to_string(),
+                    depth: 1,
+                },
+                ChatListItem {
+                    markdown: "Grandchild".to_string(),
+                    depth: 2,
+                },
+                ChatListItem {
+                    markdown: "Next parent".to_string(),
+                    depth: 0,
+                },
+            ]
+        );
+        assert_eq!(next, 6);
+    }
+
+    #[test]
+    fn four_space_markdown_uses_one_visual_level_per_indent() {
+        let lines = ["- Parent", "    - Child", "        - Grandchild"];
+        let indent_unit = markdown_list_indent_unit(&lines);
+
+        assert_eq!(indent_unit, 4);
+        assert_eq!(markdown_list_depth(lines[1], indent_unit), 1);
+        assert_eq!(markdown_list_depth(lines[2], indent_unit), 2);
+    }
+
+    #[test]
+    fn pathological_list_depth_is_bounded() {
+        let line = format!("{}- Deep", " ".repeat(200));
+        assert_eq!(markdown_list_depth(&line, 2), CHAT_LIST_MAX_DEPTH);
+    }
+
+    #[test]
+    fn an_unfinished_trailing_table_row_stays_live_and_keeps_all_columns() {
+        let lines = [
+            "| Name | State | Result |",
+            "| --- | --- | --- |",
+            "| Choro | Run",
+        ];
+
+        let (row, live) = streaming_table_row(3, &lines, 2, Some((16, 1.0))).unwrap();
+
+        assert_eq!(row, vec!["Choro", "Run", ""]);
+        assert_eq!(live, (16, 1.0));
+    }
+
+    #[test]
+    fn a_table_finalizes_when_non_table_content_follows() {
+        let lines = [
+            "| Name | State |",
+            "| --- | --- |",
+            "| Choro | Ready",
+            "Final paragraph",
+        ];
+
+        assert_eq!(streaming_table_row(2, &lines, 2, Some((16, 1.0))), None);
+    }
 }

@@ -433,7 +433,11 @@ fn agent_reply_returns_to_the_request_source_once() {
             None,
         )
         .unwrap();
-    store.mark_agent_message_delivered(request.id).unwrap();
+    assert_eq!(
+        store.load_pending_agent_messages().unwrap(),
+        vec![request.clone()],
+        "the request stays durable until the target returns its reply"
+    );
 
     assert!(store
         .reply_to_agent_message(stranger.id, request.id, "Forged answer")
@@ -460,7 +464,53 @@ fn agent_reply_returns_to_the_request_source_once() {
     );
 
     let pending = store.load_pending_agent_messages().unwrap();
-    assert_eq!(pending, vec![reply]);
+    assert_eq!(
+        pending,
+        vec![reply],
+        "saving the reply acknowledges the original request"
+    );
+}
+
+#[test]
+fn concurrent_agent_replies_resolve_to_one_durable_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+    let source = sample_agent(&project);
+    let mut target = sample_agent(&project);
+    target.id = Uuid::new_v4();
+    target.title = "Backend agent".into();
+    store
+        .save_agents(&[source.clone(), target.clone()])
+        .unwrap();
+    let request = store
+        .send_agent_message(
+            source.id,
+            target.id,
+            "Can you check this?",
+            AgentRequestKind::Ask.storage_label(),
+            Some("request:concurrent-reply".to_string()),
+        )
+        .unwrap();
+
+    let first_store = store.clone();
+    let second_store = store.clone();
+    let (first, second) = std::thread::scope(|scope| {
+        let first =
+            scope.spawn(|| first_store.reply_to_agent_message(target.id, request.id, "Checked."));
+        let second =
+            scope.spawn(|| second_store.reply_to_agent_message(target.id, request.id, "Checked."));
+        (
+            first.join().unwrap().unwrap(),
+            second.join().unwrap().unwrap(),
+        )
+    });
+
+    assert_eq!(first.id, second.id);
+    assert_eq!(store.load_pending_agent_messages().unwrap(), vec![first]);
 }
 
 #[test]

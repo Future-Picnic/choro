@@ -851,7 +851,7 @@ impl LocalStore {
                     )
                     .await?;
                 if let Some(row) = rows.next().await? {
-                    return Ok(StoredAgentMessage {
+                    let reply = StoredAgentMessage {
                         id: parse_uuid(&row.get::<String>(0)?)?,
                         source_agent_id: responder,
                         target_agent_id: target,
@@ -861,7 +861,15 @@ impl LocalStore {
                         event_key,
                         created_at: i64_to_u64(row.get(2)?)?,
                         delivered_at: opt_i64(&row, 3)?.map(i64_to_u64).transpose()?,
-                    });
+                    };
+                    drop(rows);
+                    conn.execute(
+                        "UPDATE agent_messages SET delivered_at = ?2
+                         WHERE id = ?1 AND delivered_at IS NULL",
+                        params![request_id.to_string(), u64_to_i64(unix_now())?],
+                    )
+                    .await?;
+                    return Ok(reply);
                 }
                 drop(rows);
 
@@ -869,15 +877,72 @@ impl LocalStore {
                     id: Uuid::new_v4(),
                     source_agent_id: responder,
                     target_agent_id: target,
-                    source_title,
+                    source_title: source_title.clone(),
                     text: text.clone(),
                     kind: "reply".to_string(),
                     event_key,
                     created_at: unix_now(),
                     delivered_at: None,
                 };
-                insert_stored_agent_message_async(&conn, &message).await?;
-                Ok(message)
+                let inserted = conn
+                    .execute(
+                        "INSERT OR IGNORE INTO agent_messages
+                         (id, source_agent_id, target_agent_id, text, kind, event_key, created_at, delivered_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        params![
+                            message.id.to_string(),
+                            message.source_agent_id.to_string(),
+                            message.target_agent_id.to_string(),
+                            message.text.as_str(),
+                            message.kind.as_str(),
+                            message.event_key.clone(),
+                            u64_to_i64(message.created_at)?,
+                            message.delivered_at.map(u64_to_i64).transpose()?,
+                        ],
+                    )
+                    .await?;
+                let reply = if inserted == 0 {
+                    // Another caller won the unique event-key race. Return its
+                    // durable reply so concurrent retries remain idempotent.
+                    let mut rows = conn
+                        .query(
+                            "SELECT id, text, created_at, delivered_at FROM agent_messages
+                             WHERE target_agent_id = ?1 AND event_key = ?2 LIMIT 1",
+                            (
+                                target.to_string(),
+                                message.event_key.as_deref().unwrap_or_default(),
+                            ),
+                        )
+                        .await?;
+                    let Some(row) = rows.next().await? else {
+                        return Err(anyhow!("the durable agent reply could not be loaded"));
+                    };
+                    StoredAgentMessage {
+                        id: parse_uuid(&row.get::<String>(0)?)?,
+                        source_agent_id: responder,
+                        target_agent_id: target,
+                        source_title,
+                        text: row.get(1)?,
+                        kind: "reply".to_string(),
+                        event_key: message.event_key.clone(),
+                        created_at: i64_to_u64(row.get(2)?)?,
+                        delivered_at: opt_i64(&row, 3)?.map(i64_to_u64).transpose()?,
+                    }
+                } else {
+                    message
+                };
+                // A request remains pending until its target has produced the
+                // durable reply. This gives delivery at-least-once semantics:
+                // closing Choro during hydration or while the turn is queued
+                // cannot acknowledge and lose the request. Insert the reply
+                // first so a crash between these statements retries safely.
+                conn.execute(
+                    "UPDATE agent_messages SET delivered_at = ?2
+                     WHERE id = ?1 AND delivered_at IS NULL",
+                    params![request_id.to_string(), u64_to_i64(unix_now())?],
+                )
+                .await?;
+                Ok(reply)
             })
         })
     }
