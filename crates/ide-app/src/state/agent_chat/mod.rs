@@ -31,6 +31,7 @@ pub use code_review::{split_code_review, CodeReview, CodeReviewFinding, CodeRevi
 pub use pending_approval::{PendingApproval, PendingApprovalKind};
 pub use pending_user_input::{PendingUserInput, PendingUserInputOption, PendingUserInputQuestion};
 pub use proposed_plan::{split_proposed_plan, ProposedPlan};
+pub(crate) use protocol::ChatBackendStopSignal;
 use protocol::{spawn_chat_backend, ChatBackendCommand, ChatBackendController, ChatBackendEvent};
 pub use usage::{ConversationUsage, ModelUsage, UsageTotals};
 pub use verification::{split_verification, Verification, VerificationItem, VerificationStatus};
@@ -840,7 +841,7 @@ impl AgentChatState {
 
     pub fn stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         if !self.controllers.contains_key(&agent_id) {
-            self.hard_stop_backend(agent_id, true, cx);
+            let _ = self.hard_stop_backend(agent_id, true, cx);
             return;
         }
         let force_stop = self.cancellation_requested.contains(&agent_id)
@@ -849,7 +850,7 @@ impl AgentChatState {
                 .get(&agent_id)
                 .is_some_and(|session| session.status == AgentChatStatus::Cancelling);
         if force_stop {
-            self.hard_stop_backend(agent_id, true, cx);
+            let _ = self.hard_stop_backend(agent_id, true, cx);
             return;
         }
         if let Some(controller) = self.controllers.get(&agent_id) {
@@ -919,7 +920,7 @@ impl AgentChatState {
     }
 
     pub fn reset_session(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        self.hard_stop_backend(agent_id, true, cx);
+        let _ = self.hard_stop_backend(agent_id, true, cx);
         self.sessions.remove(&agent_id);
         self.cancellation_requested.remove(&agent_id);
         cx.emit(AgentChatEvent::Changed);
@@ -927,14 +928,18 @@ impl AgentChatState {
     }
 
     pub fn force_stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        self.hard_stop_backend(agent_id, true, cx);
+        let _ = self.hard_stop_backend(agent_id, true, cx);
     }
 
     /// Stop a backend because its Solo lane is about to be merged or removed.
     /// This is a lifecycle transition, not a user pressing Stop, so it must not
     /// leave a misleading "Stopped by user" row in the conversation.
-    pub fn stop_backend_for_lane_exit(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        self.hard_stop_backend(agent_id, false, cx);
+    pub fn stop_backend_for_lane_exit(
+        &mut self,
+        agent_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> Option<ChatBackendStopSignal> {
+        self.hard_stop_backend(agent_id, false, cx)
     }
 
     /// Stop every app-owned backend process before the application exits.
@@ -958,11 +963,13 @@ impl AgentChatState {
         agent_id: Uuid,
         record_user_stop: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<ChatBackendStopSignal> {
         self.next_backend_generation(agent_id);
-        if let Some(controller) = self.controllers.remove(&agent_id) {
+        let stop_signal = self.controllers.remove(&agent_id).map(|controller| {
+            let stop_signal = controller.stop_signal();
             controller.force_shutdown();
-        }
+            stop_signal
+        });
         self.cancellation_requested.remove(&agent_id);
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             if let Some(entry) = settle_hard_stopped_session(session, record_user_stop) {
@@ -971,6 +978,7 @@ impl AgentChatState {
         }
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
+        stop_signal
     }
 
     pub fn submit_pending_user_input(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {

@@ -1,5 +1,18 @@
 use super::*;
 
+const AGENT_NOTES_COLLAPSED_HEIGHT: f32 = 320.0;
+
+fn agent_notes_drawer_height(viewport_height: f32, expanded: bool) -> f32 {
+    if !expanded {
+        return AGENT_NOTES_COLLAPSED_HEIGHT;
+    }
+
+    let available_height = (viewport_height - 160.0).max(AGENT_NOTES_COLLAPSED_HEIGHT);
+    (viewport_height * 0.68)
+        .clamp(420.0, 720.0)
+        .min(available_height)
+}
+
 impl CenterArea {
     /// Shared chrome for the agent bottom drawers (Terminal / Files / Notes /
     /// Plan): one bottom-anchored sheet with a rounded top, a single header
@@ -188,19 +201,50 @@ impl CenterArea {
         &self,
         agent: &AgentRecord,
         notes_input: Entity<InputState>,
-        summary_input: Option<Entity<InputState>>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
-        let has_summary = summary_input.is_some();
+        let summary = self.agent_summaries.get(&agent_id);
+        let has_summary = summary.is_some();
+        let notes_expanded = self.agent_notes_expanded.contains(&agent_id);
+        let drawer_height = px(agent_notes_drawer_height(
+            f32::from(window.viewport_size().height),
+            notes_expanded,
+        ));
         let prompt_lines = if agent.doc.is_empty() {
             vec![String::from("No prompt saved.")]
         } else {
             agent.doc.lines().map(ToString::to_string).collect()
         };
 
-        let close = self
-            .agent_drawer_close_button(
+        let actions = h_flex()
+            .gap_1()
+            .child(
+                crate::ui::style::header_icon_button(
+                    ("toggle-agent-notes-height", agent_id.as_u128() as u64),
+                    if notes_expanded {
+                        IconName::Minimize
+                    } else {
+                        IconName::Maximize
+                    },
+                    cx,
+                )
+                .tooltip(if notes_expanded {
+                    "Restore Notes height"
+                } else {
+                    "Make Notes taller"
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if notes_expanded {
+                        this.agent_notes_expanded.remove(&agent_id);
+                    } else {
+                        this.agent_notes_expanded.insert(agent_id);
+                    }
+                    cx.notify();
+                })),
+            )
+            .child(self.agent_drawer_close_button(
                 ("close-agent-notes", agent_id.as_u128() as u64),
                 "Close notes",
                 move |this, _, cx| {
@@ -209,7 +253,7 @@ impl CenterArea {
                     cx.notify();
                 },
                 cx,
-            )
+            ))
             .into_any_element();
 
         let body = v_flex()
@@ -290,24 +334,6 @@ impl CenterArea {
                                     .child("Agent summary"),
                             )
                             .child(div().flex_1())
-                            .when_some(summary_input.clone(), |row, input| {
-                                row.child(
-                                    crate::ui::style::primary_button_compact(
-                                        ("save-agent-summary", agent_id.as_u128() as u64),
-                                        "Save edit",
-                                        cx,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.save_agent_summary_edit(
-                                                agent_id,
-                                                input.clone(),
-                                                cx,
-                                            );
-                                        },
-                                    )),
-                                )
-                            })
                             .child(
                                 crate::ui::style::secondary_button_compact(
                                     ("refresh-agent-summary", agent_id.as_u128() as u64),
@@ -327,7 +353,7 @@ impl CenterArea {
                                 )),
                             ),
                     )
-                    .when_some(summary_input, |section, input| {
+                    .when_some(summary, |section, summary| {
                         section.child(
                             div()
                                 .min_h(px(120.))
@@ -336,12 +362,18 @@ impl CenterArea {
                                 .border_color(crate::ui::style::border(cx))
                                 .bg(crate::ui::style::surface(cx))
                                 .p_2()
+                                .text_size(crate::ui::design::text_ui())
+                                .line_height(gpui::relative(1.45))
+                                .text_color(crate::ui::design::t2(cx))
                                 .child(
-                                    Input::new(&input)
-                                        .appearance(false)
-                                        .bordered(false)
-                                        .focus_bordered(false)
-                                        .h_full(),
+                                    TextView::markdown(
+                                        ("agent-notes-summary", agent_id.as_u128() as u64),
+                                        summary.summary_text.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                    .selectable(true)
+                                    .style(chat_message_text_style()),
                                 ),
                         )
                     })
@@ -356,7 +388,15 @@ impl CenterArea {
             )
             .into_any_element();
 
-        self.render_agent_detail_drawer(IconName::File, "Notes", None, close, px(320.), body, cx)
+        self.render_agent_detail_drawer(
+            IconName::File,
+            "Notes",
+            None,
+            actions,
+            drawer_height,
+            body,
+            cx,
+        )
     }
 
     pub(in crate::ui::center) fn render_agent_files_drawer(
@@ -561,12 +601,6 @@ impl CenterArea {
             .read(cx)
             .agent_record_session(project, agent.id)
             .map(|session| session.view.clone());
-        let session_id = self
-            .agent_chats
-            .read(cx)
-            .session(agent.id)
-            .and_then(|session| session.cli_session_id.clone())
-            .or_else(|| agent.cli_session_id.clone());
         let agent_id = agent.id;
         let reset_agent = agent.clone();
 
@@ -584,22 +618,21 @@ impl CenterArea {
             .gap_1()
             .when(terminal_view.is_some(), |row| {
                 row.child(
-                    Button::new(("reset-agent-chat-terminal", agent_id.as_u128() as u64))
-                        .ghost()
-                        .xsmall()
-                        .compact()
-                        .h(crate::ui::design::control_h())
-                        .icon(IconName::Undo2)
-                        .label("Reset")
-                        .tooltip("Close and reopen the terminal transcript")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.reset_agent_chat_terminal(reset_agent.clone(), window, cx);
-                        })),
+                    crate::ui::style::refresh_button(
+                        ("reset-agent-chat-terminal", agent_id.as_u128() as u64),
+                        "Reset",
+                        cx,
+                    )
+                    .tooltip("Close and reopen the agent shell")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.reset_agent_chat_terminal(reset_agent.clone(), window, cx);
+                    })),
                 )
             })
             .child(close_button)
             .into_any_element();
-        let subtitle = session_id.map(|session_id| {
+        let subtitle = Some({
+            let runtime_path = agent.runtime_path().display().to_string();
             div()
                 .min_w(px(0.))
                 .max_w(px(280.))
@@ -607,7 +640,7 @@ impl CenterArea {
                 .text_size(crate::ui::design::text_ui())
                 .font_family(crate::ui::design::FONT_MONO)
                 .text_color(crate::ui::design::t3(cx))
-                .child(session_id)
+                .child(runtime_path)
                 .into_any_element()
         });
         let body = match terminal_view {
@@ -626,12 +659,12 @@ impl CenterArea {
                 .child(
                     div()
                         .text_size(crate::ui::design::text_body())
-                        .child("The backing CLI session is not available yet."),
+                        .child("The agent shell is not available yet."),
                 )
                 .child(
                     div()
                         .text_size(crate::ui::design::text_ui())
-                        .child("Send a message first, then reopen Terminal."),
+                        .child("Close Terminal and open it again to retry."),
                 )
                 .into_any_element(),
         };
@@ -645,5 +678,23 @@ impl CenterArea {
             body,
             cx,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_notes_drawer_stays_compact_until_expanded() {
+        assert_eq!(agent_notes_drawer_height(900.0, false), 320.0);
+        assert!(agent_notes_drawer_height(900.0, true) > 320.0);
+    }
+
+    #[test]
+    fn expanded_agent_notes_drawer_respects_window_bounds() {
+        assert_eq!(agent_notes_drawer_height(400.0, true), 320.0);
+        assert!(agent_notes_drawer_height(500.0, true) <= 340.0);
+        assert_eq!(agent_notes_drawer_height(2_000.0, true), 720.0);
     }
 }

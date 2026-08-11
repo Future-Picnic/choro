@@ -1,6 +1,6 @@
 use super::*;
 
-/// Settings → Memory: the facts every agent starts with. Two tabs (Global /
+/// Settings → Brain → Memories: the facts every agent starts with. Two tabs (Global /
 /// Project), inline editor, one-tap enable/pin/delete. Rows live in the
 /// shared `memories` table — the same one the `memory_save` MCP tool writes.
 impl SettingsView {

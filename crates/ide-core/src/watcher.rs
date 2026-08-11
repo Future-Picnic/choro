@@ -186,6 +186,17 @@ mod tests {
     }
 
     #[test]
+    fn emits_tick_on_worktree_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_watcher, rx) = WorktreeWatcher::new(dir.path()).unwrap();
+
+        std::fs::write(dir.path().join("live-change.rs"), "fn live() {}\n").unwrap();
+
+        let tick = rx.recv_timeout(Duration::from_secs(5));
+        assert!(tick.is_ok(), "expected a watcher tick after a file edit");
+    }
+
+    #[test]
     fn debounce_emits_despite_constant_events() {
         let (raw_tx, raw_rx) = mpsc::channel::<()>();
         let (tick_tx, tick_rx) = mpsc::channel::<()>();

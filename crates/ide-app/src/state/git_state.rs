@@ -30,6 +30,7 @@ pub struct GitState {
     pub stash_count: usize,
     refresh_queued: bool,
     _watcher: Option<GitWatcher>,
+    _worktree_watcher: Option<WorktreeWatcher>,
 }
 
 impl GitState {
@@ -48,6 +49,7 @@ impl GitState {
             stash_count: 0,
             refresh_queued: false,
             _watcher: None,
+            _worktree_watcher: None,
         };
         if is_repo {
             if let Err(error) = ide_core::git::ensure_local_dependency_excludes(&state.repo_path) {
@@ -58,6 +60,17 @@ impl GitState {
             }
             state.start_git_watcher(cx);
             state.refresh(cx);
+        }
+        state
+    }
+
+    /// Creates a Git state that also refreshes when ordinary worktree files
+    /// change. The project-level GitStates collection owns this watcher for the
+    /// active project; standalone Solo-lane states need to own it themselves.
+    pub(crate) fn new_with_worktree_watcher(repo_path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let mut state = Self::new(repo_path, cx);
+        if state.is_repo {
+            state.start_worktree_watcher(cx);
         }
         state
     }
@@ -94,6 +107,43 @@ impl GitState {
             }
             Err(error) => {
                 eprintln!("git watcher failed for {:?}: {error:#}", self.repo_path);
+            }
+        }
+    }
+
+    fn start_worktree_watcher(&mut self, cx: &mut Context<Self>) {
+        if self._worktree_watcher.is_some() {
+            return;
+        }
+
+        match WorktreeWatcher::new(&self.repo_path) {
+            Ok((watcher, ticks)) => {
+                cx.spawn(async move |this, cx| {
+                    let mut ticks = ticks;
+                    loop {
+                        let next = cx
+                            .background_executor()
+                            .spawn(async move { ticks.recv().map(move |_| ticks) })
+                            .await;
+                        match next {
+                            Ok(returned) => {
+                                ticks = returned;
+                                if this.update(cx, |state, cx| state.refresh(cx)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                })
+                .detach();
+                self._worktree_watcher = Some(watcher);
+            }
+            Err(error) => {
+                eprintln!(
+                    "worktree watcher failed for standalone Git state {:?}: {error:#}",
+                    self.repo_path
+                );
             }
         }
     }

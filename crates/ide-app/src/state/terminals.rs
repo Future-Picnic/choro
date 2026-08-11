@@ -572,6 +572,41 @@ impl TerminalManager {
         Ok(id)
     }
 
+    /// Opens a plain interactive shell scoped to an app-owned chat agent.
+    ///
+    /// Chat agents already have a live provider backend. Resuming that same
+    /// provider session in a second CLI would create two writers for one
+    /// conversation, so their Terminal drawer owns an independent shell
+    /// instead.
+    pub fn spawn_agent_shell(
+        &mut self,
+        project: ProjectId,
+        cwd: PathBuf,
+        agent_id: Uuid,
+        kind: AgentKind,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> Result<SessionId> {
+        let previous_tab = self.active_tab.get(&project).copied();
+        let id = self.spawn(project, cwd, SharedString::from(title), None, cx)?;
+        match previous_tab {
+            Some(prev) => {
+                self.active_tab.insert(project, prev);
+            }
+            None => {
+                self.active_tab.remove(&project);
+            }
+        }
+        if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
+            session.agent = Some(kind);
+            session.agent_record_id = Some(agent_id);
+            session.doc_assistant_key = None;
+            session.agent_session_id = None;
+        }
+        self.active_agent_tab.insert(project, id);
+        Ok(id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_doc_assistant(
         &mut self,
@@ -621,6 +656,7 @@ impl TerminalManager {
         for session in self.sessions.iter_mut().filter(|s| {
             s.agent_record_id.is_some()
                 && s.agent.is_some()
+                && s.command.is_some()
                 && s.agent_session_id.is_none()
                 && !s.exited
         }) {

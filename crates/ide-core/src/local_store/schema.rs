@@ -37,6 +37,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_agent_repository_column(conn).await?;
         ensure_git_workflow_schema(conn).await?;
         ensure_brain_schema(conn).await?;
+        ensure_verification_closed_column(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -490,6 +491,26 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 28 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_brain_schema_inner(conn).await?;
+                record_schema_version(conn, 28).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    if current < 29 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_verification_closed_column_inner(conn).await?;
+                record_schema_version(conn, 29).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
     Ok(())
 }
 
@@ -505,6 +526,13 @@ async fn ensure_brain_schema_inner(conn: &Connection) -> Result<()> {
     let rebuild_message_search = !table_exists(conn, "chat_messages_fts").await?;
     for statement in SCHEMA_V27 {
         conn.execute(statement, ()).await?;
+    }
+    if !column_exists(conn, "agent_summaries", "outcome_text").await? {
+        conn.execute(
+            "ALTER TABLE agent_summaries ADD COLUMN outcome_text TEXT",
+            (),
+        )
+        .await?;
     }
     // These projection tables are derived indexes. Populate them once when
     // introduced; normal agent, summary, and message writes keep them current.
@@ -599,6 +627,39 @@ async fn ensure_agent_repository_column_inner(conn: &Connection) -> Result<()> {
         conn.execute("ALTER TABLE agents ADD COLUMN repository_path TEXT", ())
             .await?;
     }
+    Ok(())
+}
+
+async fn ensure_verification_closed_column(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_verification_closed_column_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_verification_closed_column_inner(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "agents", "verification_completed_at").await? {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN verification_completed_at INTEGER",
+            (),
+        )
+        .await?;
+    }
+    if !column_exists(conn, "agents", "verification_closed").await? {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN verification_closed INTEGER NOT NULL DEFAULT 0",
+            (),
+        )
+        .await?;
+    }
+    // Completion was the original terminal verification state. Promote those
+    // records so the new hard gate is correct immediately after migration.
+    conn.execute(
+        "UPDATE agents SET verification_closed = 1
+         WHERE verification_completed_at IS NOT NULL AND verification_closed = 0",
+        (),
+    )
+    .await?;
     Ok(())
 }
 
@@ -830,6 +891,7 @@ const SCHEMA_V27: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS agent_summaries (
         agent_id TEXT PRIMARY KEY,
         summary_text TEXT NOT NULL,
+        outcome_text TEXT,
         last_summarized_sequence INTEGER NOT NULL DEFAULT -1,
         updated_at INTEGER NOT NULL,
         edited_by_user INTEGER NOT NULL DEFAULT 0,

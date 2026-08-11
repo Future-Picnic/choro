@@ -255,10 +255,15 @@ fn brain_summary_search_recall_and_message_bus_round_trip() {
         .save_agent_summary(
             target.id,
             "Migrated cache storage to SQLite. Touched src/storage.rs and verified restart behavior.",
+            Some("Migrated cache storage to SQLite and verified restart behavior."),
             false,
         )
         .unwrap();
     assert_eq!(summary.last_summarized_sequence, 1);
+    assert_eq!(
+        summary.outcome_text.as_deref(),
+        Some("Migrated cache storage to SQLite and verified restart behavior.")
+    );
 
     let results = store
         .search_agents(requester.id, "SQLite storage", false, 10)
@@ -338,7 +343,12 @@ fn brain_summary_search_recall_and_message_bus_round_trip() {
     assert_eq!(page.next_before_sequence, Some(21));
 
     let edited = store
-        .save_agent_summary(target.id, "User-verified SQLite migration.", true)
+        .save_agent_summary(
+            target.id,
+            "User-verified SQLite migration.",
+            Some("Verified the SQLite migration."),
+            true,
+        )
         .unwrap();
     assert!(edited.edited_by_user);
     assert_eq!(edited.last_summarized_sequence, 1);
@@ -368,6 +378,92 @@ fn brain_summary_search_recall_and_message_bus_round_trip() {
 }
 
 #[test]
+fn free_text_agent_requests_classify_questions_and_actions() {
+    for question in [
+        "What did you implement in authentication?",
+        "Can you explain the storage decision?",
+        "Tell me the current status",
+    ] {
+        assert_eq!(
+            classify_agent_request(question),
+            AgentRequestKind::Ask,
+            "expected question: {question}"
+        );
+    }
+    for task in [
+        "Please implement the refresh endpoint",
+        "Can you fix the restart bug?",
+        "Handle this next",
+    ] {
+        assert_eq!(
+            classify_agent_request(task),
+            AgentRequestKind::Delegate,
+            "expected task: {task}"
+        );
+    }
+    assert_eq!(AgentRequestKind::Ask.toggled(), AgentRequestKind::Delegate);
+    assert_eq!(AgentRequestKind::Delegate.toggled(), AgentRequestKind::Ask);
+}
+
+#[test]
+fn agent_reply_returns_to_the_request_source_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+    let source = sample_agent(&project);
+    let mut target = sample_agent(&project);
+    target.id = Uuid::new_v4();
+    target.title = "Backend agent".into();
+    let mut stranger = sample_agent(&project);
+    stranger.id = Uuid::new_v4();
+    stranger.title = "Unrelated agent".into();
+    store
+        .save_agents(&[source.clone(), target.clone(), stranger.clone()])
+        .unwrap();
+
+    let request = store
+        .send_agent_message(
+            source.id,
+            target.id,
+            "What authentication contract did you implement?",
+            AgentRequestKind::Ask.storage_label(),
+            None,
+        )
+        .unwrap();
+    store.mark_agent_message_delivered(request.id).unwrap();
+
+    assert!(store
+        .reply_to_agent_message(stranger.id, request.id, "Forged answer")
+        .is_err());
+    let reply = store
+        .reply_to_agent_message(target.id, request.id, "JWT with rotating refresh tokens.")
+        .unwrap();
+    let duplicate = store
+        .reply_to_agent_message(
+            target.id,
+            request.id,
+            "A retry must not replace the answer.",
+        )
+        .unwrap();
+    assert_eq!(reply.id, duplicate.id);
+    assert_eq!(duplicate.text, "JWT with rotating refresh tokens.");
+    assert_eq!(reply.source_agent_id, target.id);
+    assert_eq!(reply.target_agent_id, source.id);
+    assert_eq!(reply.source_title, "Backend agent");
+    assert_eq!(reply.kind, "reply");
+    assert_eq!(
+        reply.event_key.as_deref(),
+        Some(format!("reply:{}", request.id).as_str())
+    );
+
+    let pending = store.load_pending_agent_messages().unwrap();
+    assert_eq!(pending, vec![reply]);
+}
+
+#[test]
 fn brain_cross_agent_reads_are_available_without_a_per_agent_toggle() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
@@ -383,8 +479,21 @@ fn brain_cross_agent_reads_are_available_without_a_per_agent_toggle() {
         .save_agents(&[requester.clone(), target.clone()])
         .unwrap();
     store
-        .save_agent_summary(target.id, "Implemented indexed storage recall.", false)
+        .save_agent_summary(
+            target.id,
+            "Implemented indexed storage recall.",
+            None,
+            false,
+        )
         .unwrap();
+    assert_eq!(
+        store
+            .load_agent_summary(target.id)
+            .unwrap()
+            .unwrap()
+            .outcome_text,
+        None
+    );
 
     let results = store
         .search_agents(requester.id, "storage", false, 10)
@@ -393,7 +502,7 @@ fn brain_cross_agent_reads_are_available_without_a_per_agent_toggle() {
 }
 
 #[test]
-fn migrates_v26_to_brain_schema_and_fts_indexes() {
+fn migrates_v26_to_current_brain_schema_and_fts_indexes() {
     let dir = tempfile::tempdir().unwrap();
     {
         let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
@@ -411,8 +520,9 @@ fn migrates_v26_to_brain_schema_and_fts_indexes() {
         .rt
         .block_on(async {
             let conn = store.connect().await?;
-            assert_eq!(schema_version(&conn).await?, 27);
+            assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
             assert!(table_exists(&conn, "agent_summaries").await?);
+            assert!(column_exists(&conn, "agent_summaries", "outcome_text").await?);
             assert!(table_exists(&conn, "agent_search_fts").await?);
             assert!(table_exists(&conn, "chat_messages_fts").await?);
             assert!(table_exists(&conn, "agent_messages").await?);
@@ -421,12 +531,43 @@ fn migrates_v26_to_brain_schema_and_fts_indexes() {
         .unwrap();
 }
 
+#[test]
+fn brain_outcome_migration_does_not_backfill_existing_summaries() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let mut config = AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        store.save_agents(std::slice::from_ref(&agent)).unwrap();
+        store
+            .save_agent_summary(agent.id, "An older living summary.", None, false)
+            .unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 28", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 27);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let summary = reopened.load_agent_summary(agent.id).unwrap().unwrap();
+    assert_eq!(summary.outcome_text, None);
+}
+
 async fn conn_cleanup_brain_v27(conn: &Connection) -> anyhow::Result<()> {
     conn.execute("DROP TABLE agent_messages", ()).await?;
     conn.execute("DROP TABLE agent_search_fts", ()).await?;
     conn.execute("DROP TABLE chat_messages_fts", ()).await?;
     conn.execute("DROP TABLE agent_summaries", ()).await?;
-    conn.execute("DELETE FROM schema_migrations WHERE version = 27", ())
+    conn.execute("DELETE FROM schema_migrations WHERE version >= 27", ())
         .await?;
     assert_eq!(schema_version(conn).await?, 26);
     Ok(())
@@ -651,6 +792,7 @@ fn solo_lane_fields_round_trip_through_the_store() {
     assert_eq!(loaded_solo.solo_rejoined_branch, solo.solo_rejoined_branch);
     assert_eq!(loaded_solo.lane_profile, Some(LaneProfile::Full));
     assert!(loaded_solo.is_solo());
+    assert!(!loaded_solo.is_active_solo());
 
     let loaded_legacy = loaded.iter().find(|agent| agent.id == legacy.id).unwrap();
     assert_eq!(loaded_legacy.lane_path, None);
@@ -665,6 +807,7 @@ fn verification_completion_round_trips_through_the_store() {
     let project = sample_project();
     let mut agent = sample_agent(&project);
     agent.verification_completed_at = Some(42);
+    agent.verification_closed = true;
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
     let mut config = AppConfig::default();
     config.projects = vec![project];
@@ -672,6 +815,24 @@ fn verification_completion_round_trips_through_the_store() {
     store.save_agents(&[agent.clone()]).unwrap();
 
     assert_eq!(store.load_agents().unwrap(), vec![agent]);
+}
+
+#[test]
+fn verification_dismissal_round_trips_as_a_hard_closed_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let mut agent = sample_agent(&project);
+    agent.verification_closed = true;
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(&[agent.clone()]).unwrap();
+
+    let loaded = store.load_agents().unwrap();
+    assert_eq!(loaded, vec![agent]);
+    assert!(loaded[0].is_verification_closed());
+    assert_eq!(loaded[0].verification_completed_at, None);
 }
 
 #[test]
@@ -1016,6 +1177,39 @@ fn migrates_v18_verification_completion_from_v17_db() {
             Ok::<_, anyhow::Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn migrates_v29_verification_closed_and_promotes_completed_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let mut agent = sample_agent(&project);
+    agent.verification_completed_at = Some(42);
+    agent.verification_closed = true;
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let mut config = AppConfig::default();
+        config.projects = vec![project];
+        store.save_workspace_config(&config).unwrap();
+        store.save_agents(std::slice::from_ref(&agent)).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("ALTER TABLE agents DROP COLUMN verification_closed", ())
+                    .await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 29", ())
+                    .await?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let loaded = reopened.load_agents().unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert!(loaded[0].verification_closed);
+    assert_eq!(loaded[0].verification_completed_at, Some(42));
 }
 
 #[test]

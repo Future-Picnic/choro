@@ -1,9 +1,14 @@
 use super::*;
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let section = self.section;
         let settings_query = self.settings_search.read(cx).value().trim().to_lowercase();
+        let brain_matches = settings_query.is_empty()
+            || "brain".contains(&settings_query)
+            || SettingsSection::Brain.matches(&settings_query)
+            || SettingsSection::Memory.matches(&settings_query);
+        let brain_children_visible = self.brain_expanded || !settings_query.is_empty();
         h_flex()
             .h_full()
             .w_full()
@@ -99,13 +104,28 @@ impl Render for SettingsView {
                             ))
                         },
                     )
-                    .when(SettingsSection::Memory.matches(&settings_query), |nav| {
-                        nav.child(Self::section_button(
-                            "settings-memory-section",
-                            SettingsSection::Memory,
-                            section,
-                            cx,
-                        ))
+                    .when(brain_matches, |nav| {
+                        nav.child(
+                            v_flex()
+                                .w_full()
+                                .gap_1()
+                                .child(Self::brain_group_button(self.brain_expanded, section, cx))
+                                .when(brain_children_visible, |group| {
+                                    group
+                                        .child(Self::nested_section_button(
+                                            "settings-brain-knowledge-section",
+                                            SettingsSection::Brain,
+                                            section,
+                                            cx,
+                                        ))
+                                        .child(Self::nested_section_button(
+                                            "settings-memory-section",
+                                            SettingsSection::Memory,
+                                            section,
+                                            cx,
+                                        ))
+                                }),
+                        )
                     })
                     .when(SettingsSection::Remote.matches(&settings_query), |nav| {
                         nav.child(Self::section_button(
@@ -158,6 +178,7 @@ impl Render for SettingsView {
                     .child(
                         v_flex()
                             .w_full()
+                            .min_w(px(0.))
                             .mx_auto()
                             .when(section == SettingsSection::AgentSkills, |page| {
                                 page.h_full()
@@ -178,6 +199,7 @@ impl Render for SettingsView {
                             .child(Self::page_header(section, cx))
                             .child(match section {
                                 SettingsSection::Design => self.render_design_section(cx),
+                                SettingsSection::Brain => self.render_brain_section(window, cx),
                                 SettingsSection::Memory => self.render_memory_section(cx),
                                 SettingsSection::Voice => self.render_voice_section(cx),
                                 SettingsSection::Companion => self.render_companion_section(cx),

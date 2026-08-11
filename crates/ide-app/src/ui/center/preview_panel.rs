@@ -55,6 +55,7 @@ fn explicit_preview_choice(
 }
 
 fn solo_preview_owner(agent: &ide_core::AgentRecord) -> Option<SoloPreviewOwner> {
+    agent.is_active_solo().then_some(())?;
     agent.lane_path.as_ref()?;
     let branch = agent.solo_branch.as_deref()?;
     Some(SoloPreviewOwner {
@@ -843,7 +844,7 @@ impl CenterArea {
                 .source_agent_id
                 .and_then(|agent_id| agents.iter().find(|agent| agent.id == agent_id));
             if source_agent.is_some_and(|agent| {
-                agent.solo_branch.is_some()
+                agent.is_active_solo()
                     && (agent.lane_path.is_none() || self.lane_exit_pending.contains(&agent.id))
             }) {
                 continue;

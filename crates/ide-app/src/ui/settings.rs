@@ -9,7 +9,8 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     scroll::ScrollableElement,
     spinner::Spinner,
-    v_flex, Disableable, Icon, IconName, Sizable,
+    text::{TextView, TextViewStyle},
+    v_flex, Disableable, Icon, IconName, Sizable, WindowExt,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,6 +34,7 @@ use ide_core::{
 use uuid::Uuid;
 
 mod appearance_page;
+mod brain;
 mod companion;
 mod data_page;
 mod design;
@@ -59,6 +61,7 @@ enum SettingsSection {
     Notifications,
     Process,
     AgentSkills,
+    Brain,
     Memory,
     Remote,
     Data,
@@ -76,7 +79,8 @@ impl SettingsSection {
             Self::Notifications => "Notifications",
             Self::Process => "Process monitor",
             Self::AgentSkills => "Skills",
-            Self::Memory => "Memory",
+            Self::Brain => "Knowledge",
+            Self::Memory => "Memories",
             Self::Remote => "Remote access",
             Self::Data => "Data & backups",
             Self::Shortcuts => "Keyboard shortcuts",
@@ -103,6 +107,7 @@ impl SettingsSection {
             Self::AgentSkills => {
                 "Create Choro Riffs for every project and review skills discovered from your coding agents."
             }
+            Self::Brain => "Search living summaries from agents across your projects.",
             Self::Memory => {
                 "Facts every agent starts with — global ones about you, project ones about each repo."
             }
@@ -186,6 +191,11 @@ pub struct SettingsView {
     riff_editor: Option<RiffEditor>,
     riffs_status: Option<String>,
     memories: Vec<ide_core::local_store::StoredMemory>,
+    brain_summaries: Vec<ide_core::local_store::StoredAgentSummary>,
+    brain_agents: Vec<AgentRecord>,
+    brain_project: Option<ide_core::ProjectId>,
+    brain_search: Entity<InputState>,
+    brain_expanded: bool,
     /// Which tab: `true` = Global, `false` = Project.
     memory_scope_global: bool,
     memory_project: Option<ide_core::ProjectId>,
@@ -382,6 +392,8 @@ impl SettingsView {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts"));
         let settings_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search settings…"));
+        let brain_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search agent summaries…"));
         let code_review_prompt = cx.new(|cx| InputState::new(window, cx).multi_line(true));
         code_review_prompt.update(cx, |input, cx| {
             input.set_value(code_review_prompt_value, window, cx)
@@ -432,6 +444,14 @@ impl SettingsView {
         });
         let cached_skills = AgentCapabilityCacheFile::load();
         let riffs = ChoroRiffStore::load().riffs;
+        let (memories, brain_summaries, brain_agents) = match LocalStore::open_default() {
+            Ok(store) => (
+                store.load_all_memories().unwrap_or_default(),
+                store.load_all_agent_summaries().unwrap_or_default(),
+                store.load_agents().unwrap_or_default(),
+            ),
+            Err(_) => (Vec::new(), Vec::new(), Vec::new()),
+        };
         let view = cx.new(|cx| {
             cx.subscribe(
                 &code_review_prompt,
@@ -462,6 +482,12 @@ impl SettingsView {
                     }
                 },
             )
+            .detach();
+            cx.subscribe(&brain_search, |_: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
             .detach();
             cx.observe(&penpot, |_: &mut Self, _, cx| cx.notify())
                 .detach();
@@ -499,9 +525,13 @@ impl SettingsView {
                 riffs,
                 riff_editor: None,
                 riffs_status: None,
-                memories: ide_core::local_store::LocalStore::open_default()
-                    .and_then(|store| store.load_all_memories())
-                    .unwrap_or_default(),
+                memories,
+                brain_summaries,
+                brain_agents,
+                brain_project: active_project
+                    .or_else(|| projects.first().map(|project| project.id)),
+                brain_search,
+                brain_expanded: matches!(section, SettingsSection::Brain | SettingsSection::Memory),
                 memory_scope_global: false,
                 memory_project: active_project,
                 memory_editor: None,
@@ -1067,47 +1097,50 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let is_selected = selected == target;
-        h_flex()
-            .id(id)
-            .w_full()
-            .h(px(34.))
-            .px_2()
-            .gap_2()
-            .items_center()
-            .rounded(crate::ui::design::r_sm())
-            .cursor_pointer()
-            .text_size(crate::ui::design::text_ui())
-            .text_color(if is_selected {
-                crate::ui::design::t1(cx)
-            } else {
-                crate::ui::design::t2(cx)
-            })
-            .when(is_selected, |row| {
-                row.bg(crate::ui::design::accent_soft(cx))
-                    .border_1()
-                    .border_color(crate::ui::design::accent_line(cx))
-            })
-            .when(!is_selected, |row| {
-                row.border_1()
-                    .border_color(crate::ui::design::base(cx).opacity(0.0))
-                    .hover(|row| row.bg(crate::ui::design::hover(cx)))
-            })
-            .child(
-                Icon::new(IconName::ChevronRight)
-                    .size(crate::ui::design::icon_sm())
-                    .text_color(if is_selected {
-                        crate::ui::design::accent(cx)
-                    } else {
-                        crate::ui::design::t4(cx)
-                    }),
-            )
-            .child(target.title())
-            .on_click(cx.listener(move |this, _, _, cx| {
+        crate::ui::style::settings_nav_button(id, target.title(), is_selected, false, cx).on_click(
+            cx.listener(move |this, _, _, cx| {
                 this.section = target;
                 this.recording_shortcut = None;
                 this.shortcut_error = None;
                 cx.notify();
-            }))
+            }),
+        )
+    }
+
+    fn nested_section_button(
+        id: &'static str,
+        target: SettingsSection,
+        selected: SettingsSection,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_selected = selected == target;
+        crate::ui::style::settings_nav_button(id, target.title(), is_selected, true, cx).on_click(
+            cx.listener(move |this, _, _, cx| {
+                this.section = target;
+                this.recording_shortcut = None;
+                this.shortcut_error = None;
+                cx.notify();
+            }),
+        )
+    }
+
+    fn brain_group_button(
+        expanded: bool,
+        selected: SettingsSection,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = matches!(selected, SettingsSection::Brain | SettingsSection::Memory);
+        crate::ui::style::settings_nav_group_button(
+            "settings-brain-group",
+            "Brain",
+            expanded,
+            active,
+            cx,
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.brain_expanded = !this.brain_expanded;
+            cx.notify();
+        }))
     }
 
     fn page_header(section: SettingsSection, cx: &App) -> impl IntoElement {

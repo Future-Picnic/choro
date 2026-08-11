@@ -611,6 +611,19 @@ impl CenterArea {
             .when_some(target, |row, target| {
                 let source_agent_id = agent_id;
                 let target_id = target.id;
+                let request_kind = self
+                    .agent_chat_agent_request_kind_overrides
+                    .get(&source_agent_id)
+                    .copied()
+                    .unwrap_or_else(|| classify_agent_request(&input.read(cx).value()));
+                let request_icon = match request_kind {
+                    AgentRequestKind::Ask => lucide_icons::Icon::CircleHelp,
+                    AgentRequestKind::Delegate => lucide_icons::Icon::ListTodo,
+                };
+                let request_color = match request_kind {
+                    AgentRequestKind::Ask => crate::ui::design::sky(cx),
+                    AgentRequestKind::Delegate => crate::ui::design::amber(cx),
+                };
                 row.child(
                     h_flex()
                         .id((
@@ -631,6 +644,8 @@ impl CenterArea {
                         .hover(|chip| chip.bg(crate::ui::design::sky(cx).opacity(0.18)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.agent_chat_selected_agent_targets
+                                .remove(&source_agent_id);
+                            this.agent_chat_agent_request_kind_overrides
                                 .remove(&source_agent_id);
                             cx.notify();
                         }))
@@ -653,6 +668,31 @@ impl CenterArea {
                                 .size(crate::ui::design::icon_sm())
                                 .text_color(crate::ui::design::sky(cx).opacity(0.72)),
                         ),
+                )
+                .child(
+                    crate::ui::style::composer_toggle_chip(
+                        (
+                            "agent-chat-agent-request-kind",
+                            source_agent_id.as_u128() as u64,
+                        ),
+                        request_kind.display_label(),
+                        Some(
+                            crate::ui::design::indicator::lucide_icon(
+                                request_icon,
+                                request_color,
+                                crate::ui::design::icon_sm(),
+                            )
+                            .into_any_element(),
+                        ),
+                        false,
+                        cx,
+                    )
+                    .tooltip("Inferred from your text · click to switch Question / Task")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.agent_chat_agent_request_kind_overrides
+                            .insert(source_agent_id, request_kind.toggled());
+                        cx.notify();
+                    })),
                 )
             })
             .children(mentions.iter().enumerate().map(|(index, mention)| {

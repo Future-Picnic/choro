@@ -42,7 +42,7 @@ impl CenterArea {
         }
         // A Solo whose lane was torn down (e.g. after Ship PR) recreates it
         // first; the start continues from the lane-setup callback.
-        if agent.is_solo()
+        if agent.is_active_solo()
             && (agent.lane_path.is_none()
                 || !ide_core::lanes::lane_path_for(agent.project_id, agent.id)
                     .join(".git")
@@ -1083,7 +1083,7 @@ impl CenterArea {
         agent: &AgentRecord,
         cx: &mut Context<Self>,
     ) -> Option<SessionId> {
-        let Some((project, cwd)) = self.active_project(cx) else {
+        let Some((project, _)) = self.active_project(cx) else {
             return None;
         };
         if agent.project_id != project {
@@ -1097,40 +1097,14 @@ impl CenterArea {
             return Some(id);
         }
 
-        let session_id = self
-            .agent_chats
-            .read(cx)
-            .session(agent.id)
-            .and_then(|session| session.cli_session_id.clone())
-            .or_else(|| agent.cli_session_id.clone())
-            .or_else(|| {
-                if agent.provider != AgentKind::Codex {
-                    return None;
-                }
-                let session_id = self
-                    .agent_chats
-                    .read(cx)
-                    .session(agent.id)
-                    .and_then(|session| session.chat_session_id.clone())
-                    .or_else(|| agent.chat_session_id.clone())?;
-                ide_core::agents::chat_transcript_path(
-                    agent.provider,
-                    agent.runtime_path(),
-                    &session_id,
-                )
-                .map(|_| session_id)
-            })
-            .filter(|session_id| session_id != &agent.id.to_string())?;
-        let command = ide_core::agents::resume_command_with_settings(agent, &session_id);
+        let runtime_cwd = agent.runtime_path().to_path_buf();
         let spawned = self.terminals.update(cx, |manager, cx| {
-            manager.spawn_agent_record(
+            manager.spawn_agent_shell(
                 project,
-                cwd,
+                runtime_cwd,
                 agent.id,
                 agent.provider,
                 format!("{} terminal", agent.title),
-                command,
-                Some(session_id),
                 cx,
             )
         });

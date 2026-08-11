@@ -15,9 +15,9 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
              chat_session_id, ship_pr_repo_path, ship_pr_branch, created_at, updated_at, started_at,
              external_model_id, external_model_label, external_model_variants,
              lane_path, solo_branch, solo_base_branch, solo_rejoined_branch, lane_profile,
-             verification_completed_at)
+             verification_completed_at, verification_closed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)
              ON CONFLICT(id) DO UPDATE SET
                  project_id = excluded.project_id,
                  project_path = excluded.project_path,
@@ -48,7 +48,8 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
                  solo_base_branch = excluded.solo_base_branch,
                  solo_rejoined_branch = excluded.solo_rejoined_branch,
                  lane_profile = excluded.lane_profile,
-                 verification_completed_at = excluded.verification_completed_at",
+                 verification_completed_at = excluded.verification_completed_at,
+                 verification_closed = excluded.verification_closed",
             params![
                 agent.id.to_string(),
                 agent.project_id.0.to_string(),
@@ -84,6 +85,7 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
                     .verification_completed_at
                     .map(u64_to_i64)
                     .transpose()?,
+                bool_to_i64(agent.is_verification_closed()),
             ],
         )
         .await?;
@@ -181,7 +183,7 @@ pub(super) async fn load_agents_async(conn: &Connection) -> Result<Vec<AgentReco
              chat_session_id, ship_pr_repo_path, ship_pr_branch, created_at, updated_at, started_at,
              external_model_id, external_model_label, external_model_variants,
              lane_path, solo_branch, solo_base_branch, solo_rejoined_branch, lane_profile,
-             verification_completed_at
+             verification_completed_at, verification_closed
              FROM agents ORDER BY updated_at DESC",
             (),
         )
@@ -225,6 +227,7 @@ pub(super) async fn load_agents_async(conn: &Connection) -> Result<Vec<AgentReco
                 .as_deref()
                 .and_then(LaneProfile::parse_str),
             verification_completed_at: opt_i64(&row, 30)?.map(i64_to_u64).transpose()?,
+            verification_closed: row.get::<i64>(31)? != 0,
             linked_docs: linked_docs.get(&id).cloned().unwrap_or_default(),
             linked_tasks: linked_tasks.linked.get(&id).cloned().unwrap_or_default(),
             source_task: linked_tasks.source.get(&id).cloned(),

@@ -11,8 +11,8 @@ use super::*;
 const RECENT_AGENTS: usize = 4;
 const WEEK_SECS: u64 = 7 * 24 * 60 * 60;
 
-fn weekly_digest_excerpt(summary: &str) -> String {
-    let flattened = summary
+fn weekly_outcome_preview(outcome: &str) -> String {
+    let flattened = outcome
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -86,6 +86,11 @@ impl CenterArea {
         let count = entries.len();
         let rows = entries.into_iter().map(|(agent, summary)| {
             let agent_id = agent.id;
+            let outcome = summary
+                .outcome_text
+                .as_deref()
+                .filter(|outcome| !outcome.trim().is_empty())
+                .map(weekly_outcome_preview);
             h_flex()
                 .id(SharedString::from(format!("weekly-brain-agent-{agent_id}")))
                 .w_full()
@@ -137,13 +142,17 @@ impl CenterArea {
                                         .child(branch_relative_time(summary.updated_at as i64)),
                                 ),
                         )
-                        .child(
-                            div()
-                                .text_size(crate::ui::design::text_label())
-                                .line_height(gpui::relative(1.35))
-                                .text_color(crate::ui::design::t3(cx))
-                                .child(weekly_digest_excerpt(&summary.summary_text)),
-                        ),
+                        .when_some(outcome, |column, outcome| {
+                            column.child(
+                                div()
+                                    .max_h(px(32.))
+                                    .overflow_hidden()
+                                    .text_size(crate::ui::design::text_label())
+                                    .line_height(gpui::relative(1.35))
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child(outcome),
+                            )
+                        }),
                 )
         });
 
@@ -160,14 +169,14 @@ impl CenterArea {
                             div()
                                 .text_size(crate::ui::design::text_label())
                                 .text_color(crate::ui::design::t4(cx))
-                                .child("This week in Choro Brain"),
+                                .child("What changed this week"),
                         )
                         .child(div().flex_1())
                         .child(
                             div()
                                 .text_size(crate::ui::design::text_label())
                                 .text_color(crate::ui::design::t4(cx))
-                                .child(format!("{count} summarized agents")),
+                                .child(format!("{count} agents")),
                         ),
                 )
                 .children(rows)
@@ -273,12 +282,12 @@ impl CenterArea {
 
 #[cfg(test)]
 mod tests {
-    use super::weekly_digest_excerpt;
+    use super::weekly_outcome_preview;
 
     #[test]
-    fn weekly_digest_excerpt_flattens_and_bounds_summaries() {
-        assert_eq!(weekly_digest_excerpt("Done\n\nVerified"), "Done Verified");
-        let excerpt = weekly_digest_excerpt(&"x".repeat(400));
+    fn weekly_outcome_preview_flattens_and_bounds_outcomes() {
+        assert_eq!(weekly_outcome_preview("Done\n\nVerified"), "Done Verified");
+        let excerpt = weekly_outcome_preview(&"x".repeat(400));
         assert_eq!(excerpt.chars().count(), 220);
         assert!(excerpt.ends_with('…'));
     }

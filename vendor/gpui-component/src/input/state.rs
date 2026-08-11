@@ -2355,6 +2355,7 @@ impl Render for InputState {
         div()
             .id("input-state")
             .flex_1()
+            .min_w(px(0.))
             .when(self.mode.is_multi_line(), |this| this.h_full())
             .flex_grow()
             .overflow_x_hidden()

@@ -24,10 +24,13 @@ pub(super) const AGENT_CODE_REVIEW_FIX_PREFIX: &str =
 /// timeline collapses the turn to a "Sent for verification" chip.
 pub(super) const AGENT_VERIFY_REQUEST_MARKER: &str = "<!-- choro:verify -->";
 
-/// Records that the user declined the one optional follow-up verification for
-/// this conversation. Unlike the transient decision panel, this marker is
-/// persisted with the timeline so later turns and app restarts do not revive
-/// the same prompt.
+/// Records that the user declined verification for this agent. Unlike the
+/// transient decision panel, this marker is persisted with the timeline so
+/// later turns and app restarts do not revive either verification prompt.
+pub(super) const AGENT_VERIFY_DISMISS_MARKER: &str = "<!-- choro:verify-dismissed -->";
+
+/// Historical marker written by releases that only persisted dismissal of the
+/// follow-up verification prompt. Keep recognising it in resumed transcripts.
 pub(super) const AGENT_REVERIFY_DISMISS_MARKER: &str = "<!-- choro:reverify-dismissed -->";
 
 /// Stable opening of the "Ask to fix" turn that lists a verification's unmet
@@ -416,6 +419,8 @@ impl CenterArea {
         self.agent_chat_selected_commands.remove(&agent_id);
         self.agent_chat_selected_mentions.remove(&agent_id);
         self.agent_chat_selected_agent_targets.remove(&agent_id);
+        self.agent_chat_agent_request_kind_overrides
+            .remove(&agent_id);
         self.agent_chat_slash_dismissed_query.remove(&agent_id);
         self.agent_chat_agent_dismissed_query.remove(&agent_id);
         self.agent_chat_project_dismissed_query.remove(&agent_id);
@@ -734,12 +739,12 @@ impl CenterArea {
             .session(agent_id)
             .map(|session| verification_lifecycle(&session.timeline))
             .unwrap_or(VerificationLifecycle::NotStarted);
-        let already_complete = self
+        let verification_closed = self
             .agents
             .read(cx)
             .agent(agent_id)
-            .is_some_and(|agent| agent.verification_completed_at.is_some());
-        if already_complete
+            .is_some_and(AgentRecord::is_verification_closed);
+        if verification_closed
             || !matches!(
                 lifecycle,
                 VerificationLifecycle::NotStarted | VerificationLifecycle::Fixing
@@ -855,6 +860,7 @@ impl CenterArea {
         let mut fire: Vec<Uuid> = Vec::new();
         let mut offer: Vec<Uuid> = Vec::new();
         let mut completed: Vec<Uuid> = Vec::new();
+        let mut declined: Vec<Uuid> = Vec::new();
         let verification_mode = self.workspace.read(cx).verification_mode;
         {
             let chats = self.agent_chats.read(cx);
@@ -875,7 +881,7 @@ impl CenterArea {
                     session.last_activity_at,
                     session.status,
                     agent.is_some(),
-                    agent.is_some_and(|agent| agent.verification_completed_at.is_some()),
+                    agent.is_some_and(AgentRecord::is_verification_closed),
                     verification_mode,
                 );
                 if self.agent_verify_scan_seen.get(agent_id) == Some(&scan_key) {
@@ -883,6 +889,13 @@ impl CenterArea {
                 }
                 self.agent_verify_scan_seen.insert(*agent_id, scan_key);
                 let lifecycle = verification_lifecycle(&session.timeline);
+                if lifecycle == VerificationLifecycle::Declined
+                    && agent.is_some_and(|agent| !agent.verification_closed)
+                {
+                    // Promote dismissals written by older builds from a
+                    // timeline-only marker to the authoritative hard gate.
+                    declined.push(*agent_id);
+                }
                 if lifecycle == VerificationLifecycle::Complete
                     && agent.is_some_and(|agent| agent.verification_completed_at.is_none())
                 {
@@ -894,7 +907,7 @@ impl CenterArea {
                 {
                     continue;
                 }
-                if agent.is_some_and(|agent| agent.verification_completed_at.is_some())
+                if agent.is_some_and(AgentRecord::is_verification_closed)
                     || lifecycle == VerificationLifecycle::Complete
                 {
                     continue;
@@ -920,7 +933,7 @@ impl CenterArea {
                     VerificationLifecycle::Fixing => {}
                     VerificationLifecycle::Verifying
                     | VerificationLifecycle::NeedsFix
-                    | VerificationLifecycle::ReverificationDeclined
+                    | VerificationLifecycle::Declined
                     | VerificationLifecycle::Complete => continue,
                 }
                 match verification_mode {
@@ -929,6 +942,16 @@ impl CenterArea {
                     ide_core::config::VerificationMode::Off => {}
                 }
             }
+        }
+        if !declined.is_empty() {
+            for agent_id in &declined {
+                self.verification_prompt_pending.remove(agent_id);
+            }
+            self.agents.update(cx, |agents, cx| {
+                for agent_id in declined {
+                    agents.mark_verification_closed(agent_id, cx);
+                }
+            });
         }
         if !completed.is_empty() {
             for agent_id in &completed {
@@ -1152,6 +1175,10 @@ impl CenterArea {
             if message.is_empty() {
                 return;
             }
+            let request_kind = self
+                .agent_chat_agent_request_kind_overrides
+                .remove(&agent.id)
+                .unwrap_or_else(|| classify_agent_request(&message));
             input.update(cx, |input, cx| input.set_value("", window, cx));
             self.agent_chat_attached_files.remove(&agent.id);
             self.agent_chat_pasted_text_blocks.remove(&agent.id);
@@ -1159,7 +1186,7 @@ impl CenterArea {
             self.agent_chat_selected_mentions.remove(&agent.id);
             self.agent_chat_selected_agent_targets.remove(&agent.id);
             self.agent_chat_preview_armed.remove(&agent.id);
-            self.queue_composer_agent_message(agent.id, target_agent_id, message, cx);
+            self.queue_composer_agent_message(agent.id, target_agent_id, message, request_kind, cx);
             self.acknowledge_agent_chat_seen(agent.id, cx);
             cx.notify();
             return;
@@ -1683,7 +1710,11 @@ impl CenterArea {
                     .read(cx)
                     .session(agent_id)
                     .is_some_and(|session| {
-                        !session.messages.is_empty() || !session.timeline.is_empty()
+                        !session.messages.is_empty()
+                            || session
+                                .timeline
+                                .iter()
+                                .any(|item| matches!(item, AgentChatTimelineItem::Message(_)))
                     });
             let needs_resume_hydration = should_defer_agent_chat_submission_for_resume(
                 agent_has_backend_resume_id(&agent),
@@ -2243,6 +2274,8 @@ impl CenterArea {
         });
         self.agent_chat_selected_agent_targets
             .insert(source_agent_id, target.id);
+        self.agent_chat_agent_request_kind_overrides
+            .remove(&source_agent_id);
         self.agent_chat_agent_selection.insert(source_agent_id, 0);
         self.agent_chat_agent_dismissed_query
             .remove(&source_agent_id);
@@ -2686,13 +2719,13 @@ pub(super) enum VerificationLifecycle {
     Verifying,
     NeedsFix,
     Fixing,
-    ReverificationDeclined,
+    Declined,
     Complete,
 }
 
 /// The latest meaningful state in this agent's one verification lifecycle.
 /// Ordinary user turns do not reset it: only a fix request advances a failed
-/// verification. An all-met card or a declined follow-up closes it permanently.
+/// verification. An all-met card or either declined decision closes it permanently.
 pub(super) fn verification_lifecycle(timeline: &[AgentChatTimelineItem]) -> VerificationLifecycle {
     for (index, item) in timeline.iter().enumerate().rev() {
         match item {
@@ -2711,8 +2744,10 @@ pub(super) fn verification_lifecycle(timeline: &[AgentChatTimelineItem]) -> Veri
                 };
             }
             AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
-                if text.starts_with(AGENT_REVERIFY_DISMISS_MARKER) {
-                    return VerificationLifecycle::ReverificationDeclined;
+                if text.starts_with(AGENT_VERIFY_DISMISS_MARKER)
+                    || text.starts_with(AGENT_REVERIFY_DISMISS_MARKER)
+                {
+                    return VerificationLifecycle::Declined;
                 }
                 if text.starts_with(AGENT_VERIFY_REQUEST_MARKER) {
                     return VerificationLifecycle::Verifying;
@@ -2889,19 +2924,49 @@ mod verification_trigger_tests {
     }
 
     #[test]
+    fn declining_initial_verification_closes_it_for_later_turns() {
+        let timeline = vec![
+            user_turn("build the thing"),
+            assistant_turn("done"),
+            user_turn(AGENT_VERIFY_DISMISS_MARKER),
+            user_turn("make one more adjustment"),
+            assistant_turn("done"),
+        ];
+        assert_eq!(
+            verification_lifecycle(&timeline),
+            VerificationLifecycle::Declined
+        );
+    }
+
+    #[test]
     fn declining_reverification_closes_it_for_later_turns() {
         let timeline = vec![
             user_turn("build the thing"),
             verification_card(false),
             user_turn(&format!("{AGENT_VERIFY_FIX_PREFIX}:\n- missed thing")),
             assistant_turn("fixed"),
-            user_turn(AGENT_REVERIFY_DISMISS_MARKER),
+            user_turn(AGENT_VERIFY_DISMISS_MARKER),
             user_turn("make one more adjustment"),
             assistant_turn("done"),
         ];
         assert_eq!(
             verification_lifecycle(&timeline),
-            VerificationLifecycle::ReverificationDeclined
+            VerificationLifecycle::Declined
+        );
+    }
+
+    #[test]
+    fn legacy_reverification_dismissal_still_closes_the_lifecycle() {
+        let timeline = vec![
+            user_turn("build the thing"),
+            verification_card(false),
+            user_turn(&format!("{AGENT_VERIFY_FIX_PREFIX}:\n- missed thing")),
+            assistant_turn("fixed"),
+            user_turn(AGENT_REVERIFY_DISMISS_MARKER),
+        ];
+        assert_eq!(
+            verification_lifecycle(&timeline),
+            VerificationLifecycle::Declined
         );
     }
 

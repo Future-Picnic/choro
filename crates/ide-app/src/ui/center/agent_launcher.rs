@@ -288,19 +288,6 @@ impl CenterArea {
         };
         let draft = composer.prompt.read(cx).value().trim().to_string();
         let selected_mentions = composer.selected_mentions.clone();
-        let mut related_work_files = selected_mentions
-            .iter()
-            .filter(|mention| mention.kind == ComposerMentionKind::File)
-            .map(|mention| mention.path_label.clone())
-            .collect::<Vec<_>>();
-        related_work_files.extend(composer.attached_files.iter().map(|path| {
-            path.strip_prefix(&workspace_root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string()
-        }));
-        related_work_files.sort();
-        related_work_files.dedup();
         let raw_doc = composer_mentions_submission_text(&draft, &selected_mentions, &projects);
         let raw_doc = agent_chat_submission_text(&raw_doc, composer.selected_command.as_ref());
         if raw_doc.is_empty() {
@@ -314,8 +301,6 @@ impl CenterArea {
         // Choro memory rides the first turn of every new agent — one budgeted
         // block, identical across Claude, Codex, and OpenCode.
         let (raw_doc, memory_ids) = memory_submission_text(&raw_doc, project);
-        let (raw_doc, related_work_count) =
-            related_work_submission_text(&raw_doc, &draft, project, &related_work_files);
         if !memory_ids.is_empty() {
             // Stamp usage off the UI thread; purely bookkeeping.
             cx.background_executor()
@@ -373,21 +358,11 @@ impl CenterArea {
             composer.selected_command.as_ref(),
             &selected_mentions,
         );
-        let mut message_tags = composer_message_tags(
+        let message_tags = composer_message_tags(
             composer.selected_command.as_ref(),
             &selected_mentions,
             preview_armed,
         );
-        if related_work_count > 0 {
-            message_tags.push(AgentChatMessageTag {
-                kind: AgentChatMessageTagKind::Brain,
-                label: format!("{related_work_count} related past agents"),
-                detail: Some(
-                    "Choro Brain added quarantined related-work context to this first turn"
-                        .to_string(),
-                ),
-            });
-        }
         let linked_docs = composer.linked_docs.clone();
         let linked_tasks = composer.linked_tasks.clone();
         let attached_files = composer.attached_files.clone();

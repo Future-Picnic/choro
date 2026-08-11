@@ -205,6 +205,10 @@ pub fn worktree_remove(repo_path: &Path, lane_path: &Path, force: bool) -> Resul
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
+        // Git requires --force twice for a locked worktree. Choro only reaches
+        // this path after an explicit destructive confirmation or after Rejoin
+        // has verified the lane clean and merged its branch.
+        args.push("--force");
     }
     args.push(&lane);
     run_git(repo_path, &args)

@@ -616,6 +616,11 @@ pub struct AgentRecord {
     /// automatic verification lifecycle for this agent.
     #[serde(default)]
     pub verification_completed_at: Option<u64>,
+    /// Hard per-agent gate for the entire verification lifecycle. Once set,
+    /// neither automatic scheduling nor a direct verification request may
+    /// reopen verification, including after an app restart.
+    #[serde(default)]
+    pub verification_closed: bool,
 }
 
 impl AgentRecord {
@@ -673,7 +678,12 @@ impl AgentRecord {
             updated_at: now,
             started_at: None,
             verification_completed_at: None,
+            verification_closed: false,
         }
+    }
+
+    pub fn is_verification_closed(&self) -> bool {
+        self.verification_closed || self.verification_completed_at.is_some()
     }
 
     pub fn provider_label(&self) -> &'static str {
@@ -805,13 +815,21 @@ impl AgentRecord {
             .unwrap_or(&self.project_path)
     }
 
-    /// Where this agent actually works: the lane directory for a materialized
-    /// Solo, otherwise its selected repository, otherwise the workspace root.
+    /// Where this agent actually works: the lane directory only while it is an
+    /// active Solo, otherwise its selected repository or workspace root.
+    ///
+    /// A failed post-merge cleanup deliberately keeps `lane_path` so Choro can
+    /// retry removing the folder. That retained cleanup path must never route a
+    /// resumed agent back into a branch whose work has already been rejoined.
     /// Every consumer that means "the agent's working directory" must use this.
     pub fn runtime_path(&self) -> &Path {
-        self.lane_path
-            .as_deref()
-            .unwrap_or_else(|| self.repository_root())
+        if self.is_active_solo() {
+            self.lane_path
+                .as_deref()
+                .unwrap_or_else(|| self.repository_root())
+        } else {
+            self.repository_root()
+        }
     }
 
     /// True for a Solo agent even while its lane folder is torn down — the
@@ -819,6 +837,14 @@ impl AgentRecord {
     /// lane is currently materialized.
     pub fn is_solo(&self) -> bool {
         self.solo_branch.is_some()
+    }
+
+    /// True only while this agent is still isolated in its Solo branch.
+    /// Rejoined agents retain their Solo branch as history, but immediately
+    /// behave like ordinary agents on the project's active branch—even when a
+    /// leftover lane folder still awaits cleanup.
+    pub fn is_active_solo(&self) -> bool {
+        self.is_solo() && self.solo_rejoined_branch.is_none()
     }
 }
 
@@ -1128,7 +1154,7 @@ pub fn prompt_with_connected_context(
                 "role": if is_source { "source" } else { "linked" },
                 "working_copy_path": working_copy_path,
                 "canonical_path": canonical_path,
-                "working_copy_is_read_only_snapshot": agent.is_solo()
+                "working_copy_is_read_only_snapshot": agent.is_active_solo()
                     && path.starts_with(crate::branding::DOCS_DIR_NAME),
             })
         })
@@ -1643,7 +1669,21 @@ mod tests {
             updated_at: 2,
             started_at: None,
             verification_completed_at: None,
+            verification_closed: false,
         }
+    }
+
+    #[test]
+    fn completed_verification_is_always_closed() {
+        let mut agent = sample_agent(AgentKind::Codex, AgentModel::CodexDefault);
+        assert!(!agent.is_verification_closed());
+
+        agent.verification_closed = true;
+        assert!(agent.is_verification_closed());
+
+        agent.verification_closed = false;
+        agent.verification_completed_at = Some(42);
+        assert!(agent.is_verification_closed());
     }
 
     #[test]
@@ -1663,6 +1703,15 @@ mod tests {
 
         agent.lane_path = Some(PathBuf::from("/tmp/lanes/p/a"));
         assert_eq!(agent.runtime_path(), Path::new("/tmp/lanes/p/a"));
+
+        agent.solo_rejoined_branch = Some("main".into());
+        assert!(agent.is_solo(), "the Solo origin remains durable history");
+        assert!(!agent.is_active_solo());
+        assert_eq!(
+            agent.runtime_path(),
+            Path::new("/tmp/app/packages/web"),
+            "a retained cleanup path must never receive post-Rejoin work"
+        );
     }
 
     #[test]

@@ -68,6 +68,26 @@ pub(crate) type EventSender = async_channel::Sender<ChatBackendEvent>;
 pub struct ChatBackendController {
     tx: Sender<ChatBackendCommand>,
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ChatBackendStopSignal {
+    stopped: Arc<AtomicBool>,
+}
+
+impl ChatBackendStopSignal {
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+}
+
+struct BackendStoppedOnDrop(Arc<AtomicBool>);
+
+impl Drop for BackendStoppedOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// The next thing a backend run loop should react to. Commands are drained
@@ -193,6 +213,12 @@ impl ChatBackendController {
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = self.tx.send(ChatBackendCommand::ForceShutdown);
     }
+
+    pub fn stop_signal(&self) -> ChatBackendStopSignal {
+        ChatBackendStopSignal {
+            stopped: self.stopped.clone(),
+        }
+    }
 }
 
 impl Drop for ChatBackendController {
@@ -224,25 +250,38 @@ pub fn spawn_chat_backend(
     let (command_tx, command_rx) = crossbeam_channel::unbounded();
     let (event_tx, event_rx) = async_channel::unbounded();
     let shutdown = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::new(AtomicBool::new(false));
     match agent.provider {
-        AgentKind::Codex => {
-            spawn_codex_app_server(agent, initial_mode, command_rx, event_tx, shutdown.clone())?
-        }
-        AgentKind::Claude => {
-            spawn_claude_bridge(agent, initial_mode, command_rx, event_tx, shutdown.clone())?
-        }
+        AgentKind::Codex => spawn_codex_app_server(
+            agent,
+            initial_mode,
+            command_rx,
+            event_tx,
+            shutdown.clone(),
+            stopped.clone(),
+        )?,
+        AgentKind::Claude => spawn_claude_bridge(
+            agent,
+            initial_mode,
+            command_rx,
+            event_tx,
+            shutdown.clone(),
+            stopped.clone(),
+        )?,
         AgentKind::OpenCode => open_code::spawn_open_code_acp(
             agent,
             initial_mode,
             command_rx,
             event_tx,
             shutdown.clone(),
+            stopped.clone(),
         )?,
     }
     Ok((
         ChatBackendController {
             tx: command_tx,
             shutdown,
+            stopped,
         },
         event_rx,
     ))
@@ -254,10 +293,12 @@ fn spawn_claude_bridge(
     command_rx: Receiver<ChatBackendCommand>,
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
         .name("choro-claude-chat-bridge".into())
         .spawn(move || {
+            let _stopped = BackendStoppedOnDrop(stopped);
             if let Err(error) =
                 run_claude_bridge(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
@@ -275,10 +316,12 @@ fn spawn_codex_app_server(
     command_rx: Receiver<ChatBackendCommand>,
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
         .name("choro-codex-app-server".into())
         .spawn(move || {
+            let _stopped = BackendStoppedOnDrop(stopped);
             if let Err(error) =
                 run_codex_app_server(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {

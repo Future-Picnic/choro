@@ -387,6 +387,15 @@ impl CenterArea {
                 tags,
                 created_at,
             } => {
+                // Incoming agent requests already have a dedicated timeline
+                // card. The provider still needs this hidden user turn, but a
+                // second "Question from …" bubble only repeats the card.
+                if super::agent_chat_brain::is_agent_request_submission(text) {
+                    return div().into_any_element();
+                }
+                if let Some(label) = super::agent_chat_brain::summary_request_action_label(text) {
+                    return self.render_brain_summary_request_action(render_key, label, cx);
+                }
                 if let Some((label, icon)) = code_review_request_chip(text) {
                     let _ = created_at;
                     return h_flex()
@@ -1081,9 +1090,11 @@ impl CenterArea {
                 self.render_memory_proposal_card(agent.id, card, cx)
             }
             AgentChatTimelineItem::AgentSummary(card) => {
-                self.render_agent_summary_card(agent.id, card, cx)
+                self.render_agent_summary_card(agent.id, card, window, cx)
             }
-            AgentChatTimelineItem::AgentMessage(card) => self.render_agent_message_card(card, cx),
+            AgentChatTimelineItem::AgentMessage(card) => {
+                self.render_agent_message_card(card, window, cx)
+            }
         }
     }
 }

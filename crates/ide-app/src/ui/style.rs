@@ -567,6 +567,164 @@ pub fn ghost_button_compact(id: impl Into<ElementId>, label: impl Into<SharedStr
     base_button_compact(id, label).ghost()
 }
 
+/// Inline agent identity link used inside Brain request / response cards.
+/// It stays typographic at rest, then gains the shared hover surface so the
+/// navigation affordance is clear without making the agent name look like a
+/// separate toolbar action.
+pub fn chat_agent_link_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .label(label)
+        .xsmall()
+        .compact()
+        .h(px(24.))
+        .px_1p5()
+        .rounded(design::r_xs())
+        .text_size(design::text_ui())
+        .font_weight(FontWeight::SEMIBOLD)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent)
+                .foreground(design::t1(cx))
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+}
+
+/// A leaf in the Settings navigation. Top-level entries and nested entries use
+/// the same interaction treatment; nested entries only add structural inset.
+pub fn settings_nav_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    nested: bool,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    let label = label.into();
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w_full()
+        .justify_start()
+        .h(px(34.))
+        .p_0()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if selected {
+                    design::accent_soft(cx)
+                } else {
+                    transparent
+                })
+                .foreground(if selected {
+                    design::t1(cx)
+                } else {
+                    design::t2(cx)
+                })
+                .border(if selected {
+                    design::accent_line(cx)
+                } else {
+                    transparent
+                })
+                .hover(if selected {
+                    design::accent_soft(cx)
+                } else {
+                    design::hover(cx)
+                })
+                .active(design::accent_soft(cx)),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .h_full()
+                .items_center()
+                .when(nested, |row| row.pl_7().pr_2())
+                .when(!nested, |row| row.px_2())
+                .child(
+                    div()
+                        .text_size(design::text_ui())
+                        .font_weight(if selected {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .child(label),
+                ),
+        )
+}
+
+/// Expand/collapse affordance for a Settings navigation group. The caret is
+/// reserved for actual disclosure rows, so ordinary settings no longer imply
+/// that they contain hidden children.
+pub fn settings_nav_group_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    expanded: bool,
+    active: bool,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    let foreground = if active {
+        design::t1(cx)
+    } else {
+        design::t2(cx)
+    };
+    let label = label.into();
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w_full()
+        .justify_start()
+        .h(px(34.))
+        .p_0()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent)
+                .foreground(foreground)
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .h_full()
+                .px_2()
+                .items_center()
+                .child(
+                    div()
+                        .text_size(design::text_ui())
+                        .font_weight(if active {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .child(label),
+                )
+                .child(div().flex_1())
+                .child(
+                    Icon::new(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .size(design::icon_sm())
+                    .text_color(if active {
+                        design::accent(cx)
+                    } else {
+                        design::t4(cx)
+                    }),
+                ),
+        )
+}
+
 /// A compact selectable option used by Settings for choices such as themes.
 /// The builder owns the control geometry while the caller supplies selection
 /// state and behavior.
@@ -2130,6 +2288,22 @@ pub fn chat_card_action_variant(cx: &App) -> ButtonCustomVariant {
         .border(design::control_line(cx))
         .hover(design::control_on_hover(plane, cx))
         .active(design::control_on_hover(plane, cx))
+}
+
+/// Compact completion action used in chat-card headers.
+pub fn chat_card_done_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .label(label)
+        .xsmall()
+        .compact()
+        .h(design::control_h_xs())
+        .px(design::split_primary_pad_x())
+        .icon(Icon::new(IconName::Check).text_color(design::sage(cx)))
+        .custom(chat_card_action_variant(cx))
 }
 
 /// A bordered inline row in the chat — a tool call, a source/citation, a

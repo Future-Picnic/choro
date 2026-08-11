@@ -159,7 +159,7 @@ impl CenterArea {
                 .or_else(|| self.git_states.read(cx).get(agent.project_id))
         };
         let has_project_changed_files = surface.allows_project_actions()
-            && if agent.is_solo() {
+            && if agent.is_active_solo() {
                 // A Solo ships from its lane — the project tree is clean by
                 // design, so the gate reads the agent's own changed files.
                 agent.lane_path.is_some()
@@ -1189,7 +1189,7 @@ impl CenterArea {
                                         } else {
                                             // A Solo sends in sky — the lane
                                             // color rides the act itself.
-                                            let solo = agent.is_solo();
+                                            let solo = agent.is_active_solo();
                                             let send_fill = if solo {
                                                 crate::ui::design::sky(cx)
                                             } else {

@@ -628,20 +628,42 @@ impl AgentRecords {
         cx.notify();
     }
 
-    /// Permanently close this agent's automatic verification lifecycle after a
+    /// Permanently close this agent's verification lifecycle after the user
+    /// declines verification. This is the hard gate; timeline markers remain
+    /// presentation/history only.
+    pub fn mark_verification_closed(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id) else {
+            return;
+        };
+        if agent.verification_closed {
+            return;
+        }
+        let now = agents::unix_now();
+        agent.verification_closed = true;
+        agent.updated_at = now;
+        // A dismissal must survive the next app launch even if the process
+        // exits before the normal debounced save runs.
+        self.save_immediately();
+        cx.emit(AgentRecordsEvent::Changed);
+        cx.notify();
+    }
+
+    /// Permanently close this agent's verification lifecycle after a
     /// verification reports every stated requirement met.
     pub fn mark_verification_completed(&mut self, id: Uuid, cx: &mut Context<Self>) {
         let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id) else {
             return;
         };
-        if agent.verification_completed_at.is_some() {
+        if agent.verification_completed_at.is_some() && agent.verification_closed {
             return;
         }
         let now = agents::unix_now();
-        agent.verification_completed_at = Some(now);
+        if agent.verification_completed_at.is_none() {
+            agent.verification_completed_at = Some(now);
+        }
+        agent.verification_closed = true;
         agent.updated_at = now;
-        // This flag gates future automatic turns, including after an app
-        // restart, so persist it immediately instead of waiting on debounce.
+        // Both completion evidence and the hard gate must survive restart.
         self.save_immediately();
         cx.emit(AgentRecordsEvent::Changed);
         cx.notify();

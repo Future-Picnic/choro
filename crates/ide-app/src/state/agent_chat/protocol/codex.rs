@@ -871,7 +871,7 @@ pub(super) fn capture_changed_files_snapshot(
         return summary;
     }
 
-    let diffs_result = if agent.repository_path.is_none() && agent.lane_path.is_none() {
+    let diffs_result = if agent.repository_path.is_none() && !agent.is_active_solo() {
         ide_core::git::workspace_worktree_diffs(&agent.project_path)
     } else {
         ide_core::git::worktree_diffs(&repo_path)

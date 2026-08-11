@@ -1,7 +1,38 @@
 use super::*;
+use std::time::Duration;
 
 pub const MAX_AGENT_SUMMARY_CHARS: usize = 12_000;
+pub const MAX_AGENT_OUTCOME_CHARS: usize = 220;
 pub const MAX_AGENT_MESSAGE_CHARS: usize = 8_000;
+const AGENT_REPLY_LOCK_ATTEMPTS: usize = 4;
+
+fn is_database_lock_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().to_ascii_lowercase().contains("lock"))
+}
+
+fn retry_database_lock_with_delay<T>(
+    mut operation: impl FnMut() -> Result<T>,
+    retry_delay: Duration,
+) -> Result<T> {
+    for attempt in 0..AGENT_REPLY_LOCK_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if is_database_lock_error(&error) && attempt + 1 < AGENT_REPLY_LOCK_ATTEMPTS =>
+            {
+                std::thread::sleep(retry_delay.saturating_mul((attempt + 1) as u32));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the bounded database retry loop always returns")
+}
+
+fn retry_database_lock<T>(operation: impl FnMut() -> Result<T>) -> Result<T> {
+    retry_database_lock_with_delay(operation, Duration::from_millis(100))
+}
 
 pub(super) async fn refresh_agent_search_fts_async(
     conn: &Connection,
@@ -73,8 +104,8 @@ async fn load_agent_summary_async(
 ) -> Result<Option<StoredAgentSummary>> {
     let mut rows = conn
         .query(
-            "SELECT agent_id, summary_text, last_summarized_sequence, updated_at,
-                    edited_by_user
+            "SELECT agent_id, summary_text, outcome_text, last_summarized_sequence,
+                    updated_at, edited_by_user
              FROM agent_summaries WHERE agent_id = ?1",
             [agent_id.to_string()],
         )
@@ -85,9 +116,10 @@ async fn load_agent_summary_async(
     Ok(Some(StoredAgentSummary {
         agent_id: parse_uuid(&row.get::<String>(0)?)?,
         summary_text: row.get(1)?,
-        last_summarized_sequence: row.get(2)?,
-        updated_at: i64_to_u64(row.get(3)?)?,
-        edited_by_user: row.get::<i64>(4)? != 0,
+        outcome_text: opt_text(&row, 2)?,
+        last_summarized_sequence: row.get(3)?,
+        updated_at: i64_to_u64(row.get(4)?)?,
+        edited_by_user: row.get::<i64>(5)? != 0,
     }))
 }
 
@@ -96,8 +128,8 @@ pub(super) async fn load_all_agent_summaries_async(
 ) -> Result<Vec<StoredAgentSummary>> {
     let mut rows = conn
         .query(
-            "SELECT agent_id, summary_text, last_summarized_sequence, updated_at,
-                    edited_by_user
+            "SELECT agent_id, summary_text, outcome_text, last_summarized_sequence,
+                    updated_at, edited_by_user
              FROM agent_summaries ORDER BY updated_at DESC",
             (),
         )
@@ -107,9 +139,10 @@ pub(super) async fn load_all_agent_summaries_async(
         summaries.push(StoredAgentSummary {
             agent_id: parse_uuid(&row.get::<String>(0)?)?,
             summary_text: row.get(1)?,
-            last_summarized_sequence: row.get(2)?,
-            updated_at: i64_to_u64(row.get(3)?)?,
-            edited_by_user: row.get::<i64>(4)? != 0,
+            outcome_text: opt_text(&row, 2)?,
+            last_summarized_sequence: row.get(3)?,
+            updated_at: i64_to_u64(row.get(4)?)?,
+            edited_by_user: row.get::<i64>(5)? != 0,
         });
     }
     Ok(summaries)
@@ -121,16 +154,18 @@ pub(super) async fn insert_stored_agent_summary_async(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO agent_summaries
-         (agent_id, summary_text, last_summarized_sequence, updated_at, edited_by_user)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+         (agent_id, summary_text, outcome_text, last_summarized_sequence, updated_at, edited_by_user)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(agent_id) DO UPDATE SET
              summary_text = excluded.summary_text,
+             outcome_text = excluded.outcome_text,
              last_summarized_sequence = excluded.last_summarized_sequence,
              updated_at = excluded.updated_at,
              edited_by_user = excluded.edited_by_user",
         params![
             summary.agent_id.to_string(),
             summary.summary_text.as_str(),
+            summary.outcome_text.clone(),
             summary.last_summarized_sequence,
             u64_to_i64(summary.updated_at)?,
             bool_to_i64(summary.edited_by_user),
@@ -204,6 +239,19 @@ fn normalized_summary_text(text: &str) -> Result<String> {
         "summary text must be at most {MAX_AGENT_SUMMARY_CHARS} characters"
     );
     Ok(text)
+}
+
+fn normalized_outcome_text(text: Option<&str>) -> Result<Option<String>> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    anyhow::ensure!(!text.is_empty(), "summary outcome is empty");
+    anyhow::ensure!(
+        text.chars().count() <= MAX_AGENT_OUTCOME_CHARS,
+        "summary outcome must be at most {MAX_AGENT_OUTCOME_CHARS} characters"
+    );
+    Ok(Some(text))
 }
 
 fn fts_query(input: &str) -> Result<String> {
@@ -424,9 +472,11 @@ impl LocalStore {
         &self,
         agent_id: Uuid,
         text: &str,
+        outcome: Option<&str>,
         edited_by_user: bool,
     ) -> Result<StoredAgentSummary> {
         let summary_text = normalized_summary_text(text)?;
+        let outcome_text = normalized_outcome_text(outcome)?;
         self.rt.block_on(async {
             let conn = self.connect().await?;
             let mut agent_rows = conn
@@ -456,6 +506,7 @@ impl LocalStore {
             let summary = StoredAgentSummary {
                 agent_id,
                 summary_text,
+                outcome_text,
                 last_summarized_sequence,
                 updated_at: unix_now(),
                 edited_by_user,
@@ -738,6 +789,99 @@ impl LocalStore {
         })
     }
 
+    /// Return exactly one durable response to the source of an earlier request.
+    /// The original target is the only agent allowed to answer it, and the
+    /// stable event key makes retries from an MCP client idempotent.
+    pub fn reply_to_agent_message(
+        &self,
+        responder: Uuid,
+        request_id: Uuid,
+        text: &str,
+    ) -> Result<StoredAgentMessage> {
+        let text = text.trim().to_string();
+        anyhow::ensure!(!text.is_empty(), "reply text is empty");
+        anyhow::ensure!(
+            text.chars().count() <= MAX_AGENT_MESSAGE_CHARS,
+            "reply text must be at most {MAX_AGENT_MESSAGE_CHARS} characters"
+        );
+        retry_database_lock(|| {
+            self.rt.block_on(async {
+                let conn = self.connect().await?;
+                let mut rows = conn
+                    .query(
+                        "SELECT source_agent_id, target_agent_id, kind
+                         FROM agent_messages WHERE id = ?1",
+                        [request_id.to_string()],
+                    )
+                    .await?;
+                let Some(request) = rows.next().await? else {
+                    return Err(anyhow!("the original agent request no longer exists"));
+                };
+                let target = parse_uuid(&request.get::<String>(0)?)?;
+                let original_target = parse_uuid(&request.get::<String>(1)?)?;
+                let original_kind: String = request.get(2)?;
+                drop(rows);
+                anyhow::ensure!(
+                    original_target == responder,
+                    "only the requested agent can reply"
+                );
+                anyhow::ensure!(
+                    !matches!(original_kind.as_str(), "reply" | "collision"),
+                    "this message does not accept a reply"
+                );
+
+                let mut rows = conn
+                    .query(
+                        "SELECT title FROM agents WHERE id = ?1",
+                        [responder.to_string()],
+                    )
+                    .await?;
+                let Some(source) = rows.next().await? else {
+                    return Err(anyhow!("replying agent no longer exists"));
+                };
+                let source_title: String = source.get(0)?;
+                drop(rows);
+
+                let event_key = Some(format!("reply:{request_id}"));
+                let mut rows = conn
+                    .query(
+                        "SELECT id, text, created_at, delivered_at FROM agent_messages
+                         WHERE target_agent_id = ?1 AND event_key = ?2 LIMIT 1",
+                        (target.to_string(), event_key.as_deref().unwrap_or_default()),
+                    )
+                    .await?;
+                if let Some(row) = rows.next().await? {
+                    return Ok(StoredAgentMessage {
+                        id: parse_uuid(&row.get::<String>(0)?)?,
+                        source_agent_id: responder,
+                        target_agent_id: target,
+                        source_title,
+                        text: row.get(1)?,
+                        kind: "reply".to_string(),
+                        event_key,
+                        created_at: i64_to_u64(row.get(2)?)?,
+                        delivered_at: opt_i64(&row, 3)?.map(i64_to_u64).transpose()?,
+                    });
+                }
+                drop(rows);
+
+                let message = StoredAgentMessage {
+                    id: Uuid::new_v4(),
+                    source_agent_id: responder,
+                    target_agent_id: target,
+                    source_title,
+                    text: text.clone(),
+                    kind: "reply".to_string(),
+                    event_key,
+                    created_at: unix_now(),
+                    delivered_at: None,
+                };
+                insert_stored_agent_message_async(&conn, &message).await?;
+                Ok(message)
+            })
+        })
+    }
+
     pub fn load_pending_agent_messages(&self) -> Result<Vec<StoredAgentMessage>> {
         self.rt.block_on(async {
             let conn = self.connect().await?;
@@ -784,5 +928,46 @@ impl LocalStore {
             .await?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_lock_retries_are_bounded_and_recover() {
+        let mut attempts = 0;
+        let result = retry_database_lock_with_delay(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(anyhow!("database is locked"))
+                } else {
+                    Ok("delivered")
+                }
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert_eq!(result, "delivered");
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn database_lock_retry_does_not_repeat_non_lock_errors() {
+        let mut attempts = 0;
+        let error = retry_database_lock_with_delay(
+            || {
+                attempts += 1;
+                Err::<(), _>(anyhow!("replying agent no longer exists"))
+            },
+            Duration::ZERO,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no longer exists"));
+        assert_eq!(attempts, 1);
     }
 }

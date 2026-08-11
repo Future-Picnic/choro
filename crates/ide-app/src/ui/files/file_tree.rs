@@ -875,7 +875,7 @@ impl Render for FileTree {
             .agents
             .read(cx)
             .explicitly_selected_agent(project)
-            .filter(|agent| agent.is_solo())
+            .filter(|agent| agent.is_active_solo())
             .and_then(|agent| {
                 let lane = agent.lane_path.clone()?;
                 let branch = agent.solo_branch.clone()?;
@@ -895,7 +895,7 @@ impl Render for FileTree {
                     .as_ref()
                     .is_none_or(|(current, _)| current != agent_id)
                 {
-                    let git = cx.new(|cx| GitState::new(lane.clone(), cx));
+                    let git = cx.new(|cx| GitState::new_with_worktree_watcher(lane.clone(), cx));
                     cx.observe(&git, |_, _, cx| cx.notify()).detach();
                     self.lane_git = Some((*agent_id, git));
                 }

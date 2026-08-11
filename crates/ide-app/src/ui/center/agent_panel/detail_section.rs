@@ -65,7 +65,6 @@ impl CenterArea {
             .entry(agent.id)
             .or_insert(AgentDetailTab::Terminal);
         let notes_input = self.agent_notes_input(&agent, window, cx);
-        let summary_input = self.agent_summary_input(agent.id, window, cx);
         let runtime = self.agent_runtime(&agent, project, cx);
         let (terminal_view, terminal_exited) = {
             let manager = self.terminals.read(cx);
@@ -493,7 +492,7 @@ impl CenterArea {
                         area.child(self.render_agent_notes_drawer(
                             &agent,
                             notes_input,
-                            summary_input,
+                            window,
                             cx,
                         ))
                     })

@@ -167,7 +167,7 @@ impl CenterArea {
                 eprintln!("failed to persist agent ship result: {error:#}");
             }
             self.agent_summary_requests_pending.remove(&agent_id);
-            self.request_agent_summary(agent_id, cx);
+            self.request_agent_summary_maintenance(agent_id, cx);
         }
 
         // Pre-seed the post-ship "update the task" card and warm up its status
@@ -311,14 +311,17 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         if agent.repository_path.is_none()
-            && !agent.is_solo()
+            && !agent.is_active_solo()
             && self.open_multi_repo_ship_dialog(&agent, window, cx)
         {
             return;
         }
         // A materialized Solo ships from its lane: same execution path, the
         // lane's own snapshot as the source instead of the project GitState.
-        let solo_lane = agent.solo_branch.clone().zip(agent.lane_path.clone());
+        let solo_lane = agent
+            .is_active_solo()
+            .then(|| agent.solo_branch.clone().zip(agent.lane_path.clone()))
+            .flatten();
         let (repo_path, branch, needs_upstream, all_files, staged_files, file_kinds) =
             if let Some((solo_branch, lane)) = solo_lane.clone() {
                 let snapshot = ide_core::git::read_snapshot(&lane).ok();
@@ -437,7 +440,7 @@ impl CenterArea {
             };
 
         let mut related = std::collections::BTreeSet::new();
-        let whole_workspace = agent.repository_path.is_none() && !agent.is_solo();
+        let whole_workspace = agent.repository_path.is_none() && !agent.is_active_solo();
         let related_root = if whole_workspace {
             agent.project_path.as_path()
         } else {

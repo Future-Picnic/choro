@@ -119,7 +119,6 @@ impl CenterArea {
                 |this: &mut Self, _, event: &crate::state::agents::AgentRecordsEvent, cx| {
                     if matches!(event, crate::state::agents::AgentRecordsEvent::Changed) {
                         this.maybe_terminal_agent_summary(cx);
-                        this.maybe_send_collision_radar(cx);
                     }
                     if matches!(
                         event,
@@ -144,7 +143,7 @@ impl CenterArea {
                 this.sync_doc_assistant_chat_session_ids(cx);
                 this.maybe_finalize_doc_assistant_titles(cx);
                 this.maybe_auto_verify(cx);
-                this.maybe_auto_summary(cx);
+                this.maybe_finish_summary_maintenance(cx);
                 cx.notify();
             })
             .detach();
@@ -644,6 +643,7 @@ impl CenterArea {
                 agent_chat_file_selection: HashMap::new(),
                 agent_chat_file_dismissed_query: HashMap::new(),
                 agent_chat_selected_agent_targets: HashMap::new(),
+                agent_chat_agent_request_kind_overrides: HashMap::new(),
                 agent_chat_agent_selection: HashMap::new(),
                 agent_chat_agent_dismissed_query: HashMap::new(),
                 agent_chat_project_selection: HashMap::new(),
@@ -684,6 +684,7 @@ impl CenterArea {
                 agent_ship_pr_fetching: HashSet::new(),
                 ship_task_ui: HashMap::new(),
                 agent_detail_tabs: HashMap::new(),
+                agent_notes_expanded: HashSet::new(),
                 personal_editor: None,
                 personal_editor_save_epoch: 0,
                 task_desc_expanded: HashSet::new(),
@@ -710,13 +711,11 @@ impl CenterArea {
                 memory_card_ids_seen,
                 memory_undos_pending: HashSet::new(),
                 agent_summaries,
-                agent_summary_inputs: HashMap::new(),
                 agent_summary_requests_pending: HashMap::new(),
-                agent_summary_idle_checks_pending: HashSet::new(),
-                agent_summary_status_seen: HashMap::new(),
+                agent_summary_silent_requests: HashSet::new(),
+                agent_summary_maintenance_status_seen: HashMap::new(),
                 agent_record_status_seen: HashMap::new(),
                 agent_messages_inflight: HashSet::new(),
-                collision_radar_inflight: HashSet::new(),
                 memory_distills_inflight: HashSet::new(),
                 memory_proposal_accepts_pending: HashSet::new(),
                 memory_proposal_errors: HashMap::new(),
