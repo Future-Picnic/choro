@@ -61,6 +61,7 @@ pub struct Scrollable<E: InteractiveElement + Styled + ParentElement + Element> 
     id: ElementId,
     element: E,
     axis: ScrollbarAxis,
+    restrict_scroll_to_axis: bool,
 }
 
 impl<E> Scrollable<E>
@@ -74,7 +75,16 @@ where
             id: ElementId::CodeLocation(*caller),
             element,
             axis: axis.into(),
+            restrict_scroll_to_axis: false,
         }
+    }
+
+    /// Keep wheel input on its native axis. In particular, a vertical wheel
+    /// gesture over a horizontal scroller should bubble to the surrounding
+    /// vertical surface instead of being converted into horizontal movement.
+    pub fn restrict_scroll_to_axis(mut self) -> Self {
+        self.restrict_scroll_to_axis = true;
+        self
     }
 }
 
@@ -121,6 +131,8 @@ where
         let style = self.element.style().clone();
         *self.element.style() = StyleRefinement::default();
 
+        let restrict_scroll_to_axis = self.restrict_scroll_to_axis;
+
         div()
             .id(self.id)
             .size_full()
@@ -132,6 +144,10 @@ where
                     .flex()
                     .size_full()
                     .track_scroll(&scroll_handle)
+                    .map(|mut this| {
+                        this.style().restrict_scroll_to_axis = Some(restrict_scroll_to_axis);
+                        this
+                    })
                     .map(|this| match self.axis {
                         ScrollbarAxis::Vertical => this.flex_col().overflow_y_scroll(),
                         ScrollbarAxis::Horizontal => this.flex_row().overflow_x_scroll(),
@@ -155,6 +171,18 @@ where
     E: ParentElement + Styled + Element,
     Self: InteractiveElement,
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn horizontal_scroller_can_preserve_vertical_wheel_routing() {
+        let scroller = div().overflow_x_scrollbar().restrict_scroll_to_axis();
+
+        assert!(scroller.restrict_scroll_to_axis);
+    }
 }
 
 #[derive(IntoElement)]

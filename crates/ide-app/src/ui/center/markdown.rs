@@ -807,15 +807,21 @@ fn render_chat_code_block(
                 ),
         )
         .child(
-            div().w_full().overflow_x_scrollbar().px_4().py_3().child(
-                div()
-                    .font_family(crate::ui::design::FONT_MONO)
-                    .text_size(crate::ui::design::text_ui())
-                    .line_height(gpui::relative(1.62))
-                    .whitespace_nowrap()
-                    .text_color(code_text)
-                    .child(StyledText::new(code).with_highlights(highlights)),
-            ),
+            div()
+                .w_full()
+                .overflow_x_scrollbar()
+                .restrict_scroll_to_axis()
+                .px_4()
+                .py_3()
+                .child(
+                    div()
+                        .font_family(crate::ui::design::FONT_MONO)
+                        .text_size(crate::ui::design::text_ui())
+                        .line_height(gpui::relative(1.62))
+                        .whitespace_nowrap()
+                        .text_color(code_text)
+                        .child(StyledText::new(code).with_highlights(highlights)),
+                ),
         )
         .into_any_element()
 }

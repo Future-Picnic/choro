@@ -1018,16 +1018,28 @@ impl CenterArea {
         let composer_view = cx.entity().clone();
 
         v_flex()
+            .id("new-agent-landing-scroll")
             .relative()
             .size_full()
+            .min_h(px(0.))
             .items_center()
-            .justify_center()
+            // The Brain sections below the composer can be taller than the
+            // viewport. Keep the composer at its natural height and let this
+            // landing surface scroll instead of flex-shrinking the composer
+            // until its control rail is clipped by the rounded frame.
+            // Use GPUI's native overflow on this flex owner. The decorated
+            // scrollbar helper wraps and resets the element's flex styles,
+            // which drops `items_center` and left-aligns the whole landing
+            // column after the first layout pass.
+            .overflow_y_scroll()
             .px_8()
+            .child(div().w_full().flex_1().min_h(px(32.)))
             .child(
                 v_flex()
                     .w_full()
                     .min_w(px(0.))
                     .max_w(px(760.))
+                    .flex_none()
                     .gap_2()
                     .child(
                         div()
@@ -1046,6 +1058,10 @@ impl CenterArea {
                             .relative()
                             .w_full()
                             .min_w(px(0.))
+                            // This frame owns the prompt and its footer. It must
+                            // never surrender height to the recent-agent/Brain
+                            // content that follows it.
+                            .flex_none()
                             // Same frame as the agent-chat composer: r_lg, a
                             // line-2 border, the focus plane, and the shared
                             // shadow — the two composers must read identically.
@@ -1812,6 +1828,7 @@ impl CenterArea {
                     .children(self.render_new_agent_recent_agents(project, cx))
                     .children(self.render_fleet_weekly_digest(project, cx)),
             )
+            .child(div().w_full().flex_1().min_h(px(32.)))
             .into_any_element()
     }
 }
