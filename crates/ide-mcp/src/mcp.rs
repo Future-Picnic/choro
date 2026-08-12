@@ -5,7 +5,10 @@
 //! keeps the dependency surface tiny and the behavior obvious. stdout carries
 //! protocol messages only; all logging goes to stderr.
 
-use std::io::{BufRead, Write};
+use std::{
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -21,9 +24,13 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(project_id: Option<uuid::Uuid>, agent_id: Option<uuid::Uuid>) -> Self {
+    pub fn new(
+        project_id: Option<uuid::Uuid>,
+        agent_id: Option<uuid::Uuid>,
+        data_root: Option<PathBuf>,
+    ) -> Self {
         Self {
-            ctx: ServerContext::new(project_id, agent_id),
+            ctx: ServerContext::new(project_id, agent_id, data_root),
             tools: ToolRegistry::default(),
         }
     }

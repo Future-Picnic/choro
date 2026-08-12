@@ -489,7 +489,12 @@ impl CenterArea {
                             .child(detail_body),
                     )
                     .when(detail_tab == AgentDetailTab::Notes, |area| {
-                        area.child(self.render_agent_notes_drawer(&agent, notes_input, cx))
+                        area.child(self.render_agent_notes_drawer(
+                            &agent,
+                            notes_input,
+                            window,
+                            cx,
+                        ))
                     })
                     .when(detail_tab == AgentDetailTab::Files, |area| {
                         area.child(self.render_agent_files_drawer(project, &agent, cx))

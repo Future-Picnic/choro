@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "net", "ti
 axum = { version = "0.8", features = ["ws"] }
 async-channel = "2"
 crossbeam-channel = "0.5"
-turso = { version = "=0.7.0-pre.14", default-features = false }
+turso = { version = "=0.7.0-pre.14", default-features = false, features = ["fts"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 git2 = "0.21"

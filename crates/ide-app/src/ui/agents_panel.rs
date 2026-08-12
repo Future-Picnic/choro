@@ -544,7 +544,7 @@ impl AgentsPanel {
                 this.open_agent(agent_id, window, cx);
             }))
             // Solo marker: the agent works on its own lane, not the active branch.
-            .when(agent.is_solo(), |row| {
+            .when(agent.is_active_solo(), |row| {
                 row.child(crate::ui::design::indicator::solo_icon(
                     crate::ui::design::sky(cx),
                     crate::ui::design::icon_sm(),

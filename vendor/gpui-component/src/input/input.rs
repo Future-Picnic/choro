@@ -281,6 +281,7 @@ impl RenderOnce for Input {
         div()
             .id(("input", self.state.entity_id()))
             .flex()
+            .min_w(px(0.))
             .key_context(crate::input::CONTEXT)
             .track_focus(&state.focus_handle.clone())
             .tab_index(self.tab_index)

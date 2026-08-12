@@ -344,11 +344,6 @@ impl VoiceState {
         }
     }
 
-    pub fn activate_dictation_for(&mut self, agent_id: uuid::Uuid, cx: &mut Context<Self>) {
-        self.dictation_target = Some(VoiceDictationTarget::Agent(agent_id));
-        self.activate(VoiceMode::Dictation, false, false, cx);
-    }
-
     pub fn begin_push_to_talk_for(&mut self, target: VoiceDictationTarget, cx: &mut Context<Self>) {
         if self.push_to_talk_held || self.dictation_active() {
             return;

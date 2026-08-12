@@ -31,8 +31,8 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 26;
-const EXPORT_FORMAT_VERSION: u32 = 4;
+const STORE_SCHEMA_VERSION: u32 = 29;
+const EXPORT_FORMAT_VERSION: u32 = 5;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
 
@@ -138,6 +138,169 @@ pub struct StoredMemory {
     pub last_used_at: Option<u64>,
 }
 
+/// The living Brain summary for one real project agent. Summaries are replaced
+/// in place; `last_summarized_sequence` is the chat-message cursor covered by
+/// the current text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentSummary {
+    pub agent_id: Uuid,
+    pub summary_text: String,
+    /// A short outcome written alongside newer summaries for the weekly
+    /// launcher digest. Older rows intentionally remain `None`.
+    #[serde(default)]
+    pub outcome_text: Option<String>,
+    pub last_summarized_sequence: i64,
+    pub updated_at: u64,
+    pub edited_by_user: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentSearchResult {
+    pub agent_id: Uuid,
+    pub title: String,
+    pub status: String,
+    pub snippet: String,
+    pub summary_text: Option<String>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentRecallPage {
+    pub agent_id: Uuid,
+    pub title: String,
+    pub summary: Option<StoredAgentSummary>,
+    /// Returned oldest-to-newest within this page.
+    pub messages: Vec<StoredChatMessage>,
+    pub next_before_sequence: Option<i64>,
+    pub has_more: bool,
+}
+
+/// A durable Choro-native delivery queued by one agent for another. The GUI
+/// marks the row delivered only after it has surfaced the incoming card and
+/// queued the quarantined prompt into the target session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAgentMessage {
+    pub id: Uuid,
+    pub source_agent_id: Uuid,
+    pub target_agent_id: Uuid,
+    pub source_title: String,
+    pub text: String,
+    pub kind: String,
+    pub event_key: Option<String>,
+    pub created_at: u64,
+    pub delivered_at: Option<u64>,
+}
+
+/// The intent of a free-text request sent from one Choro agent to another.
+/// Storage uses these stable lowercase labels so older generic `user` / `agent`
+/// rows can continue to be inferred at delivery time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentRequestKind {
+    Ask,
+    Delegate,
+}
+
+impl AgentRequestKind {
+    pub const fn storage_label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Delegate => "delegate",
+        }
+    }
+
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::Ask => "Question",
+            Self::Delegate => "Task",
+        }
+    }
+
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Ask => Self::Delegate,
+            Self::Delegate => Self::Ask,
+        }
+    }
+}
+
+/// Classify natural composer text without making the user choose a form mode.
+/// Leading interrogatives win even when they ask about past implementation;
+/// otherwise explicit action verbs win (`Can you fix…?` is a task). The
+/// remaining explanation requests and question forms are questions. The
+/// conservative fallback is Delegate because ambiguous free text may require
+/// action and must not be silently constrained to a read-only answer.
+pub fn classify_agent_request(text: &str) -> AgentRequestKind {
+    let lowered = text.to_lowercase();
+    let words = lowered
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let has_word = |candidates: &[&str]| {
+        words
+            .iter()
+            .any(|word| candidates.iter().any(|candidate| word == candidate))
+    };
+
+    let starts_as_question = words.first().is_some_and(|first| {
+        matches!(
+            *first,
+            "what"
+                | "why"
+                | "how"
+                | "when"
+                | "where"
+                | "who"
+                | "which"
+                | "is"
+                | "are"
+                | "was"
+                | "were"
+                | "do"
+                | "does"
+                | "did"
+        )
+    });
+    if starts_as_question {
+        return AgentRequestKind::Ask;
+    }
+
+    if has_word(&[
+        "add",
+        "build",
+        "change",
+        "create",
+        "delete",
+        "edit",
+        "fix",
+        "implement",
+        "install",
+        "migrate",
+        "modify",
+        "move",
+        "patch",
+        "refactor",
+        "remove",
+        "rename",
+        "replace",
+        "run",
+        "ship",
+        "test",
+        "update",
+        "write",
+    ]) {
+        return AgentRequestKind::Delegate;
+    }
+
+    if lowered.contains('?')
+        || has_word(&["explain", "describe", "summarize", "status"])
+        || lowered.contains("tell me")
+    {
+        AgentRequestKind::Ask
+    } else {
+        AgentRequestKind::Delegate
+    }
+}
+
 impl StoredMemory {
     pub fn is_global(&self) -> bool {
         self.scope == "global"
@@ -233,6 +396,10 @@ struct ExportCounts {
     timeline_events: usize,
     #[serde(default)]
     memories: usize,
+    #[serde(default)]
+    agent_summaries: usize,
+    #[serde(default)]
+    agent_messages: usize,
     attachments: usize,
     #[serde(default)]
     diff_snapshots: usize,
@@ -257,6 +424,7 @@ struct ExportChecksum {
 mod agents;
 mod api;
 mod archive;
+mod brain;
 mod chat;
 mod diffs;
 mod maintenance;
@@ -272,6 +440,7 @@ mod workspace;
 
 use agents::*;
 use archive::*;
+use brain::*;
 use chat::*;
 use diffs::*;
 pub use memories::MAX_MEMORY_TEXT_CHARS;

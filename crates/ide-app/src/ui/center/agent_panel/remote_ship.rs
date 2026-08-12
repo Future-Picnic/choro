@@ -86,7 +86,7 @@ impl CenterArea {
             all_files,
             staged_files,
             conversation_files,
-            solo: agent.is_solo(),
+            solo: agent.is_active_solo(),
         })
     }
 

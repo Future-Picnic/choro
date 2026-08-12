@@ -1149,6 +1149,160 @@ impl CenterArea {
             .into_any_element()
     }
 
+    pub(super) fn active_composer_project_mention_view(
+        &self,
+        cx: &App,
+    ) -> Option<ComposerProjectMentionView> {
+        let composer = self.new_agent_composer.as_ref()?;
+        let mention = active_composer_project_mention(&composer.prompt.read(cx))?;
+        if composer.project_mention_dismissed_query.as_deref() == Some(mention.query.as_str()) {
+            return None;
+        }
+        let mut matches = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .filter(|project| project.id != composer.project)
+            .map(|project| ComposerProjectEntry {
+                id: project.id,
+                name: project.name.clone(),
+                path: project.path.clone(),
+                is_favorite: project.is_favorite,
+            })
+            .filter(|project| composer_project_matches(project, &mention.query))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right.is_favorite.cmp(&left.is_favorite).then_with(|| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            })
+        });
+        matches.truncate(COMPOSER_PICKER_VISIBLE_LIMIT);
+        let selected = composer
+            .project_mention_selected
+            .min(matches.len().saturating_sub(1));
+        Some(ComposerProjectMentionView {
+            mention,
+            matches,
+            selected,
+        })
+    }
+
+    pub(super) fn render_composer_project_mention_picker(
+        &self,
+        view: &ComposerProjectMentionView,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let selected = view.selected;
+        v_flex()
+            .id("composer-project-mention-picker")
+            .w_full()
+            .max_h(px(COMPOSER_PICKER_MAX_H))
+            .overflow_hidden()
+            .rounded(crate::ui::design::r_md())
+            .border_1()
+            .border_color(crate::ui::design::line_2(cx))
+            .bg(crate::ui::design::focus(cx))
+            .shadow_lg()
+            .p_1()
+            .gap_0p5()
+            .when(view.matches.is_empty(), |picker| {
+                picker.child(
+                    h_flex()
+                        .w_full()
+                        .h(px(COMPOSER_PICKER_ROW_H))
+                        .px_2()
+                        .gap_1p5()
+                        .items_center()
+                        .text_size(crate::ui::design::text_ui())
+                        .text_color(crate::ui::design::t3(cx))
+                        .child(
+                            gpui_component::Icon::new(IconName::FolderOpen)
+                                .size(crate::ui::design::icon_md()),
+                        )
+                        .child(if view.mention.query.is_empty() {
+                            "No other projects in Choro".to_string()
+                        } else {
+                            format!("No projects matching {}", view.mention.query)
+                        }),
+                )
+            })
+            .children(view.matches.iter().enumerate().map(|(index, project)| {
+                let is_active = index == selected;
+                let project = project.clone();
+                let mention = view.mention.clone();
+                let name = project.name.clone();
+                let path = project.path.to_string_lossy().to_string();
+                h_flex()
+                    .id(("composer-project-mention-row", index))
+                    .w_full()
+                    .min_w(px(0.))
+                    .h(px(COMPOSER_PICKER_ROW_H))
+                    .px_2()
+                    .gap_1p5()
+                    .items_center()
+                    .rounded(crate::ui::design::r_sm())
+                    .cursor_pointer()
+                    .bg(if is_active {
+                        crate::ui::design::surface_2(cx).opacity(0.72)
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.46)))
+                    .child(
+                        gpui_component::Icon::new(IconName::FolderOpen)
+                            .size(crate::ui::design::icon_md())
+                            .text_color(if is_active {
+                                crate::ui::design::rose(cx)
+                            } else {
+                                crate::ui::design::t3(cx)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(190.))
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(crate::ui::design::text_ui())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child(path),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .rounded(crate::ui::design::r_sm())
+                            .bg(crate::ui::design::rose(cx).opacity(0.12))
+                            .px_1p5()
+                            .py_0p5()
+                            .text_size(crate::ui::design::text_label())
+                            .text_color(crate::ui::design::rose(cx))
+                            .child("Project"),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.insert_project_mention_into_composer(
+                            project.clone(),
+                            mention.clone(),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element()
+            }))
+            .into_any_element()
+    }
+
     /// Resolves the currently active `@@` doc-mention picker, if any: the
     /// mention under the cursor, the docs matching its query, and the clamped
     /// highlight index. Returns `None` when there is no mention or the picker

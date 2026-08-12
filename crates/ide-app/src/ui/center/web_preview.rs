@@ -561,6 +561,20 @@ mod imp {
         let _ = app.refresh();
     }
 
+    fn project_preview_message_live_url(
+        message: &ProjectPreviewMessage,
+    ) -> Option<(ProjectId, &str)> {
+        match message {
+            ProjectPreviewMessage::AgentPageLoad {
+                project_id, url, ..
+            }
+            | ProjectPreviewMessage::AgentNavigationSettled {
+                project_id, url, ..
+            } => Some((*project_id, url)),
+            _ => None,
+        }
+    }
+
     define_class!(
         #[unsafe(super(NSObject))]
         #[name = "ChoroProjectPreviewMessageHandler"]
@@ -861,6 +875,7 @@ mod imp {
         messages: Rc<RefCell<VecDeque<DocEditorMessage>>>,
         penpot_messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
         preview_messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
+        project_preview_live_urls: Rc<RefCell<HashMap<ProjectId, String>>>,
         app: AsyncApp,
     }
 
@@ -937,6 +952,7 @@ mod imp {
                 messages: Rc::new(RefCell::new(VecDeque::new())),
                 penpot_messages: Arc::new(Mutex::new(VecDeque::new())),
                 preview_messages: Rc::new(RefCell::new(VecDeque::new())),
+                project_preview_live_urls: Rc::new(RefCell::new(HashMap::new())),
                 app,
             }
         }
@@ -1133,7 +1149,18 @@ mod imp {
         }
 
         pub fn take_project_preview_messages(&mut self) -> Vec<ProjectPreviewMessage> {
-            self.preview_messages.borrow_mut().drain(..).collect()
+            let messages = self
+                .preview_messages
+                .borrow_mut()
+                .drain(..)
+                .collect::<Vec<_>>();
+            let mut live_urls = self.project_preview_live_urls.borrow_mut();
+            for message in &messages {
+                if let Some((project_id, url)) = project_preview_message_live_url(message) {
+                    live_urls.insert(project_id, url.to_string());
+                }
+            }
+            messages
         }
 
         pub fn take_penpot_messages(&mut self) -> Vec<PenpotMessage> {
@@ -1268,11 +1295,18 @@ mod imp {
                 .ok_or_else(|| "Project Preview requires the WebKit surface.".to_string())?;
             if let Some(path) = project_preview_file_path(url) {
                 load_project_preview_file(webview, &path);
+                self.project_preview_live_urls
+                    .borrow_mut()
+                    .insert(project_id, url.to_string());
                 return Ok(());
             }
             webview
                 .load_url(url)
-                .map_err(|error| format!("Could not open Preview URL: {error}"))
+                .map_err(|error| format!("Could not open Preview URL: {error}"))?;
+            self.project_preview_live_urls
+                .borrow_mut()
+                .insert(project_id, url.to_string());
+            Ok(())
         }
 
         pub fn navigate_project_preview_history(&self, forward: bool) -> Result<(), String> {
@@ -1305,12 +1339,20 @@ mod imp {
             ) {
                 return Err("That project's Preview is not active.".to_string());
             }
-            active
-                .webview
-                .webkit()
-                .ok_or_else(|| "Project Preview requires the WebKit surface.".to_string())?
-                .url()
-                .map_err(|error| format!("Could not read the live Preview URL: {error}"))
+            // Do not call Wry's `WebView::url()` here. On macOS, Wry 0.52.1
+            // unwraps WKWebView.URL internally, but WebKit may legitimately
+            // return nil while the native view is being created or torn down.
+            // Page-load and same-document navigation events maintain this
+            // cache without making render-time native lifecycle assumptions.
+            self.project_preview_live_urls
+                .borrow()
+                .get(&project_id)
+                .cloned()
+                .or_else(|| match &active.intent {
+                    WebPreviewIntent::ProjectPreview { url, .. } => Some(url.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| "The project Preview URL is not ready yet.".to_string())
         }
 
         pub fn execute_project_preview_agent_command(
@@ -1809,12 +1851,21 @@ mod imp {
                     self.messages.clone(),
                     self.penpot_messages.clone(),
                     self.preview_messages.clone(),
+                    self.project_preview_live_urls.clone(),
                     self.app.clone(),
                     self.penpot_assistant_open,
                     self.penpot_compare_open,
                     surface_id,
                 ) {
                     Ok(webview) => {
+                        if let WebPreviewIntent::ProjectPreview {
+                            project_id, url, ..
+                        } = &intent
+                        {
+                            self.project_preview_live_urls
+                                .borrow_mut()
+                                .insert(*project_id, url.clone());
+                        }
                         let doc_editor_ready =
                             !matches!(intent, WebPreviewIntent::DocEditor { .. });
                         self.active = Some(Active {
@@ -2562,6 +2613,7 @@ mod imp {
         messages: Rc<RefCell<VecDeque<DocEditorMessage>>>,
         penpot_messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
         preview_messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
+        project_preview_live_urls: Rc<RefCell<HashMap<ProjectId, String>>>,
         app: AsyncApp,
         penpot_assistant_open: bool,
         penpot_compare_open: bool,
@@ -2680,6 +2732,7 @@ mod imp {
                 let file_path = project_preview_file_path(url);
                 let page_load_project = *project_id;
                 let page_load_messages = preview_messages.clone();
+                let page_load_live_urls = project_preview_live_urls;
                 let page_load_app = app.clone();
                 let webview = WebViewBuilder::new()
                     // Build on a neutral page so the guarded native message
@@ -2696,6 +2749,9 @@ mod imp {
                             || url == "about:blank"
                     })
                     .with_on_page_load_handler(move |event, url| {
+                        page_load_live_urls
+                            .borrow_mut()
+                            .insert(page_load_project, url.clone());
                         enqueue_project_preview_message(
                             &page_load_messages,
                             &page_load_app,
@@ -3135,9 +3191,25 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             inject_visualization_chrome, penpot_assistant_initialization_script,
             penpot_chrome_sync_script, penpot_left_sidebar_collapse_script,
             penpot_message_matches_surface, penpot_sidebar_tab_script, penpot_theme_sync_script,
-            preview_key_event_data, same_surface, surface_visible, unique_design_download_path,
-            PenpotMessage, PenpotSidebarTab, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
+            preview_key_event_data, project_preview_message_live_url, same_surface,
+            surface_visible, unique_design_download_path, PenpotMessage, PenpotSidebarTab,
+            MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
+
+        #[test]
+        fn project_preview_navigation_events_supply_the_live_url_cache() {
+            let project_id = ProjectId(Uuid::from_u128(7));
+            let message = ProjectPreviewMessage::AgentPageLoad {
+                project_id,
+                finished: false,
+                url: "http://127.0.0.1:5173/ready".into(),
+            };
+
+            assert_eq!(
+                project_preview_message_live_url(&message),
+                Some((project_id, "http://127.0.0.1:5173/ready"))
+            );
+        }
         use crate::ui::center::web_preview::{
             PenpotTheme, ProjectPreviewMessage, WebPreviewIntent,
         };

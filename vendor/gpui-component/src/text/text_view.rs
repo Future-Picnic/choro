@@ -119,6 +119,25 @@ enum Update {
     Style(Box<TextViewStyle>),
 }
 
+#[derive(Default)]
+struct UpdateCadence {
+    scheduled: bool,
+}
+
+impl UpdateCadence {
+    fn request(&mut self) -> bool {
+        if self.scheduled {
+            return false;
+        }
+        self.scheduled = true;
+        true
+    }
+
+    fn complete(&mut self) {
+        self.scheduled = false;
+    }
+}
+
 struct UpdateFuture {
     type_: TextViewType,
     highlight_theme: Arc<HighlightTheme>,
@@ -128,6 +147,7 @@ struct UpdateFuture {
     rx: Pin<Box<smol::channel::Receiver<Update>>>,
     tx_result: smol::channel::Sender<Result<ParsedContent, SharedString>>,
     delay: Duration,
+    cadence: UpdateCadence,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
 }
 
@@ -152,8 +172,21 @@ impl UpdateFuture {
             rx: Box::pin(rx),
             tx_result,
             delay,
+            cadence: UpdateCadence::default(),
             code_block_actions,
         }
+    }
+
+    /// Coalesce a burst of changes without postponing rendering until the
+    /// producer becomes idle. Markdown chat messages can stream continuously
+    /// for seconds; a trailing debounce leaves their first parsed fragments on
+    /// screen for the whole turn. Scheduling only the first change gives us a
+    /// bounded refresh cadence while every tick still parses the newest text.
+    fn schedule_update(&mut self) {
+        if !self.cadence.request() {
+            return;
+        }
+        self.timer.set_after(self.delay);
     }
 }
 
@@ -176,8 +209,7 @@ impl Future for UpdateFuture {
                         _ => false,
                     };
                     if changed {
-                        let delay = self.delay;
-                        self.timer.set_after(delay);
+                        self.schedule_update();
                     }
                     continue;
                 }
@@ -187,6 +219,7 @@ impl Future for UpdateFuture {
 
             match self.timer.poll_next(cx) {
                 Poll::Ready(Some(_)) => {
+                    self.cadence.complete();
                     let res = parse_content(
                         self.type_,
                         &self.current_text,
@@ -825,6 +858,23 @@ fn selection_bounds(
 mod tests {
     use super::*;
     use gpui::{Bounds, point, px, size};
+
+    #[test]
+    fn continuous_text_changes_keep_the_first_refresh_deadline() {
+        let mut cadence = UpdateCadence::default();
+
+        assert!(cadence.request(), "the first change schedules a refresh");
+        assert!(
+            !cadence.request(),
+            "later streaming fragments must not postpone that refresh"
+        );
+
+        cadence.complete();
+        assert!(
+            cadence.request(),
+            "the first fragment after a refresh schedules the next cadence tick"
+        );
+    }
 
     #[test]
     fn test_text_view_state_selection_bounds() {

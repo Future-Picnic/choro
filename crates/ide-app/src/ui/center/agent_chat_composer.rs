@@ -12,12 +12,243 @@ impl CenterArea {
         {
             return Some(picker);
         }
+        if let Some(view) = self.active_agent_chat_project_mention_view(agent, cx) {
+            return Some(self.render_agent_chat_project_picker(agent, input, &view, cx));
+        }
+        if let Some(view) = self.active_agent_chat_agent_mention_view(agent, cx) {
+            return Some(self.render_agent_chat_agent_picker(agent, input, &view, cx));
+        }
         if let Some(view) = self.active_agent_chat_doc_mention_view(agent.id, agent.project_id, cx)
         {
             return Some(self.render_agent_chat_doc_mention_picker(agent, input, &view, cx));
         }
         let view = self.active_agent_chat_file_mention_view(agent, cx)?;
         Some(self.render_agent_chat_file_mention_picker(agent, input, &view, cx))
+    }
+
+    pub(super) fn render_agent_chat_project_picker(
+        &self,
+        agent: &AgentRecord,
+        input: Entity<InputState>,
+        view: &ComposerProjectMentionView,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let content = if view.matches.is_empty() {
+            vec![h_flex()
+                .w_full()
+                .h(px(COMPOSER_PICKER_ROW_H))
+                .px_2()
+                .gap_1p5()
+                .items_center()
+                .text_size(crate::ui::design::text_ui())
+                .text_color(crate::ui::design::t3(cx))
+                .child(
+                    gpui_component::Icon::new(IconName::FolderOpen)
+                        .size(crate::ui::design::icon_md()),
+                )
+                .child(if view.mention.query.is_empty() {
+                    "No other projects in Choro".to_string()
+                } else {
+                    format!("No projects matching {}", view.mention.query)
+                })
+                .into_any_element()]
+        } else {
+            view.matches
+                .iter()
+                .enumerate()
+                .map(|(index, project)| {
+                    let selected = index == view.selected;
+                    let project_for_click = project.clone();
+                    let mention_for_click = view.mention.clone();
+                    let input_for_click = input.clone();
+                    let agent_id = agent.id;
+                    h_flex()
+                        .id(("agent-chat-project-mention-row", index))
+                        .w_full()
+                        .min_w(px(0.))
+                        .h(px(COMPOSER_PICKER_ROW_H))
+                        .gap_1p5()
+                        .items_center()
+                        .px_2()
+                        .rounded(crate::ui::design::r_sm())
+                        .cursor_pointer()
+                        .bg(if selected {
+                            crate::ui::design::surface_2(cx)
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.46)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.insert_agent_chat_project_mention(
+                                agent_id,
+                                input_for_click.clone(),
+                                project_for_click.clone(),
+                                mention_for_click.clone(),
+                                window,
+                                cx,
+                            );
+                        }))
+                        .child(
+                            gpui_component::Icon::new(IconName::FolderOpen)
+                                .size(crate::ui::design::icon_md())
+                                .text_color(if selected {
+                                    crate::ui::design::rose(cx)
+                                } else {
+                                    crate::ui::design::t3(cx)
+                                }),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(190.))
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(crate::ui::design::text_ui())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(crate::ui::design::t1(cx))
+                                .child(project.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(crate::ui::design::text_ui())
+                                .text_color(crate::ui::design::t3(cx))
+                                .child(project.path.to_string_lossy().to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .rounded(crate::ui::design::r_sm())
+                                .bg(crate::ui::design::rose(cx).opacity(0.12))
+                                .px_1p5()
+                                .py_0p5()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::rose(cx))
+                                .child("Project"),
+                        )
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        v_flex()
+            .w_full()
+            .max_h(px(COMPOSER_PICKER_MAX_H))
+            .overflow_hidden()
+            .rounded(crate::ui::design::r_md())
+            .border_1()
+            .border_color(crate::ui::design::line(cx).opacity(0.42))
+            .bg(crate::ui::design::focus(cx))
+            .shadow_lg()
+            .p_1()
+            .gap_0p5()
+            .children(content)
+            .into_any_element()
+    }
+
+    pub(super) fn render_agent_chat_agent_picker(
+        &self,
+        agent: &AgentRecord,
+        input: Entity<InputState>,
+        view: &ComposerAgentMentionView,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let content = if view.matches.is_empty() {
+            vec![div()
+                .px_2()
+                .py_1p5()
+                .text_size(crate::ui::design::text_ui())
+                .text_color(crate::ui::design::t3(cx))
+                .child(if view.mention.query.is_empty() {
+                    "No other agents in this project".to_string()
+                } else {
+                    format!("No agents matching {}", view.mention.query)
+                })
+                .into_any_element()]
+        } else {
+            view.matches
+                .iter()
+                .enumerate()
+                .map(|(index, target)| {
+                    let selected = index == view.selected;
+                    let target_for_click = target.clone();
+                    let mention_for_click = view.mention.clone();
+                    let input_for_click = input.clone();
+                    let source_agent_id = agent.id;
+                    h_flex()
+                        .id(("agent-chat-agent-mention-row", index))
+                        .w_full()
+                        .min_w(px(0.))
+                        .h(px(COMPOSER_PICKER_ROW_H))
+                        .gap_2()
+                        .items_center()
+                        .px_2()
+                        .rounded(crate::ui::design::r_sm())
+                        .cursor_pointer()
+                        .bg(if selected {
+                            crate::ui::design::surface_2(cx)
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.46)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.insert_agent_chat_agent_target(
+                                source_agent_id,
+                                input_for_click.clone(),
+                                target_for_click.clone(),
+                                mention_for_click.clone(),
+                                window,
+                                cx,
+                            );
+                        }))
+                        .child(crate::ui::agent_status_style::status_dot(
+                            target.status,
+                            6.,
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .max_w(px(180.))
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(crate::ui::design::text_ui())
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(crate::ui::design::t1(cx))
+                                .child(target.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::t4(cx))
+                                .child(format!(
+                                    "{} · {} · {}",
+                                    target.status.label(),
+                                    target.project_name,
+                                    if target.active { "Active" } else { "Inactive" }
+                                )),
+                        )
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        v_flex()
+            .w_full()
+            .max_h(px(COMPOSER_PICKER_MAX_H))
+            .overflow_hidden()
+            .rounded(crate::ui::design::r_md())
+            .border_1()
+            .border_color(crate::ui::design::line(cx).opacity(0.42))
+            .bg(crate::ui::design::focus(cx))
+            .shadow_lg()
+            .p_1()
+            .gap_0p5()
+            .children(content)
+            .into_any_element()
     }
 
     pub(super) fn render_agent_chat_slash_picker(
@@ -302,6 +533,7 @@ impl CenterArea {
         input: Entity<InputState>,
         command: Option<&AgentCapability>,
         mentions: &[ComposerMentionToken],
+        target: Option<&AgentRecord>,
         preview_armed: bool,
         preview_suggested: bool,
         cx: &mut Context<Self>,
@@ -376,6 +608,93 @@ impl CenterArea {
                     cx,
                 ))
             })
+            .when_some(target, |row, target| {
+                let source_agent_id = agent_id;
+                let target_id = target.id;
+                let request_kind = self
+                    .agent_chat_agent_request_kind_overrides
+                    .get(&source_agent_id)
+                    .copied()
+                    .unwrap_or_else(|| classify_agent_request(&input.read(cx).value()));
+                let request_icon = match request_kind {
+                    AgentRequestKind::Ask => lucide_icons::Icon::CircleHelp,
+                    AgentRequestKind::Delegate => lucide_icons::Icon::ListTodo,
+                };
+                let request_color = match request_kind {
+                    AgentRequestKind::Ask => crate::ui::design::sky(cx),
+                    AgentRequestKind::Delegate => crate::ui::design::amber(cx),
+                };
+                row.child(
+                    h_flex()
+                        .id((
+                            "agent-chat-selected-agent-target",
+                            target_id.as_u128() as u64,
+                        ))
+                        .min_w(px(0.))
+                        .items_center()
+                        .gap_1()
+                        .h(crate::ui::design::control_h_xs())
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(crate::ui::design::r_sm())
+                        .border_1()
+                        .border_color(crate::ui::design::sky(cx).opacity(0.34))
+                        .bg(crate::ui::design::sky(cx).opacity(0.12))
+                        .cursor_pointer()
+                        .hover(|chip| chip.bg(crate::ui::design::sky(cx).opacity(0.18)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.agent_chat_selected_agent_targets
+                                .remove(&source_agent_id);
+                            this.agent_chat_agent_request_kind_overrides
+                                .remove(&source_agent_id);
+                            cx.notify();
+                        }))
+                        .child(
+                            gpui_component::Icon::new(IconName::Bot)
+                                .size(crate::ui::design::icon_md())
+                                .text_color(crate::ui::design::sky(cx)),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(140.))
+                                .truncate()
+                                .text_size(crate::ui::design::text_head())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(crate::ui::design::sky(cx))
+                                .child(format!("#{}", target.title)),
+                        )
+                        .child(
+                            gpui_component::Icon::new(IconName::Close)
+                                .size(crate::ui::design::icon_sm())
+                                .text_color(crate::ui::design::sky(cx).opacity(0.72)),
+                        ),
+                )
+                .child(
+                    crate::ui::style::composer_toggle_chip(
+                        (
+                            "agent-chat-agent-request-kind",
+                            source_agent_id.as_u128() as u64,
+                        ),
+                        request_kind.display_label(),
+                        Some(
+                            crate::ui::design::indicator::lucide_icon(
+                                request_icon,
+                                request_color,
+                                crate::ui::design::icon_sm(),
+                            )
+                            .into_any_element(),
+                        ),
+                        false,
+                        cx,
+                    )
+                    .tooltip("Inferred from your text · click to switch Question / Task")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.agent_chat_agent_request_kind_overrides
+                            .insert(source_agent_id, request_kind.toggled());
+                        cx.notify();
+                    })),
+                )
+            })
             .children(mentions.iter().enumerate().map(|(index, mention)| {
                 self.render_agent_chat_selected_mention_token(
                     agent_id,
@@ -405,6 +724,12 @@ impl CenterArea {
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),
+            ComposerMentionKind::Project => (IconName::FolderOpen, crate::ui::design::rose(cx)),
+        };
+        let label = if mention.kind == ComposerMentionKind::Project {
+            format!("##{}", mention.chip_label())
+        } else {
+            mention.chip_label().to_string()
         };
         h_flex()
             .id((
@@ -461,7 +786,7 @@ impl CenterArea {
                     .text_size(crate::ui::design::text_head())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(color)
-                    .child(mention.chip_label().to_string()),
+                    .child(label),
             )
             .child(
                 gpui_component::Icon::new(IconName::Close)

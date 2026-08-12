@@ -142,6 +142,10 @@ enum NotificationAction {
 #[derive(Default)]
 struct NotificationCoordinator {
     attention: HashMap<AttentionKey, AttentionState>,
+    /// Exact maintenance revisions acknowledged before (or after) the regular
+    /// attention poll observes them. Consuming an exact revision avoids
+    /// suppressing the agent's next real response.
+    suppressed_revisions: HashSet<(AttentionKey, String)>,
     primed: bool,
 }
 
@@ -183,6 +187,8 @@ impl NotificationCoordinator {
         }
 
         for event in events {
+            let suppressed_revision = (event.key.clone(), event.revision.clone());
+            let suppressed = self.suppressed_revisions.remove(&suppressed_revision);
             let exact_agent_visible = app_active
                 && visible.is_some_and(|visible| {
                     visible.project_id == event.project_id() && visible.agent_id == event.agent_id()
@@ -202,6 +208,16 @@ impl NotificationCoordinator {
                 state.delivered_revision = None;
             }
             state.event = event;
+
+            if suppressed {
+                state.unread = false;
+                state.delivered_revision = Some(state.event.revision.clone());
+                state.companion_seen_revision = Some(state.event.revision.clone());
+                actions.push(NotificationAction::Remove(notification_identifier(
+                    &state.event,
+                )));
+                continue;
+            }
 
             if exact_agent_visible {
                 state.unread = false;
@@ -257,6 +273,38 @@ impl NotificationCoordinator {
         }
 
         self.primed = true;
+        actions
+    }
+
+    fn suppress_revision(
+        &mut self,
+        project_id: ProjectId,
+        agent_id: Uuid,
+        category: AttentionCategory,
+        revision: String,
+    ) -> Vec<NotificationAction> {
+        let key = AttentionKey {
+            project_id,
+            agent_id,
+            category,
+        };
+        let revision_key = (key.clone(), revision.clone());
+        self.suppressed_revisions.insert(revision_key.clone());
+
+        let mut actions = Vec::new();
+        if let Some(state) = self
+            .attention
+            .get_mut(&key)
+            .filter(|state| state.event.revision == revision)
+        {
+            state.unread = false;
+            state.delivered_revision = Some(state.event.revision.clone());
+            state.companion_seen_revision = Some(state.event.revision.clone());
+            self.suppressed_revisions.remove(&revision_key);
+            actions.push(NotificationAction::Remove(notification_identifier(
+                &state.event,
+            )));
+        }
         actions
     }
 
@@ -386,6 +434,20 @@ pub fn acknowledge_agent(project_id: ProjectId, agent_id: Uuid) {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .acknowledge_agent(project_id, agent_id);
+    execute_actions(actions);
+    update_dock_badge();
+}
+
+pub fn suppress_agent_attention_revision(
+    project_id: ProjectId,
+    agent_id: Uuid,
+    category: AttentionCategory,
+    revision: String,
+) {
+    let actions = coordinator()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .suppress_revision(project_id, agent_id, category, revision);
     execute_actions(actions);
     update_dock_badge();
 }
@@ -1100,6 +1162,78 @@ mod tests {
         let attention = coordinator.companion_attention();
         assert_eq!(attention.len(), 1);
         assert_eq!(attention[0].agent_id, completed_agent);
+    }
+
+    #[test]
+    fn exact_maintenance_completion_is_hidden_but_the_next_completion_is_not() {
+        let project = ProjectId(Uuid::nil());
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+
+        assert!(coordinator
+            .suppress_revision(
+                project,
+                agent,
+                AttentionCategory::Completed,
+                "completed:summary".to_string(),
+            )
+            .is_empty());
+        let actions = coordinator.synchronize(
+            vec![event(
+                agent,
+                AttentionCategory::Completed,
+                "completed:summary",
+            )],
+            None,
+            false,
+            background_preferences(),
+        );
+        assert!(actions
+            .iter()
+            .all(|action| !matches!(action, NotificationAction::Deliver { .. })));
+        assert!(coordinator.companion_attention().is_empty());
+
+        coordinator.synchronize(
+            vec![event(
+                agent,
+                AttentionCategory::Completed,
+                "completed:real-work",
+            )],
+            None,
+            false,
+            background_preferences(),
+        );
+        let attention = coordinator.companion_attention();
+        assert_eq!(attention.len(), 1);
+        assert_eq!(attention[0].revision, "completed:real-work");
+    }
+
+    #[test]
+    fn maintenance_completion_can_be_hidden_after_attention_polling() {
+        let project = ProjectId(Uuid::nil());
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+        coordinator.synchronize(
+            vec![event(
+                agent,
+                AttentionCategory::Completed,
+                "completed:summary",
+            )],
+            None,
+            false,
+            background_preferences(),
+        );
+        assert_eq!(coordinator.companion_attention().len(), 1);
+
+        coordinator.suppress_revision(
+            project,
+            agent,
+            AttentionCategory::Completed,
+            "completed:summary".to_string(),
+        );
+        assert!(coordinator.companion_attention().is_empty());
     }
 
     #[test]

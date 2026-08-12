@@ -107,6 +107,10 @@ impl CenterArea {
             .get(&agent.id)
             .cloned()
             .unwrap_or_default();
+        let selected_agent_target = self
+            .agent_chat_selected_agent_targets
+            .get(&agent.id)
+            .and_then(|target_id| self.agents.read(cx).agent(*target_id).cloned());
         let has_attachments = !attached_files.is_empty();
         let has_pasted_text_blocks = !pasted_text_blocks.is_empty();
         let has_draft = !input.read(cx).value().trim().is_empty()
@@ -155,7 +159,7 @@ impl CenterArea {
                 .or_else(|| self.git_states.read(cx).get(agent.project_id))
         };
         let has_project_changed_files = surface.allows_project_actions()
-            && if agent.is_solo() {
+            && if agent.is_active_solo() {
                 // A Solo ships from its lane — the project tree is clean by
                 // design, so the gate reads the agent's own changed files.
                 agent.lane_path.is_some()
@@ -229,7 +233,9 @@ impl CenterArea {
         let row_fingerprints = display_order
             .iter()
             .filter_map(|index| rows.get(*index))
-            .map(|row| agent_chat_row_fingerprint(row, &session))
+            .map(|row| {
+                agent_chat_row_fingerprint(row, &session, self.agent_chat_active_reveal.as_ref())
+            })
             .collect::<Vec<_>>();
         let list_state = self.agent_chat_list_state(
             agent.id,
@@ -663,6 +669,7 @@ impl CenterArea {
                                         .when(
                                                 selected_command.is_some()
                                                 || !selected_mentions.is_empty()
+                                                || selected_agent_target.is_some()
                                                 || preview_armed
                                                 || preview_suggested,
                                             |col| {
@@ -671,6 +678,7 @@ impl CenterArea {
                                                     input.clone(),
                                                     selected_command.as_ref(),
                                                     &selected_mentions,
+                                                    selected_agent_target.as_ref(),
                                                     preview_armed,
                                                     preview_suggested,
                                                     cx,
@@ -1090,29 +1098,6 @@ impl CenterArea {
                                                 )),
                                         )
                                     })
-                                    .child(
-                                        crate::ui::style::composer_icon_action(
-                                            (
-                                                "agent-chat-dictate",
-                                                agent.id.as_u128() as u64,
-                                            ),
-                                            svg()
-                                                .path("icons/microphone.svg")
-                                                .size(crate::ui::design::icon_sm())
-                                                .text_color(crate::ui::design::t3(cx)),
-                                            cx,
-                                        )
-                                        .tooltip("Dictate editable text")
-                                        .on_click({
-                                            let voice = self.voice.clone();
-                                            let agent_id = agent.id;
-                                            move |_, _, cx| {
-                                                voice.update(cx, |voice, cx| {
-                                                    voice.activate_dictation_for(agent_id, cx)
-                                                });
-                                            }
-                                        }),
-                                    )
                                     .child({
                                         let can_send = has_draft || has_attachments;
                                         if is_running && !can_send {
@@ -1183,7 +1168,7 @@ impl CenterArea {
                                         } else {
                                             // A Solo sends in sky — the lane
                                             // color rides the act itself.
-                                            let solo = agent.is_solo();
+                                            let solo = agent.is_active_solo();
                                             let send_fill = if solo {
                                                 crate::ui::design::sky(cx)
                                             } else {

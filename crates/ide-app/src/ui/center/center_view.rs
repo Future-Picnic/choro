@@ -65,6 +65,15 @@ impl CenterArea {
                 HashSet::new()
             }
         };
+        let agent_summaries = ide_core::local_store::LocalStore::open_default()
+            .and_then(|store| store.load_all_agent_summaries())
+            .map(|summaries| {
+                summaries
+                    .into_iter()
+                    .map(|summary| (summary.agent_id, summary))
+                    .collect()
+            })
+            .unwrap_or_default();
         let preview_control_root = ide_core::AppConfig::config_path()
             .parent()
             .map(Path::to_path_buf)
@@ -108,6 +117,9 @@ impl CenterArea {
             cx.subscribe(
                 &agents,
                 |this: &mut Self, _, event: &crate::state::agents::AgentRecordsEvent, cx| {
+                    if matches!(event, crate::state::agents::AgentRecordsEvent::Changed) {
+                        this.maybe_terminal_agent_summary(cx);
+                    }
                     if matches!(
                         event,
                         crate::state::agents::AgentRecordsEvent::SelectionChanged
@@ -131,6 +143,7 @@ impl CenterArea {
                 this.sync_doc_assistant_chat_session_ids(cx);
                 this.maybe_finalize_doc_assistant_titles(cx);
                 this.maybe_auto_verify(cx);
+                this.maybe_finish_summary_maintenance(cx);
                 cx.notify();
             })
             .detach();
@@ -330,12 +343,12 @@ impl CenterArea {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    let (records, memories) = cx
+                    let (records, memories, summaries, agent_messages) = cx
                         .background_executor()
                         .spawn(async move {
                             let Ok(store) = ide_core::local_store::LocalStore::open_default()
                             else {
-                                return (HashMap::new(), Vec::new());
+                                return (HashMap::new(), Vec::new(), Vec::new(), Vec::new());
                             };
                             let records = project_ids
                                 .into_iter()
@@ -348,12 +361,17 @@ impl CenterArea {
                             // Same DB channel as previews: the MCP `memory_save`
                             // writes rows the GUI notices here.
                             let memories = store.load_all_memories().unwrap_or_default();
-                            (records, memories)
+                            let summaries = store.load_all_agent_summaries().unwrap_or_default();
+                            let agent_messages =
+                                store.load_pending_agent_messages().unwrap_or_default();
+                            (records, memories, summaries, agent_messages)
                         })
                         .await;
                     center
                         .update(cx, |this: &mut Self, cx| {
                             this.surface_fresh_memorized_cards(&memories, cx);
+                            this.surface_fresh_agent_summaries(&summaries, cx);
+                            this.surface_pending_agent_messages(&agent_messages, cx);
                             this.maybe_check_rejoin_ready(cx);
                             let now = SystemTime::now()
                                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -624,6 +642,12 @@ impl CenterArea {
                 agent_chat_doc_dismissed_query: HashMap::new(),
                 agent_chat_file_selection: HashMap::new(),
                 agent_chat_file_dismissed_query: HashMap::new(),
+                agent_chat_selected_agent_targets: HashMap::new(),
+                agent_chat_agent_request_kind_overrides: HashMap::new(),
+                agent_chat_agent_selection: HashMap::new(),
+                agent_chat_agent_dismissed_query: HashMap::new(),
+                agent_chat_project_selection: HashMap::new(),
+                agent_chat_project_dismissed_query: HashMap::new(),
                 agent_chat_expanded_thoughts: HashSet::new(),
                 agent_chat_expanded_work_log_groups: HashSet::new(),
                 agent_chat_expanded_work_log_entries: HashSet::new(),
@@ -660,6 +684,7 @@ impl CenterArea {
                 agent_ship_pr_fetching: HashSet::new(),
                 ship_task_ui: HashMap::new(),
                 agent_detail_tabs: HashMap::new(),
+                agent_notes_expanded: HashSet::new(),
                 personal_editor: None,
                 personal_editor_save_epoch: 0,
                 task_desc_expanded: HashSet::new(),
@@ -685,6 +710,12 @@ impl CenterArea {
                 project_preview_refresh: HashMap::new(),
                 memory_card_ids_seen,
                 memory_undos_pending: HashSet::new(),
+                agent_summaries,
+                agent_summary_requests_pending: HashMap::new(),
+                agent_summary_silent_requests: HashSet::new(),
+                agent_summary_maintenance_status_seen: HashMap::new(),
+                agent_record_status_seen: HashMap::new(),
+                agent_messages_inflight: HashSet::new(),
                 memory_distills_inflight: HashSet::new(),
                 memory_proposal_accepts_pending: HashSet::new(),
                 memory_proposal_errors: HashMap::new(),

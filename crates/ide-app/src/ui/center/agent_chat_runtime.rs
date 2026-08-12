@@ -24,10 +24,13 @@ pub(super) const AGENT_CODE_REVIEW_FIX_PREFIX: &str =
 /// timeline collapses the turn to a "Sent for verification" chip.
 pub(super) const AGENT_VERIFY_REQUEST_MARKER: &str = "<!-- choro:verify -->";
 
-/// Records that the user declined the one optional follow-up verification for
-/// this conversation. Unlike the transient decision panel, this marker is
-/// persisted with the timeline so later turns and app restarts do not revive
-/// the same prompt.
+/// Records that the user declined verification for this agent. Unlike the
+/// transient decision panel, this marker is persisted with the timeline so
+/// later turns and app restarts do not revive either verification prompt.
+pub(super) const AGENT_VERIFY_DISMISS_MARKER: &str = "<!-- choro:verify-dismissed -->";
+
+/// Historical marker written by releases that only persisted dismissal of the
+/// follow-up verification prompt. Keep recognising it in resumed transcripts.
 pub(super) const AGENT_REVERIFY_DISMISS_MARKER: &str = "<!-- choro:reverify-dismissed -->";
 
 /// Stable opening of the "Ask to fix" turn that lists a verification's unmet
@@ -415,7 +418,12 @@ impl CenterArea {
             .update(cx, |chats, cx| chats.force_stop_backend(agent_id, cx));
         self.agent_chat_selected_commands.remove(&agent_id);
         self.agent_chat_selected_mentions.remove(&agent_id);
+        self.agent_chat_selected_agent_targets.remove(&agent_id);
+        self.agent_chat_agent_request_kind_overrides
+            .remove(&agent_id);
         self.agent_chat_slash_dismissed_query.remove(&agent_id);
+        self.agent_chat_agent_dismissed_query.remove(&agent_id);
+        self.agent_chat_project_dismissed_query.remove(&agent_id);
         self.agent_chat_doc_dismissed_query.remove(&agent_id);
         self.agent_chat_file_dismissed_query.remove(&agent_id);
 
@@ -584,12 +592,25 @@ impl CenterArea {
         cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.agent_chat_slash_selection.insert(agent_id, 0);
+                this.agent_chat_project_selection.insert(agent_id, 0);
+                this.agent_chat_agent_selection.insert(agent_id, 0);
                 this.agent_chat_doc_selection.insert(agent_id, 0);
                 this.agent_chat_file_selection.insert(agent_id, 0);
                 let value = input_for_sub.read(cx).value().to_string();
                 let active_query = agent_chat_slash_query(&value).map(|query| query.query);
                 if this.agent_chat_slash_dismissed_query.get(&agent_id) != active_query.as_ref() {
                     this.agent_chat_slash_dismissed_query.remove(&agent_id);
+                }
+                let project_query = active_composer_project_mention(&input_for_sub.read(cx))
+                    .map(|mention| mention.query);
+                if this.agent_chat_project_dismissed_query.get(&agent_id) != project_query.as_ref()
+                {
+                    this.agent_chat_project_dismissed_query.remove(&agent_id);
+                }
+                let agent_query = active_composer_agent_mention(&input_for_sub.read(cx))
+                    .map(|mention| mention.query);
+                if this.agent_chat_agent_dismissed_query.get(&agent_id) != agent_query.as_ref() {
+                    this.agent_chat_agent_dismissed_query.remove(&agent_id);
                 }
                 let doc_query = active_composer_doc_mention(&input_for_sub.read(cx))
                     .map(|mention| mention.query);
@@ -718,12 +739,12 @@ impl CenterArea {
             .session(agent_id)
             .map(|session| verification_lifecycle(&session.timeline))
             .unwrap_or(VerificationLifecycle::NotStarted);
-        let already_complete = self
+        let verification_closed = self
             .agents
             .read(cx)
             .agent(agent_id)
-            .is_some_and(|agent| agent.verification_completed_at.is_some());
-        if already_complete
+            .is_some_and(AgentRecord::is_verification_closed);
+        if verification_closed
             || !matches!(
                 lifecycle,
                 VerificationLifecycle::NotStarted | VerificationLifecycle::Fixing
@@ -839,6 +860,7 @@ impl CenterArea {
         let mut fire: Vec<Uuid> = Vec::new();
         let mut offer: Vec<Uuid> = Vec::new();
         let mut completed: Vec<Uuid> = Vec::new();
+        let mut declined: Vec<Uuid> = Vec::new();
         let verification_mode = self.workspace.read(cx).verification_mode;
         {
             let chats = self.agent_chats.read(cx);
@@ -859,7 +881,7 @@ impl CenterArea {
                     session.last_activity_at,
                     session.status,
                     agent.is_some(),
-                    agent.is_some_and(|agent| agent.verification_completed_at.is_some()),
+                    agent.is_some_and(AgentRecord::is_verification_closed),
                     verification_mode,
                 );
                 if self.agent_verify_scan_seen.get(agent_id) == Some(&scan_key) {
@@ -867,6 +889,13 @@ impl CenterArea {
                 }
                 self.agent_verify_scan_seen.insert(*agent_id, scan_key);
                 let lifecycle = verification_lifecycle(&session.timeline);
+                if lifecycle == VerificationLifecycle::Declined
+                    && agent.is_some_and(|agent| !agent.verification_closed)
+                {
+                    // Promote dismissals written by older builds from a
+                    // timeline-only marker to the authoritative hard gate.
+                    declined.push(*agent_id);
+                }
                 if lifecycle == VerificationLifecycle::Complete
                     && agent.is_some_and(|agent| agent.verification_completed_at.is_none())
                 {
@@ -878,7 +907,7 @@ impl CenterArea {
                 {
                     continue;
                 }
-                if agent.is_some_and(|agent| agent.verification_completed_at.is_some())
+                if agent.is_some_and(AgentRecord::is_verification_closed)
                     || lifecycle == VerificationLifecycle::Complete
                 {
                     continue;
@@ -904,7 +933,7 @@ impl CenterArea {
                     VerificationLifecycle::Fixing => {}
                     VerificationLifecycle::Verifying
                     | VerificationLifecycle::NeedsFix
-                    | VerificationLifecycle::ReverificationDeclined
+                    | VerificationLifecycle::Declined
                     | VerificationLifecycle::Complete => continue,
                 }
                 match verification_mode {
@@ -913,6 +942,16 @@ impl CenterArea {
                     ide_core::config::VerificationMode::Off => {}
                 }
             }
+        }
+        if !declined.is_empty() {
+            for agent_id in &declined {
+                self.verification_prompt_pending.remove(agent_id);
+            }
+            self.agents.update(cx, |agents, cx| {
+                for agent_id in declined {
+                    agents.mark_verification_closed(agent_id, cx);
+                }
+            });
         }
         if !completed.is_empty() {
             for agent_id in &completed {
@@ -1126,6 +1165,32 @@ impl CenterArea {
         );
         let message_tags =
             composer_message_tags(selected_command.as_ref(), &selected_mentions, preview_armed);
+        let projects = self.workspace.read(cx).projects.clone();
+        if let Some(target_agent_id) = self
+            .agent_chat_selected_agent_targets
+            .get(&agent.id)
+            .copied()
+        {
+            let message = message_display_text.trim().to_string();
+            if message.is_empty() {
+                return;
+            }
+            let request_kind = self
+                .agent_chat_agent_request_kind_overrides
+                .remove(&agent.id)
+                .unwrap_or_else(|| classify_agent_request(&message));
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+            self.agent_chat_attached_files.remove(&agent.id);
+            self.agent_chat_pasted_text_blocks.remove(&agent.id);
+            self.agent_chat_selected_commands.remove(&agent.id);
+            self.agent_chat_selected_mentions.remove(&agent.id);
+            self.agent_chat_selected_agent_targets.remove(&agent.id);
+            self.agent_chat_preview_armed.remove(&agent.id);
+            self.queue_composer_agent_message(agent.id, target_agent_id, message, request_kind, cx);
+            self.acknowledge_agent_chat_seen(agent.id, cx);
+            cx.notify();
+            return;
+        }
         // Captured before resolution: plan feedback is a decision worth
         // examining for a durable preference once the submission goes through.
         let refine_plan_markdown = self
@@ -1155,7 +1220,8 @@ impl CenterArea {
                 None
             } else {
                 let session = chats.ensure_session(agent.id, agent.title.clone(), cx);
-                let draft = composer_mentions_submission_text(&draft, &selected_mentions);
+                let draft =
+                    composer_mentions_submission_text(&draft, &selected_mentions, &projects);
                 let draft = agent_chat_submission_text(&draft, selected_command.as_ref());
                 let draft = preview_submission_text(&draft, preview_armed);
                 let draft = memory_save_submission_text(&draft);
@@ -1406,6 +1472,45 @@ impl CenterArea {
         .detach();
     }
 
+    pub(super) fn agent_connected_context_extras(
+        &self,
+        agent: &AgentRecord,
+        cx: &App,
+    ) -> AgentConnectedContextExtras {
+        let connected_designs = self
+            .penpot
+            .read(cx)
+            .designs_for_agent(&agent)
+            .into_iter()
+            .map(|design| AgentConnectedDesign {
+                design_id: design.id,
+                file_id: design.penpot_file_id,
+                name: design.name,
+                page_id: design.page_id,
+            })
+            .collect();
+        let pull_request =
+            self.agent_ship_prs
+                .get(&agent.id)
+                .map(|pull_request| AgentConnectedPullRequest {
+                    repository_path: agent
+                        .ship_pr_repo_path
+                        .clone()
+                        .unwrap_or_else(|| agent.repository_root().to_path_buf()),
+                    branch: pull_request.branch.clone(),
+                    base_branch: pull_request.base_branch.clone(),
+                    number: pull_request.number,
+                    title: pull_request.title.clone(),
+                    url: pull_request.url.clone(),
+                    state: pull_request.state.clone(),
+                    is_draft: pull_request.is_draft,
+                });
+        AgentConnectedContextExtras {
+            designs: connected_designs,
+            pull_request,
+        }
+    }
+
     pub(super) fn dispatch_agent_chat_submission_with_agent(
         &mut self,
         agent: &AgentRecord,
@@ -1415,6 +1520,15 @@ impl CenterArea {
         fallback_mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) -> bool {
+        let agent = self
+            .agents
+            .read(cx)
+            .agent(agent.id)
+            .cloned()
+            .unwrap_or_else(|| agent.clone());
+        let connected_context = self.agent_connected_context_extras(&agent, cx);
+        let submission_text =
+            ide_core::prompt_with_connected_context(&submission_text, &agent, &connected_context);
         if let Some(design_context) = agent.design_context {
             let design_id = design_context.design_id;
             let expected_file_id = design_context.file_id;
@@ -1505,7 +1619,7 @@ impl CenterArea {
             display_text,
             tags,
             fallback_mode,
-            Some(agent.clone()),
+            Some(agent),
             cx,
         )
     }
@@ -1513,7 +1627,7 @@ impl CenterArea {
     fn dispatch_agent_chat_submission_inner(
         &mut self,
         agent_id: Uuid,
-        submission_text: String,
+        mut submission_text: String,
         display_text: Option<String>,
         tags: Vec<AgentChatMessageTag>,
         fallback_mode: AgentInteractionMode,
@@ -1576,6 +1690,9 @@ impl CenterArea {
                 return false;
             };
             self.apply_live_chat_session_ids(&mut agent, cx);
+            if agent_has_backend_resume_id(&agent) {
+                submission_text = summary_resume_submission_text(&submission_text, agent_id);
+            }
             if !agent_has_backend_resume_id(&agent)
                 && (agent.started_at.is_some()
                     || self.agent_chat_has_persisted_history(agent_id, cx))
@@ -1593,7 +1710,11 @@ impl CenterArea {
                     .read(cx)
                     .session(agent_id)
                     .is_some_and(|session| {
-                        !session.messages.is_empty() || !session.timeline.is_empty()
+                        !session.messages.is_empty()
+                            || session
+                                .timeline
+                                .iter()
+                                .any(|item| matches!(item, AgentChatTimelineItem::Message(_)))
                     });
             let needs_resume_hydration = should_defer_agent_chat_submission_for_resume(
                 agent_has_backend_resume_id(&agent),
@@ -1870,6 +1991,113 @@ impl CenterArea {
         })
     }
 
+    pub(super) fn active_agent_chat_agent_mention_view(
+        &self,
+        agent: &AgentRecord,
+        cx: &App,
+    ) -> Option<ComposerAgentMentionView> {
+        let input = self.agent_chat_inputs.get(&agent.id)?;
+        let mention = active_composer_agent_mention(&input.read(cx))?;
+        if self
+            .agent_chat_agent_dismissed_query
+            .get(&agent.id)
+            .is_some_and(|dismissed| dismissed == &mention.query)
+        {
+            return None;
+        }
+        let project_name = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .find(|project| project.id == agent.project_id)
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| "Project".to_string());
+        let mut matches = self
+            .agents
+            .read(cx)
+            .records_for_project(agent.project_id)
+            .into_iter()
+            .filter(|candidate| candidate.id != agent.id)
+            .map(|candidate| ComposerAgentEntry {
+                id: candidate.id,
+                title: candidate.title,
+                status: candidate.status,
+                project_name: project_name.clone(),
+                active: self.agent_chats.read(cx).has_backend(candidate.id),
+            })
+            .filter(|candidate| composer_agent_matches(candidate, &mention.query))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right.active.cmp(&left.active).then_with(|| {
+                left.title
+                    .to_ascii_lowercase()
+                    .cmp(&right.title.to_ascii_lowercase())
+            })
+        });
+        matches.truncate(8);
+        let selected = self
+            .agent_chat_agent_selection
+            .get(&agent.id)
+            .copied()
+            .unwrap_or_default()
+            .min(matches.len().saturating_sub(1));
+        Some(ComposerAgentMentionView {
+            mention,
+            matches,
+            selected,
+        })
+    }
+
+    pub(super) fn active_agent_chat_project_mention_view(
+        &self,
+        agent: &AgentRecord,
+        cx: &App,
+    ) -> Option<ComposerProjectMentionView> {
+        let input = self.agent_chat_inputs.get(&agent.id)?;
+        let mention = active_composer_project_mention(&input.read(cx))?;
+        if self
+            .agent_chat_project_dismissed_query
+            .get(&agent.id)
+            .is_some_and(|dismissed| dismissed == &mention.query)
+        {
+            return None;
+        }
+        let mut matches = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .filter(|project| project.id != agent.project_id)
+            .map(|project| ComposerProjectEntry {
+                id: project.id,
+                name: project.name.clone(),
+                path: project.path.clone(),
+                is_favorite: project.is_favorite,
+            })
+            .filter(|project| composer_project_matches(project, &mention.query))
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right.is_favorite.cmp(&left.is_favorite).then_with(|| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            })
+        });
+        matches.truncate(COMPOSER_PICKER_VISIBLE_LIMIT);
+        let selected = self
+            .agent_chat_project_selection
+            .get(&agent.id)
+            .copied()
+            .unwrap_or_default()
+            .min(matches.len().saturating_sub(1));
+        Some(ComposerProjectMentionView {
+            mention,
+            matches,
+            selected,
+        })
+    }
+
     pub(super) fn active_agent_chat_file_mention_view(
         &mut self,
         agent: &AgentRecord,
@@ -2025,6 +2253,69 @@ impl CenterArea {
         cx.notify();
     }
 
+    pub(super) fn insert_agent_chat_agent_target(
+        &mut self,
+        source_agent_id: Uuid,
+        input: Entity<InputState>,
+        target: ComposerAgentEntry,
+        mention: ComposerAgentMention,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = input.read(cx).value().to_string();
+        if mention.range.start > mention.range.end || mention.range.end > current.len() {
+            return;
+        }
+        let (next, cursor) = remove_composer_agent_mention(&current, &mention);
+        input.update(cx, |input, cx| {
+            input.set_value(next.clone(), window, cx);
+            input.set_cursor_position(input_position_for_byte_offset(&next, cursor), window, cx);
+            input.focus(window, cx);
+        });
+        self.agent_chat_selected_agent_targets
+            .insert(source_agent_id, target.id);
+        self.agent_chat_agent_request_kind_overrides
+            .remove(&source_agent_id);
+        self.agent_chat_agent_selection.insert(source_agent_id, 0);
+        self.agent_chat_agent_dismissed_query
+            .remove(&source_agent_id);
+        cx.notify();
+    }
+
+    pub(super) fn insert_agent_chat_project_mention(
+        &mut self,
+        agent_id: Uuid,
+        input: Entity<InputState>,
+        project: ComposerProjectEntry,
+        mention: ComposerProjectMention,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = input.read(cx).value().to_string();
+        if mention.range.start > mention.range.end || mention.range.end > current.len() {
+            return;
+        }
+        let (next, cursor) = remove_composer_project_mention(&current, &mention);
+        input.update(cx, |input, cx| {
+            input.set_value(next.clone(), window, cx);
+            input.set_cursor_position(input_position_for_byte_offset(&next, cursor), window, cx);
+            input.focus(window, cx);
+        });
+        let token = ComposerMentionToken::project_entry(&project);
+        let mentions = self
+            .agent_chat_selected_mentions
+            .entry(agent_id)
+            .or_default();
+        if !mentions.iter().any(|selected| {
+            selected.kind == ComposerMentionKind::Project && selected.project_id == token.project_id
+        }) {
+            mentions.push(token);
+        }
+        self.agent_chat_project_selection.insert(agent_id, 0);
+        self.agent_chat_project_dismissed_query.remove(&agent_id);
+        cx.notify();
+    }
+
     pub(super) fn move_agent_chat_context_picker(
         &mut self,
         agent: &AgentRecord,
@@ -2048,6 +2339,48 @@ impl CenterArea {
                 view.selected - 1
             };
             self.agent_chat_slash_selection.insert(agent.id, next);
+            cx.notify();
+            return true;
+        }
+
+        if let Some(view) = self.active_agent_chat_project_mention_view(agent, cx) {
+            if view.matches.is_empty() {
+                return false;
+            }
+            let len = view.matches.len();
+            let next = if delta > 0 {
+                if view.selected + 1 >= len {
+                    0
+                } else {
+                    view.selected + 1
+                }
+            } else if view.selected == 0 {
+                len - 1
+            } else {
+                view.selected - 1
+            };
+            self.agent_chat_project_selection.insert(agent.id, next);
+            cx.notify();
+            return true;
+        }
+
+        if let Some(view) = self.active_agent_chat_agent_mention_view(agent, cx) {
+            if view.matches.is_empty() {
+                return false;
+            }
+            let len = view.matches.len();
+            let next = if delta > 0 {
+                if view.selected + 1 >= len {
+                    0
+                } else {
+                    view.selected + 1
+                }
+            } else if view.selected == 0 {
+                len - 1
+            } else {
+                view.selected - 1
+            };
+            self.agent_chat_agent_selection.insert(agent.id, next);
             cx.notify();
             return true;
         }
@@ -2109,6 +2442,18 @@ impl CenterArea {
             cx.notify();
             return true;
         }
+        if let Some(view) = self.active_agent_chat_project_mention_view(agent, cx) {
+            self.agent_chat_project_dismissed_query
+                .insert(agent.id, view.mention.query);
+            cx.notify();
+            return true;
+        }
+        if let Some(view) = self.active_agent_chat_agent_mention_view(agent, cx) {
+            self.agent_chat_agent_dismissed_query
+                .insert(agent.id, view.mention.query);
+            cx.notify();
+            return true;
+        }
         if let Some(view) = self.active_agent_chat_doc_mention_view(agent.id, agent.project_id, cx)
         {
             self.agent_chat_doc_dismissed_query
@@ -2137,6 +2482,27 @@ impl CenterArea {
                 return false;
             };
             self.insert_agent_chat_slash_command(agent.id, input, command, view.query, window, cx);
+            return true;
+        }
+        if let Some(view) = self.active_agent_chat_project_mention_view(agent, cx) {
+            let Some(project) = view.matches.get(view.selected).cloned() else {
+                return false;
+            };
+            self.insert_agent_chat_project_mention(
+                agent.id,
+                input,
+                project,
+                view.mention,
+                window,
+                cx,
+            );
+            return true;
+        }
+        if let Some(view) = self.active_agent_chat_agent_mention_view(agent, cx) {
+            let Some(target) = view.matches.get(view.selected).cloned() else {
+                return false;
+            };
+            self.insert_agent_chat_agent_target(agent.id, input, target, view.mention, window, cx);
             return true;
         }
         if let Some(view) = self.active_agent_chat_doc_mention_view(agent.id, agent.project_id, cx)
@@ -2353,13 +2719,13 @@ pub(super) enum VerificationLifecycle {
     Verifying,
     NeedsFix,
     Fixing,
-    ReverificationDeclined,
+    Declined,
     Complete,
 }
 
 /// The latest meaningful state in this agent's one verification lifecycle.
 /// Ordinary user turns do not reset it: only a fix request advances a failed
-/// verification. An all-met card or a declined follow-up closes it permanently.
+/// verification. An all-met card or either declined decision closes it permanently.
 pub(super) fn verification_lifecycle(timeline: &[AgentChatTimelineItem]) -> VerificationLifecycle {
     for (index, item) in timeline.iter().enumerate().rev() {
         match item {
@@ -2378,8 +2744,10 @@ pub(super) fn verification_lifecycle(timeline: &[AgentChatTimelineItem]) -> Veri
                 };
             }
             AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
-                if text.starts_with(AGENT_REVERIFY_DISMISS_MARKER) {
-                    return VerificationLifecycle::ReverificationDeclined;
+                if text.starts_with(AGENT_VERIFY_DISMISS_MARKER)
+                    || text.starts_with(AGENT_REVERIFY_DISMISS_MARKER)
+                {
+                    return VerificationLifecycle::Declined;
                 }
                 if text.starts_with(AGENT_VERIFY_REQUEST_MARKER) {
                     return VerificationLifecycle::Verifying;
@@ -2556,19 +2924,49 @@ mod verification_trigger_tests {
     }
 
     #[test]
+    fn declining_initial_verification_closes_it_for_later_turns() {
+        let timeline = vec![
+            user_turn("build the thing"),
+            assistant_turn("done"),
+            user_turn(AGENT_VERIFY_DISMISS_MARKER),
+            user_turn("make one more adjustment"),
+            assistant_turn("done"),
+        ];
+        assert_eq!(
+            verification_lifecycle(&timeline),
+            VerificationLifecycle::Declined
+        );
+    }
+
+    #[test]
     fn declining_reverification_closes_it_for_later_turns() {
         let timeline = vec![
             user_turn("build the thing"),
             verification_card(false),
             user_turn(&format!("{AGENT_VERIFY_FIX_PREFIX}:\n- missed thing")),
             assistant_turn("fixed"),
-            user_turn(AGENT_REVERIFY_DISMISS_MARKER),
+            user_turn(AGENT_VERIFY_DISMISS_MARKER),
             user_turn("make one more adjustment"),
             assistant_turn("done"),
         ];
         assert_eq!(
             verification_lifecycle(&timeline),
-            VerificationLifecycle::ReverificationDeclined
+            VerificationLifecycle::Declined
+        );
+    }
+
+    #[test]
+    fn legacy_reverification_dismissal_still_closes_the_lifecycle() {
+        let timeline = vec![
+            user_turn("build the thing"),
+            verification_card(false),
+            user_turn(&format!("{AGENT_VERIFY_FIX_PREFIX}:\n- missed thing")),
+            assistant_turn("fixed"),
+            user_turn(AGENT_REVERIFY_DISMISS_MARKER),
+        ];
+        assert_eq!(
+            verification_lifecycle(&timeline),
+            VerificationLifecycle::Declined
         );
     }
 

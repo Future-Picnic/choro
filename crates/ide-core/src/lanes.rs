@@ -599,8 +599,10 @@ pub enum RejoinOutcome {
 ///    first (git's safe checkout — it refuses to clobber dirty files).
 /// 3. `git merge --no-ff` runs in the MAIN tree. Git itself refuses merges
 ///    that would clobber dirty files there — we don't pre-block.
-/// 4. Success tears the lane down (branch survives). Failure aborts the merge
-///    and reports git's own message verbatim.
+/// 4. Success force-removes only a verified-clean lane so ignored build output
+///    cannot strand the worktree. The Solo branch survives.
+/// 5. Rejoin is complete only after the lane directory is gone. A merge whose
+///    cleanup fails is reported separately and must never resume in the lane.
 pub fn rejoin(
     project_root: &Path,
     lane_path: &Path,
@@ -656,7 +658,14 @@ pub fn rejoin(
         return Ok(RejoinOutcome::Conflict(merged.message()));
     }
 
-    let removed = teardown_lane(project_root, lane_path, false)?;
+    let removed = match teardown_rejoined_lane(project_root, lane_path) {
+        Ok(removed) => removed,
+        Err(error) => {
+            return Ok(RejoinOutcome::MergedLaneRetained(format!(
+                "The merge finished, but Choro could not remove the lane folder: {error:#}"
+            )));
+        }
+    };
     if !removed.success {
         return Ok(RejoinOutcome::MergedLaneRetained(removed.message()));
     }
@@ -734,6 +743,56 @@ pub fn teardown_lane(project_root: &Path, lane_path: &Path, force: bool) -> Resu
         }
     }
     Ok(output)
+}
+
+/// Remove a lane after its branch has already merged into the target branch.
+///
+/// Rejoin commits every visible change before merging, so a still-registered
+/// lane must be clean here. `--force` is then safe and necessary: Git otherwise
+/// may retain a clean worktree merely because it contains ignored build output
+/// such as Cargo's `target/` or copied dependencies. If Git already dropped its
+/// worktree bookkeeping during a partial cleanup, remove that orphaned folder
+/// directly. A registered dirty lane is always retained so late writes cannot
+/// be lost.
+pub fn teardown_rejoined_lane(project_root: &Path, lane_path: &Path) -> Result<RemoteOutput> {
+    if !lane_path.exists() {
+        let _ = remote::worktree_prune(project_root);
+        return Ok(RemoteOutput {
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+    }
+
+    let registered = git2::Repository::open(lane_path).is_ok();
+    if registered && lane_is_dirty(lane_path)? {
+        return Ok(RemoteOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "The lane changed after its merge commit, so Choro kept the folder to avoid losing work. Review or commit those changes, then retry cleanup.".to_string(),
+        });
+    }
+
+    let removed = teardown_lane(project_root, lane_path, true)?;
+    if removed.success || !lane_path.exists() {
+        return Ok(removed);
+    }
+
+    // Git can remove `.git/worktrees/<name>` and still fail while deleting the
+    // physical directory. At that point the folder is no longer a worktree and
+    // cannot be cleaned through `git worktree remove` on a retry.
+    if git2::Repository::open(lane_path).is_err() {
+        fs::remove_dir_all(lane_path)
+            .context("failed to remove the orphaned lane folder after Rejoin")?;
+        let _ = remote::worktree_prune(project_root);
+        return Ok(RemoteOutput {
+            success: true,
+            stdout: "Removed the orphaned lane folder.".to_string(),
+            stderr: String::new(),
+        });
+    }
+
+    Ok(removed)
 }
 
 /// Resolve a sub-app's `rel_path` ("." for the root) under `root`.
@@ -1179,7 +1238,7 @@ mod tests {
     }
 
     #[test]
-    fn rejoin_reports_a_merged_lane_that_git_refuses_to_remove() {
+    fn rejoin_removes_a_clean_locked_lane_after_merge() {
         let dir = tempfile::tempdir().unwrap();
         let repo = repo_with_commit(dir.path());
         configure_identity(&repo);
@@ -1210,16 +1269,47 @@ mod tests {
         );
 
         let outcome = rejoin(dir.path(), &lane, "solo/locked", "Locked", None).unwrap();
-
-        let RejoinOutcome::MergedLaneRetained(message) = outcome else {
-            panic!("expected retained lane, got {outcome:?}");
-        };
-        assert!(!message.is_empty());
+        assert_eq!(outcome, RejoinOutcome::Merged);
         assert!(dir.path().join("feature.txt").exists());
-        assert!(
-            lane.exists(),
-            "failed cleanup must remain tracked by the caller"
+        assert!(!lane.exists(), "a completed Rejoin must remove its lane");
+    }
+
+    #[test]
+    fn rejoined_cleanup_retains_a_registered_dirty_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let _repo = repo_with_commit(dir.path());
+        let base = crate::git::read_head(dir.path()).unwrap().branch.unwrap();
+        let (_keep, lane) = lane_dir();
+        let created = create_lane(
+            dir.path(),
+            &lane,
+            "solo/late-write",
+            Some(&base),
+            LaneProfile::CodeOnly,
         );
+        assert!(created.iter().all(|result| result.ok), "{created:?}");
+        std::fs::write(lane.join("late.txt"), "written after merge\n").unwrap();
+
+        let removed = teardown_rejoined_lane(dir.path(), &lane).unwrap();
+
+        assert!(!removed.success);
+        assert!(removed.message().contains("changed after its merge commit"));
+        assert!(lane.join("late.txt").exists());
+    }
+
+    #[test]
+    fn rejoined_cleanup_removes_an_orphaned_lane_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let _repo = repo_with_commit(dir.path());
+        let (_keep, lane) = lane_dir();
+        std::fs::create_dir_all(&lane).unwrap();
+        std::fs::write(lane.join(".git"), "gitdir: /missing/worktree/bookkeeping\n").unwrap();
+        std::fs::write(lane.join("leftover.txt"), "already merged\n").unwrap();
+
+        let removed = teardown_rejoined_lane(dir.path(), &lane).unwrap();
+
+        assert!(removed.success, "cleanup failed: {}", removed.message());
+        assert!(!lane.exists(), "orphaned Rejoin folder must be removed");
     }
 
     #[test]

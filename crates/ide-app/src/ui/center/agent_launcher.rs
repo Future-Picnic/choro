@@ -109,7 +109,7 @@ impl CenterArea {
         let prompt = cx.new(|cx| {
             InputState::new(window, cx)
                 .auto_grow(4, 8)
-                .placeholder("Do anything — / skills, @ files, @@ docs & designs")
+                .placeholder("Do anything — / skills, @ files, @@ docs, ## projects")
         });
         prompt.update(cx, |input, cx| input.focus(window, cx));
         // Keep the doc-mention picker live as the prompt is edited: re-render on
@@ -119,6 +119,7 @@ impl CenterArea {
             if matches!(event, InputEvent::Change) {
                 if let Some(composer) = this.new_agent_composer.as_mut() {
                     composer.slash_selection = 0;
+                    composer.project_mention_selected = 0;
                     composer.doc_mention_selected = 0;
                     composer.doc_mention_dismissed_query = None;
                     composer.file_mention_selected = 0;
@@ -127,6 +128,11 @@ impl CenterArea {
                     let active_query = agent_chat_slash_query(&value).map(|query| query.query);
                     if composer.slash_dismissed_query.as_ref() != active_query.as_ref() {
                         composer.slash_dismissed_query = None;
+                    }
+                    let project_query = active_composer_project_mention(&composer.prompt.read(cx))
+                        .map(|mention| mention.query);
+                    if composer.project_mention_dismissed_query.as_ref() != project_query.as_ref() {
+                        composer.project_mention_dismissed_query = None;
                     }
                     if composer.selected_command.as_ref().is_some_and(|command| {
                         !command.is_choro_riff()
@@ -185,6 +191,8 @@ impl CenterArea {
             doc_mention_dismissed_query: None,
             file_mention_selected: 0,
             file_mention_dismissed_query: None,
+            project_mention_selected: 0,
+            project_mention_dismissed_query: None,
         });
         if let (Some(defaults), Some(composer)) = (
             crate::ui::onboarding::agent_defaults(project, cx),
@@ -274,12 +282,13 @@ impl CenterArea {
             cx.notify();
             return;
         };
+        let projects = self.workspace.read(cx).projects.clone();
         let Some(composer) = self.new_agent_composer.as_mut() else {
             return;
         };
         let draft = composer.prompt.read(cx).value().trim().to_string();
         let selected_mentions = composer.selected_mentions.clone();
-        let raw_doc = composer_mentions_submission_text(&draft, &selected_mentions);
+        let raw_doc = composer_mentions_submission_text(&draft, &selected_mentions, &projects);
         let raw_doc = agent_chat_submission_text(&raw_doc, composer.selected_command.as_ref());
         if raw_doc.is_empty() {
             composer.error = Some("Describe what the agent should do first.".into());
@@ -450,6 +459,10 @@ impl CenterArea {
             }
             agent_id
         });
+        // The provider can call Choro MCP tools on its first turn. Persist the
+        // scoped agent before starting the backend so summary/search/message
+        // tools can never race the normal debounced agent save.
+        self.agents.update(cx, |agents, _| agents.save_now());
         self.agent_chats.update(cx, |chats, cx| {
             let session = chats.ensure_session(agent_id, title.clone(), cx);
             session.interaction_mode = interaction_mode;
@@ -613,6 +626,45 @@ impl CenterArea {
             }
             composer.doc_mention_selected = 0;
             composer.doc_mention_dismissed_query = None;
+            composer.error = None;
+        }
+        cx.notify();
+    }
+
+    pub(super) fn insert_project_mention_into_composer(
+        &mut self,
+        project: ComposerProjectEntry,
+        mention: ComposerProjectMention,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(prompt) = self
+            .new_agent_composer
+            .as_ref()
+            .map(|composer| composer.prompt.clone())
+        else {
+            return;
+        };
+        let current = prompt.read(cx).value().to_string();
+        if mention.range.start > mention.range.end || mention.range.end > current.len() {
+            return;
+        }
+        let (next, cursor) = remove_composer_project_mention(&current, &mention);
+        prompt.update(cx, |input, cx| {
+            input.set_value(next.clone(), window, cx);
+            input.set_cursor_position(input_position_for_byte_offset(&next, cursor), window, cx);
+            input.focus(window, cx);
+        });
+        if let Some(composer) = self.new_agent_composer.as_mut() {
+            let token = ComposerMentionToken::project_entry(&project);
+            if !composer.selected_mentions.iter().any(|selected| {
+                selected.kind == ComposerMentionKind::Project
+                    && selected.project_id == token.project_id
+            }) {
+                composer.selected_mentions.push(token);
+            }
+            composer.project_mention_selected = 0;
+            composer.project_mention_dismissed_query = None;
             composer.error = None;
         }
         cx.notify();

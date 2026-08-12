@@ -36,6 +36,12 @@ impl CenterArea {
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),
+            ComposerMentionKind::Project => (IconName::FolderOpen, crate::ui::design::rose(cx)),
+        };
+        let label = if mention.kind == ComposerMentionKind::Project {
+            format!("##{}", mention.chip_label())
+        } else {
+            mention.chip_label().to_string()
         };
         h_flex()
             .id(("new-agent-selected-mention-token", index))
@@ -77,7 +83,7 @@ impl CenterArea {
                     .text_size(crate::ui::design::text_head())
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(color)
-                    .child(mention.chip_label().to_string()),
+                    .child(label),
             )
             .child(
                 gpui_component::Icon::new(IconName::Close)
@@ -496,6 +502,14 @@ impl CenterArea {
                                                     composer.source_doc = None;
                                                     composer.linked_tasks.clear();
                                                     composer.source_task = None;
+                                                    composer.selected_mentions.retain(|mention| {
+                                                        mention.kind
+                                                            != ComposerMentionKind::Project
+                                                            || mention.project_id
+                                                                != Some(project_id)
+                                                    });
+                                                    composer.project_mention_selected = 0;
+                                                    composer.project_mention_dismissed_query = None;
                                                     composer.error = None;
                                                 }
                                                 this.workspace.update(cx, |workspace, cx| {
@@ -922,16 +936,23 @@ impl CenterArea {
         let selected_project = composer.project;
         let selected_repository = composer.repository_path.clone();
         let slash_view = self.active_composer_slash_view(cx);
-        let doc_mention_view = if slash_view.is_none() {
+        let project_mention_view = if slash_view.is_none() {
+            self.active_composer_project_mention_view(cx)
+        } else {
+            None
+        };
+        let doc_mention_view = if slash_view.is_none() && project_mention_view.is_none() {
             self.active_composer_doc_mention_view(cx)
         } else {
             None
         };
-        let file_mention_view = if slash_view.is_none() && doc_mention_view.is_none() {
-            self.active_composer_file_mention_view(cx)
-        } else {
-            None
-        };
+        let file_mention_view =
+            if slash_view.is_none() && project_mention_view.is_none() && doc_mention_view.is_none()
+            {
+                self.active_composer_file_mention_view(cx)
+            } else {
+                None
+            };
         let project_entries = self
             .workspace
             .read(cx)
@@ -979,6 +1000,11 @@ impl CenterArea {
             .as_ref()
             .map(|view| self.render_composer_slash_picker(view, cx))
             .or_else(|| {
+                project_mention_view
+                    .as_ref()
+                    .map(|view| self.render_composer_project_mention_picker(view, cx))
+            })
+            .or_else(|| {
                 doc_mention_view
                     .as_ref()
                     .map(|view| self.render_composer_doc_mention_picker(view, &linked_docs, cx))
@@ -992,16 +1018,28 @@ impl CenterArea {
         let composer_view = cx.entity().clone();
 
         v_flex()
+            .id("new-agent-landing-scroll")
             .relative()
             .size_full()
+            .min_h(px(0.))
             .items_center()
-            .justify_center()
+            // The Brain sections below the composer can be taller than the
+            // viewport. Keep the composer at its natural height and let this
+            // landing surface scroll instead of flex-shrinking the composer
+            // until its control rail is clipped by the rounded frame.
+            // Use GPUI's native overflow on this flex owner. The decorated
+            // scrollbar helper wraps and resets the element's flex styles,
+            // which drops `items_center` and left-aligns the whole landing
+            // column after the first layout pass.
+            .overflow_y_scroll()
             .px_8()
+            .child(div().w_full().flex_1().min_h(px(32.)))
             .child(
                 v_flex()
                     .w_full()
                     .min_w(px(0.))
                     .max_w(px(760.))
+                    .flex_none()
                     .gap_2()
                     .child(
                         div()
@@ -1020,6 +1058,10 @@ impl CenterArea {
                             .relative()
                             .w_full()
                             .min_w(px(0.))
+                            // This frame owns the prompt and its footer. It must
+                            // never surrender height to the recent-agent/Brain
+                            // content that follows it.
+                            .flex_none()
                             // Same frame as the agent-chat composer: r_lg, a
                             // line-2 border, the focus plane, and the shared
                             // shadow — the two composers must read identically.
@@ -1047,6 +1089,22 @@ impl CenterArea {
                                     };
                                     if let Some(composer) = this.new_agent_composer.as_mut() {
                                         composer.slash_selection = next;
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    if view.matches.is_empty() {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    let next = if view.selected + 1 >= view.matches.len() {
+                                        0
+                                    } else {
+                                        view.selected + 1
+                                    };
+                                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                                        composer.project_mention_selected = next;
                                     }
                                     cx.notify();
                                     return;
@@ -1103,6 +1161,22 @@ impl CenterArea {
                                     cx.notify();
                                     return;
                                 }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    if view.matches.is_empty() {
+                                        return;
+                                    }
+                                    cx.stop_propagation();
+                                    let prev = if view.selected == 0 {
+                                        view.matches.len() - 1
+                                    } else {
+                                        view.selected - 1
+                                    };
+                                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                                        composer.project_mention_selected = prev;
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
                                 if let Some(view) = this.active_composer_doc_mention_view(cx) {
                                     if view.total() == 0 {
                                         return;
@@ -1148,6 +1222,15 @@ impl CenterArea {
                                     cx.notify();
                                     return;
                                 }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    cx.stop_propagation();
+                                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                                        composer.project_mention_dismissed_query =
+                                            Some(view.mention.query.clone());
+                                    }
+                                    cx.notify();
+                                    return;
+                                }
                                 if let Some(view) = this.active_composer_doc_mention_view(cx) {
                                     cx.stop_propagation();
                                     if let Some(composer) = this.new_agent_composer.as_mut() {
@@ -1176,6 +1259,20 @@ impl CenterArea {
                                     cx.stop_propagation();
                                     this.insert_slash_command_into_composer(
                                         command, view.query, window, cx,
+                                    );
+                                    return;
+                                }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    let Some(project) = view.matches.get(view.selected).cloned()
+                                    else {
+                                        return;
+                                    };
+                                    cx.stop_propagation();
+                                    this.insert_project_mention_into_composer(
+                                        project,
+                                        view.mention,
+                                        window,
+                                        cx,
                                     );
                                     return;
                                 }
@@ -1233,6 +1330,20 @@ impl CenterArea {
                                     cx.stop_propagation();
                                     this.insert_slash_command_into_composer(
                                         command, view.query, window, cx,
+                                    );
+                                    return;
+                                }
+                                if let Some(view) = this.active_composer_project_mention_view(cx) {
+                                    let Some(project) = view.matches.get(view.selected).cloned()
+                                    else {
+                                        return;
+                                    };
+                                    cx.stop_propagation();
+                                    this.insert_project_mention_into_composer(
+                                        project,
+                                        view.mention,
+                                        window,
+                                        cx,
                                     );
                                     return;
                                 }
@@ -1714,8 +1825,10 @@ impl CenterArea {
                     })
                     // The project's recent conversations, under the composer:
                     // close enough to step back into without going looking.
-                    .children(self.render_new_agent_recent_agents(project, cx)),
+                    .children(self.render_new_agent_recent_agents(project, cx))
+                    .children(self.render_fleet_weekly_digest(project, cx)),
             )
+            .child(div().w_full().flex_1().min_h(px(32.)))
             .into_any_element()
     }
 }

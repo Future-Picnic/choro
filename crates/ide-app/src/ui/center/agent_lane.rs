@@ -11,6 +11,10 @@ use crate::state::agent_chat::{RejoinConflictCard, RejoinedCard};
 use ide_core::lanes::{self, LaneStep, LaneStepResult, RejoinOutcome};
 use ide_core::LaneProfile;
 
+struct LaneExitStop {
+    backend: Option<crate::state::agent_chat::ChatBackendStopSignal>,
+}
+
 #[derive(Clone)]
 enum RejoinDialogPhase {
     Choosing,
@@ -338,8 +342,8 @@ impl Render for RejoinDialog {
                             .text_color(crate::ui::design::t3(cx))
                             .line_height(gpui::relative(1.5))
                             .child(
-                                "One merge commit lands on the branch you pick. The lane packs up; \
-                                 the branch and the chat are kept. Nothing is pushed.",
+                                "One merge commit lands on the branch you pick. Rejoin completes \
+                                 only after the lane folder is removed. The branch and chat are kept; nothing is pushed.",
                             ),
                     )
                     .child(
@@ -395,7 +399,7 @@ impl Render for RejoinDialog {
                 .child(self.render_status(
                     "Rejoining…",
                     format!(
-                        "Stopping lane processes and merging into {target}. You can hide this and keep working."
+                        "Stopping the Solo, merging into {target}, and removing its lane. You can hide this and keep working."
                     ),
                     logo_spinner(
                         34.,
@@ -417,8 +421,10 @@ impl Render for RejoinDialog {
                 )
                 .into_any_element(),
             RejoinDialogPhase::Succeeded => self.render_status(
-                "Rejoined",
-                format!("The Solo’s work is now on {target}."),
+                "Rejoin complete",
+                format!(
+                    "The Solo lane was removed. This agent now continues on {target} with the rest of the project."
+                ),
                 crate::ui::design::indicator::lucide_icon(
                     lucide_icons::Icon::Check,
                     crate::ui::design::sage(cx),
@@ -476,8 +482,10 @@ impl Render for RejoinDialog {
                 v_flex()
                     .gap_3()
                     .child(self.render_status(
-                        "Rejoined — cleanup needed",
-                        "The merge succeeded, but Choro could not remove the lane folder. Your work is safe; use Clean up to retry.",
+                        "Merge finished — cleanup failed",
+                        format!(
+                            "The work reached {target}, but Rejoin is not complete because the lane folder remains. Future messages now run on the project branch; use Retry cleanup to finish."
+                        ),
                         crate::ui::design::indicator::lucide_icon(
                             lucide_icons::Icon::AlertTriangle,
                             crate::ui::design::amber(cx),
@@ -505,9 +513,9 @@ impl Render for RejoinDialog {
                                 }),
                             )
                             .child(
-                                crate::ui::style::primary_button_compact(
+                                crate::ui::style::dialog_neutral_button(
                                     "rejoin-cleanup-done",
-                                    "Done",
+                                    "Close",
                                     cx,
                                 )
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
@@ -656,13 +664,17 @@ impl CenterArea {
     /// Freeze every app-owned process rooted in a lane before Git starts an exit
     /// transition. This closes chat backends, CLI terminals, preview servers,
     /// and any plain terminal whose cwd is the worktree.
-    fn begin_lane_exit(&mut self, agent: &ide_core::AgentRecord, cx: &mut Context<Self>) -> bool {
+    fn begin_lane_exit(
+        &mut self,
+        agent: &ide_core::AgentRecord,
+        cx: &mut Context<Self>,
+    ) -> Option<LaneExitStop> {
         if !self.lane_exit_pending.insert(agent.id) {
-            return false;
+            return None;
         }
         self.cancel_agent_chat_hydration(agent.id);
         self.sync_chat_session_ids(cx);
-        self.agent_chats.update(cx, |chats, cx| {
+        let backend = self.agent_chats.update(cx, |chats, cx| {
             chats.stop_backend_for_lane_exit(agent.id, cx)
         });
         self.agent_chat_terminal_open.remove(&agent.id);
@@ -715,7 +727,7 @@ impl CenterArea {
             self.project_preview_solo_urls.remove(&agent.id);
             self.reconcile_project_preview_for_selected_agent(agent.project_id, cx);
         }
-        true
+        Some(LaneExitStop { backend })
     }
 
     /// Ensure a Solo agent's lane and its requested extras are ready, then start
@@ -730,6 +742,9 @@ impl CenterArea {
         let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
             return false;
         };
+        if !agent.is_active_solo() {
+            return self.start_agent_without_focus(agent_id, target_mode, cx);
+        }
         let Some(branch) = agent.solo_branch.clone() else {
             return self.start_agent_without_focus(agent_id, target_mode, cx);
         };
@@ -856,7 +871,7 @@ impl CenterArea {
                         .all_records()
                         .into_iter()
                         .filter(|agent| {
-                            agent.is_solo()
+                            agent.is_active_solo()
                                 && agent.solo_rejoined_branch.is_none()
                                 && agent.lane_path.is_some()
                         })
@@ -904,6 +919,9 @@ impl CenterArea {
         let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
             return;
         };
+        if !agent.is_active_solo() {
+            return;
+        }
         let Some(branch) = agent
             .solo_branch
             .clone()
@@ -1059,7 +1077,7 @@ impl CenterArea {
         let project_root = agent.repository_root().to_path_buf();
         let title = agent.title.clone();
         self.agent_start_errors.remove(&agent_id);
-        if !self.begin_lane_exit(&agent, cx) {
+        let Some(lane_exit) = self.begin_lane_exit(&agent, cx) else {
             dialog
                 .update(cx, |dialog, cx| {
                     dialog.phase = RejoinDialogPhase::Failed(
@@ -1070,25 +1088,55 @@ impl CenterArea {
                 })
                 .ok();
             return;
-        }
+        };
         let window_handle = window.window_handle();
 
         cx.spawn(async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn({
-                    let project_root = project_root.clone();
-                    let lane_path = lane_path.clone();
-                    let branch = branch.clone();
-                    let target = target.clone();
-                    async move {
-                        lanes::rejoin(&project_root, &lane_path, &branch, &title, Some(&target))
+            let backend_stopped = if let Some(stop) = lane_exit.backend.as_ref() {
+                for _ in 0..100 {
+                    if stop.is_stopped() {
+                        break;
                     }
-                })
-                .await;
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                }
+                stop.is_stopped()
+            } else {
+                true
+            };
+            let outcome = if backend_stopped {
+                cx.background_executor()
+                    .spawn({
+                        let project_root = project_root.clone();
+                        let lane_path = lane_path.clone();
+                        let branch = branch.clone();
+                        let target = target.clone();
+                        async move {
+                            lanes::rejoin(
+                                &project_root,
+                                &lane_path,
+                                &branch,
+                                &title,
+                                Some(&target),
+                            )
+                        }
+                    })
+                    .await
+            } else {
+                Err(anyhow::anyhow!(
+                    "The Solo agent process did not stop within 5 seconds. The merge was not started; retry Rejoin after the process exits."
+                ))
+            };
 
             let close_after_success = this.update(cx, |this, cx| {
-                this.lane_exit_pending.remove(&agent_id);
+                // Keep the lane operation locked if the backend ignored the
+                // initial shutdown deadline. A follow-up task below continues
+                // watching the same process; a retry must never mistake the
+                // removed controller for proof that the process exited.
+                if backend_stopped {
+                    this.lane_exit_pending.remove(&agent_id);
+                }
                 let (phase, close_after_success, persistent_error) = match outcome {
                     Ok(RejoinOutcome::Merged) => {
                         // Deliberately NOT status → Done here: that would pull
@@ -1107,7 +1155,7 @@ impl CenterArea {
                         this.agents.update(cx, |agents, cx| {
                             agents.set_solo_rejoined_branch(agent_id, target.clone(), cx);
                         });
-                        this.append_rejoined_card(agent_id, &branch, &target, cx);
+                        this.retire_rejoin_conflict_cards(agent_id, cx);
                         (RejoinDialogPhase::CleanupNeeded(message), false, None)
                     }
                     Ok(RejoinOutcome::Conflict(message)) => {
@@ -1160,6 +1208,80 @@ impl CenterArea {
                     .update(cx, |_, window, cx| window.close_dialog(cx))
                     .ok();
             }
+            if !backend_stopped {
+                if let Some(stop) = lane_exit.backend {
+                    while !stop.is_stopped() {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(100))
+                            .await;
+                    }
+                }
+                this.update(cx, |this, cx| {
+                    this.lane_exit_pending.remove(&agent_id);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Finish the folder-removal half of a Rejoin whose merge already landed.
+    /// The agent is intentionally not stopped here: once `solo_rejoined_branch`
+    /// is set, every runtime path points at the project repository, never this
+    /// retained cleanup folder.
+    fn finish_rejoin_cleanup(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
+            return;
+        };
+        let (Some(lane_path), Some(branch), Some(target)) = (
+            agent.lane_path.clone(),
+            agent.solo_branch.clone(),
+            agent.solo_rejoined_branch.clone(),
+        ) else {
+            return;
+        };
+        if !self.lane_path_is_expected(&agent, &lane_path, cx)
+            || !self.lane_exit_pending.insert(agent_id)
+        {
+            return;
+        }
+        self.agent_start_errors.remove(&agent_id);
+        let project_root = agent.repository_root().to_path_buf();
+        cx.spawn(async move |this, cx| {
+            let removed = cx
+                .background_executor()
+                .spawn(async move { lanes::teardown_rejoined_lane(&project_root, &lane_path) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.lane_exit_pending.remove(&agent_id);
+                match removed {
+                    Ok(output) if output.success => {
+                        this.agents
+                            .update(cx, |agents, cx| agents.set_lane_path(agent_id, None, cx));
+                        this.append_rejoined_card(agent_id, &branch, &target, cx);
+                    }
+                    Ok(output) => {
+                        this.agent_start_errors.insert(
+                            agent_id,
+                            format!(
+                                "Rejoin cleanup is still incomplete — {} The agent is working on {target}; the retained lane was not changed.",
+                                output.message()
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        this.agent_start_errors.insert(
+                            agent_id,
+                            format!(
+                                "Rejoin cleanup is still incomplete — {error:#} The agent is working on {target}; the retained lane was not changed."
+                            ),
+                        );
+                    }
+                }
+                cx.notify();
+            })?;
+            anyhow::Ok(())
         })
         .detach();
     }
@@ -1178,9 +1300,9 @@ impl CenterArea {
             return;
         }
         self.agent_start_errors.remove(&agent_id);
-        if !self.begin_lane_exit(&agent, cx) {
+        let Some(_lane_exit) = self.begin_lane_exit(&agent, cx) else {
             return;
-        }
+        };
         let project_root = agent.repository_root().to_path_buf();
         cx.spawn(async move |this, cx| {
             let removed = cx
@@ -1324,9 +1446,9 @@ impl CenterArea {
             return false;
         }
         self.agent_start_errors.remove(&agent_id);
-        if !self.begin_lane_exit(&agent, cx) {
+        let Some(_lane_exit) = self.begin_lane_exit(&agent, cx) else {
             return true;
-        }
+        };
         let project_root = agent.repository_root().to_path_buf();
         cx.spawn(async move |this, cx| {
             let removed = cx
@@ -1384,6 +1506,15 @@ impl CenterArea {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
                 return;
             };
+            if session.timeline.iter().any(|item| {
+                matches!(
+                    item,
+                    AgentChatTimelineItem::Rejoined(existing)
+                        if existing.branch == branch && existing.base == base
+                )
+            }) {
+                return;
+            }
             // The Rejoined card is the durable record now — retire any
             // conflict card still offering actions for this merge.
             for item in session.timeline.iter_mut() {
@@ -1401,6 +1532,35 @@ impl CenterArea {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
                 eprintln!("failed to persist rejoin card: {error:#}");
             }
+            self.agent_summary_requests_pending.remove(&agent_id);
+            self.request_agent_summary_maintenance(agent_id, cx);
+        }
+    }
+
+    fn retire_rejoin_conflict_cards(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        let mut timeline_to_persist = None;
+        self.agent_chats.update(cx, |chats, cx| {
+            let Some(session) = chats.sessions.get_mut(&agent_id) else {
+                return;
+            };
+            let mut changed = false;
+            for item in session.timeline.iter_mut() {
+                if let AgentChatTimelineItem::RejoinConflict(conflict) = item {
+                    if conflict.dismissed_at.is_none() {
+                        conflict.dismissed_at = Some(unix_now_secs());
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                timeline_to_persist = Some(session.timeline.clone());
+                cx.notify();
+            }
+        });
+        if let Some(timeline) = timeline_to_persist {
+            if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
+                eprintln!("failed to retire Rejoin conflict cards: {error:#}");
+            }
         }
     }
 
@@ -1414,35 +1574,48 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
         let task_done = agent.status == AgentStatus::Done;
+        let cleanup_pending = agent.lane_path.is_some()
+            && agent.solo_rejoined_branch.as_deref() == Some(card.base.as_str());
+        let status_color = if cleanup_pending {
+            crate::ui::design::amber(cx)
+        } else {
+            crate::ui::design::sage(cx)
+        };
         crate::ui::style::chat_card(cx)
             .child(
                 crate::ui::style::chat_card_head(cx)
                     .child(crate::ui::design::indicator::lucide_icon(
-                        lucide_icons::Icon::GitMerge,
-                        crate::ui::design::sage(cx),
+                        if cleanup_pending {
+                            lucide_icons::Icon::AlertTriangle
+                        } else {
+                            lucide_icons::Icon::GitMerge
+                        },
+                        status_color,
                         crate::ui::design::icon_sm(),
                     ))
-                    .child("Rejoined")
+                    .child(if cleanup_pending {
+                        "Merge finished"
+                    } else {
+                        "Rejoined"
+                    })
                     .child(div().flex_1())
-                    .child(
-                        Button::new(("rejoined-mark-done", agent_id.as_u128() as u64))
-                            .xsmall()
-                            .compact()
-                            .h(crate::ui::design::control_h_xs())
-                            .px(crate::ui::design::split_primary_pad_x())
-                            .icon(
-                                gpui_component::Icon::new(IconName::Check)
-                                    .text_color(crate::ui::design::sage(cx)),
+                    .when(!cleanup_pending, |head| {
+                        head.child(
+                            crate::ui::style::chat_card_done_button(
+                                ("rejoined-mark-done", agent_id.as_u128() as u64),
+                                if task_done { "Done" } else { "Mark done" },
+                                cx,
                             )
-                            .label(if task_done { "Done" } else { "Mark done" })
-                            .custom(crate::ui::style::chat_card_action_variant(cx))
                             .disabled(task_done)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.agents.update(cx, |agents, cx| {
-                                    agents.update_status(agent_id, AgentStatus::Done, cx);
-                                });
-                            })),
-                    ),
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.agents.update(cx, |agents, cx| {
+                                        agents.update_status(agent_id, AgentStatus::Done, cx);
+                                    });
+                                },
+                            )),
+                        )
+                    }),
             )
             .child(
                 h_flex()
@@ -1455,8 +1628,16 @@ impl CenterArea {
                     .child(format!("{} merged into {}", card.branch, card.base))
                     .child(
                         div()
-                            .text_color(crate::ui::design::t4(cx))
-                            .child("· lane packed up"),
+                            .text_color(if cleanup_pending {
+                                crate::ui::design::amber(cx)
+                            } else {
+                                crate::ui::design::t4(cx)
+                            })
+                            .child(if cleanup_pending {
+                                "· lane cleanup incomplete"
+                            } else {
+                                "· lane removed"
+                            }),
                     ),
             )
             .into_any_element()
@@ -1947,6 +2128,9 @@ impl CenterArea {
         let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
             return;
         };
+        if !agent.is_active_solo() {
+            return;
+        }
         let Some(lane) = agent.lane_path.clone() else {
             return;
         };
@@ -2055,7 +2239,7 @@ impl CenterArea {
         if agent.lane_path.is_none() || cleanup_needed {
             let detail: String = match agent.solo_rejoined_branch.as_ref() {
                 Some(base) if cleanup_needed => {
-                    format!("· rejoined into {base} · cleanup needed")
+                    format!("· merged into {base} · cleanup incomplete")
                 }
                 Some(base) => format!("· rejoined into {base}"),
                 None => "· packed up".to_string(),
@@ -2101,7 +2285,7 @@ impl CenterArea {
                                 if cleaning {
                                     "Cleaning up…"
                                 } else {
-                                    "Clean up"
+                                    "Retry cleanup"
                                 },
                                 false,
                                 cx,
@@ -2110,35 +2294,47 @@ impl CenterArea {
                             .disabled(cleaning)
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.discard_solo_lane(agent_id, false, cx);
+                                    this.finish_rejoin_cleanup(agent_id, cx);
                                 },
                             )),
                         )
                     })
                     // A suggestion, never automatic: rejoining doesn't yank
                     // the agent out of the sidebar — the user closes it out.
-                    .when(agent.status != AgentStatus::Done, |band| {
-                        band.child(
-                            crate::ui::style::solo_lane_action_button(
-                                ("solo-band-mark-done", agent_id.as_u128() as u64),
-                                "Mark done",
-                                false,
-                                cx,
+                    .when(
+                        !cleanup_needed && agent.status != AgentStatus::Done,
+                        |band| {
+                            band.child(
+                                crate::ui::style::solo_lane_action_button(
+                                    ("solo-band-mark-done", agent_id.as_u128() as u64),
+                                    "Mark done",
+                                    false,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.agents.update(cx, |agents, cx| {
+                                            agents.update_status(agent_id, AgentStatus::Done, cx);
+                                        });
+                                    },
+                                )),
                             )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.agents.update(cx, |agents, cx| {
-                                        agents.update_status(agent_id, AgentStatus::Done, cx);
-                                    });
-                                },
-                            )),
-                        )
+                        },
+                    )
+                    .when(cleanup_needed, |band| {
+                        band.child(crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::AlertTriangle,
+                            crate::ui::design::amber(cx),
+                            crate::ui::design::icon_sm(),
+                        ))
                     })
-                    .child(crate::ui::design::indicator::lucide_icon(
-                        lucide_icons::Icon::Check,
-                        crate::ui::design::sage(cx),
-                        crate::ui::design::icon_sm(),
-                    ))
+                    .when(!cleanup_needed, |band| {
+                        band.child(crate::ui::design::indicator::lucide_icon(
+                            lucide_icons::Icon::Check,
+                            crate::ui::design::sage(cx),
+                            crate::ui::design::icon_sm(),
+                        ))
+                    })
                     .into_any_element(),
             );
         }
@@ -2341,9 +2537,10 @@ impl CenterArea {
 
         let runtime_cwd = agent.runtime_path().to_path_buf();
         let resume_command = agent.resume_command();
+        let connected_context = self.agent_connected_context_extras(&agent, cx);
         let command = resume_command
             .clone()
-            .unwrap_or_else(|| agent.start_command());
+            .unwrap_or_else(|| agent.start_command_with_connected_context(&connected_context));
         let cli_session_id = if resume_command.is_some() {
             agent.cli_session_id.clone()
         } else {

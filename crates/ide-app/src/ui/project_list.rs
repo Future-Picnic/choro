@@ -1227,7 +1227,7 @@ impl ProjectList {
                 this.open_agent(project, agent_id, window, cx);
             }))
             // A Solo wears its fork before the name, sky-marked like everywhere.
-            .when(agent.is_solo(), |row| {
+            .when(agent.is_active_solo(), |row| {
                 row.child(crate::ui::design::indicator::solo_icon(
                     crate::ui::design::sky(cx),
                     crate::ui::design::icon_sm(),
@@ -1458,7 +1458,7 @@ impl ProjectList {
                 this.attention_pinned = Some(agent_id);
                 this.open_agent(project, agent_id, window, cx);
             }))
-            .when(agent.is_solo(), |row| {
+            .when(agent.is_active_solo(), |row| {
                 row.child(crate::ui::design::indicator::solo_icon(
                     crate::ui::design::sky(cx),
                     crate::ui::design::icon_sm(),

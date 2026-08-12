@@ -33,7 +33,7 @@ impl GitPanel {
             .and_then(|agent| {
                 let lane = agent.lane_path.clone()?;
                 should_scope_to_solo_lane(
-                    agent.is_solo(),
+                    agent.is_active_solo(),
                     agent.solo_rejoined_branch.is_some(),
                     lane.join(".git").exists(),
                 )
@@ -62,7 +62,7 @@ impl GitPanel {
             .map(|(id, _)| *id != agent.id)
             .unwrap_or(true);
         if stale {
-            let git = cx.new(|cx| GitState::new(lane, cx));
+            let git = cx.new(|cx| GitState::new_with_worktree_watcher(lane, cx));
             cx.observe(&git, |_, _, cx| cx.notify()).detach();
             self.lane_git = Some((agent.id, git));
         }
@@ -191,7 +191,7 @@ impl GitPanel {
             .read(cx)
             .records_for_project(project)
             .iter()
-            .filter(|agent| agent.is_solo())
+            .filter(|agent| agent.is_active_solo())
             .filter_map(|agent| {
                 Some((
                     agent.id,

@@ -552,6 +552,8 @@ impl CenterArea {
             });
 
         let fixable_id = fixable_verification_id(&timeline);
+        let rejoin_cleanup_pending =
+            agent.lane_path.is_some() && agent.solo_rejoined_branch.is_some();
         Ok(AgentSnapshotDto {
             agent: self.remote_agent_list_item(&agent, cx),
             project_name,
@@ -562,7 +564,9 @@ impl CenterArea {
                 .into(),
             timeline: timeline
                 .iter()
-                .filter_map(|item| timeline_item_dto(item, fixable_id.as_deref()))
+                .filter_map(|item| {
+                    timeline_item_dto(item, fixable_id.as_deref(), rejoin_cleanup_pending)
+                })
                 .collect(),
             pending_user_input,
             pending_approval,
@@ -609,7 +613,7 @@ impl CenterArea {
             started_running_at,
             last_activity_at,
             needs_attention,
-            solo: agent.is_solo(),
+            solo: agent.is_active_solo(),
             solo_branch: agent.solo_branch.clone(),
         }
     }
@@ -786,7 +790,7 @@ impl CenterArea {
             .ok_or_else(|| RemoteError::internal("created agent disappeared"))?;
         // A Solo's start waits for its lane; the lane callback starts the
         // backend once the worktree is ready — same path as the desktop.
-        let started = if agent.is_solo() {
+        let started = if agent.is_active_solo() {
             self.ensure_solo_lane_then_start(agent_id, CenterMode::Agents, cx)
         } else {
             self.start_chat_agent_in_mode(agent, CenterMode::Agents, cx)
@@ -960,6 +964,7 @@ fn verification_status_wire(status: VerificationStatus) -> &'static str {
 fn timeline_item_dto(
     item: &AgentChatTimelineItem,
     fixable_verification_id: Option<&str>,
+    rejoin_cleanup_pending: bool,
 ) -> Option<TimelineItemDto> {
     match item {
         AgentChatTimelineItem::Message(AgentChatMessage::User {
@@ -1031,11 +1036,21 @@ fn timeline_item_dto(
             pr_title: result.pr_title.clone(),
             created_at: result.created_at,
         }),
-        AgentChatTimelineItem::Rejoined(card) => Some(TimelineItemDto::Notice {
-            title: format!("Rejoined {} into {}", card.branch, card.base),
-            detail: None,
-            created_at: card.created_at,
-        }),
+        AgentChatTimelineItem::Rejoined(card) => {
+            let (title, detail) = if rejoin_cleanup_pending {
+                (
+                    format!("Merged {} into {}", card.branch, card.base),
+                    Some("Lane cleanup is incomplete".to_string()),
+                )
+            } else {
+                (format!("Rejoined {} into {}", card.branch, card.base), None)
+            };
+            Some(TimelineItemDto::Notice {
+                title,
+                detail,
+                created_at: card.created_at,
+            })
+        }
         AgentChatTimelineItem::RejoinConflict(card) => Some(TimelineItemDto::Notice {
             title: format!("Rejoin paused — conflicts with {}", card.target),
             detail: (!card.files.is_empty()).then(|| card.files.join(", ")),
@@ -1049,6 +1064,16 @@ fn timeline_item_dto(
         // Desktop-only for now: the proposal card needs accept/dismiss
         // actions the remote protocol doesn't carry yet.
         AgentChatTimelineItem::MemoryProposal(_) => None,
+        AgentChatTimelineItem::AgentSummary(card) => Some(TimelineItemDto::Notice {
+            title: "Agent summary".to_string(),
+            detail: Some(card.summary_text.clone()),
+            created_at: card.updated_at,
+        }),
+        AgentChatTimelineItem::AgentMessage(card) => Some(TimelineItemDto::Notice {
+            title: format!("From {}", card.source_title),
+            detail: Some(card.text.clone()),
+            created_at: card.created_at,
+        }),
     }
 }
 

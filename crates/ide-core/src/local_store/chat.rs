@@ -19,6 +19,7 @@ pub(super) async fn insert_chat_message_async(
         ],
     )
     .await?;
+    refresh_chat_message_fts_async(conn, message).await?;
     Ok(())
 }
 

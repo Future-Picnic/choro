@@ -61,10 +61,12 @@ pub(super) fn spawn_open_code_acp(
     command_rx: Receiver<ChatBackendCommand>,
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
         .name("choro-opencode-acp".into())
         .spawn(move || {
+            let _stopped = super::BackendStoppedOnDrop(stopped);
             if let Err(error) =
                 run_open_code_acp(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
@@ -938,7 +940,7 @@ impl OpenCodeRuntime {
     }
 
     fn changed_files_summary(&self) -> ChangedFilesSummary {
-        let diffs = if self.agent.repository_path.is_none() && self.agent.lane_path.is_none() {
+        let diffs = if self.agent.repository_path.is_none() && !self.agent.is_active_solo() {
             ide_core::git::workspace_worktree_diffs(&self.agent.project_path)
         } else {
             ide_core::git::worktree_diffs(self.agent.runtime_path())

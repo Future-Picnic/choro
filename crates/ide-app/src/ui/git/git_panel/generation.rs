@@ -883,6 +883,10 @@ pub(crate) enum MemoryDecisionContext {
     },
     /// (question, the user's free-text answer) pairs.
     QuestionAnswers { pairs: Vec<(String, String)> },
+    /// Agent-authored living summary. This is weaker evidence than direct user
+    /// text, so the distiller may only extract an explicitly documented user
+    /// preference and must ignore task facts and implementation decisions.
+    AgentSummary { summary: String },
 }
 
 const MEMORY_PROPOSAL_PLAN_BUDGET: usize = 4_000;
@@ -916,6 +920,10 @@ pub(crate) fn distill_memory_proposal(
             })
             .collect::<Vec<_>>()
             .join("\n\n"),
+        MemoryDecisionContext::AgentSummary { summary } => format!(
+            "The agent produced this living summary of its work:\n---\n{}\n---\nOnly treat a statement as preference evidence when the summary clearly attributes a reusable convention or correction to the developer. Task facts, code decisions, files, bugs, and outcomes are not preferences.",
+            bounded_chars(summary, MEMORY_PROPOSAL_PLAN_BUDGET),
+        ),
     };
     let mut known_block = String::new();
     for memory in known_memories {
