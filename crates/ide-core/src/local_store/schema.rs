@@ -563,8 +563,6 @@ async fn ensure_brain_schema(conn: &Connection) -> Result<()> {
 }
 
 async fn ensure_brain_schema_inner(conn: &Connection) -> Result<()> {
-    let rebuild_agent_search = !table_exists(conn, "agent_search_fts").await?;
-    let rebuild_message_search = !table_exists(conn, "chat_messages_fts").await?;
     for statement in SCHEMA_V27 {
         conn.execute(statement, ()).await?;
     }
@@ -575,31 +573,9 @@ async fn ensure_brain_schema_inner(conn: &Connection) -> Result<()> {
         )
         .await?;
     }
-    // These projection tables are derived indexes. Populate them once when
-    // introduced; normal agent, summary, and message writes keep them current.
-    if rebuild_agent_search {
-        conn.execute(
-            "INSERT INTO agent_search_fts
-             (agent_id, project_id, title, status, summary_text, updated_at)
-             SELECT agents.id, agents.project_id, agents.title, agents.status,
-                    COALESCE(agent_summaries.summary_text, ''),
-                    COALESCE(agent_summaries.updated_at, agents.updated_at)
-             FROM agents
-             LEFT JOIN agent_summaries ON agent_summaries.agent_id = agents.id",
-            (),
-        )
-        .await?;
-    }
-    if rebuild_message_search {
-        conn.execute(
-            "INSERT INTO chat_messages_fts(message_id, agent_id, text)
-             SELECT chat_messages.id, chat_messages.agent_id, chat_messages.text
-             FROM chat_messages
-             INNER JOIN agents ON agents.id = chat_messages.agent_id",
-            (),
-        )
-        .await?;
-    }
+    // Legacy FTS projection tables remain for schema compatibility, but are
+    // intentionally not populated. Brain search reads the source tables after
+    // indexed Turso writes caused process-ending panics in production.
     Ok(())
 }
 
@@ -1041,6 +1017,7 @@ pub(super) async fn column_exists(conn: &Connection, table: &str, column: &str) 
     Ok(false)
 }
 
+#[cfg(test)]
 pub(super) async fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let mut rows = conn
         .query(

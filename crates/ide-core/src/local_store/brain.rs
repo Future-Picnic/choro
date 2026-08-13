@@ -34,70 +34,6 @@ fn retry_database_lock<T>(operation: impl FnMut() -> Result<T>) -> Result<T> {
     retry_database_lock_with_delay(operation, Duration::from_millis(100))
 }
 
-pub(super) async fn refresh_agent_search_fts_async(
-    conn: &Connection,
-    agent_id: Uuid,
-) -> Result<()> {
-    conn.execute(
-        "DELETE FROM agent_search_fts WHERE agent_id = ?1",
-        [agent_id.to_string()],
-    )
-    .await?;
-    conn.execute(
-        "INSERT INTO agent_search_fts
-         (agent_id, project_id, title, status, summary_text, updated_at)
-         SELECT agents.id, agents.project_id, agents.title, agents.status,
-                COALESCE(agent_summaries.summary_text, ''),
-                COALESCE(agent_summaries.updated_at, agents.updated_at)
-         FROM agents
-         LEFT JOIN agent_summaries ON agent_summaries.agent_id = agents.id
-         WHERE agents.id = ?1",
-        [agent_id.to_string()],
-    )
-    .await?;
-    Ok(())
-}
-
-pub(super) async fn rebuild_agent_search_fts_async(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM agent_search_fts", ()).await?;
-    conn.execute(
-        "INSERT INTO agent_search_fts
-         (agent_id, project_id, title, status, summary_text, updated_at)
-         SELECT agents.id, agents.project_id, agents.title, agents.status,
-                COALESCE(agent_summaries.summary_text, ''),
-                COALESCE(agent_summaries.updated_at, agents.updated_at)
-         FROM agents
-         LEFT JOIN agent_summaries ON agent_summaries.agent_id = agents.id",
-        (),
-    )
-    .await?;
-    Ok(())
-}
-
-pub(super) async fn refresh_chat_message_fts_async(
-    conn: &Connection,
-    message: &StoredChatMessage,
-) -> Result<()> {
-    conn.execute(
-        "DELETE FROM chat_messages_fts WHERE message_id = ?1",
-        [message.id.to_string()],
-    )
-    .await?;
-    // The agents join deliberately excludes Penpot design conversations,
-    // whose ids share chat_messages but are not fleet agents.
-    conn.execute(
-        "INSERT INTO chat_messages_fts(message_id, agent_id, text)
-         SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM agents WHERE id = ?2)",
-        params![
-            message.id.to_string(),
-            message.agent_id.to_string(),
-            message.text.as_str(),
-        ],
-    )
-    .await?;
-    Ok(())
-}
-
 async fn load_agent_summary_async(
     conn: &Connection,
     agent_id: Uuid,
@@ -172,7 +108,7 @@ pub(super) async fn insert_stored_agent_summary_async(
         ],
     )
     .await?;
-    refresh_agent_search_fts_async(conn, summary.agent_id).await
+    Ok(())
 }
 
 pub(super) async fn insert_stored_agent_message_async(
@@ -254,15 +190,14 @@ fn normalized_outcome_text(text: Option<&str>) -> Result<Option<String>> {
     Ok(Some(text))
 }
 
-fn fts_query(input: &str) -> Result<String> {
-    let tokens = input
+fn search_terms(input: &str) -> Result<Vec<String>> {
+    let terms = input
         .split(|character: char| !character.is_alphanumeric() && character != '_')
-        .filter(|token| !token.is_empty())
-        .take(16)
-        .map(|token| format!("{token}*"))
+        .filter(|term| !term.is_empty())
+        .map(str::to_lowercase)
         .collect::<Vec<_>>();
-    anyhow::ensure!(!tokens.is_empty(), "provide a search query");
-    Ok(tokens.join(" OR "))
+    anyhow::ensure!(!terms.is_empty(), "provide a search query");
+    Ok(terms)
 }
 
 fn search_snippet(text: &str, query: &str) -> String {
@@ -292,34 +227,42 @@ fn search_snippet(text: &str, query: &str) -> String {
 async fn search_agent_documents_async(
     conn: &Connection,
     project: ProjectId,
-    fts_query: &str,
+    search_terms: &[String],
     display_query: &str,
     file_scope: &[String],
     limit: usize,
 ) -> Result<Vec<StoredAgentSearchResult>> {
-    // Turso's indexed FTS query pattern is intentionally kept to a single
-    // projection table. Project filtering happens before results leave this
-    // helper, so cross-project content is never returned to a caller.
-    let fetch_limit = limit.saturating_mul(20).clamp(20, 1_000);
+    // Search the source tables directly. Turso's indexed FTS writes have
+    // crashed in production; this bounded background scan keeps Brain search
+    // available without coupling message durability to that index.
+    let fetch_limit = limit.saturating_mul(100).clamp(100, 5_000);
     let mut rows = conn
         .query(
-            "SELECT * FROM agent_search_fts
-             WHERE fts_match(title, summary_text, ?1) LIMIT ?2",
-            params![fts_query, i64::try_from(fetch_limit)?],
+            "SELECT agents.id, agents.project_id, agents.title, agents.status,
+                    COALESCE(agent_summaries.summary_text, ''),
+                    COALESCE(agent_summaries.outcome_text, ''),
+                    COALESCE(agent_summaries.updated_at, agents.updated_at)
+             FROM agents
+             LEFT JOIN agent_summaries ON agent_summaries.agent_id = agents.id
+             WHERE agents.project_id = ?1
+             ORDER BY 7 DESC LIMIT ?2",
+            params![project.0.to_string(), i64::try_from(fetch_limit)?],
         )
         .await?;
     let mut results = Vec::new();
     while results.len() < limit {
         let Some(row) = rows.next().await? else { break };
-        if row.get::<String>(1)? != project.0.to_string() {
-            continue;
-        }
         let agent_id = parse_uuid(&row.get::<String>(0)?)?;
         if !agent_matches_file_scope_async(conn, agent_id, file_scope).await? {
             continue;
         }
         let title: String = row.get(2)?;
         let summary_text: String = row.get(4)?;
+        let outcome_text: String = row.get(5)?;
+        let searchable = format!("{title}\n{summary_text}\n{outcome_text}").to_lowercase();
+        if !search_terms.iter().all(|term| searchable.contains(term)) {
+            continue;
+        }
         let snippet_source = if summary_text.is_empty() {
             title.as_str()
         } else {
@@ -332,7 +275,7 @@ async fn search_agent_documents_async(
             status: row.get(3)?,
             snippet,
             summary_text: (!summary_text.is_empty()).then_some(summary_text),
-            updated_at: i64_to_u64(row.get(5)?)?,
+            updated_at: i64_to_u64(row.get(6)?)?,
         });
     }
     Ok(results)
@@ -402,8 +345,12 @@ async fn load_agent_search_document_async(
 ) -> Result<Option<StoredAgentSearchResult>> {
     let mut rows = conn
         .query(
-            "SELECT agent_id, title, status, summary_text, updated_at
-             FROM agent_search_fts WHERE agent_id = ?1 AND project_id = ?2",
+            "SELECT agents.id, agents.title, agents.status,
+                    COALESCE(agent_summaries.summary_text, ''),
+                    COALESCE(agent_summaries.updated_at, agents.updated_at)
+             FROM agents
+             LEFT JOIN agent_summaries ON agent_summaries.agent_id = agents.id
+             WHERE agents.id = ?1 AND agents.project_id = ?2",
             (agent_id.to_string(), project.0.to_string()),
         )
         .await?;
@@ -456,7 +403,7 @@ impl LocalStore {
         limit: usize,
     ) -> Result<Vec<StoredAgentSearchResult>> {
         let display_query = query.trim().to_string();
-        let query = fts_query(&display_query)?;
+        let query = search_terms(&display_query)?;
         let file_scope = normalized_file_scope(files);
         let limit = limit.clamp(1, 10);
         self.rt.block_on(async {
@@ -581,7 +528,7 @@ impl LocalStore {
         limit: usize,
     ) -> Result<Vec<StoredAgentSearchResult>> {
         let display_query = query.trim().to_string();
-        let query = fts_query(&display_query)?;
+        let query = search_terms(&display_query)?;
         let limit = limit.clamp(1, 50);
         self.rt.block_on(async {
             let conn = self.connect().await?;
@@ -605,12 +552,12 @@ impl LocalStore {
                 .collect::<HashSet<_>>();
 
             if include_messages && results.len() < limit {
-                let fetch_limit = limit.saturating_mul(20).clamp(20, 1_000);
+                let fetch_limit = limit.saturating_mul(100).clamp(100, 5_000);
                 let mut rows = conn
                     .query(
-                        "SELECT * FROM chat_messages_fts
-                         WHERE fts_match(text, ?1) LIMIT ?2",
-                        params![query.as_str(), i64::try_from(fetch_limit)?],
+                        "SELECT id, agent_id, text FROM chat_messages
+                         ORDER BY created_at DESC LIMIT ?1",
+                        [i64::try_from(fetch_limit)?],
                     )
                     .await?;
                 while results.len() < limit {
@@ -623,6 +570,10 @@ impl LocalStore {
                         continue;
                     }
                     let text: String = row.get(2)?;
+                    let searchable = text.to_lowercase();
+                    if !query.iter().all(|term| searchable.contains(term)) {
+                        continue;
+                    }
                     if let Some(result) = load_agent_search_document_async(
                         &conn,
                         project,

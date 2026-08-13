@@ -471,6 +471,23 @@ pub(super) fn file_stat_from_patch_change(change: &Value) -> Option<FileChangeSt
     Some(FileChangeStat::new(path, additions, deletions))
 }
 
+pub(super) fn completed_file_change_stats(params: &Value) -> Vec<FileChangeStat> {
+    let Some(item) = params.get("item") else {
+        return Vec::new();
+    };
+    if item.get("type").and_then(Value::as_str) != Some("fileChange")
+        || item.get("status").and_then(Value::as_str) != Some("completed")
+    {
+        return Vec::new();
+    }
+    item.get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(file_stat_from_patch_change)
+        .collect()
+}
+
 pub(super) fn item_type_from_params(params: &Value) -> Option<&str> {
     params
         .get("item")
@@ -692,6 +709,43 @@ Do not implement while in Plan Mode.
 #[cfg(test)]
 mod work_log_tests {
     use super::*;
+
+    #[test]
+    fn completed_file_change_item_reports_a_new_file_without_streaming_events() {
+        let params = json!({
+            "item": {
+                "id": "file-change-1",
+                "type": "fileChange",
+                "status": "completed",
+                "changes": [{
+                    "path": "simple-mock.html",
+                    "kind": "add",
+                    "diff": "--- /dev/null\n+++ b/simple-mock.html\n@@ -0,0 +1,2 @@\n+<!doctype html>\n+<title>Mock</title>\n"
+                }]
+            }
+        });
+
+        assert_eq!(
+            completed_file_change_stats(&params),
+            vec![FileChangeStat::new("simple-mock.html", 2, 0)]
+        );
+    }
+
+    #[test]
+    fn unsuccessful_file_change_item_does_not_report_edits() {
+        for status in ["failed", "declined"] {
+            let params = json!({
+                "item": {
+                    "id": "file-change-1",
+                    "type": "fileChange",
+                    "status": status,
+                    "changes": [{"path": "not-created.html", "kind": "add", "diff": "+nope"}]
+                }
+            });
+
+            assert!(completed_file_change_stats(&params).is_empty());
+        }
+    }
 
     #[test]
     fn reasoning_and_duplicate_file_change_items_do_not_become_work_logs() {

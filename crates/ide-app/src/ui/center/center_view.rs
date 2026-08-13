@@ -50,30 +50,6 @@ impl CenterArea {
         let compare_web_app = web_app.clone();
         let web_host = cx.new(|_| web_preview::WebPreviewHost::new(web_app));
         let compare_web_host = cx.new(|_| web_preview::WebPreviewHost::new(compare_web_app));
-        let memory_card_ids_seen = match ide_core::local_store::LocalStore::open_default() {
-            Ok(store) => {
-                if let Err(error) = store.clear_project_previews() {
-                    eprintln!("could not clear transient Preview requests: {error:#}");
-                }
-                store
-                    .load_all_memories()
-                    .map(|memories| memories.into_iter().map(|memory| memory.id).collect())
-                    .unwrap_or_default()
-            }
-            Err(error) => {
-                eprintln!("could not open local store for Preview cleanup: {error:#}");
-                HashSet::new()
-            }
-        };
-        let agent_summaries = ide_core::local_store::LocalStore::open_default()
-            .and_then(|store| store.load_all_agent_summaries())
-            .map(|summaries| {
-                summaries
-                    .into_iter()
-                    .map(|summary| (summary.agent_id, summary))
-                    .collect()
-            })
-            .unwrap_or_default();
         let preview_control_root = ide_core::AppConfig::config_path()
             .parent()
             .map(Path::to_path_buf)
@@ -333,23 +309,33 @@ impl CenterArea {
                     let Some(center) = this.upgrade() else {
                         break;
                     };
-                    let project_ids = center
+                    let (project_ids, needs_brain_bootstrap) = center
                         .update(cx, |this: &mut Self, cx| {
-                            this.workspace
-                                .read(cx)
-                                .projects
-                                .iter()
-                                .map(|project| project.id)
-                                .collect::<Vec<_>>()
+                            (
+                                this.workspace
+                                    .read(cx)
+                                    .projects
+                                    .iter()
+                                    .map(|project| project.id)
+                                    .collect::<Vec<_>>(),
+                                !this.brain_poll_bootstrapped,
+                            )
                         })
                         .unwrap_or_default();
-                    let (records, memories, summaries, agent_messages) = cx
+                    let (records, memories, summaries, agent_messages, store_opened) = cx
                         .background_executor()
                         .spawn(async move {
                             let Ok(store) = ide_core::local_store::LocalStore::open_default()
                             else {
-                                return (HashMap::new(), Vec::new(), Vec::new(), Vec::new());
+                                return (HashMap::new(), Vec::new(), Vec::new(), Vec::new(), false);
                             };
+                            if needs_brain_bootstrap {
+                                if let Err(error) = store.clear_project_previews() {
+                                    eprintln!(
+                                        "could not clear transient Preview requests: {error:#}"
+                                    );
+                                }
+                            }
                             let records = project_ids
                                 .into_iter()
                                 .map(|project| {
@@ -364,13 +350,27 @@ impl CenterArea {
                             let summaries = store.load_all_agent_summaries().unwrap_or_default();
                             let agent_messages =
                                 store.load_pending_agent_messages().unwrap_or_default();
-                            (records, memories, summaries, agent_messages)
+                            (records, memories, summaries, agent_messages, true)
                         })
                         .await;
                     center
                         .update(cx, |this: &mut Self, cx| {
-                            this.surface_fresh_memorized_cards(&memories, cx);
-                            this.surface_fresh_agent_summaries(&summaries, cx);
+                            if needs_brain_bootstrap
+                                && store_opened
+                                && !this.brain_poll_bootstrapped
+                            {
+                                this.memory_card_ids_seen =
+                                    memories.iter().map(|memory| memory.id).collect();
+                                this.agent_summaries = summaries
+                                    .iter()
+                                    .cloned()
+                                    .map(|summary| (summary.agent_id, summary))
+                                    .collect();
+                                this.brain_poll_bootstrapped = true;
+                            } else {
+                                this.surface_fresh_memorized_cards(&memories, cx);
+                                this.surface_fresh_agent_summaries(&summaries, cx);
+                            }
                             this.surface_pending_agent_messages(&agent_messages, cx);
                             this.maybe_check_rejoin_ready(cx);
                             let now = SystemTime::now()
@@ -611,6 +611,7 @@ impl CenterArea {
                 agent_notes_inputs: HashMap::new(),
                 agent_chat_inputs: HashMap::new(),
                 agent_chat_attached_files: HashMap::new(),
+                agent_chat_attachment_pastes_pending: HashMap::new(),
                 agent_chat_pasted_text_blocks: HashMap::new(),
                 agent_chat_selected_commands: HashMap::new(),
                 agent_chat_preview_armed: HashSet::new(),
@@ -707,9 +708,10 @@ impl CenterArea {
                 rejoin_ready_inflight: HashSet::new(),
                 lane_preview_pending: HashSet::new(),
                 project_preview_refresh: HashMap::new(),
-                memory_card_ids_seen,
+                memory_card_ids_seen: HashSet::new(),
+                brain_poll_bootstrapped: false,
                 memory_undos_pending: HashSet::new(),
-                agent_summaries,
+                agent_summaries: HashMap::new(),
                 agent_summary_requests_pending: HashMap::new(),
                 agent_summary_silent_requests: HashSet::new(),
                 agent_summary_maintenance_status_seen: HashMap::new(),
@@ -741,6 +743,7 @@ impl CenterArea {
                 new_agent_composer: None,
                 onboarding_composer_nudged: false,
                 composer_file_cache: HashMap::new(),
+                composer_file_cache_loading: HashSet::new(),
                 composer_branch_query,
                 composer_model_query,
                 composer_branch_expanded: false,

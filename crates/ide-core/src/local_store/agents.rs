@@ -165,10 +165,6 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
             upsert_runtime_session(conn, agent.id, "chat", session_id, agent.updated_at).await?;
         }
     }
-    // `save_agents` persists the complete fleet snapshot. Rebuilding the
-    // derived search projection once avoids two indexed writes per agent and
-    // also removes rows for agents pruned by `delete_missing`.
-    rebuild_agent_search_fts_async(conn).await?;
     Ok(())
 }
 

@@ -178,6 +178,7 @@ impl CenterArea {
             preview_suggestion_dismissed: None,
             selected_mentions: Vec::new(),
             attached_files: Vec::new(),
+            attachment_pastes_pending: 0,
             suggested_title: None,
             source_doc: None,
             linked_tasks: Vec::new(),
@@ -237,6 +238,11 @@ impl CenterArea {
         let Some(composer) = self.new_agent_composer.as_mut() else {
             return;
         };
+        if composer.attachment_pastes_pending > 0 {
+            composer.error = Some("Wait for the image to finish attaching.".into());
+            cx.notify();
+            return;
+        }
         composer.prompt.update(cx, |input, cx| {
             input.set_value(prompt.clone(), window, cx);
             input.set_cursor_position(
@@ -459,10 +465,12 @@ impl CenterArea {
             }
             agent_id
         });
-        // The provider can call Choro MCP tools on its first turn. Persist the
-        // scoped agent before starting the backend so summary/search/message
-        // tools can never race the normal debounced agent save.
-        self.agents.update(cx, |agents, _| agents.save_now());
+        // The provider can call Choro MCP tools on its first turn. Capture the
+        // scoped record now, persist it away from GPUI, and only then start the
+        // backend so MCP tools cannot race the normal debounced agent save.
+        let (save_revision, agent_store) = self
+            .agents
+            .update(cx, |agents, _| agents.durable_snapshot());
         self.agent_chats.update(cx, |chats, cx| {
             let session = chats.ensure_session(agent_id, title.clone(), cx);
             session.interaction_mode = interaction_mode;
@@ -478,30 +486,86 @@ impl CenterArea {
             );
         });
         self.new_agent_composer = None;
-        // A Solo's start is deferred behind lane setup and needs no window;
-        // everything else starts exactly as before.
-        let started = if solo {
-            self.ensure_solo_lane_then_start(agent_id, CenterMode::Agents, cx)
-        } else {
-            self.start_agent_in_mode(agent_id, CenterMode::Agents, window, cx)
-        };
-        if started {
-            crate::ui::onboarding::emit_for_project(
-                project,
-                crate::ui::onboarding::OnboardingEvent::AgentStarted {
-                    id: agent_id,
-                    source: onboarding_source,
-                },
-                cx,
-            );
-            if let Some(source_doc) = source_doc {
-                if let Err(error) = self.docs.update(cx, |docs, cx| {
-                    docs.set_doc_implementor(project, &source_doc, Some(agent_id), cx)
-                }) {
-                    eprintln!("failed to set doc implementor: {error:#}");
-                }
+        cx.notify();
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let persisted = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::state::agents::persist_agent_store_snapshot(save_revision, agent_store)
+                })
+                .await;
+            if let Err(error) = persisted {
+                this.update(cx, |this, cx| {
+                    let message = format!("Could not save agent before starting: {error:#}");
+                    eprintln!("{message}");
+                    this.agent_start_errors.insert(agent_id, message);
+                    cx.notify();
+                })
+                .ok();
+                return;
             }
-        }
+
+            // A Solo's start is deferred behind lane setup and needs no
+            // window; every other runtime starts after the durable write.
+            if solo {
+                this.update(cx, |this, cx| {
+                    let started =
+                        this.ensure_solo_lane_then_start(agent_id, CenterMode::Agents, cx);
+                    if started {
+                        crate::ui::onboarding::emit_for_project(
+                            project,
+                            crate::ui::onboarding::OnboardingEvent::AgentStarted {
+                                id: agent_id,
+                                source: onboarding_source,
+                            },
+                            cx,
+                        );
+                        if let Some(source_doc) = source_doc {
+                            if let Err(error) = this.docs.update(cx, |docs, cx| {
+                                docs.set_doc_implementor(project, &source_doc, Some(agent_id), cx)
+                            }) {
+                                eprintln!("failed to set doc implementor: {error:#}");
+                            }
+                        }
+                    }
+                })
+                .ok();
+            } else {
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| {
+                            let started =
+                                this.start_agent_in_mode(agent_id, CenterMode::Agents, window, cx);
+                            if started {
+                                crate::ui::onboarding::emit_for_project(
+                                    project,
+                                    crate::ui::onboarding::OnboardingEvent::AgentStarted {
+                                        id: agent_id,
+                                        source: onboarding_source,
+                                    },
+                                    cx,
+                                );
+                                if let Some(source_doc) = source_doc {
+                                    if let Err(error) = this.docs.update(cx, |docs, cx| {
+                                        docs.set_doc_implementor(
+                                            project,
+                                            &source_doc,
+                                            Some(agent_id),
+                                            cx,
+                                        )
+                                    }) {
+                                        eprintln!("failed to set doc implementor: {error:#}");
+                                    }
+                                }
+                            }
+                        })
+                        .ok();
+                    })
+                    .ok();
+            }
+        })
+        .detach();
     }
 
     pub(super) fn paste_image_into_new_agent_composer(
@@ -509,6 +573,8 @@ impl CenterArea {
         report_missing: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        let _slow_operation =
+            crate::ui::performance::UiOperationTimer::start("new_agent.clipboard_read");
         let Some(project) = self
             .new_agent_composer
             .as_ref()
@@ -516,10 +582,7 @@ impl CenterArea {
         else {
             return false;
         };
-        let Some(image) = cx
-            .read_from_clipboard()
-            .and_then(|item| clipboard_image_from_item(&item))
-        else {
+        let Some(image) = cx.read_from_clipboard().and_then(clipboard_image_from_item) else {
             if report_missing {
                 if let Some(composer) = self.new_agent_composer.as_mut() {
                     composer.error = Some("Copy an image first, then paste it here.".into());
@@ -536,23 +599,41 @@ impl CenterArea {
             return false;
         }
 
-        match materialize_project_clipboard_image(project, &image) {
-            Ok(path) => {
-                if let Some(composer) = self.new_agent_composer.as_mut() {
-                    composer.attached_files.push(path);
-                    composer.error = None;
-                }
-                cx.notify();
-                true
-            }
-            Err(error) => {
-                if let Some(composer) = self.new_agent_composer.as_mut() {
-                    composer.error = Some(format!("Could not attach image: {error:#}"));
-                }
-                cx.notify();
-                false
-            }
+        if let Some(composer) = self.new_agent_composer.as_mut() {
+            composer.attachment_pastes_pending += 1;
+            composer.error = None;
         }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { materialize_project_clipboard_image(project, &image) })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(composer) = this
+                    .new_agent_composer
+                    .as_mut()
+                    .filter(|composer| composer.project == project)
+                else {
+                    return;
+                };
+                composer.attachment_pastes_pending =
+                    composer.attachment_pastes_pending.saturating_sub(1);
+                match result {
+                    Ok(path) => {
+                        composer.attached_files.push(path);
+                        composer.error = None;
+                    }
+                    Err(error) => {
+                        composer.error = Some(format!("Could not attach image: {error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        true
     }
 
     pub(super) fn attach_paths_to_new_agent_composer(

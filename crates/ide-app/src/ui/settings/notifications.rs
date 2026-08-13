@@ -29,6 +29,8 @@ impl SettingsView {
                             )
                             .child(
                                 div()
+                                    .w_full()
+                                    .min_w(px(0.))
                                     .max_w(px(460.))
                                     .text_size(crate::ui::design::text_body())
                                     .text_color(crate::ui::design::t3(cx))
@@ -219,6 +221,7 @@ impl SettingsView {
                     .bg(crate::ui::design::surface(cx).opacity(0.55))
                     .child(
                         v_flex()
+                            .flex_1()
                             .min_w(px(0.))
                             .gap_1()
                             .child(
@@ -230,6 +233,8 @@ impl SettingsView {
                             )
                             .child(
                                 div()
+                                    .w_full()
+                                    .min_w(px(0.))
                                     .text_size(crate::ui::design::text_body())
                                     .text_color(crate::ui::design::t3(cx))
                                     .child(permission.label()),

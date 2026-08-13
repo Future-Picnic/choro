@@ -39,6 +39,7 @@ pub struct TasksState {
     my_tasks: Vec<MyTaskEntry>,
     my_tasks_loading: bool,
     my_tasks_error: Option<String>,
+    personal_save_versions: HashMap<Uuid, u64>,
 }
 
 impl EventEmitter<TasksEvent> for TasksState {}
@@ -73,6 +74,7 @@ impl TasksState {
                 my_tasks: Vec::new(),
                 my_tasks_loading: false,
                 my_tasks_error: None,
+                personal_save_versions: HashMap::new(),
             }
         })
     }
@@ -581,29 +583,44 @@ impl TasksState {
         project: ProjectId,
         task_id: Uuid,
         description_markdown: String,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
-        let result = LocalStore::open_default().and_then(|store| {
-            let mut tasks = store.load_personal_tasks(project)?;
-            if let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) {
-                task.description_markdown = description_markdown;
-                store.upsert_personal_task(task)?;
-                Ok(Some((task.task_ref(), task.detail())))
-            } else {
-                Ok(None)
-            }
-        });
-        match result {
-            Ok(Some((reference, detail))) => {
-                let key = task_cache_key(&reference);
-                self.details.insert(key.clone(), detail);
-                self.detail_errors.remove(&key);
-            }
-            Ok(None) => {}
-            Err(error) => {
-                self.board_errors.insert(project, format!("{error:#}"));
-            }
-        }
+        let version = self
+            .personal_save_versions
+            .entry(task_id)
+            .and_modify(|version| *version = version.wrapping_add(1))
+            .or_insert(1)
+            .to_owned();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    LocalStore::open_default().and_then(|store| {
+                        store.update_personal_task_description(task_id, &description_markdown)
+                    })
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.personal_save_versions.get(&task_id) != Some(&version) {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        let task_id = task_id.to_string();
+                        this.details
+                            .retain(|_, detail| detail.summary.reference.issue_id != task_id);
+                        this.board_errors.remove(&project);
+                    }
+                    Err(error) => {
+                        this.board_errors.insert(project, format!("{error:#}"));
+                    }
+                }
+                cx.emit(TasksEvent::Changed);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn archive_personal_task(

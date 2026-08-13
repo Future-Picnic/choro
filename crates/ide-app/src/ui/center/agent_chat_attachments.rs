@@ -7,6 +7,29 @@ pub(super) enum AttachmentRemoval {
 }
 
 impl CenterArea {
+    pub(super) fn render_agent_attachment_pending(
+        &self,
+        id: (&'static str, usize),
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        h_flex()
+            .id(id)
+            .h(px(34.))
+            .flex_none()
+            .gap_1p5()
+            .items_center()
+            .rounded(crate::ui::design::r_md())
+            .border_1()
+            .border_color(crate::ui::design::sage(cx).opacity(0.28))
+            .bg(crate::ui::design::sage(cx).opacity(0.10))
+            .px_2()
+            .text_size(crate::ui::design::text_ui())
+            .text_color(crate::ui::style::focus_text(cx))
+            .child(gpui_component::spinner::Spinner::new().xsmall())
+            .child("Attaching image…")
+            .into_any_element()
+    }
+
     fn remove_composer_attachment(&mut self, removal: &AttachmentRemoval) {
         match removal {
             AttachmentRemoval::AgentChat { agent_id, path } => {

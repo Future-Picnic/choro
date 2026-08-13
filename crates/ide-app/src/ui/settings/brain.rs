@@ -4,6 +4,7 @@ fn short_outcome(outcome: Option<&str>) -> Option<&str> {
     outcome.map(str::trim).filter(|outcome| !outcome.is_empty())
 }
 
+#[cfg(test)]
 fn summary_matches(agent: &AgentRecord, summary: &str, outcome: Option<&str>, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -79,9 +80,9 @@ fn open_knowledge_summary(
 
 impl SettingsView {
     fn render_knowledge_agent(
-        &mut self,
-        agent: AgentRecord,
-        summary: ide_core::local_store::StoredAgentSummary,
+        &self,
+        agent: &AgentRecord,
+        summary: &ide_core::local_store::StoredAgentSummary,
         _window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> gpui::AnyElement {
@@ -153,6 +154,8 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> gpui::AnyElement {
+        let _slow_operation =
+            crate::ui::performance::UiOperationTimer::start("settings.brain.render");
         let selected_project = self.brain_project;
         let project_label = selected_project
             .and_then(|id| {
@@ -166,7 +169,6 @@ impl SettingsView {
         let summaries = self
             .brain_summaries
             .iter()
-            .cloned()
             .map(|summary| (summary.agent_id, summary))
             .collect::<HashMap<_, _>>();
         let mut agents = self
@@ -175,22 +177,20 @@ impl SettingsView {
             .filter(|agent| {
                 !agent.hidden_doc_assistant && Some(agent.project_id) == selected_project
             })
-            .cloned()
             .filter_map(|agent| {
-                let summary = summaries.get(&agent.id)?.clone();
-                summary_matches(
-                    &agent,
-                    &summary.summary_text,
-                    summary.outcome_text.as_deref(),
-                    &query,
-                )
+                let summary = *summaries.get(&agent.id)?;
+                (query.is_empty()
+                    || self
+                        .brain_search_index
+                        .get(&agent.id)
+                        .is_some_and(|text| text.contains(&query)))
                 .then_some((agent, summary))
             })
             .collect::<Vec<_>>();
         agents.sort_by_key(|(agent, summary)| {
             std::cmp::Reverse(summary.updated_at.max(agent.updated_at))
         });
-        let no_results = agents.is_empty();
+        let no_results = agents.is_empty() && !self.brain_data_loading;
 
         let mut agent_list = v_flex()
             .w_full()
@@ -222,7 +222,21 @@ impl SettingsView {
                     )
                     .child(div().w(px(66.)).flex_none()),
             );
-        for (agent, summary) in agents {
+        if self.brain_data_loading {
+            agent_list = agent_list.child(
+                h_flex()
+                    .w_full()
+                    .h(px(58.))
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .text_size(crate::ui::design::text_ui())
+                    .text_color(crate::ui::design::t3(cx))
+                    .child(Spinner::new().xsmall())
+                    .child("Loading summaries…"),
+            );
+        }
+        for (agent, summary) in agents.into_iter().take(100) {
             agent_list = agent_list.child(self.render_knowledge_agent(agent, summary, window, cx));
         }
 

@@ -917,79 +917,28 @@ impl CenterArea {
         &mut self,
         project: ProjectId,
         root: &Path,
+        cx: &mut Context<Self>,
     ) -> Vec<ComposerFileEntry> {
         if let Some(entries) = self.composer_file_cache.get(&project) {
             return entries.clone();
         }
-
-        let ignored_dirs = [
-            ".git",
-            "target",
-            "node_modules",
-            ".next",
-            "dist",
-            "build",
-            ".choro_agent_attachments",
-            ".my_ide_agent_attachments",
-            DOCS_DIR_NAME,
-        ];
-        let mut entries = Vec::new();
-        let mut stack = vec![root.to_path_buf()];
-
-        while let Some(dir) = stack.pop() {
-            let Ok(read_dir) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for item in read_dir.flatten() {
-                if entries.len() >= COMPOSER_FILE_CACHE_LIMIT {
-                    break;
-                }
-                let path = item.path();
-                let Ok(file_type) = item.file_type() else {
-                    continue;
-                };
-                if file_type.is_dir() {
-                    let should_skip = path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| ignored_dirs.contains(&name));
-                    if !should_skip {
-                        stack.push(path);
-                    }
-                    continue;
-                }
-                if !file_type.is_file() {
-                    continue;
-                }
-                let Ok(relative) = path.strip_prefix(root) else {
-                    continue;
-                };
-                let relative_path = relative.to_path_buf();
-                let relative_label = relative_path.to_string_lossy().to_string();
-                let name = relative_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(relative_label.as_str())
-                    .to_string();
-                entries.push(ComposerFileEntry {
-                    relative_path,
-                    absolute_path: path,
-                    relative_label,
-                    name,
-                });
-            }
-            if entries.len() >= COMPOSER_FILE_CACHE_LIMIT {
-                break;
-            }
+        if self.composer_file_cache_loading.insert(project) {
+            let root = root.to_path_buf();
+            cx.spawn(async move |this, cx| {
+                let entries = cx
+                    .background_executor()
+                    .spawn(async move { collect_composer_file_entries(&root) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.composer_file_cache_loading.remove(&project);
+                    this.composer_file_cache.insert(project, entries);
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
         }
-
-        entries.sort_by(|left, right| {
-            left.relative_label
-                .to_ascii_lowercase()
-                .cmp(&right.relative_label.to_ascii_lowercase())
-        });
-        self.composer_file_cache.insert(project, entries.clone());
-        entries
+        Vec::new()
     }
 
     pub(super) fn active_composer_slash_view(&self, cx: &App) -> Option<AgentChatSlashView> {
@@ -1151,7 +1100,7 @@ impl CenterArea {
 
     pub(super) fn active_composer_project_mention_view(
         &self,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Option<ComposerProjectMentionView> {
         let composer = self.new_agent_composer.as_ref()?;
         let mention = active_composer_project_mention(&composer.prompt.read(cx))?;
@@ -1360,7 +1309,7 @@ impl CenterArea {
 
     pub(super) fn active_composer_file_mention_view(
         &mut self,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Option<ComposerFileMentionView> {
         let (project, prompt, dismissed, selected_index) = {
             let composer = self.new_agent_composer.as_ref()?;
@@ -1376,7 +1325,8 @@ impl CenterArea {
             return None;
         }
         let (_, root) = self.project_by_id(project, cx)?;
-        let files = self.workspace_file_entries(project, &root);
+        let files = self.workspace_file_entries(project, &root, cx);
+        let loading = self.composer_file_cache_loading.contains(&project);
         let mut matches = composer_file_mention_matches(&mention, &files);
         matches.truncate(COMPOSER_FILE_MENTION_LIMIT.min(COMPOSER_PICKER_VISIBLE_LIMIT));
         let selected = selected_index.min(matches.len().saturating_sub(1));
@@ -1384,6 +1334,7 @@ impl CenterArea {
             mention,
             matches,
             selected,
+            loading,
         })
     }
 
@@ -1610,6 +1561,7 @@ impl CenterArea {
             mention,
             matches,
             selected,
+            loading,
         } = view;
         let selected = *selected;
 
@@ -1635,11 +1587,18 @@ impl CenterArea {
                         .items_center()
                         .text_size(crate::ui::design::text_ui())
                         .text_color(crate::ui::design::t3(cx))
-                        .child(
+                        .child(if *loading {
+                            gpui_component::spinner::Spinner::new()
+                                .xsmall()
+                                .into_any_element()
+                        } else {
                             gpui_component::Icon::new(IconName::File)
-                                .size(crate::ui::design::icon_md()),
-                        )
-                        .child(if mention.query.is_empty() {
+                                .size(crate::ui::design::icon_md())
+                                .into_any_element()
+                        })
+                        .child(if *loading {
+                            "Indexing project files…".to_string()
+                        } else if mention.query.is_empty() {
                             "No files in this project".to_string()
                         } else {
                             format!("No files matching {}", mention.query)
@@ -1717,4 +1676,72 @@ impl CenterArea {
             }))
             .into_any_element()
     }
+}
+
+fn collect_composer_file_entries(root: &Path) -> Vec<ComposerFileEntry> {
+    let ignored_dirs = [
+        ".git",
+        "target",
+        "node_modules",
+        ".next",
+        "dist",
+        "build",
+        ".choro_agent_attachments",
+        ".my_ide_agent_attachments",
+        DOCS_DIR_NAME,
+    ];
+    let mut entries = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read_dir) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in read_dir.flatten() {
+            if entries.len() >= COMPOSER_FILE_CACHE_LIMIT {
+                break;
+            }
+            let path = item.path();
+            let Ok(file_type) = item.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                let should_skip = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| ignored_dirs.contains(&name));
+                if !should_skip {
+                    stack.push(path);
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            let relative_path = relative.to_path_buf();
+            let relative_label = relative_path.to_string_lossy().to_string();
+            let name = relative_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(relative_label.as_str())
+                .to_string();
+            entries.push(ComposerFileEntry {
+                relative_path,
+                absolute_path: path,
+                relative_label,
+                name,
+            });
+        }
+        if entries.len() >= COMPOSER_FILE_CACHE_LIMIT {
+            break;
+        }
+    }
+    entries.sort_by(|left, right| {
+        left.relative_label
+            .to_ascii_lowercase()
+            .cmp(&right.relative_label.to_ascii_lowercase())
+    });
+    entries
 }

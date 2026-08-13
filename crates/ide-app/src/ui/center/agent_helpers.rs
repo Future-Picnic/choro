@@ -527,6 +527,40 @@ mod tests {
     }
 
     #[test]
+    fn assistant_messages_also_separate_activity_groups() {
+        let work = |id: &str| {
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                id,
+                id,
+                WorkLogEntryKind::Command,
+                "Command",
+                WorkLogStatus::Completed,
+            ))
+        };
+        let session = session_with_timeline(vec![
+            work("before"),
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                message_id: Some("message-1".to_string()),
+                text: "Progress update".to_string(),
+                created_at: 11,
+            }),
+            work("after"),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        let rows = agent_chat_rows(&session, false, false, &filter);
+
+        assert!(matches!(
+            rows.as_slice(),
+            [
+                AgentChatRow::ActivityGroup { start: 0, end: 1 },
+                AgentChatRow::TimelineItem(1),
+                AgentChatRow::ActivityGroup { start: 2, end: 3 }
+            ]
+        ));
+    }
+
+    #[test]
     fn generic_reasoning_and_duplicate_file_change_steps_are_hidden() {
         let session = session_with_timeline(vec![
             AgentChatTimelineItem::WorkLog(WorkLogEntry::new(

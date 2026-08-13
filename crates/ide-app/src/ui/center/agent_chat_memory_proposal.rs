@@ -182,7 +182,6 @@ impl CenterArea {
                     status: MemoryProposalStatus::Pending,
                     created_at: unix_now_secs(),
                 };
-                let mut timeline_to_persist = None;
                 this.agent_chats.update(cx, |chats, cx| {
                     let Some(session) = chats.sessions.get_mut(&agent_id) else {
                         return;
@@ -199,15 +198,14 @@ impl CenterArea {
                     }
                     session
                         .timeline
-                        .push(AgentChatTimelineItem::MemoryProposal(card));
-                    timeline_to_persist = Some(session.timeline.clone());
+                        .push(AgentChatTimelineItem::MemoryProposal(card.clone()));
+                    persist_timeline_item(
+                        agent_id,
+                        AgentChatTimelineItem::MemoryProposal(card),
+                        cx,
+                    );
                     cx.notify();
                 });
-                if let Some(timeline) = timeline_to_persist {
-                    if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
-                        eprintln!("failed to persist memory proposal: {error:#}");
-                    }
-                }
                 cx.notify();
             })
             .ok();
@@ -363,7 +361,6 @@ impl CenterArea {
         status: MemoryProposalStatus,
         cx: &mut Context<Self>,
     ) {
-        let mut timeline_to_persist = None;
         self.agent_chats.update(cx, |chats, cx| {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
                 return;
@@ -372,18 +369,17 @@ impl CenterArea {
                 if let AgentChatTimelineItem::MemoryProposal(card) = item {
                     if card.id == proposal_id {
                         card.status = status.clone();
-                        timeline_to_persist = Some(session.timeline.clone());
+                        persist_timeline_item(
+                            agent_id,
+                            AgentChatTimelineItem::MemoryProposal(card.clone()),
+                            cx,
+                        );
                         break;
                     }
                 }
             }
             cx.notify();
         });
-        if let Some(timeline) = timeline_to_persist {
-            if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
-                eprintln!("failed to persist memory proposal status: {error:#}");
-            }
-        }
     }
 
     /// The card: Pending asks the question, Accepted mirrors the Memorized

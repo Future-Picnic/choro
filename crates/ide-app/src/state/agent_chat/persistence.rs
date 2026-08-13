@@ -109,14 +109,16 @@ pub(super) fn persist_chat_message(
     message: AgentChatMessage,
     cx: &mut Context<AgentChatState>,
 ) {
-    let timeline_event =
-        stored_timeline_event_parts(&AgentChatTimelineItem::Message(message.clone()));
-    let Some((role, text, created_at, backend_message_id)) = stored_message_parts(&message) else {
-        return;
-    };
     cx.spawn(async move |_, cx| {
         cx.background_executor()
             .spawn(async move {
+                let timeline_event =
+                    stored_timeline_event_parts(&AgentChatTimelineItem::Message(message.clone()));
+                let Some((role, text, created_at, backend_message_id)) =
+                    stored_message_parts(&message)
+                else {
+                    return;
+                };
                 if let Err(error) = LocalStore::open_default().and_then(|store| {
                     store.upsert_chat_message(
                         agent_id,
@@ -145,18 +147,19 @@ pub(super) fn persist_chat_message(
     .detach();
 }
 
-pub(super) fn persist_timeline_item(
+pub(crate) fn persist_timeline_item(
     agent_id: Uuid,
     item: AgentChatTimelineItem,
     cx: &mut Context<AgentChatState>,
 ) {
-    let Some((kind, event_key, payload_json, created_at)) = stored_timeline_event_parts(&item)
-    else {
-        return;
-    };
     cx.spawn(async move |_, cx| {
         cx.background_executor()
             .spawn(async move {
+                let Some((kind, event_key, payload_json, created_at)) =
+                    stored_timeline_event_parts(&item)
+                else {
+                    return;
+                };
                 if let Err(error) = LocalStore::open_default().and_then(|store| {
                     store
                         .upsert_timeline_event(agent_id, kind, event_key, payload_json, created_at)

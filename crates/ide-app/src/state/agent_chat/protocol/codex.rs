@@ -428,6 +428,12 @@ impl CodexRuntime {
                 }
             }
             "item/completed" => {
+                let files = completed_file_change_stats(&params);
+                if !files.is_empty() {
+                    let action_id = item_id_from_params(&params)
+                        .unwrap_or_else(|| format!("file-change-{}", self.active_turn_id));
+                    self.record_exact_file_changes(action_id, files);
+                }
                 if let Some(plan) = plan_text_from_completed_item(&params).or_else(|| {
                     (!self.plan_buffer.trim().is_empty()).then(|| self.plan_buffer.clone())
                 }) {
@@ -471,27 +477,7 @@ impl CodexRuntime {
                     .flatten()
                     .filter_map(file_stat_from_patch_change)
                     .collect::<Vec<_>>();
-                if !files.is_empty() {
-                    for file in &files {
-                        let activity_id =
-                            format!("codex:{action_id}:{}", file.path.to_string_lossy());
-                        self.events
-                            .send_blocking(ChatBackendEvent::FileChangeActivity(
-                                FileChangeActivity::new(
-                                    activity_id,
-                                    self.active_turn_id.clone(),
-                                    file.clone(),
-                                    false,
-                                    unix_now(),
-                                ),
-                            ))
-                            .ok();
-                    }
-                    let summary = self
-                        .pending_changed_files
-                        .get_or_insert_with(ChangedFilesSummary::default);
-                    upsert_file_change_stats(&mut summary.files, files);
-                }
+                self.record_exact_file_changes(action_id, files);
             }
             "turn/diff/updated" => {
                 if let Some(diff) = self
@@ -656,6 +642,36 @@ impl CodexRuntime {
                     .ok();
             }
         }
+    }
+
+    fn record_exact_file_changes(&mut self, action_id: String, files: Vec<FileChangeStat>) {
+        if files.is_empty() {
+            return;
+        }
+        let exact_paths = files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<HashSet<_>>();
+        self.pending_observed_files
+            .retain(|file| !exact_paths.contains(&file.path));
+        for file in &files {
+            let activity_id = format!("codex:{action_id}:{}", file.path.to_string_lossy());
+            self.events
+                .send_blocking(ChatBackendEvent::FileChangeActivity(
+                    FileChangeActivity::new(
+                        activity_id,
+                        self.active_turn_id.clone(),
+                        file.clone(),
+                        false,
+                        unix_now(),
+                    ),
+                ))
+                .ok();
+        }
+        let summary = self
+            .pending_changed_files
+            .get_or_insert_with(ChangedFilesSummary::default);
+        upsert_file_change_stats(&mut summary.files, files);
     }
 
     fn handle_server_request(&mut self, message: Value) -> anyhow::Result<()> {

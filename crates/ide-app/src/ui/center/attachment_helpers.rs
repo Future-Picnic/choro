@@ -24,9 +24,9 @@ pub(super) fn clipboard_image_mime_type(format: ImageFormat) -> &'static str {
     }
 }
 
-pub(super) fn clipboard_image_from_item(item: &gpui::ClipboardItem) -> Option<gpui::Image> {
-    item.entries().iter().find_map(|entry| match entry {
-        ClipboardEntry::Image(image) => Some(image.clone()),
+pub(super) fn clipboard_image_from_item(item: gpui::ClipboardItem) -> Option<gpui::Image> {
+    item.into_entries().find_map(|entry| match entry {
+        ClipboardEntry::Image(image) => Some(image),
         ClipboardEntry::String(_) => None,
     })
 }
@@ -133,4 +133,20 @@ pub(super) fn queued_turn_composer_draft(turn: &QueuedChatTurn) -> (String, Vec<
     let (text, _) = split_prompt_attached_files(&visible_text);
     let (_, attached_files) = split_prompt_attached_files(&turn.text);
     (text, attached_files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_clipboard_image_extraction_preserves_payload() {
+        let expected = gpui::Image::from_bytes(ImageFormat::Png, vec![1, 2, 3, 4]);
+        let item = ClipboardItem::new_image(&expected);
+
+        let extracted = clipboard_image_from_item(item).expect("clipboard image");
+
+        assert_eq!(extracted.format, expected.format);
+        assert_eq!(extracted.bytes, expected.bytes);
+    }
 }
