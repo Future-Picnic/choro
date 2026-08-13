@@ -677,7 +677,6 @@ impl CenterArea {
                 auto_loaded_chat_visualizations: HashSet::new(),
                 agent_chat_visualization_sync_stamps: HashMap::new(),
                 agent_diff_drawers: HashMap::new(),
-                agent_chat_terminal_open: HashSet::new(),
                 agent_ship_pr_targets: HashMap::new(),
                 agent_ship_prs: HashMap::new(),
                 agent_ship_pr_checked_at: HashMap::new(),

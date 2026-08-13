@@ -31,8 +31,8 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 29;
-const EXPORT_FORMAT_VERSION: u32 = 5;
+const STORE_SCHEMA_VERSION: u32 = 30;
+const EXPORT_FORMAT_VERSION: u32 = 6;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
 
@@ -52,6 +52,28 @@ pub struct StoredChatMessage {
     pub sequence: i64,
     pub created_at: u64,
     pub backend_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredChatFileLedgerEntry {
+    pub agent_id: Uuid,
+    pub path: PathBuf,
+    pub observed: bool,
+    pub additions: usize,
+    pub deletions: usize,
+    pub baseline_hash: Option<String>,
+    pub result_hash: Option<String>,
+    pub baseline_content: Option<String>,
+    pub result_content: Option<String>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredChatFileLedger {
+    pub agent_id: Uuid,
+    pub revision: u64,
+    pub updated_at: u64,
+    pub entries: Vec<StoredChatFileLedgerEntry>,
 }
 
 /// Text-only history from Project Talk or composer dictation. Microphone
@@ -394,6 +416,8 @@ struct ExportCounts {
     agents: usize,
     messages: usize,
     timeline_events: usize,
+    #[serde(default)]
+    chat_file_ledgers: usize,
     #[serde(default)]
     memories: usize,
     #[serde(default)]

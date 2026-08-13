@@ -65,11 +65,13 @@ impl CenterArea {
         staged_files.dedup();
 
         let mut related = std::collections::BTreeSet::new();
-        for file in &agent.changed_files {
-            related.insert(normalize_agent_ship_path(agent.runtime_path(), &file.path));
-        }
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            for file in &session.changed_files.files {
+            related = super::center_ship::exact_agent_ship_paths(
+                agent.runtime_path(),
+                &session.changed_files,
+            );
+        } else {
+            for file in &agent.changed_files {
                 related.insert(normalize_agent_ship_path(agent.runtime_path(), &file.path));
             }
         }

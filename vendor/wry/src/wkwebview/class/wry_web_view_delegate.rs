@@ -50,15 +50,37 @@ define_class!(
 
           let frame_info = msg.frameInfo();
           let request = frame_info.request();
-          let url = request.URL().unwrap();
-          let absolute_url = url.absoluteString().unwrap();
+          let Some(url) = request.URL() else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("WebView IPC call had no source URL.");
+            return;
+          };
+          let Some(absolute_url) = url.absoluteString() else {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("WebView IPC call had no absolute source URL.");
+            return;
+          };
           let url_utf8 = absolute_url.UTF8String();
+
+          if js_utf8.is_null() || url_utf8.is_null() {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("WebView IPC call contained a non-UTF-8 URL or body.");
+            return;
+          }
 
           if let (Ok(url), Ok(js)) = (
             CStr::from_ptr(url_utf8).to_str(),
             CStr::from_ptr(js_utf8).to_str(),
           ) {
-            ipc_handler(Request::builder().uri(url).body(js.to_string()).unwrap());
+            // A page can acquire an invalid HTTP URI after WebKit handles an
+            // external file drop (for example a local path containing spaces).
+            // Never let that untrusted page URL unwind through Objective-C.
+            if let Some(request) = ipc_request(url, js.to_string()) {
+              ipc_handler(request);
+            } else {
+              #[cfg(feature = "tracing")]
+              tracing::warn!("WebView received IPC from an invalid source URL: {}", url);
+            }
             return;
           }
         }
@@ -69,6 +91,10 @@ define_class!(
     }
   }
 );
+
+fn ipc_request(url: &str, body: String) -> Option<Request<String>> {
+  Request::builder().uri(url).body(body).ok()
+}
 
 impl WryWebViewDelegate {
   pub fn new(
@@ -95,5 +121,24 @@ impl WryWebViewDelegate {
     }
 
     delegate
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::ipc_request;
+
+  #[test]
+  fn invalid_external_file_url_does_not_build_an_ipc_request() {
+    assert!(ipc_request("file:///Users/choro/Outside file.pdf", "{}".into()).is_none());
+  }
+
+  #[test]
+  fn valid_webview_url_still_builds_an_ipc_request() {
+    let request = ipc_request("choro-editor://localhost/index.html", "{}".into())
+      .expect("valid custom-protocol URL");
+
+    assert_eq!(request.uri(), "choro-editor://localhost/index.html");
+    assert_eq!(request.body(), "{}");
   }
 }

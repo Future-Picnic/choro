@@ -31,7 +31,6 @@ impl Render for GitPanel {
             self.workflow_runs_checked_at = None;
             self.workflow_runs_error = None;
             self.collapsed_status_folders.clear();
-            self.hovered_status_file = None;
             self.branch_row_hovered = false;
             self.pr_chip_hovered = false;
             self.commit_input.update(cx, |input, cx| {
@@ -162,7 +161,6 @@ impl Render for GitPanel {
             let workspace = self.workspace.read(cx);
             (workspace.git_status_view, workspace.git_status_group)
         };
-        let hovered_status_file = self.hovered_status_file.clone();
         let tab = self.tab;
         let project = self.workspace.read(cx).active;
         let center = self.center.clone();
@@ -396,87 +394,60 @@ impl Render for GitPanel {
         let unstaged_rows = status_list_entries(unstaged, false);
         let untracked_rows = status_list_entries(untracked, false);
         let collapsed_folders = self.collapsed_status_folders.clone();
-        let status_content: gpui::AnyElement = if clean {
-            v_flex()
-                .w_full()
-                .items_center()
-                .py_8()
-                .gap_2()
-                .text_color(crate::ui::design::t3(cx))
-                .child(
-                    gpui_component::Icon::new(IconName::CircleCheck)
-                        .size(crate::ui::design::icon_xl())
-                        .text_color(crate::ui::design::sage(cx)),
-                )
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_body())
-                        .child("Working tree clean"),
-                )
-                .into_any_element()
-        } else if status_group == GitStatusGroupMode::Status {
-            v_flex()
-                .w_full()
-                .when(!staged_rows.is_empty(), |panel| {
-                    panel.child(render_section(
-                        Some("STAGED"),
-                        staged_rows,
-                        true,
-                        status_view,
-                        &collapsed_folders,
-                        hovered_status_file.as_ref(),
-                        git.clone(),
-                        project,
-                        center.clone(),
-                        cx,
-                    ))
-                })
-                .when(!unstaged_rows.is_empty(), |panel| {
-                    panel.child(render_section(
-                        Some("CHANGES"),
-                        unstaged_rows,
-                        false,
-                        status_view,
-                        &collapsed_folders,
-                        hovered_status_file.as_ref(),
-                        git.clone(),
-                        project,
-                        center.clone(),
-                        cx,
-                    ))
-                })
-                .when(!untracked_rows.is_empty(), |panel| {
-                    panel.child(render_section(
-                        Some("UNTRACKED"),
-                        untracked_rows,
-                        false,
-                        status_view,
-                        &collapsed_folders,
-                        hovered_status_file.as_ref(),
-                        git.clone(),
-                        project,
-                        center.clone(),
-                        cx,
-                    ))
-                })
-                .into_any_element()
-        } else {
+        let clean_status_content: gpui::AnyElement = v_flex()
+            .w_full()
+            .items_center()
+            .py_8()
+            .gap_2()
+            .text_color(crate::ui::design::t3(cx))
+            .child(
+                gpui_component::Icon::new(IconName::CircleCheck)
+                    .size(crate::ui::design::icon_xl())
+                    .text_color(crate::ui::design::sage(cx)),
+            )
+            .child(
+                div()
+                    .text_size(crate::ui::design::text_body())
+                    .child("Working tree clean"),
+            )
+            .into_any_element();
+        let mut status_rows = Vec::new();
+        if !clean && status_group == GitStatusGroupMode::Status {
+            if !staged_rows.is_empty() {
+                status_rows.extend(status_section_rows(
+                    Some("STAGED"),
+                    staged_rows,
+                    true,
+                    status_view,
+                    &collapsed_folders,
+                ));
+            }
+            if !unstaged_rows.is_empty() {
+                status_rows.extend(status_section_rows(
+                    Some("CHANGES"),
+                    unstaged_rows,
+                    false,
+                    status_view,
+                    &collapsed_folders,
+                ));
+            }
+            if !untracked_rows.is_empty() {
+                status_rows.extend(status_section_rows(
+                    Some("UNTRACKED"),
+                    untracked_rows,
+                    false,
+                    status_view,
+                    &collapsed_folders,
+                ));
+            }
+        } else if !clean {
             let mut all_rows = staged_rows;
             all_rows.extend(unstaged_rows);
             all_rows.extend(untracked_rows);
-            render_section(
-                None,
-                all_rows,
-                false,
-                status_view,
-                &collapsed_folders,
-                hovered_status_file.as_ref(),
-                git.clone(),
-                project,
-                center.clone(),
-                cx,
-            )
-        };
+            status_rows =
+                status_section_rows(None, all_rows, false, status_view, &collapsed_folders);
+        }
+        let status_rows = Arc::new(status_rows);
 
         let body: gpui::AnyElement = match tab {
             GitTab::Commits => self.render_history(git.clone(), cx).into_any_element(),
@@ -564,12 +535,42 @@ impl Render for GitPanel {
                         .child(stage_split_button),
                 )
                 .child(
-                    v_flex()
+                    div()
                         .id("git-status-scroll")
                         .flex_1()
                         .min_h(px(0.))
-                        .overflow_y_scroll()
-                        .child(status_content),
+                        .overflow_hidden()
+                        .when(clean, |scroll| scroll.child(clean_status_content))
+                        .when(!clean, |scroll| {
+                            let rows = status_rows.clone();
+                            let list_git = git.clone();
+                            let list_center = center.clone();
+                            let list_panel = cx.entity().downgrade();
+                            scroll.child(
+                                uniform_list(
+                                    "git-status-virtual-list",
+                                    rows.len(),
+                                    move |visible_range, _, cx| {
+                                        visible_range
+                                            .filter_map(|ix| {
+                                                rows.get(ix).cloned().map(|row| {
+                                                    render_status_row(
+                                                        ix,
+                                                        row,
+                                                        list_git.clone(),
+                                                        project,
+                                                        list_center.clone(),
+                                                        list_panel.clone(),
+                                                        cx,
+                                                    )
+                                                })
+                                            })
+                                            .collect::<Vec<_>>()
+                                    },
+                                )
+                                .size_full(),
+                            )
+                        }),
                 )
                 .into_any_element(),
         };

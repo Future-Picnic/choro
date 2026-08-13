@@ -117,6 +117,22 @@ pub(super) fn upsert_timeline_work_log(
     }
 }
 
+pub(super) fn upsert_timeline_file_change_activity(
+    timeline: &mut Vec<AgentChatTimelineItem>,
+    activity: FileChangeActivity,
+) {
+    if let Some(AgentChatTimelineItem::FileChangeActivity(existing)) =
+        timeline.iter_mut().rev().find(|item| match item {
+            AgentChatTimelineItem::FileChangeActivity(existing) => existing.id == activity.id,
+            _ => false,
+        })
+    {
+        *existing = activity;
+    } else {
+        timeline.push(AgentChatTimelineItem::FileChangeActivity(activity));
+    }
+}
+
 pub(super) fn upsert_timeline_pending_user_input(
     timeline: &mut Vec<AgentChatTimelineItem>,
     pending: PendingUserInput,
@@ -211,6 +227,49 @@ pub(super) fn remove_proposed_plan_blocks_from_timeline(timeline: &mut Vec<Agent
         AgentChatTimelineItem::ProposedPlan(_) => false,
         _ => true,
     });
+}
+
+#[cfg(test)]
+mod file_activity_tests {
+    use super::*;
+
+    #[test]
+    fn streaming_updates_replace_only_the_same_live_file_row() {
+        let mut timeline = vec![AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+            "tool",
+            "tool",
+            WorkLogEntryKind::Tool,
+            "Editing",
+            WorkLogStatus::InProgress,
+        ))];
+        upsert_timeline_file_change_activity(
+            &mut timeline,
+            FileChangeActivity::new(
+                "edit:index",
+                "turn-a",
+                FileChangeStat::new("index.html", 1, 0),
+                false,
+                10,
+            ),
+        );
+        upsert_timeline_file_change_activity(
+            &mut timeline,
+            FileChangeActivity::new(
+                "edit:index",
+                "turn-a",
+                FileChangeStat::new("index.html", 23, 34),
+                false,
+                11,
+            ),
+        );
+
+        assert_eq!(timeline.len(), 2);
+        let AgentChatTimelineItem::FileChangeActivity(activity) = &timeline[1] else {
+            panic!("file activity should remain its own timeline row");
+        };
+        assert_eq!(activity.file.additions, 23);
+        assert_eq!(activity.file.deletions, 34);
+    }
 }
 
 pub(super) fn remove_code_review_blocks(messages: &mut Vec<AgentChatMessage>) {

@@ -101,11 +101,22 @@ fn is_local_code_link(label: &str, target: &str) -> bool {
 fn format_chat_list_item(item: &str) -> String {
     let normalized = normalize_local_markdown_links(item);
     let plain = strip_inline_markdown(&normalized);
-    if is_file_label(plain.trim()) {
+    // A Markdown link target naturally contains `/`. Do not mistake that URL
+    // for a file path and wrap the whole link in `**...**`: the Markdown text
+    // component cannot retain the nested link mark in that shape, leaving only
+    // bold, non-clickable label text.
+    if !contains_inline_markdown_link(&normalized) && is_file_label(plain.trim()) {
         format!("**{}**", plain.trim())
     } else {
         normalized
     }
+}
+
+fn contains_inline_markdown_link(markdown: &str) -> bool {
+    markdown
+        .char_indices()
+        .filter(|(_, ch)| *ch == ']')
+        .any(|(index, _)| markdown[index + 1..].starts_with('('))
 }
 
 fn is_file_label(label: &str) -> bool {
@@ -716,6 +727,7 @@ fn streaming_table_row(
         return None;
     }
     let mut cells = markdown_table_cells(line);
+    trim_surplus_empty_table_cells(&mut cells, header_len);
     if cells.is_empty() || cells.len() > header_len {
         return None;
     }
@@ -1152,7 +1164,11 @@ pub(super) fn markdown_table(
         if line.is_empty() || !line.contains('|') {
             break;
         }
-        let cells = markdown_table_cells(line);
+        let mut cells = markdown_table_cells(line);
+        // Models occasionally close a row with `| |`, producing one surplus
+        // empty cell after an otherwise valid row. Treat empty overflow as
+        // delimiter noise, but never discard a non-empty extra cell.
+        trim_surplus_empty_table_cells(&mut cells, header.len());
         if cells.len() != header.len() {
             break;
         }
@@ -1168,6 +1184,12 @@ pub(super) fn markdown_table_cells(line: &str) -> Vec<String> {
         .split('|')
         .map(|cell| cell.trim().to_string())
         .collect()
+}
+
+fn trim_surplus_empty_table_cells(cells: &mut Vec<String>, expected: usize) {
+    while cells.len() > expected && cells.last().is_some_and(|cell| cell.trim().is_empty()) {
+        cells.pop();
+    }
 }
 
 /// Inner radius of the table's rounded frame — gpui does not clip children to a
@@ -1506,6 +1528,20 @@ mod streaming_list_tests {
 
         assert_eq!(row, vec!["Choro", "Run", ""]);
         assert_eq!(live, (16, 1.0));
+    }
+
+    #[test]
+    fn a_live_table_row_ignores_a_surplus_empty_trailing_cell() {
+        let lines = [
+            "| Name | State | Result |",
+            "| --- | --- | --- |",
+            "| Choro | Ready | Passed | |",
+        ];
+
+        let (row, live) = streaming_table_row(3, &lines, 2, Some((4, 0.8))).unwrap();
+
+        assert_eq!(row, vec!["Choro", "Ready", "Passed"]);
+        assert_eq!(live, (4, 0.8));
     }
 
     #[test]

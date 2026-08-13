@@ -82,7 +82,6 @@ impl GitPanel {
                 branch_query,
                 branches_expanded: false,
                 collapsed_status_folders: HashSet::new(),
-                hovered_status_file: None,
                 branch_row_hovered: false,
                 pr_chip_hovered: false,
                 tab: GitTab::default(),

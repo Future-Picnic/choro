@@ -2,16 +2,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::FluentBuilder, px, AnyElement, App, Context, Entity, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
-    Styled,
+    div, prelude::FluentBuilder, px, AnyElement, App, Entity, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled,
 };
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    h_flex,
-    tooltip::Tooltip,
-    v_flex, Icon, IconName, Sizable,
-};
+use gpui_component::{h_flex, tooltip::Tooltip, Icon, IconName};
 use ide_core::config::GitStatusViewMode;
 use ide_core::git::{ChangeKind, LineStats, StatusEntry};
 
@@ -78,6 +72,31 @@ enum StatusTreeRow {
         collapsed: bool,
     },
     File {
+        entry: GitStatusListEntry,
+        depth: usize,
+    },
+}
+
+/// A single lazily rendered row in the Git changes list. Keeping section
+/// headers, folders, and files in one flat collection lets GPUI mount only the
+/// visible slice instead of rebuilding every changed file during unrelated
+/// workspace redraws (for example, while scrolling chat).
+#[derive(Clone)]
+pub enum GitStatusListRow {
+    Section {
+        title: &'static str,
+        count: usize,
+        show_bulk_action: bool,
+    },
+    Folder {
+        name: SharedString,
+        full_path: SharedString,
+        key: String,
+        depth: usize,
+        collapsed: bool,
+    },
+    File {
+        scope: &'static str,
         entry: GitStatusListEntry,
         depth: usize,
     },
@@ -171,110 +190,126 @@ fn flatten_status_tree(
     );
 }
 
-/// One section (Staged / Changes / Untracked) of the status list.
-/// Rows use Zed-style checkboxes: checked = staged.
-#[allow(clippy::too_many_arguments)]
-pub fn render_section(
+/// Flatten one section (Staged / Changes / Untracked) into cheap row data.
+/// Element construction is deferred to the virtual list's visible-range
+/// callback.
+pub fn status_section_rows(
     title: Option<&'static str>,
     entries: Vec<GitStatusListEntry>,
     show_bulk_action: bool,
     view_mode: GitStatusViewMode,
     collapsed_folders: &HashSet<String>,
-    hovered_file: Option<&(PathBuf, bool)>,
-    git: Entity<GitState>,
-    project: Option<ProjectId>,
-    center: gpui::WeakEntity<CenterArea>,
-    cx: &mut Context<GitPanel>,
-) -> AnyElement {
+) -> Vec<GitStatusListRow> {
     let count = entries.len();
-    let bulk_git = git.clone();
     let scope = title.unwrap_or("ALL");
+    let mut rows = Vec::with_capacity(count + usize::from(title.is_some()));
 
-    let rows = match view_mode {
-        GitStatusViewMode::List => entries
-            .into_iter()
-            .enumerate()
-            .map(|(ix, entry)| {
-                render_file_row(
-                    scope,
-                    ix,
-                    hovered_file.is_some_and(|(path, staged)| {
-                        path == &entry.path && *staged == entry.staged
-                    }),
-                    entry,
-                    0,
-                    git.clone(),
-                    project,
-                    center.clone(),
-                    cx,
-                )
-            })
-            .collect::<Vec<_>>(),
+    if let Some(title) = title {
+        rows.push(GitStatusListRow::Section {
+            title,
+            count,
+            show_bulk_action,
+        });
+    }
+
+    match view_mode {
+        GitStatusViewMode::List => {
+            rows.extend(entries.into_iter().map(|entry| GitStatusListRow::File {
+                scope,
+                entry,
+                depth: 0,
+            }))
+        }
         GitStatusViewMode::Tree => {
             let tree = status_tree(entries);
             let mut tree_rows = Vec::new();
             flatten_status_tree(scope, &tree, "", 0, collapsed_folders, &mut tree_rows);
-            tree_rows
-                .into_iter()
-                .enumerate()
-                .map(|(ix, row)| match row {
-                    StatusTreeRow::Folder {
-                        name,
-                        full_path,
-                        key,
-                        depth,
-                        collapsed,
-                    } => render_folder_row(name, full_path, key, depth, collapsed, cx),
-                    StatusTreeRow::File { entry, depth } => render_file_row(
-                        scope,
-                        ix,
-                        hovered_file.is_some_and(|(path, staged)| {
-                            path == &entry.path && *staged == entry.staged
-                        }),
-                        entry,
-                        depth,
-                        git.clone(),
-                        project,
-                        center.clone(),
-                        cx,
-                    ),
-                })
-                .collect::<Vec<_>>()
+            rows.extend(tree_rows.into_iter().map(|row| match row {
+                StatusTreeRow::Folder {
+                    name,
+                    full_path,
+                    key,
+                    depth,
+                    collapsed,
+                } => GitStatusListRow::Folder {
+                    name,
+                    full_path,
+                    key,
+                    depth,
+                    collapsed,
+                },
+                StatusTreeRow::File { entry, depth } => GitStatusListRow::File {
+                    scope,
+                    entry,
+                    depth,
+                },
+            }));
         }
-    };
+    }
 
-    v_flex()
+    rows
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_status_row(
+    ix: usize,
+    row: GitStatusListRow,
+    git: Entity<GitState>,
+    project: Option<ProjectId>,
+    center: gpui::WeakEntity<CenterArea>,
+    panel: gpui::WeakEntity<GitPanel>,
+    cx: &mut App,
+) -> AnyElement {
+    match row {
+        GitStatusListRow::Section {
+            title,
+            count,
+            show_bulk_action,
+        } => render_section_header(title, count, show_bulk_action, git, cx),
+        GitStatusListRow::Folder {
+            name,
+            full_path,
+            key,
+            depth,
+            collapsed,
+        } => render_folder_row(name, full_path, key, depth, collapsed, panel, cx),
+        GitStatusListRow::File {
+            scope,
+            entry,
+            depth,
+        } => render_file_row(scope, ix, entry, depth, git, project, center, cx),
+    }
+}
+
+fn render_section_header(
+    title: &'static str,
+    count: usize,
+    show_bulk_action: bool,
+    git: Entity<GitState>,
+    cx: &mut App,
+) -> AnyElement {
+    h_flex()
+        .h(crate::ui::design::git_status_row_h())
         .w_full()
-        .gap_0p5()
-        .when_some(title, |section, title| {
-            section.child(
-                h_flex()
-                    .w_full()
-                    .px_2()
-                    .pt(crate::ui::design::git_status_section_pad_top())
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(crate::ui::design::text_label())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t4(cx))
-                            .child(format!("{} ({count})", title.to_uppercase())),
-                    )
-                    .when(show_bulk_action, |row| {
-                        row.child(
-                            Button::new("bulk-unstage")
-                                .ghost()
-                                .xsmall()
-                                .label("Unstage all")
-                                .on_click(move |_, _, cx| {
-                                    bulk_git.update(cx, |git, cx| git.unstage_all(cx));
-                                }),
-                        )
-                    }),
+        .px_2()
+        .items_center()
+        .child(
+            div()
+                .flex_1()
+                .text_size(crate::ui::design::text_label())
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(crate::ui::design::t4(cx))
+                .child(format!("{} ({count})", title.to_uppercase())),
+        )
+        .when(show_bulk_action, |row| {
+            row.child(
+                style::ghost_button_compact("bulk-unstage", "Unstage all").on_click(
+                    move |_, _, cx| {
+                        git.update(cx, |git, cx| git.unstage_all(cx));
+                    },
+                ),
             )
         })
-        .children(rows)
         .into_any_element()
 }
 
@@ -284,29 +319,34 @@ fn render_folder_row(
     key: String,
     depth: usize,
     collapsed: bool,
-    cx: &mut Context<GitPanel>,
+    panel: gpui::WeakEntity<GitPanel>,
+    cx: &mut App,
 ) -> AnyElement {
     let tooltip_path = full_path.clone();
     let row_id = SharedString::from(format!("git-status-folder:{key}"));
     h_flex()
         .id(row_id)
+        .h(crate::ui::design::git_status_row_h())
         .w_full()
         .mx_1()
         .pl(px(8. + depth as f32 * 14.))
         .pr_2()
-        .py(crate::ui::design::git_status_row_pad_y())
         .gap_1()
         .items_center()
         .rounded(crate::ui::design::r_sm())
         .cursor_pointer()
         .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
         .tooltip(move |window, cx| Tooltip::new(tooltip_path.clone()).build(window, cx))
-        .on_click(cx.listener(move |panel, _, _, cx| {
-            if !panel.collapsed_status_folders.remove(&key) {
-                panel.collapsed_status_folders.insert(key.clone());
-            }
-            cx.notify();
-        }))
+        .on_click(move |_, _, cx| {
+            panel
+                .update(cx, |panel, cx| {
+                    if !panel.collapsed_status_folders.remove(&key) {
+                        panel.collapsed_status_folders.insert(key.clone());
+                    }
+                    cx.notify();
+                })
+                .ok();
+        })
         .child(
             Icon::new(if collapsed {
                 IconName::ChevronRight
@@ -342,13 +382,12 @@ fn render_folder_row(
 fn render_file_row(
     scope: &'static str,
     ix: usize,
-    is_hovered: bool,
     entry: GitStatusListEntry,
     depth: usize,
     git: Entity<GitState>,
     project: Option<ProjectId>,
     center: gpui::WeakEntity<CenterArea>,
-    cx: &mut Context<GitPanel>,
+    cx: &mut App,
 ) -> AnyElement {
     let full_path: SharedString = entry.path.display().to_string().into();
     let file_name: SharedString = entry
@@ -362,7 +401,6 @@ fn render_file_row(
     let color = kind_color(entry.kind, cx);
     let soft_color = kind_soft_color(entry.kind, cx);
     let action_path = entry.path.clone();
-    let hover_path = entry.path.clone();
     let row_center = center;
     let staged = entry.staged;
     let can_discard = !staged;
@@ -375,28 +413,16 @@ fn render_file_row(
     h_flex()
         .id(row_id)
         .group("git-status-file-row")
+        .h(crate::ui::design::git_status_row_h())
         .w_full()
         .mx_1()
         .pl(px(8. + depth as f32 * 14.))
         .pr_2()
-        .py(crate::ui::design::git_status_row_pad_y())
         .gap_2()
         .items_center()
         .rounded(crate::ui::design::r_sm())
         .cursor_pointer()
         .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
-        .on_hover(cx.listener(move |panel, hovered, _, cx| {
-            let key = (hover_path.clone(), staged);
-            if *hovered {
-                if panel.hovered_status_file.as_ref() != Some(&key) {
-                    panel.hovered_status_file = Some(key);
-                    cx.notify();
-                }
-            } else if panel.hovered_status_file.as_ref() == Some(&key) {
-                panel.hovered_status_file = None;
-                cx.notify();
-            }
-        }))
         .tooltip(move |window, cx| Tooltip::new(tooltip_path.clone()).build(window, cx))
         .on_click(move |_, _, cx| {
             let Some(project) = project else { return };
@@ -442,25 +468,25 @@ fn render_file_row(
                 .truncate()
                 .child(file_name),
         )
-        .when(is_hovered, |row| {
-            row.child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .whitespace_nowrap()
-                    .text_size(crate::ui::design::text_ui())
-                    .child(
-                        div()
-                            .text_color(crate::ui::design::sage(cx))
-                            .child(format!("+{insertions}")),
-                    )
-                    .child(
-                        div()
-                            .text_color(crate::ui::design::rose(cx))
-                            .child(format!("−{deletions}")),
-                    ),
-            )
-        })
+        .child(
+            h_flex()
+                .flex_none()
+                .gap_1()
+                .whitespace_nowrap()
+                .text_size(crate::ui::design::text_ui())
+                .invisible()
+                .group_hover("git-status-file-row", |stats| stats.visible())
+                .child(
+                    div()
+                        .text_color(crate::ui::design::sage(cx))
+                        .child(format!("+{insertions}")),
+                )
+                .child(
+                    div()
+                        .text_color(crate::ui::design::rose(cx))
+                        .child(format!("−{deletions}")),
+                ),
+        )
         .when(can_discard, |row| {
             let discard_git = git;
             let discard_path = entry.path;
@@ -602,5 +628,42 @@ mod tests {
         assert_eq!(untracked.len(), 1);
         assert_eq!(staged[0].2.insertions, 3);
         assert_eq!(untracked[0].2.insertions, 8);
+    }
+
+    #[test]
+    fn large_sections_flatten_to_data_rows_for_lazy_rendering() {
+        let entries = status_list_entries(
+            (0..5_000)
+                .map(|ix| {
+                    (
+                        PathBuf::from(format!("src/generated/file-{ix}.rs")),
+                        ChangeKind::Modified,
+                        LineStats::default(),
+                    )
+                })
+                .collect(),
+            false,
+        );
+
+        let rows = status_section_rows(
+            Some("CHANGES"),
+            entries,
+            false,
+            GitStatusViewMode::List,
+            &HashSet::new(),
+        );
+
+        assert_eq!(rows.len(), 5_001);
+        assert!(matches!(
+            rows.first(),
+            Some(GitStatusListRow::Section {
+                title: "CHANGES",
+                count: 5_000,
+                ..
+            })
+        ));
+        assert!(rows[1..]
+            .iter()
+            .all(|row| matches!(row, GitStatusListRow::File { .. })));
     }
 }

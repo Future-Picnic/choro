@@ -132,7 +132,6 @@ impl CenterArea {
             );
         }
 
-        self.agent_chat_terminal_open.remove(&agent_id);
         self.agent_detail_tabs
             .insert(agent_id, AgentDetailTab::Diff);
         cx.notify();
@@ -406,16 +405,22 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
-        let mut files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
-        for file in &agent.changed_files {
-            files.insert(file.path.clone(), (file.additions, file.deletions));
-        }
+        let mut exact_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
+        let mut observed_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
             for file in &session.changed_files.files {
-                files.insert(file.path.clone(), (file.additions, file.deletions));
+                exact_files.insert(file.path.clone(), (file.additions, file.deletions));
+            }
+            for file in &session.changed_files.observed_files {
+                if !exact_files.contains_key(&file.path) {
+                    observed_files.insert(file.path.clone(), (file.additions, file.deletions));
+                }
             }
         }
-        let rows = files.into_iter().collect::<Vec<_>>();
+        let exact_rows = exact_files.into_iter().collect::<Vec<_>>();
+        let observed_rows = observed_files.into_iter().collect::<Vec<_>>();
+        let row_count = exact_rows.len() + observed_rows.len();
+        let exact_count = exact_rows.len();
 
         let close = self
             .agent_drawer_close_button(
@@ -437,7 +442,7 @@ impl CenterArea {
             .py_0p5()
             .text_size(crate::ui::design::text_ui())
             .text_color(crate::ui::design::t3(cx))
-            .child(rows.len().to_string())
+            .child(row_count.to_string())
             .into_any_element();
 
         let body = v_flex()
@@ -445,7 +450,7 @@ impl CenterArea {
             .p_3()
             .gap_1()
             .overflow_y_scrollbar()
-            .when(rows.is_empty(), |list| {
+            .when(row_count == 0, |list| {
                 list.child(
                     v_flex()
                         .h_full()
@@ -469,60 +474,33 @@ impl CenterArea {
                         ),
                 )
             })
-            .children(
-                rows.into_iter()
-                    .enumerate()
-                    .map(|(index, (path, (add, del)))| {
-                        let absolute = agent.runtime_path().join(&path);
-                        let label = SharedString::from(path.display().to_string());
-                        h_flex()
-                            .id(("agent-connected-file", index))
-                            .w_full()
-                            .min_w(px(0.))
-                            .items_center()
-                            .gap_2()
-                            .rounded(crate::ui::design::r_sm())
-                            .px_2()
-                            .py_1p5()
-                            .cursor_pointer()
-                            .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.24)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_file(project, absolute.clone(), window, cx);
-                            }))
-                            .child(
-                                gpui_component::Icon::new(IconName::File)
-                                    .size(crate::ui::design::icon_md())
-                                    .text_color(crate::ui::design::t3(cx)),
+            .when(!exact_rows.is_empty(), |list| {
+                list.child(agent_files_section_label("Edited in this chat", cx))
+                    .children(exact_rows.into_iter().enumerate().map(
+                        |(index, (path, (add, del)))| {
+                            self.render_agent_file_ledger_row(
+                                project, agent, index, path, add, del, false, cx,
                             )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_size(crate::ui::design::text_body())
-                                    .text_color(crate::ui::design::t1(cx))
-                                    .child(label),
+                        },
+                    ))
+            })
+            .when(!observed_rows.is_empty(), |list| {
+                list.child(agent_files_section_label("Command changes (observed)", cx))
+                    .children(observed_rows.into_iter().enumerate().map(
+                        |(index, (path, (add, del)))| {
+                            self.render_agent_file_ledger_row(
+                                project,
+                                agent,
+                                exact_count + index,
+                                path,
+                                add,
+                                del,
+                                true,
+                                cx,
                             )
-                            .child(
-                                h_flex()
-                                    .flex_none()
-                                    .gap_1p5()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .font_family(crate::ui::design::FONT_MONO)
-                                    .child(
-                                        div()
-                                            .text_color(crate::ui::design::sage(cx))
-                                            .child(format!("+{add}")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(crate::ui::design::rose(cx))
-                                            .child(format!("-{del}")),
-                                    ),
-                            )
-                            .into_any_element()
-                    }),
-            )
+                        },
+                    ))
+            })
             .into_any_element();
 
         self.render_agent_detail_drawer(
@@ -534,6 +512,71 @@ impl CenterArea {
             body,
             cx,
         )
+    }
+
+    fn render_agent_file_ledger_row(
+        &self,
+        project: ProjectId,
+        agent: &AgentRecord,
+        index: usize,
+        path: PathBuf,
+        add: usize,
+        del: usize,
+        observed: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let absolute = agent.runtime_path().join(&path);
+        let label = SharedString::from(path.display().to_string());
+        h_flex()
+            .id(("agent-connected-file", index))
+            .w_full()
+            .min_w(px(0.))
+            .items_center()
+            .gap_2()
+            .rounded(crate::ui::design::r_sm())
+            .px_2()
+            .py_1p5()
+            .cursor_pointer()
+            .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.24)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_file(project, absolute.clone(), window, cx);
+            }))
+            .child(
+                gpui_component::Icon::new(IconName::File)
+                    .size(crate::ui::design::icon_md())
+                    .text_color(crate::ui::design::t3(cx)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_size(crate::ui::design::text_body())
+                    .text_color(if observed {
+                        crate::ui::design::t2(cx)
+                    } else {
+                        crate::ui::design::t1(cx)
+                    })
+                    .child(label),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_1p5()
+                    .text_size(crate::ui::design::text_ui())
+                    .font_family(crate::ui::design::FONT_MONO)
+                    .child(
+                        div()
+                            .text_color(crate::ui::design::sage(cx))
+                            .child(format!("+{add}")),
+                    )
+                    .child(
+                        div()
+                            .text_color(crate::ui::design::rose(cx))
+                            .child(format!("-{del}")),
+                    ),
+            )
+            .into_any_element()
     }
 
     pub(in crate::ui::center) fn render_agent_plan_drawer(
@@ -589,96 +632,20 @@ impl CenterArea {
             cx,
         )
     }
+}
 
-    pub(in crate::ui::center) fn render_agent_chat_terminal_drawer(
-        &self,
-        project: ProjectId,
-        agent: &AgentRecord,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let terminal_view = self
-            .terminals
-            .read(cx)
-            .agent_record_session(project, agent.id)
-            .map(|session| session.view.clone());
-        let agent_id = agent.id;
-        let reset_agent = agent.clone();
-
-        let close_button = self.agent_drawer_close_button(
-            ("close-agent-chat-terminal", agent_id.as_u128() as u64),
-            "Close terminal",
-            move |this, _, cx| {
-                this.agent_chat_terminal_open.remove(&agent_id);
-                cx.notify();
-            },
-            cx,
-        );
-        let actions = h_flex()
-            .items_center()
-            .gap_1()
-            .when(terminal_view.is_some(), |row| {
-                row.child(
-                    crate::ui::style::refresh_button(
-                        ("reset-agent-chat-terminal", agent_id.as_u128() as u64),
-                        "Reset",
-                        cx,
-                    )
-                    .tooltip("Close and reopen the agent shell")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.reset_agent_chat_terminal(reset_agent.clone(), window, cx);
-                    })),
-                )
-            })
-            .child(close_button)
-            .into_any_element();
-        let subtitle = Some({
-            let runtime_path = agent.runtime_path().display().to_string();
-            div()
-                .min_w(px(0.))
-                .max_w(px(280.))
-                .truncate()
-                .text_size(crate::ui::design::text_ui())
-                .font_family(crate::ui::design::FONT_MONO)
-                .text_color(crate::ui::design::t3(cx))
-                .child(runtime_path)
-                .into_any_element()
-        });
-        let body = match terminal_view {
-            Some(view) => view.into_any_element(),
-            None => v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .text_color(crate::ui::design::t3(cx))
-                .child(
-                    gpui_component::Icon::new(IconName::SquareTerminal)
-                        .size(crate::ui::design::icon_xl())
-                        .text_color(crate::ui::design::t3(cx)),
-                )
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_body())
-                        .child("The agent shell is not available yet."),
-                )
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_ui())
-                        .child("Close Terminal and open it again to retry."),
-                )
-                .into_any_element(),
-        };
-
-        self.render_agent_detail_drawer(
-            IconName::SquareTerminal,
-            "Terminal",
-            subtitle,
-            actions,
-            px(320.),
-            body,
-            cx,
-        )
-    }
+fn agent_files_section_label(
+    label: &'static str,
+    cx: &mut Context<CenterArea>,
+) -> gpui::AnyElement {
+    div()
+        .mt_2()
+        .px_2()
+        .text_size(crate::ui::design::text_label())
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(crate::ui::design::t3(cx))
+        .child(label)
+        .into_any_element()
 }
 
 #[cfg(test)]

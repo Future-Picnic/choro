@@ -40,6 +40,13 @@ impl LocalStore {
         write_zip_jsonl(
             &mut zip,
             options,
+            "chat_file_ledgers.jsonl",
+            &snapshot.chat_file_ledgers,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
             "memories.jsonl",
             &snapshot.memories,
             &mut checksums,
@@ -186,6 +193,7 @@ impl LocalStore {
                 agents: snapshot.agents.len(),
                 messages: snapshot.messages.len(),
                 timeline_events: snapshot.timeline_events.len(),
+                chat_file_ledgers: snapshot.chat_file_ledgers.len(),
                 memories: snapshot.memories.len(),
                 agent_summaries: snapshot.agent_summaries.len(),
                 agent_messages: snapshot.agent_messages.len(),
@@ -220,6 +228,8 @@ impl LocalStore {
         let agents: Vec<AgentRecord> = read_zip_jsonl(&mut zip, "agents.jsonl")?;
         let messages: Vec<StoredChatMessage> = read_zip_jsonl(&mut zip, "messages.jsonl")?;
         let timeline_events: Vec<StoredTimelineEvent> = read_zip_jsonl(&mut zip, "timeline.jsonl")?;
+        let chat_file_ledgers: Vec<StoredChatFileLedger> =
+            read_zip_jsonl_optional(&mut zip, "chat_file_ledgers.jsonl")?;
         let memories: Vec<StoredMemory> = read_zip_jsonl_optional(&mut zip, "memories.jsonl")?;
         let agent_summaries: Vec<StoredAgentSummary> =
             read_zip_jsonl_optional(&mut zip, "agent_summaries.jsonl")?;
@@ -296,6 +306,22 @@ impl LocalStore {
                     }
                     for event in &timeline_events {
                         insert_timeline_event_async(conn, event).await?;
+                    }
+                    for ledger in &chat_file_ledgers {
+                        replace_chat_file_ledger_async(
+                            conn,
+                            ledger.agent_id,
+                            ledger.revision,
+                            &ledger.entries,
+                        )
+                        .await?;
+                        if ledger.entries.is_empty() {
+                            conn.execute(
+                                "UPDATE chat_file_ledgers SET updated_at = ?1 WHERE agent_id = ?2",
+                                (u64_to_i64(ledger.updated_at)?, ledger.agent_id.to_string()),
+                            )
+                            .await?;
+                        }
                     }
                     anyhow::ensure!(
                         memories.len() <= MAX_MEMORY_ROWS,
@@ -439,6 +465,7 @@ impl LocalStore {
                 agents: load_agents_async(&conn).await?,
                 messages: load_all_messages_async(&conn).await?,
                 timeline_events: load_all_timeline_events_async(&conn).await?,
+                chat_file_ledgers: load_all_chat_file_ledgers_async(&conn).await?,
                 memories: load_all_memories_async(&conn).await?,
                 agent_summaries: load_all_agent_summaries_async(&conn).await?,
                 agent_messages: load_all_agent_messages_async(&conn).await?,
@@ -490,6 +517,7 @@ pub(super) struct ExportSnapshot {
     agents: Vec<AgentRecord>,
     messages: Vec<StoredChatMessage>,
     timeline_events: Vec<StoredTimelineEvent>,
+    chat_file_ledgers: Vec<StoredChatFileLedger>,
     memories: Vec<StoredMemory>,
     agent_summaries: Vec<StoredAgentSummary>,
     agent_messages: Vec<StoredAgentMessage>,

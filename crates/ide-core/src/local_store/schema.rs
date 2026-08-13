@@ -38,6 +38,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_git_workflow_schema(conn).await?;
         ensure_brain_schema(conn).await?;
         ensure_verification_closed_column(conn).await?;
+        ensure_chat_file_ledger_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -511,6 +512,46 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 30 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_chat_file_ledger_schema_inner(conn).await?;
+                record_schema_version(conn, 30).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_chat_file_ledger_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_chat_file_ledger_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_chat_file_ledger_schema_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V30 {
+        conn.execute(statement, ()).await?;
+    }
+    if !column_exists(conn, "chat_file_ledgers", "revision").await? {
+        conn.execute(
+            "ALTER TABLE chat_file_ledgers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0",
+            (),
+        )
+        .await?;
+    }
+    for (column, definition) in [("baseline_content", "TEXT"), ("result_content", "TEXT")] {
+        if !column_exists(conn, "chat_file_ledger", column).await? {
+            conn.execute(
+                format!("ALTER TABLE chat_file_ledger ADD COLUMN {column} {definition}"),
+                (),
+            )
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -938,6 +979,31 @@ const SCHEMA_V27: &[&str] = &[
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_messages_target_event_key
         ON agent_messages(target_agent_id, event_key)
         WHERE event_key IS NOT NULL",
+];
+
+const SCHEMA_V30: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS chat_file_ledgers (
+        agent_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    )",
+    "CREATE TABLE IF NOT EXISTS chat_file_ledger (
+        agent_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        attribution TEXT NOT NULL,
+        additions INTEGER NOT NULL,
+        deletions INTEGER NOT NULL,
+        baseline_hash TEXT,
+        result_hash TEXT,
+        baseline_content TEXT,
+        result_content TEXT,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(agent_id, path),
+        FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_chat_file_ledger_agent_attribution_path
+        ON chat_file_ledger(agent_id, attribution, path)",
 ];
 
 pub(super) async fn schema_version(conn: &Connection) -> Result<u32> {

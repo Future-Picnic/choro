@@ -27,6 +27,7 @@ impl CenterArea {
             == ide_core::config::ConversationLayout::TopDown;
         let compact_design_surface = surface.is_design();
         let compact_assistant_controls = surface.is_document();
+        let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
         let input = self.agent_chat_input(agent, surface.input_placeholder(), window, cx);
         let session = if let Some(session) = self.agent_chat_render_sessions.get(&agent.id) {
             session.clone()
@@ -60,25 +61,31 @@ impl CenterArea {
             session
                 .changed_files
                 .remove_visualization_artifacts(agent.id, agent.runtime_path());
-            session.timeline.retain_mut(|item| {
-                let AgentChatTimelineItem::ChangedFiles(summary) = item else {
-                    return true;
-                };
-                summary.remove_visualization_artifacts(agent.id, agent.runtime_path());
-                !summary.files.is_empty()
+            session.timeline.retain_mut(|item| match item {
+                AgentChatTimelineItem::ChangedFiles(summary) => {
+                    summary.remove_visualization_artifacts(agent.id, agent.runtime_path());
+                    !summary.is_empty()
+                }
+                AgentChatTimelineItem::FileChangeActivity(activity) => {
+                    !artifact_filter.is_artifact(&activity.file.path)
+                }
+                _ => true,
             });
             if !surface.shows_changed_files() {
                 session.changed_files = Default::default();
-                session
-                    .timeline
-                    .retain(|item| !matches!(item, AgentChatTimelineItem::ChangedFiles(_)));
+                session.timeline.retain(|item| {
+                    !matches!(
+                        item,
+                        AgentChatTimelineItem::ChangedFiles(_)
+                            | AgentChatTimelineItem::FileChangeActivity(_)
+                    )
+                });
             }
             let session = Rc::new(session);
             self.agent_chat_render_sessions
                 .insert(agent.id, session.clone());
             session
         };
-        let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
         self.sync_agent_chat_visualizations(agent, &session);
         let is_plan_mode =
             surface.allows_plan_mode() && session.interaction_mode == AgentInteractionMode::Plan;
@@ -137,8 +144,9 @@ impl CenterArea {
             .files
             .iter()
             .any(|file| !artifact_filter.is_artifact(&file.path))
-            || agent
+            || session
                 .changed_files
+                .observed_files
                 .iter()
                 .any(|file| !artifact_filter.is_artifact(&file.path));
         let project_gits = self.git_states.read(cx).repositories(agent.project_id);

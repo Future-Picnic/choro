@@ -1362,6 +1362,47 @@ pub fn companion_music_playlist_button(id: impl Into<ElementId>, opened: bool, c
         )
 }
 
+/// Opens the Companion's lightweight live CPU/RAM process list. The selected
+/// treatment matches the other always-on-top Companion controls.
+pub fn companion_process_monitor_button(
+    id: impl Into<ElementId>,
+    opened: bool,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(px(34.))
+        .h(px(34.))
+        .p_0()
+        .rounded(design::r_pill())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if opened {
+                    design::accent_soft(cx)
+                } else {
+                    design::control_raised(cx)
+                })
+                .foreground(if opened {
+                    design::accent(cx)
+                } else {
+                    design::t1(cx)
+                })
+                .border(design::control_line(cx))
+                .hover(design::control_raised_hover(cx))
+                .active(design::accent_soft(cx)),
+        )
+        .child(design::indicator::lucide_icon(
+            lucide_icons::Icon::Activity,
+            if opened {
+                design::accent(cx)
+            } else {
+                design::t1(cx)
+            },
+            design::icon(),
+        ))
+}
+
 /// Companion Agent Assistant microphone. While active, the same control turns
 /// into a pause action so the always-on-top surface never needs a second stop
 /// button or an expanded toolbar.

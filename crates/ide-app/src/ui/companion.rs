@@ -21,12 +21,14 @@ use crate::state::agent_chat::{AgentChatMessage, AgentChatStatus, AgentChatTimel
 use crate::state::{AgentChatState, AgentRecords, Workspace};
 use crate::ui::center::CenterArea;
 use crate::ui::project_list::ProjectList;
+use crate::ui::settings::{ProcessInfo, ProjectSource, SettingsView};
 use crate::voice::{VoiceEvent, VoicePhase, VoiceState};
 
 const WINDOW_WIDTH: f32 = 330.0;
 const AVATAR_CANVAS_SIZE: f32 = 165.0;
 const AVATAR_BASE_HEIGHT: f32 = AVATAR_CANVAS_SIZE + 45.0;
 const COMPANION_CONTROLS_HEIGHT: f32 = 35.0;
+const COMPANION_CONTROLS_WIDTH: f32 = 156.0;
 const ASSISTANT_STATUS_WIDTH: f32 = 220.0;
 #[cfg(test)]
 const ANIMATION_CANVAS_WIDTH: u64 = 320;
@@ -37,6 +39,9 @@ const ATTENTION_ROW_STEP: f32 = 54.0;
 const ATTENTION_PREVIEW_LIMIT: usize = 3;
 const ATTENTION_OVERFLOW_STEP: f32 = 36.0;
 const MUSIC_MENU_HEIGHT: f32 = 180.0;
+const PROCESS_MONITOR_HEIGHT: f32 = 246.0;
+const PROCESS_MONITOR_LIMIT: usize = 5;
+const PROCESS_MONITOR_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const PERSISTENT_MOTION_FRAME_COUNT: usize = 8;
 const IDLE_PERSISTENT_MOTION_ASSETS: [&str; PERSISTENT_MOTION_FRAME_COUNT] = [
     "avatar/choro-companion-idle-medium-0.webp",
@@ -313,6 +318,13 @@ struct CompanionItem {
     acknowledge_on_open: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ProcessMetric {
+    #[default]
+    Cpu,
+    Memory,
+}
+
 pub(crate) struct CompanionView {
     _project_list: Entity<ProjectList>,
     workspace: Entity<Workspace>,
@@ -325,6 +337,13 @@ pub(crate) struct CompanionView {
     window_height: f32,
     companion_hovered: bool,
     music_menu_open: bool,
+    process_monitor_open: bool,
+    process_metric: ProcessMetric,
+    processes: Vec<ProcessInfo>,
+    process_total_memory_bytes: u64,
+    process_monitor_error: Option<String>,
+    process_monitor_loading: bool,
+    process_monitor_seq: u64,
     agents_expanded: bool,
     companion_visible: bool,
     persistent_motion_frame_index: usize,
@@ -372,12 +391,75 @@ impl CompanionView {
             self.music_menu_open = false;
         } else {
             self.music_menu_open = !self.music_menu_open;
+            if self.music_menu_open {
+                self.process_monitor_open = false;
+            }
         }
         cx.notify();
     }
 
     fn toggle_music_menu(&mut self, cx: &mut Context<Self>) {
         self.music_menu_open = !self.music_menu_open;
+        if self.music_menu_open {
+            self.process_monitor_open = false;
+        }
+        cx.notify();
+    }
+
+    fn toggle_process_monitor(&mut self, cx: &mut Context<Self>) {
+        self.process_monitor_open = !self.process_monitor_open;
+        if self.process_monitor_open {
+            self.music_menu_open = false;
+            self.refresh_process_monitor(cx);
+        }
+        cx.notify();
+    }
+
+    fn set_process_metric(&mut self, metric: ProcessMetric, cx: &mut Context<Self>) {
+        if self.process_metric != metric {
+            self.process_metric = metric;
+            cx.notify();
+        }
+    }
+
+    fn refresh_process_monitor(&mut self, cx: &mut Context<Self>) {
+        if !self.process_monitor_open || !self.companion_visible || self.process_monitor_loading {
+            return;
+        }
+
+        self.process_monitor_loading = true;
+        self.process_monitor_seq = self.process_monitor_seq.wrapping_add(1);
+        let seq = self.process_monitor_seq;
+        let projects = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .map(|project| ProjectSource {
+                id: project.id,
+                name: project.name.clone(),
+                path: project.path.display().to_string(),
+            })
+            .collect::<Vec<_>>();
+        let agents = self.agents.read(cx).all_records();
+
+        cx.spawn(async move |this, cx| {
+            let snapshot = cx
+                .background_executor()
+                .spawn(async move { SettingsView::load_live_process_snapshot(&projects, &agents) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.process_monitor_seq == seq {
+                    this.processes = snapshot.processes;
+                    this.process_total_memory_bytes = snapshot.total_bytes;
+                    this.process_monitor_error = snapshot.error;
+                    this.process_monitor_loading = false;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 
@@ -536,6 +618,214 @@ impl CompanionView {
                         .child(error),
                 )
             })
+            .into_any_element()
+    }
+
+    fn render_process_monitor(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let metric = self.process_metric;
+        let processes = top_processes(&self.processes, metric);
+        let loading = self.process_monitor_loading && self.processes.is_empty();
+        let error = self.process_monitor_error.clone();
+        let cpu_selected = metric == ProcessMetric::Cpu;
+        let memory_selected = metric == ProcessMetric::Memory;
+        let cpu_color = if cpu_selected {
+            crate::ui::design::t1(cx)
+        } else {
+            crate::ui::design::t3(cx)
+        };
+        let memory_color = if memory_selected {
+            crate::ui::design::t1(cx)
+        } else {
+            crate::ui::design::t3(cx)
+        };
+
+        v_flex()
+            .id("companion-process-monitor")
+            .w_full()
+            .h(px(PROCESS_MONITOR_HEIGHT))
+            .flex_none()
+            .gap_2()
+            .p_2()
+            .rounded(crate::ui::design::r_lg())
+            .border_1()
+            .border_color(crate::ui::design::line_2(cx))
+            .bg(crate::ui::design::focus(cx).opacity(0.98))
+            .shadow_sm()
+            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                h_flex()
+                    .h(px(22.0))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(crate::ui::design::text_body())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child("Live processes"),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                div()
+                                    .size(px(6.0))
+                                    .rounded_full()
+                                    .bg(crate::ui::design::sage(cx)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(crate::ui::design::text_label())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child("Live · 2s"),
+                            ),
+                    ),
+            )
+            .child(
+                crate::ui::style::segmented_container_quiet(cx)
+                    .h(px(30.0))
+                    .child(
+                        crate::ui::style::segment_with_leading(
+                            "companion-process-cpu",
+                            crate::ui::design::indicator::lucide_icon(
+                                lucide_icons::Icon::Cpu,
+                                cpu_color,
+                                crate::ui::design::icon_sm(),
+                            )
+                            .into_any_element(),
+                            "CPU",
+                            cpu_selected,
+                            cx,
+                        )
+                        .flex_1()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_process_metric(ProcessMetric::Cpu, cx);
+                        })),
+                    )
+                    .child(
+                        crate::ui::style::segment_with_leading(
+                            "companion-process-memory",
+                            crate::ui::design::indicator::lucide_icon(
+                                lucide_icons::Icon::MemoryStick,
+                                memory_color,
+                                crate::ui::design::icon_sm(),
+                            )
+                            .into_any_element(),
+                            "RAM",
+                            memory_selected,
+                            cx,
+                        )
+                        .flex_1()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_process_metric(ProcessMetric::Memory, cx);
+                        })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .when_some(error.clone(), |list, _error| {
+                        list.child(
+                            h_flex()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::rose(cx))
+                                .child("Process data unavailable · retrying"),
+                        )
+                    })
+                    .when(loading && error.is_none(), |list| {
+                        list.child(
+                            h_flex()
+                                .flex_1()
+                                .items_center()
+                                .justify_center()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::t3(cx))
+                                .child("Sampling processes…"),
+                        )
+                    })
+                    .when(
+                        !loading && error.is_none() && processes.is_empty(),
+                        |list| {
+                            list.child(
+                                h_flex()
+                                    .flex_1()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(crate::ui::design::text_label())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child("No related processes found"),
+                            )
+                        },
+                    )
+                    .when(error.is_none(), |list| {
+                        list.children(processes.into_iter().enumerate().map(|(index, process)| {
+                            let project = process.project.clone().unwrap_or_else(|| {
+                                if process.name == "Choro app" {
+                                    "Choro".to_string()
+                                } else {
+                                    "Background".to_string()
+                                }
+                            });
+                            let value = match metric {
+                                ProcessMetric::Cpu => format!("{:.1}%", process.cpu),
+                                ProcessMetric::Memory => format!(
+                                    "{:.0}% · {}",
+                                    process_memory_share(
+                                        process.memory_bytes,
+                                        self.process_total_memory_bytes,
+                                    ),
+                                    format_process_memory(process.memory_bytes),
+                                ),
+                            };
+
+                            h_flex()
+                                .id(("companion-process-row", process.pid as u64))
+                                .h(px(30.0))
+                                .flex_none()
+                                .gap_2()
+                                .items_center()
+                                .when(index > 0, |row| {
+                                    row.border_t_1().border_color(crate::ui::design::line(cx))
+                                })
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_size(crate::ui::design::text_label())
+                                                .font_weight(gpui::FontWeight::MEDIUM)
+                                                .text_color(crate::ui::design::t1(cx))
+                                                .child(process.name),
+                                        )
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_size(crate::ui::design::text_label())
+                                                .text_color(crate::ui::design::t3(cx))
+                                                .child(project),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::ui::design::text_label())
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(crate::ui::design::t2(cx))
+                                        .child(value),
+                                )
+                        }))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -821,7 +1111,14 @@ impl Render for CompanionView {
         } else {
             0.0
         };
-        let uncapped_height = window_height(item_count, self.agents_expanded) + music_menu_height;
+        let process_monitor_height = if self.process_monitor_open {
+            PROCESS_MONITOR_HEIGHT + 8.0
+        } else {
+            0.0
+        };
+        let uncapped_height = window_height(item_count, self.agents_expanded)
+            + music_menu_height
+            + process_monitor_height;
         let display_height = window
             .display(cx)
             .map(|display| f32::from(display.bounds().size.height));
@@ -833,8 +1130,11 @@ impl Render for CompanionView {
             window.resize(size(px(WINDOW_WIDTH), px(desired_height)));
         }
         let music_menu_open = self.music_menu_open;
-        let show_companion_controls =
-            self.companion_hovered || music_menu_open || agent_assistant_active;
+        let process_monitor_open = self.process_monitor_open;
+        let show_companion_controls = self.companion_hovered
+            || music_menu_open
+            || process_monitor_open
+            || agent_assistant_active;
         let overflow_count = item_count.saturating_sub(ATTENTION_PREVIEW_LIMIT);
         let agents_expanded = self.agents_expanded;
         let workspace_for_menu = self.workspace.clone();
@@ -886,6 +1186,9 @@ impl Render for CompanionView {
                                 this.toggle_agents_expanded(cx);
                             })),
                         )
+                    })
+                    .when(process_monitor_open, |list| {
+                        list.child(self.render_process_monitor(cx))
                     }),
             )
             .child(
@@ -998,7 +1301,7 @@ impl Render for CompanionView {
                             h_flex()
                                 .id("companion-controls")
                                 .absolute()
-                                .left(px((AVATAR_CANVAS_SIZE - 116.0) / 2.0))
+                                .left(px((AVATAR_CANVAS_SIZE - COMPANION_CONTROLS_WIDTH) / 2.0))
                                 .bottom(px(0.0))
                                 .gap_1()
                                 .p_1()
@@ -1037,6 +1340,23 @@ impl Render for CompanionView {
                                     .on_click(cx.listener(
                                         |this, _, _, cx| {
                                             this.toggle_music_menu(cx);
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    crate::ui::style::companion_process_monitor_button(
+                                        "companion-process-monitor-button",
+                                        process_monitor_open,
+                                        cx,
+                                    )
+                                    .tooltip(if process_monitor_open {
+                                        "Hide live processes"
+                                    } else {
+                                        "Show live processes"
+                                    })
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.toggle_process_monitor(cx);
                                         },
                                     )),
                                 )
@@ -1257,6 +1577,20 @@ pub(crate) fn view(
             }
         })
         .detach();
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(PROCESS_MONITOR_REFRESH_INTERVAL)
+                .await;
+            if this
+                .update(cx, |companion, cx| {
+                    companion.refresh_process_monitor(cx);
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
         CompanionView {
             _project_list: project_list,
             workspace,
@@ -1269,6 +1603,13 @@ pub(crate) fn view(
             window_height: window_height(initial_attention_count, false),
             companion_hovered: false,
             music_menu_open: false,
+            process_monitor_open: false,
+            process_metric: ProcessMetric::Cpu,
+            processes: Vec::new(),
+            process_total_memory_bytes: 0,
+            process_monitor_error: None,
+            process_monitor_loading: false,
+            process_monitor_seq: 0,
             agents_expanded: false,
             companion_visible,
             persistent_motion_frame_index: 0,
@@ -1333,6 +1674,35 @@ fn capped_window_height(content_height: f32, display_height: Option<f32>) -> f32
     display_height
         .map(|height| content_height.min((height - SCREEN_MARGIN * 2.0).max(AVATAR_BASE_HEIGHT)))
         .unwrap_or(content_height)
+}
+
+fn top_processes(processes: &[ProcessInfo], metric: ProcessMetric) -> Vec<ProcessInfo> {
+    let mut processes = processes.to_vec();
+    processes.sort_by(|a, b| match metric {
+        ProcessMetric::Cpu => b.cpu.total_cmp(&a.cpu),
+        ProcessMetric::Memory => b.memory_bytes.cmp(&a.memory_bytes),
+    });
+    processes.truncate(PROCESS_MONITOR_LIMIT);
+    processes
+}
+
+fn format_process_memory(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * MIB;
+    let bytes = bytes as f64;
+    if bytes >= GIB {
+        format!("{:.1} GB", bytes / GIB)
+    } else {
+        format!("{:.0} MB", bytes / MIB)
+    }
+}
+
+fn process_memory_share(bytes: u64, total_bytes: u64) -> f64 {
+    if total_bytes == 0 {
+        0.0
+    } else {
+        bytes as f64 / total_bytes as f64 * 100.0
+    }
 }
 
 fn current_turn_changed_file_count(timeline: &[AgentChatTimelineItem]) -> usize {
@@ -1439,6 +1809,20 @@ mod tests {
         }
     }
 
+    fn process(name: &str, cpu: f64, memory_bytes: u64) -> ProcessInfo {
+        ProcessInfo {
+            pid: memory_bytes as i32,
+            memory_bytes,
+            cpu,
+            project_id: None,
+            project: Some("Project".to_string()),
+            agent_id: None,
+            agent: None,
+            name: name.to_string(),
+            command: name.to_string(),
+        }
+    }
+
     #[test]
     fn completed_work_with_changed_files_uses_done() {
         assert_eq!(
@@ -1473,6 +1857,44 @@ mod tests {
             900.0 - SCREEN_MARGIN * 2.0
         );
         assert_eq!(capped_window_height(content_height, None), content_height);
+    }
+
+    #[test]
+    fn live_processes_are_ranked_by_selected_metric_and_limited_to_five() {
+        let processes = vec![
+            process("one", 1.0, 60),
+            process("two", 6.0, 50),
+            process("three", 2.0, 40),
+            process("four", 5.0, 30),
+            process("five", 3.0, 20),
+            process("six", 4.0, 10),
+        ];
+
+        let cpu = top_processes(&processes, ProcessMetric::Cpu);
+        let memory = top_processes(&processes, ProcessMetric::Memory);
+
+        assert_eq!(cpu.len(), PROCESS_MONITOR_LIMIT);
+        assert_eq!(
+            cpu.iter()
+                .map(|process| process.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["two", "four", "six", "five", "three"]
+        );
+        assert_eq!(
+            memory
+                .iter()
+                .map(|process| process.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one", "two", "three", "four", "five"]
+        );
+    }
+
+    #[test]
+    fn live_process_memory_uses_readable_units() {
+        assert_eq!(format_process_memory(512 * 1024 * 1024), "512 MB");
+        assert_eq!(format_process_memory(1536 * 1024 * 1024), "1.5 GB");
+        assert_eq!(process_memory_share(1, 4), 25.0);
+        assert_eq!(process_memory_share(1, 0), 0.0);
     }
 
     #[test]

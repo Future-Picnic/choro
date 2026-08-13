@@ -143,9 +143,10 @@ impl CenterArea {
             let changed_file_updates = sessions
                 .sessions
                 .iter()
-                .filter_map(|(agent_id, session)| {
-                    (!session.changed_files.files.is_empty())
-                        .then(|| (*agent_id, session.changed_files.files.clone()))
+                .map(|(agent_id, session)| {
+                    let mut files = session.changed_files.files.clone();
+                    files.extend(session.changed_files.observed_files.clone());
+                    (*agent_id, files)
                 })
                 .collect::<Vec<_>>();
             (session_updates, changed_file_updates)
@@ -165,13 +166,10 @@ impl CenterArea {
                 }
             }
             for (agent_id, files) in changed_file_updates {
-                // Refresh the Preview only when the merge actually changed
-                // the known per-file stats. The agent's accumulated set is a
-                // sorted union, so comparing it element-wise against the
-                // session's latest summary reports "different" on every tick
-                // and reloads the Preview in a loop.
+                // Refresh Preview only when the chat ledger's net projection
+                // actually changed. Replacement also removes reverted paths.
                 let project = agents.agent(agent_id).map(|agent| agent.project_id);
-                if agents.merge_changed_files(agent_id, &files, cx) {
+                if agents.replace_changed_files(agent_id, &files, cx) {
                     if let Some(project) = project {
                         if !refresh_projects.contains(&project) {
                             refresh_projects.push(project);
@@ -336,7 +334,7 @@ impl CenterArea {
         }
         let resumed_changes: crate::state::agent_chat::ChangedFilesSummary =
             crate::state::agent_chat::ChangedFilesSummary {
-                files: agent
+                observed_files: agent
                     .changed_files
                     .iter()
                     .map(|file| {
@@ -349,7 +347,7 @@ impl CenterArea {
                     .collect(),
                 ..Default::default()
             };
-        if !resumed_changes.files.is_empty() {
+        if !resumed_changes.is_empty() {
             timeline.push(AgentChatTimelineItem::ChangedFiles(resumed_changes));
         }
         if let Err(error) = persist_timeline_snapshot(agent.id, &timeline) {
@@ -683,35 +681,26 @@ impl CenterArea {
 
     pub(super) fn hydrate_chat_session_from_timeline(
         session: &mut AgentChatSession,
-        agent: &AgentRecord,
+        _agent: &AgentRecord,
         timeline: Vec<AgentChatTimelineItem>,
     ) {
         let mut messages = Vec::new();
         let mut work_log = Vec::new();
         let mut pending_user_input = None;
-        let mut changed_files = crate::state::agent_chat::ChangedFilesSummary {
-            files: agent
-                .changed_files
-                .iter()
-                .map(|file| {
-                    crate::state::agent_chat::FileChangeStat::new(
-                        file.path.clone(),
-                        file.additions,
-                        file.deletions,
-                    )
-                })
-                .collect(),
-            ..Default::default()
-        };
+        // The chat ledger is rebuilt exclusively from persisted per-turn
+        // receipts. `agent.changed_files` is a project/worktree cache and can
+        // contain paths produced by another concurrent chat.
+        let mut changed_files = crate::state::agent_chat::ChangedFilesSummary::default();
         for item in &timeline {
             match item {
                 AgentChatTimelineItem::Message(message) => messages.push(message.clone()),
                 AgentChatTimelineItem::WorkLog(entry) => work_log.push(entry.clone()),
+                AgentChatTimelineItem::FileChangeActivity(_) => {}
                 AgentChatTimelineItem::PendingUserInput(pending) => {
                     pending_user_input = Some(pending.clone());
                 }
                 AgentChatTimelineItem::ProposedPlan(_) => {}
-                AgentChatTimelineItem::ChangedFiles(summary) => changed_files = summary.clone(),
+                AgentChatTimelineItem::ChangedFiles(summary) => changed_files.merge_turn(summary),
                 AgentChatTimelineItem::CodeReview(_) => {}
                 AgentChatTimelineItem::Verification(_) => {}
                 AgentChatTimelineItem::ShipResult(_) => {}
@@ -723,6 +712,10 @@ impl CenterArea {
                 AgentChatTimelineItem::AgentMessage(_) => {}
             }
         }
+        changed_files = prefer_newest_hydrated_file_ledger(
+            changed_files,
+            crate::state::agent_chat::load_persisted_file_ledger(session.agent_id),
+        );
         session.messages = messages;
         session.work_log = work_log;
         session.pending_user_input = pending_user_input;
@@ -1078,47 +1071,7 @@ impl CenterArea {
             .or_insert(1);
     }
 
-    pub(super) fn ensure_agent_chat_terminal(
-        &mut self,
-        agent: &AgentRecord,
-        cx: &mut Context<Self>,
-    ) -> Option<SessionId> {
-        let Some((project, _)) = self.active_project(cx) else {
-            return None;
-        };
-        if agent.project_id != project {
-            return None;
-        }
-        if let Some(id) = self
-            .terminals
-            .read(cx)
-            .agent_record_terminal(project, agent.id)
-        {
-            return Some(id);
-        }
-
-        let runtime_cwd = agent.runtime_path().to_path_buf();
-        let spawned = self.terminals.update(cx, |manager, cx| {
-            manager.spawn_agent_shell(
-                project,
-                runtime_cwd,
-                agent.id,
-                agent.provider,
-                format!("{} terminal", agent.title),
-                cx,
-            )
-        });
-        match spawned {
-            Ok(id) => Some(id),
-            Err(error) => {
-                self.agent_start_errors
-                    .insert(agent.id, format!("failed to open chat terminal: {error:#}"));
-                None
-            }
-        }
-    }
-
-    /// Selects and focuses an open agent chat terminal.
+    /// Selects and focuses an open terminal-backed agent.
     pub fn focus_agent_terminal(
         &mut self,
         project: ProjectId,
@@ -1157,6 +1110,15 @@ impl CenterArea {
     }
 }
 
+fn prefer_newest_hydrated_file_ledger(
+    rebuilt: crate::state::agent_chat::ChangedFilesSummary,
+    persisted: Option<crate::state::agent_chat::ChangedFilesSummary>,
+) -> crate::state::agent_chat::ChangedFilesSummary {
+    persisted
+        .filter(|persisted| persisted.ledger_revision >= rebuilt.ledger_revision)
+        .unwrap_or(rebuilt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1183,6 +1145,33 @@ mod tests {
         shift_agent_chat_indices(&mut indices, agent, 0);
 
         assert_eq!(indices, HashSet::from([(agent, 2)]));
+    }
+
+    #[test]
+    fn stale_persisted_ledger_does_not_override_newer_turn_receipts() {
+        let rebuilt = crate::state::agent_chat::ChangedFilesSummary {
+            files: vec![crate::state::agent_chat::FileChangeStat::new(
+                "src/newest.rs",
+                1,
+                0,
+            )],
+            ledger_revision: 2,
+            ..Default::default()
+        };
+        let persisted = crate::state::agent_chat::ChangedFilesSummary {
+            files: vec![crate::state::agent_chat::FileChangeStat::new(
+                "src/stale.rs",
+                1,
+                0,
+            )],
+            ledger_revision: 1,
+            ..Default::default()
+        };
+
+        let selected = prefer_newest_hydrated_file_ledger(rebuilt, Some(persisted));
+
+        assert_eq!(selected.files[0].path, PathBuf::from("src/newest.rs"));
+        assert_eq!(selected.ledger_revision, 2);
     }
 
     #[test]

@@ -16,6 +16,17 @@ fn conversation_files_for_repository(
         .collect()
 }
 
+pub(super) fn exact_agent_ship_paths(
+    root: &Path,
+    summary: &crate::state::agent_chat::ChangedFilesSummary,
+) -> std::collections::BTreeSet<PathBuf> {
+    summary
+        .files
+        .iter()
+        .map(|file| normalize_agent_ship_path(root, &file.path))
+        .collect()
+}
+
 /// Put the branch Ship was opened from first in the PR base picker. The
 /// remote default remains the fallback for detached HEADs and older Solo
 /// records that do not remember their fork branch.
@@ -55,7 +66,7 @@ impl CenterArea {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
                 return;
             };
-            if !session.changed_files.files.is_empty() {
+            if !session.changed_files.is_empty() {
                 if session.changed_files.snapshot_id.is_none() {
                     session.changed_files.snapshot_id = ship_snapshot_id;
                 }
@@ -446,11 +457,13 @@ impl CenterArea {
         } else {
             agent.runtime_path()
         };
-        for file in &agent.changed_files {
-            related.insert(normalize_agent_ship_path(related_root, &file.path));
-        }
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            for file in &session.changed_files.files {
+            related = exact_agent_ship_paths(related_root, &session.changed_files);
+        } else {
+            // Legacy terminal agents have no chat ledger. Once a chat session
+            // exists, its attributed projection is authoritative and the old
+            // agent cache must not reintroduce another chat's dirty paths.
+            for file in &agent.changed_files {
                 related.insert(normalize_agent_ship_path(related_root, &file.path));
             }
         }
@@ -588,11 +601,10 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut related = std::collections::BTreeSet::new();
-        for file in &agent.changed_files {
-            related.insert(normalize_agent_ship_path(&agent.project_path, &file.path));
-        }
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            for file in &session.changed_files.files {
+            related = exact_agent_ship_paths(&agent.project_path, &session.changed_files);
+        } else {
+            for file in &agent.changed_files {
                 related.insert(normalize_agent_ship_path(&agent.project_path, &file.path));
             }
         }
@@ -773,6 +785,28 @@ mod tests {
                 &workspace_files,
             ),
             vec![PathBuf::from("src/app.rs")],
+        );
+    }
+
+    #[test]
+    fn this_chat_shipping_excludes_command_observations() {
+        let summary = crate::state::agent_chat::ChangedFilesSummary::attributed(
+            "turn-1",
+            vec![crate::state::agent_chat::FileChangeStat::new(
+                "src/exact.rs",
+                1,
+                0,
+            )],
+            vec![crate::state::agent_chat::FileChangeStat::new(
+                "src/concurrent.rs",
+                4,
+                0,
+            )],
+        );
+
+        assert_eq!(
+            exact_agent_ship_paths(Path::new("/workspace"), &summary),
+            [PathBuf::from("src/exact.rs")].into_iter().collect()
         );
     }
 

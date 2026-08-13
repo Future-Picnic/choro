@@ -154,10 +154,10 @@ struct CompanionPlaylistInputs {
 }
 
 #[derive(Clone)]
-struct ProjectSource {
-    id: ide_core::ProjectId,
-    name: String,
-    path: String,
+pub(crate) struct ProjectSource {
+    pub(crate) id: ide_core::ProjectId,
+    pub(crate) name: String,
+    pub(crate) path: String,
 }
 
 /// Settings dialog: editable keyboard shortcuts (persisted to config).
@@ -217,29 +217,29 @@ pub struct SettingsView {
 }
 
 #[derive(Clone, Default)]
-struct ProcessSnapshot {
+pub(crate) struct ProcessSnapshot {
     root_pid: i32,
     app_bytes: u64,
-    total_bytes: u64,
+    pub(crate) total_bytes: u64,
     total_cpu: f64,
     process_count: usize,
-    processes: Vec<ProcessInfo>,
+    pub(crate) processes: Vec<ProcessInfo>,
     categories: Vec<MemoryCategory>,
     measurement_note: String,
-    error: Option<String>,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Clone)]
-struct ProcessInfo {
-    pid: i32,
-    memory_bytes: u64,
-    cpu: f64,
-    project_id: Option<ProjectId>,
-    project: Option<String>,
-    agent_id: Option<Uuid>,
-    agent: Option<String>,
-    name: String,
-    command: String,
+pub(crate) struct ProcessInfo {
+    pub(crate) pid: i32,
+    pub(crate) memory_bytes: u64,
+    pub(crate) cpu: f64,
+    pub(crate) project_id: Option<ProjectId>,
+    pub(crate) project: Option<String>,
+    pub(crate) agent_id: Option<Uuid>,
+    pub(crate) agent: Option<String>,
+    pub(crate) name: String,
+    pub(crate) command: String,
 }
 
 #[derive(Clone)]

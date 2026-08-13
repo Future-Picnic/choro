@@ -1,4 +1,5 @@
 /target
+/vendor/wry/target/
 /solo-build
 .DS_Store
 node_modules/

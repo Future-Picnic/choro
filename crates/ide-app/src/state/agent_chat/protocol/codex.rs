@@ -125,6 +125,10 @@ impl CodexRuntime {
         self.assistant_buffer.clear();
         self.plan_buffer.clear();
         self.pending_changed_files = None;
+        self.pending_observed_files.clear();
+        self.active_turn_id = next_request_id();
+        self.command_ran_this_turn = false;
+        self.active_command_item_id = None;
         self.events
             .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
@@ -404,6 +408,11 @@ impl CodexRuntime {
                     .ok();
             }
             "item/started" => {
+                if item_type_from_params(&params) == Some("commandExecution") {
+                    self.command_ran_this_turn = true;
+                    self.active_command_item_id =
+                        item_id_from_params(&params).or_else(|| Some(next_request_id()));
+                }
                 if params
                     .get("item")
                     .and_then(|item| item.get("type"))
@@ -453,6 +462,8 @@ impl CodexRuntime {
                 }
             }
             "item/fileChange/patchUpdated" => {
+                let action_id = item_id_from_params(&params)
+                    .unwrap_or_else(|| format!("file-change-{}", self.active_turn_id));
                 let files = params
                     .get("changes")
                     .and_then(Value::as_array)
@@ -461,21 +472,63 @@ impl CodexRuntime {
                     .filter_map(file_stat_from_patch_change)
                     .collect::<Vec<_>>();
                 if !files.is_empty() {
-                    self.pending_changed_files = Some(ChangedFilesSummary {
-                        files,
-                        ..Default::default()
-                    });
+                    for file in &files {
+                        let activity_id =
+                            format!("codex:{action_id}:{}", file.path.to_string_lossy());
+                        self.events
+                            .send_blocking(ChatBackendEvent::FileChangeActivity(
+                                FileChangeActivity::new(
+                                    activity_id,
+                                    self.active_turn_id.clone(),
+                                    file.clone(),
+                                    false,
+                                    unix_now(),
+                                ),
+                            ))
+                            .ok();
+                    }
+                    let summary = self
+                        .pending_changed_files
+                        .get_or_insert_with(ChangedFilesSummary::default);
+                    upsert_file_change_stats(&mut summary.files, files);
                 }
             }
             "turn/diff/updated" => {
-                if let Some(diff) = params.get("diff").and_then(Value::as_str) {
+                if let Some(diff) = self
+                    .command_ran_this_turn
+                    .then(|| params.get("diff").and_then(Value::as_str))
+                    .flatten()
+                {
                     let files = changed_files_from_unified_diff(diff);
-                    if !files.is_empty() {
-                        self.pending_changed_files = Some(ChangedFilesSummary {
-                            files,
-                            ..Default::default()
-                        });
+                    let exact_paths = self
+                        .pending_changed_files
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(|summary| &summary.files)
+                        .map(|file| file.path.clone())
+                        .collect::<HashSet<_>>();
+                    let observed = files
+                        .into_iter()
+                        .filter(|file| !exact_paths.contains(&file.path))
+                        .map(FileChangeStat::as_count_projection)
+                        .collect::<Vec<_>>();
+                    let action_id = self.active_command_item_id.as_deref().unwrap_or("command");
+                    for file in &observed {
+                        let activity_id =
+                            format!("codex:{action_id}:{}", file.path.to_string_lossy());
+                        self.events
+                            .send_blocking(ChatBackendEvent::FileChangeActivity(
+                                FileChangeActivity::new(
+                                    activity_id,
+                                    self.active_turn_id.clone(),
+                                    file.clone(),
+                                    true,
+                                    unix_now(),
+                                ),
+                            ))
+                            .ok();
                     }
+                    upsert_file_change_stats(&mut self.pending_observed_files, observed);
                 }
             }
             "thread/tokenUsage/updated" => {
@@ -590,10 +643,14 @@ impl CodexRuntime {
     }
 
     fn emit_pending_changed_files(&mut self) {
-        if let Some(summary) = self.pending_changed_files.take() {
+        let mut summary = self.pending_changed_files.take().unwrap_or_default();
+        summary.observed_files = std::mem::take(&mut self.pending_observed_files);
+        summary.turn_id = Some(self.active_turn_id.clone());
+        summary.attribution_version = 1;
+        if !summary.is_empty() {
             let summary =
                 capture_changed_files_snapshot(&self.agent, summary, "agent_changed_files");
-            if !summary.files.is_empty() {
+            if !summary.is_empty() {
                 self.events
                     .send_blocking(ChatBackendEvent::ChangedFiles(summary))
                     .ok();

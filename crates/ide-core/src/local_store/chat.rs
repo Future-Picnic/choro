@@ -45,6 +45,200 @@ pub(super) async fn insert_timeline_event_async(
     Ok(())
 }
 
+pub(super) async fn upsert_timeline_event_async(
+    conn: &Connection,
+    agent_id: Uuid,
+    kind: String,
+    event_key: Option<String>,
+    payload_json: String,
+    created_at: u64,
+) -> Result<StoredTimelineEvent> {
+    if let Some(key) = event_key.as_deref() {
+        let mut rows = conn
+            .query(
+                "SELECT id, sequence, payload_json, created_at FROM chat_timeline_events
+                 WHERE agent_id = ?1 AND kind = ?2 AND event_key = ?3
+                 ORDER BY sequence DESC LIMIT 1",
+                (agent_id.to_string(), kind.as_str(), key),
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            let id = parse_uuid(&row.get::<String>(0)?)?;
+            let sequence = row.get(1)?;
+            let existing_payload_json: String = row.get(2)?;
+            let existing_created_at = i64_to_u64(row.get(3)?)?;
+            drop(rows);
+            let keep_existing_payload = should_keep_existing_message_payload(
+                kind.as_str(),
+                event_key.as_deref(),
+                &existing_payload_json,
+                &payload_json,
+            );
+            let event = StoredTimelineEvent {
+                id,
+                agent_id,
+                kind,
+                event_key,
+                payload_json: if keep_existing_payload {
+                    existing_payload_json
+                } else {
+                    payload_json
+                },
+                sequence,
+                created_at: created_at.max(existing_created_at),
+            };
+            insert_timeline_event_async(conn, &event).await?;
+            return Ok(event);
+        }
+    }
+    let sequence = next_sequence(conn, "chat_timeline_events", agent_id).await?;
+    let event = StoredTimelineEvent {
+        id: Uuid::new_v4(),
+        agent_id,
+        kind,
+        event_key,
+        payload_json,
+        sequence,
+        created_at,
+    };
+    insert_timeline_event_async(conn, &event).await?;
+    Ok(event)
+}
+
+pub(super) async fn replace_chat_file_ledger_async(
+    conn: &Connection,
+    agent_id: Uuid,
+    revision: u64,
+    entries: &[StoredChatFileLedgerEntry],
+) -> Result<()> {
+    let updated_at = entries
+        .first()
+        .map_or_else(unix_now, |entry| entry.updated_at);
+    let applied = conn
+        .execute(
+            "INSERT INTO chat_file_ledgers (agent_id, revision, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(agent_id) DO UPDATE SET
+             revision = excluded.revision,
+             updated_at = excluded.updated_at
+         WHERE excluded.revision >= chat_file_ledgers.revision",
+            (
+                agent_id.to_string(),
+                u64_to_i64(revision)?,
+                u64_to_i64(updated_at)?,
+            ),
+        )
+        .await?;
+    if applied == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM chat_file_ledger WHERE agent_id = ?1",
+        [agent_id.to_string()],
+    )
+    .await?;
+    for entry in entries {
+        conn.execute(
+            "INSERT INTO chat_file_ledger
+             (agent_id, path, attribution, additions, deletions, baseline_hash, result_hash,
+              baseline_content, result_content, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                agent_id.to_string(),
+                path_to_string(&entry.path),
+                if entry.observed { "observed" } else { "exact" },
+                u64_to_i64(entry.additions as u64)?,
+                u64_to_i64(entry.deletions as u64)?,
+                entry.baseline_hash.clone(),
+                entry.result_hash.clone(),
+                entry.baseline_content.clone(),
+                entry.result_content.clone(),
+                u64_to_i64(entry.updated_at)?,
+            ],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn load_chat_file_ledger_async(
+    conn: &Connection,
+    agent_id: Uuid,
+) -> Result<Option<StoredChatFileLedger>> {
+    let mut ledger_rows = conn
+        .query(
+            "SELECT revision, updated_at FROM chat_file_ledgers WHERE agent_id = ?1 LIMIT 1",
+            [agent_id.to_string()],
+        )
+        .await?;
+    let Some(ledger_row) = ledger_rows.next().await? else {
+        return Ok(None);
+    };
+    let revision = i64_to_u64(ledger_row.get(0)?)?;
+    let updated_at = i64_to_u64(ledger_row.get(1)?)?;
+    drop(ledger_rows);
+    let mut rows = conn
+        .query(
+            "SELECT path, attribution, additions, deletions, baseline_hash, result_hash,
+                    baseline_content, result_content, updated_at
+             FROM chat_file_ledger WHERE agent_id = ?1 ORDER BY path ASC",
+            [agent_id.to_string()],
+        )
+        .await?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let additions = i64_to_u64(row.get(2)?)? as usize;
+        let deletions = i64_to_u64(row.get(3)?)? as usize;
+        entries.push(StoredChatFileLedgerEntry {
+            agent_id,
+            path: PathBuf::from(row.get::<String>(0)?),
+            observed: row.get::<String>(1)? == "observed",
+            additions,
+            deletions,
+            baseline_hash: opt_text(&row, 4)?,
+            result_hash: opt_text(&row, 5)?,
+            baseline_content: opt_text(&row, 6)?,
+            result_content: opt_text(&row, 7)?,
+            updated_at: i64_to_u64(row.get(8)?)?,
+        });
+    }
+    Ok(Some(StoredChatFileLedger {
+        agent_id,
+        revision,
+        updated_at,
+        entries,
+    }))
+}
+
+pub(super) async fn load_all_chat_file_ledgers_async(
+    conn: &Connection,
+) -> Result<Vec<StoredChatFileLedger>> {
+    let mut rows = conn
+        .query(
+            "SELECT agent_id, revision, updated_at FROM chat_file_ledgers ORDER BY agent_id ASC",
+            (),
+        )
+        .await?;
+    let mut markers = Vec::new();
+    while let Some(row) = rows.next().await? {
+        markers.push((
+            parse_uuid(&row.get::<String>(0)?)?,
+            i64_to_u64(row.get(1)?)?,
+            i64_to_u64(row.get(2)?)?,
+        ));
+    }
+    drop(rows);
+    let mut ledgers = Vec::new();
+    for (agent_id, revision, updated_at) in markers {
+        if let Some(mut ledger) = load_chat_file_ledger_async(conn, agent_id).await? {
+            ledger.revision = revision;
+            ledger.updated_at = updated_at;
+            ledgers.push(ledger);
+        }
+    }
+    Ok(ledgers)
+}
+
 pub(super) async fn insert_attachment_async(
     conn: &Connection,
     attachment: &StoredAttachment,

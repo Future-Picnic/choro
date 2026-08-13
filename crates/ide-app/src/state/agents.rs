@@ -496,6 +496,47 @@ impl AgentRecords {
         true
     }
 
+    /// Replace the persisted work-product projection for a chat agent. The
+    /// chat ledger owns this set, so removal is meaningful (for example after
+    /// a later turn reverts a file to the chat baseline).
+    pub fn replace_changed_files(
+        &mut self,
+        id: Uuid,
+        files: &[FileChangeStat],
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id) else {
+            return false;
+        };
+        let mut next = files
+            .iter()
+            .filter(|file| !file.path.as_os_str().is_empty())
+            .map(|file| AgentChangedFile {
+                path: file.path.clone(),
+                additions: file.additions,
+                deletions: file.deletions,
+            })
+            .collect::<Vec<_>>();
+        next.sort_by(|a, b| a.path.cmp(&b.path));
+        next.dedup_by(|right, left| {
+            if left.path != right.path {
+                return false;
+            }
+            left.additions = right.additions;
+            left.deletions = right.deletions;
+            true
+        });
+        if agent.changed_files == next {
+            return false;
+        }
+        agent.changed_files = next;
+        agent.updated_at = agents::unix_now();
+        self.schedule_save(cx);
+        cx.emit(AgentRecordsEvent::Changed);
+        cx.notify();
+        true
+    }
+
     pub fn move_doc_reference(
         &mut self,
         project: ProjectId,

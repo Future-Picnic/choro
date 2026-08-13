@@ -77,7 +77,6 @@ impl CenterArea {
             .agent(agent_id)
             .map(|agent| agent.normalize_effort_for_model(model, effort))
             .unwrap_or_else(|| model.normalize_effort(effort));
-        let terminal_was_open = self.agent_chat_terminal_open.contains(&agent_id);
         let active_project = self.active_project(cx).map(|(project, _)| project);
         if let Some(project) = active_project {
             if let Some(id) = self
@@ -96,12 +95,6 @@ impl CenterArea {
         self.agent_chats.update(cx, |chats, cx| {
             chats.update_model_effort(agent_id, model, effort, cx);
         });
-        if terminal_was_open {
-            let agent = self.agents.read(cx).agent(agent_id).cloned();
-            if let Some(agent) = agent {
-                self.ensure_agent_chat_terminal(&agent, cx);
-            }
-        }
         cx.notify();
     }
 
@@ -333,31 +326,6 @@ impl CenterArea {
         cx.notify();
     }
 
-    pub(super) fn reset_agent_chat_terminal(
-        &mut self,
-        agent: AgentRecord,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some((project, _)) = self.active_project(cx) else {
-            return;
-        };
-        if let Some(id) = self
-            .terminals
-            .read(cx)
-            .agent_record_terminal(project, agent.id)
-        {
-            self.terminals.update(cx, |terminals, cx| {
-                terminals.close(id, cx);
-            });
-        }
-        self.agent_chat_terminal_open.insert(agent.id);
-        if let Some(id) = self.ensure_agent_chat_terminal(&agent, cx) {
-            self.focus_agent_terminal(project, id, window, cx);
-        }
-        cx.notify();
-    }
-
     pub(super) fn restart_agent_chat_connection(
         &mut self,
         agent_id: Uuid,
@@ -404,7 +372,6 @@ impl CenterArea {
 
         self.cancel_agent_chat_hydration(agent_id);
         self.sync_chat_session_ids(cx);
-        let terminal_was_open = self.agent_chat_terminal_open.contains(&agent_id);
         if let Some(id) = self
             .terminals
             .read(cx)
@@ -427,13 +394,7 @@ impl CenterArea {
         self.agent_chat_doc_dismissed_query.remove(&agent_id);
         self.agent_chat_file_dismissed_query.remove(&agent_id);
 
-        if self.start_chat_agent_in_mode(agent.clone(), CenterMode::Agents, cx) {
-            if terminal_was_open {
-                self.agent_chat_terminal_open.insert(agent_id);
-                if let Some(id) = self.ensure_agent_chat_terminal(&agent, cx) {
-                    self.focus_agent_terminal(project, id, window, cx);
-                }
-            }
+        if self.start_chat_agent_in_mode(agent, CenterMode::Agents, cx) {
             self.agent_start_errors.remove(&agent_id);
         }
         cx.notify();
@@ -914,7 +875,7 @@ impl CenterArea {
                 }
                 match lifecycle {
                     VerificationLifecycle::NotStarted => {
-                        if session.changed_files.files.is_empty() {
+                        if session.changed_files.is_empty() {
                             continue;
                         }
                         let written_intent = agent.is_some_and(|agent| {

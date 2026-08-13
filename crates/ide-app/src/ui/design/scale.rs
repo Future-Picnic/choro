@@ -302,9 +302,9 @@ pub const AGENT_DETAIL_TAB_PAD_X: f32 = 10.0;
 pub const AGENT_DETAIL_TAB_GAP: f32 = 6.0;
 /// 16px — aligns the Git last-commit strip with the PR content directly above.
 pub const GIT_META_ROW_PAD_X: f32 = 16.0;
-/// Git status-list rhythm: compact file rows with clear section separation.
-pub const GIT_STATUS_ROW_PAD_Y: f32 = 3.0;
-pub const GIT_STATUS_SECTION_PAD_TOP: f32 = 12.0;
+/// Fixed row height keeps the Git status list eligible for GPUI's lazy
+/// `uniform_list`, so large worktrees do not increase unrelated repaint cost.
+pub const GIT_STATUS_ROW_H: f32 = 26.0;
 /// Canonical contextual-panel `.ptitle`, `.flipbtn`, `.lane`, and `.brow`
 /// geometry shared by Assets, Services/Env, Docs, DB, and sibling navigators.
 pub const CONTEXT_PANEL_TITLE_PAD_X: f32 = 14.0;
@@ -464,11 +464,8 @@ pub fn agent_detail_tab_gap() -> Pixels {
 pub fn git_meta_row_pad_x() -> Pixels {
     px(GIT_META_ROW_PAD_X)
 }
-pub fn git_status_row_pad_y() -> Pixels {
-    px(GIT_STATUS_ROW_PAD_Y)
-}
-pub fn git_status_section_pad_top() -> Pixels {
-    px(GIT_STATUS_SECTION_PAD_TOP)
+pub fn git_status_row_h() -> Pixels {
+    px(GIT_STATUS_ROW_H)
 }
 pub fn context_panel_title_pad_x() -> Pixels {
     px(CONTEXT_PANEL_TITLE_PAD_X)

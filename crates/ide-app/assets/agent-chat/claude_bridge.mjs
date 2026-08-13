@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 const pendingUserInputs = new Map();
@@ -17,7 +18,11 @@ let currentSessionId = null;
 let currentCwd = process.cwd();
 let closing = false;
 let planCaptured = false;
-let turnDiffBaseline = new Map();
+let activeTurnId = randomUUID();
+let turnDirectChanges = new Map();
+let turnObservedChanges = new Map();
+let toolMutationBaselines = new Map();
+let commandDiffBaselines = new Map();
 let turnDiffEmitted = false;
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
@@ -269,6 +274,7 @@ async function ensureRuntime(command) {
       allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
       canUseTool,
+      hooks: fileAttributionHooks(),
       mcpServers: command.mcpServers || undefined,
       strictMcpConfig: currentDesignAssistant,
       settingSources: currentDesignAssistant ? [] : undefined,
@@ -385,6 +391,255 @@ async function canUseTool(toolName, input, options) {
 
 function isEditTool(toolName) {
   return ["Edit", "MultiEdit", "Write", "NotebookEdit"].includes(toolName);
+}
+
+function projectRelativePath(path) {
+  if (typeof path !== "string" || path.trim().length === 0) {
+    return null;
+  }
+  const absolute = isAbsolute(path) ? resolve(path) : resolve(currentCwd, path);
+  const local = relative(currentCwd, absolute);
+  return local === "" || local.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+    ? absolute
+    : local;
+}
+
+function mutationPaths(toolName, input) {
+  if (!isEditTool(toolName) || !input || typeof input !== "object") {
+    return [];
+  }
+  const candidates = [
+    input.file_path,
+    input.filePath,
+    input.notebook_path,
+    input.notebookPath,
+    input.path,
+  ];
+  return Array.from(
+    new Set(candidates.map(projectRelativePath).filter(Boolean)),
+  );
+}
+
+async function readMutationState(path) {
+  const absolute = isAbsolute(path) ? path : join(currentCwd, path);
+  try {
+    return mutationStateForContents(await readFile(absolute));
+  } catch {
+    return { hash: "missing", lines: 0, content: "" };
+  }
+}
+
+function mutationStateForContents(contents) {
+  const hash = createHash("sha256").update(contents).digest("hex");
+  // Attribution metadata stays bounded. Large/binary files retain a compact
+  // fingerprint so edits and reverts remain distinguishable, but not content.
+  if (contents.byteLength > 2 * 1024 * 1024 || contents.includes(0)) {
+    return { hash, lines: 0, content: null };
+  }
+  const text = contents.toString("utf8");
+  return { hash, lines: countTextLines(text), content: text };
+}
+
+function mutationStateUnchanged(before, after) {
+  if (before?.hash != null && after?.hash != null) {
+    return before.hash === after.hash;
+  }
+  return (
+    before?.content != null &&
+    after?.content != null &&
+    before.content === after.content
+  );
+}
+
+function countTextLines(text) {
+  if (typeof text !== "string" || text.length === 0) {
+    return 0;
+  }
+  return text.replace(/\r?\n$/, "").split(/\r\n|\r|\n/).length;
+}
+
+function directEditCounts(toolName, input, before, after) {
+  if (toolName === "Edit") {
+    return [countTextLines(input?.new_string), countTextLines(input?.old_string)];
+  }
+  if (toolName === "MultiEdit") {
+    return (Array.isArray(input?.edits) ? input.edits : []).reduce(
+      ([additions, deletions], edit) => [
+        additions + countTextLines(edit?.new_string),
+        deletions + countTextLines(edit?.old_string),
+      ],
+      [0, 0],
+    );
+  }
+  if (toolName === "Write") {
+    return [countTextLines(input?.content), before?.lines || 0];
+  }
+  if (toolName === "NotebookEdit") {
+    return [countTextLines(input?.new_source || input?.source), before?.lines || 0];
+  }
+  return [Math.max(after?.lines || 0, 0), Math.max(before?.lines || 0, 0)];
+}
+
+function mergeTurnChange(target, change) {
+  const existing = target.get(change.path);
+  if (!existing) {
+    target.set(change.path, change);
+    return;
+  }
+  target.set(change.path, {
+    path: change.path,
+    additions: existing.additions + change.additions,
+    deletions: existing.deletions + change.deletions,
+    baseline_hash: existing.baseline_hash ?? change.baseline_hash ?? null,
+    result_hash: change.result_hash ?? existing.result_hash ?? null,
+    baseline_content:
+      existing.baseline_content ?? change.baseline_content ?? null,
+    result_content: change.result_content ?? existing.result_content ?? null,
+  });
+}
+
+function setTurnProjection(target, change) {
+  target.set(change.path, change);
+}
+
+function fileChangeActivityEvent(actionID, change, observed) {
+  return {
+    type: "file_change_activity",
+    id: `claude:${actionID || "tool"}:${change.path}`,
+    turn_id: activeTurnId,
+    observed,
+    file: change,
+  };
+}
+
+function emitFileChangeActivity(actionID, change, observed) {
+  emit(fileChangeActivityEvent(actionID, change, observed));
+}
+
+async function finishTurnAfterFileReceipt(flushChanges, finish) {
+  await flushChanges();
+  return finish();
+}
+
+async function captureToolMutationBaseline(input, toolUseID) {
+  const toolName = input?.tool_name;
+  const toolInput = input?.tool_input || {};
+  const id = input?.tool_use_id || toolUseID || randomUUID();
+  if (isEditTool(toolName)) {
+    const paths = mutationPaths(toolName, toolInput);
+    const states = new Map();
+    await Promise.all(
+      paths.map(async (path) => states.set(path, await readMutationState(path))),
+    );
+    toolMutationBaselines.set(id, { toolName, toolInput, states });
+  } else if (toolName === "Bash") {
+    // Commands do not expose authoritative write paths. A command-scoped diff
+    // is still useful, but it is emitted separately as an observation.
+    commandDiffBaselines.set(id, await readChangedFileSnapshot());
+  }
+  return {};
+}
+
+async function captureCompletedToolMutation(input, toolUseID) {
+  const toolName = input?.tool_name;
+  const id = input?.tool_use_id || toolUseID;
+  if (isEditTool(toolName)) {
+    const baseline = toolMutationBaselines.get(id);
+    toolMutationBaselines.delete(id);
+    if (!baseline) {
+      return {};
+    }
+    await completeDirectMutationBaseline(id, baseline);
+  } else if (toolName === "Bash") {
+    const baseline = commandDiffBaselines.get(id);
+    commandDiffBaselines.delete(id);
+    if (baseline) {
+      await completeCommandMutationBaseline(id, baseline);
+    }
+  }
+  return {};
+}
+
+async function completeDirectMutationBaseline(id, baseline) {
+  for (const [path, before] of baseline.states) {
+    const after = await readMutationState(path);
+    if (mutationStateUnchanged(before, after)) {
+      continue;
+    }
+    const [additions, deletions] = directEditCounts(
+      baseline.toolName,
+      baseline.toolInput,
+      before,
+      after,
+    );
+    const change = {
+      path,
+      additions,
+      deletions,
+      baseline_hash: before.hash,
+      result_hash: after.hash,
+      baseline_content: before.content,
+      result_content: after.content,
+    };
+    mergeTurnChange(turnDirectChanges, change);
+    emitFileChangeActivity(id, change, false);
+  }
+}
+
+async function completeCommandMutationBaseline(id, baseline, next) {
+  const current = next || (await readChangedFileSnapshot());
+  for (const [path, file] of current) {
+    if (baseline.get(path)?.patch !== file.patch) {
+      // Git reports the current worktree projection, not a delta for this
+      // command. Keep only the latest projection for the turn.
+      const change = {
+        path,
+        additions: file.additions,
+        deletions: file.deletions,
+        baseline_hash: null,
+        result_hash: null,
+        baseline_content: null,
+        result_content: null,
+      };
+      setTurnProjection(turnObservedChanges, change);
+      emitFileChangeActivity(id, change, true);
+    }
+  }
+}
+
+async function captureOutstandingToolMutations() {
+  // Remove entries before awaiting reads. If a late SDK completion hook races
+  // cancellation, only one path owns each baseline and the receipt stays exact.
+  const direct = Array.from(toolMutationBaselines.entries());
+  toolMutationBaselines.clear();
+  for (const [id, baseline] of direct) {
+    await completeDirectMutationBaseline(id, baseline);
+  }
+
+  const commands = Array.from(commandDiffBaselines.entries());
+  commandDiffBaselines.clear();
+  if (commands.length > 0) {
+    const next = await readChangedFileSnapshot();
+    for (const [id, baseline] of commands) {
+      await completeCommandMutationBaseline(id, baseline, next);
+    }
+  }
+}
+
+async function finishCancelledTurn(capturePending, flushChanges, finish) {
+  await capturePending();
+  return finishTurnAfterFileReceipt(flushChanges, finish);
+}
+
+function fileAttributionHooks() {
+  const completed = [{ hooks: [captureCompletedToolMutation] }];
+  return {
+    PreToolUse: [{ hooks: [captureToolMutationBaseline] }],
+    PostToolUse: completed,
+    // Tools can mutate the filesystem before reporting failure (for example,
+    // `touch generated.txt && false`). Complete the same baseline in that path.
+    PostToolUseFailure: completed,
+  };
 }
 
 function handleToolPermission(toolName, input, options) {
@@ -578,8 +833,14 @@ async function cancelActiveTurn() {
   } catch {
     // Closing below is the hard boundary if interrupt is not supported.
   }
+  // A cancelled turn can already have completed edits. Flush their immutable
+  // receipt before closing the runtime and resetting the next turn's maps.
   try {
-    activeRuntime?.close?.();
+    await finishCancelledTurn(
+      captureOutstandingToolMutations,
+      emitChangedFiles,
+      () => activeRuntime?.close?.(),
+    );
   } finally {
     if (runtime === activeRuntime) {
       runtime = null;
@@ -625,12 +886,15 @@ async function handleSdkMessage(message) {
 
   if (message.type === "result") {
     emitUsage(message);
-    if (message.subtype === "error" || message.is_error) {
-      emitError(message.result || message.error || "Claude returned an error.");
-    } else {
-      await emitChangedFiles();
-      emit({ type: "status", status: "idle" });
-    }
+    // File actions can complete before a later provider error. A terminal
+    // result always closes the attribution window, regardless of success.
+    await finishTurnAfterFileReceipt(emitChangedFiles, () => {
+      if (message.subtype === "error" || message.is_error) {
+        emitError(message.result || message.error || "Claude returned an error.");
+      } else {
+        emit({ type: "status", status: "idle" });
+      }
+    });
   }
 
   if (message.type === "system" && message.subtype === "permission_denied") {
@@ -716,7 +980,7 @@ function emitWorkLog(id, title, status, detail) {
     type: "work_log",
     id,
     collapse_key: id,
-    kind: "tool",
+    kind: title === "Bash" ? "command" : "tool",
     title,
     status,
     detail: detail || null,
@@ -801,20 +1065,19 @@ async function emitChangedFiles() {
     return;
   }
   turnDiffEmitted = true;
-  const next = await readChangedFileSnapshot();
-  const files = [];
-  for (const [path, file] of next) {
-    if (turnDiffBaseline.get(path)?.patch !== file.patch) {
-      files.push({
-        path,
-        additions: file.additions,
-        deletions: file.deletions,
-      });
-    }
-  }
-  turnDiffBaseline = next;
-  if (files.length > 0) {
-    emit({ type: "changed_files", files });
+  const files = Array.from(turnDirectChanges.values());
+  const exactPaths = new Set(files.map((file) => file.path));
+  const observed_files = Array.from(turnObservedChanges.values()).filter(
+    (file) => !exactPaths.has(file.path),
+  );
+  if (files.length > 0 || observed_files.length > 0) {
+    emit({
+      type: "changed_files",
+      turn_id: activeTurnId,
+      attribution_version: 1,
+      files,
+      observed_files,
+    });
   }
 }
 
@@ -826,7 +1089,11 @@ async function handleCommand(command) {
     }
     planCaptured = false;
     capturedPlanKeys.clear();
-    turnDiffBaseline = await readChangedFileSnapshot();
+    activeTurnId = randomUUID();
+    turnDirectChanges = new Map();
+    turnObservedChanges = new Map();
+    toolMutationBaselines = new Map();
+    commandDiffBaselines = new Map();
     turnDiffEmitted = false;
     await ensureRuntime(command);
     emit({ type: "status", status: "running" });
@@ -853,15 +1120,30 @@ async function handleCommand(command) {
   }
 }
 
-readline
-  .createInterface({ input: process.stdin, crlfDelay: Infinity })
-  .on("line", (line) => {
-    if (!line.trim()) {
-      return;
-    }
-    try {
-      void handleCommand(JSON.parse(line));
-    } catch (error) {
-      emitError(error);
-    }
-  });
+if (resolve(process.argv[1] || "") === resolve(fileURLToPath(import.meta.url))) {
+  readline
+    .createInterface({ input: process.stdin, crlfDelay: Infinity })
+    .on("line", (line) => {
+      if (!line.trim()) {
+        return;
+      }
+      try {
+        void handleCommand(JSON.parse(line));
+      } catch (error) {
+        emitError(error);
+      }
+    });
+}
+
+export {
+  countTextLines,
+  directEditCounts,
+  fileChangeActivityEvent,
+  fileAttributionHooks,
+  finishCancelledTurn,
+  finishTurnAfterFileReceipt,
+  mergeTurnChange,
+  mutationStateForContents,
+  mutationStateUnchanged,
+  setTurnProjection,
+};

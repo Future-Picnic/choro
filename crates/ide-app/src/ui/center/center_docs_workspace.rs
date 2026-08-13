@@ -2,6 +2,10 @@
 
 use super::*;
 
+fn agent_detail_shows_terminal(runtime: AgentRuntimeKind) -> bool {
+    runtime != AgentRuntimeKind::Chat
+}
+
 impl CenterArea {
     /// Once a Doc Assistant turn finishes, promote a title it wrote into an
     /// untitled document to the document's filename. Waiting for Running → Idle
@@ -790,7 +794,6 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
         let is_chat_agent = agent.runtime == AgentRuntimeKind::Chat;
-        let chat_terminal_open = self.agent_chat_terminal_open.contains(&agent_id);
         let usage = self
             .agent_chats
             .read(cx)
@@ -805,41 +808,26 @@ impl CenterArea {
                 .and_then(|session| session.proposed_plan.as_ref())
                 .is_some();
         let has_diff = self.agent_diff_drawers.contains_key(&agent_id);
-        let terminal_selected = if is_chat_agent {
-            chat_terminal_open
-        } else {
-            detail_tab == AgentDetailTab::Terminal
-        };
         crate::ui::style::agent_detail_tabs()
             .when_some(usage.as_ref(), |switch, usage| {
                 switch.child(self.render_agent_footer_usage(agent_id, agent.provider, usage, cx))
             })
-            .child(
-                crate::ui::style::agent_detail_tab(
-                    ("agent-terminal-toggle", agent_id.as_u128() as u64),
-                    lucide_icons::Icon::Code,
-                    "Terminal",
-                    terminal_selected,
-                    cx,
-                )
-                .on_click(cx.listener({
-                    let agent = agent.clone();
-                    move |this, _, _, cx| {
-                        if agent.runtime == AgentRuntimeKind::Chat {
-                            if !this.agent_chat_terminal_open.remove(&agent.id) {
-                                this.ensure_agent_chat_terminal(&agent, cx);
-                                this.agent_chat_terminal_open.insert(agent.id);
-                                this.agent_detail_tabs
-                                    .insert(agent.id, AgentDetailTab::Terminal);
-                            }
-                        } else {
-                            this.agent_detail_tabs
-                                .insert(agent.id, AgentDetailTab::Terminal);
-                        }
+            .when(agent_detail_shows_terminal(agent.runtime), |switch| {
+                switch.child(
+                    crate::ui::style::agent_detail_tab(
+                        ("agent-terminal-toggle", agent_id.as_u128() as u64),
+                        lucide_icons::Icon::Code,
+                        "Terminal",
+                        detail_tab == AgentDetailTab::Terminal,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.agent_detail_tabs
+                            .insert(agent_id, AgentDetailTab::Terminal);
                         cx.notify();
-                    }
-                })),
-            )
+                    })),
+                )
+            })
             .child(
                 crate::ui::style::agent_detail_tab(
                     ("agent-files-toggle", agent_id.as_u128() as u64),
@@ -855,7 +843,6 @@ impl CenterArea {
                         } else {
                             AgentDetailTab::Files
                         };
-                    this.agent_chat_terminal_open.remove(&agent_id);
                     this.agent_detail_tabs.insert(agent_id, next);
                     cx.notify();
                 })),
@@ -875,7 +862,6 @@ impl CenterArea {
                         } else {
                             AgentDetailTab::Notes
                         };
-                    this.agent_chat_terminal_open.remove(&agent_id);
                     this.agent_detail_tabs.insert(agent_id, next);
                     cx.notify();
                 })),
@@ -897,7 +883,6 @@ impl CenterArea {
                         } else {
                             AgentDetailTab::Diff
                         };
-                        this.agent_chat_terminal_open.remove(&agent_id);
                         this.agent_detail_tabs.insert(agent_id, next);
                         cx.notify();
                     })),
@@ -924,7 +909,6 @@ impl CenterArea {
                                     } else {
                                         AgentDetailTab::Plan
                                     };
-                                    this.agent_chat_terminal_open.remove(&agent_id);
                                     this.agent_detail_tabs.insert(agent_id, next);
                                     cx.notify();
                                 },
@@ -937,5 +921,16 @@ impl CenterArea {
                 )
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_chat_agents_never_offer_a_terminal_tab() {
+        assert!(!agent_detail_shows_terminal(AgentRuntimeKind::Chat));
+        assert!(agent_detail_shows_terminal(AgentRuntimeKind::Terminal));
     }
 }

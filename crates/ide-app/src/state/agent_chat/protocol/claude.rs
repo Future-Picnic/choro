@@ -159,6 +159,39 @@ impl ClaudeBridgeRuntime {
                         .ok();
                 }
             }
+            "file_change_activity" => {
+                let activity = message
+                    .get("file")
+                    .and_then(|file| file_change_stat_from_bridge(file, false))
+                    .map(|file| {
+                        FileChangeActivity::new(
+                            message
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("claude-file-change"),
+                            message
+                                .get("turn_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("claude-turn"),
+                            file.with_count_projection(
+                                message
+                                    .get("observed")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
+                            ),
+                            message
+                                .get("observed")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            unix_now(),
+                        )
+                    });
+                if let Some(activity) = activity {
+                    self.events
+                        .send_blocking(ChatBackendEvent::FileChangeActivity(activity))
+                        .ok();
+                }
+            }
             "pending_user_input" => {
                 let pending = pending_user_input_from_bridge_event(&message);
                 self.events
@@ -212,30 +245,40 @@ impl ClaudeBridgeRuntime {
                 }
             }
             "changed_files" => {
-                let files = message
-                    .get("files")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|file| {
-                        let path = file.get("path").and_then(Value::as_str)?;
-                        let additions =
-                            file.get("additions").and_then(Value::as_u64).unwrap_or(0) as usize;
-                        let deletions =
-                            file.get("deletions").and_then(Value::as_u64).unwrap_or(0) as usize;
-                        Some(FileChangeStat::new(path, additions, deletions))
-                    })
-                    .collect::<Vec<_>>();
-                if !files.is_empty() {
+                let parse_files = |key: &str| {
+                    message
+                        .get(key)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|file| {
+                            file_change_stat_from_bridge(file, key == "observed_files")
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let files = parse_files("files");
+                let observed_files = parse_files("observed_files");
+                if !files.is_empty() || !observed_files.is_empty() {
                     let summary = capture_changed_files_snapshot(
                         &self.agent,
                         ChangedFilesSummary {
                             files,
+                            observed_files,
+                            turn_id: message
+                                .get("turn_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .or_else(|| Some(next_request_id())),
+                            attribution_version: message
+                                .get("attribution_version")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(1)
+                                as u8,
                             ..Default::default()
                         },
                         "agent_changed_files",
                     );
-                    if !summary.files.is_empty() {
+                    if !summary.is_empty() {
                         self.events
                             .send_blocking(ChatBackendEvent::ChangedFiles(summary))
                             .ok();
@@ -310,6 +353,32 @@ impl ClaudeBridgeRuntime {
         stdin.flush()?;
         Ok(())
     }
+}
+
+fn file_change_stat_from_bridge(file: &Value, projection: bool) -> Option<FileChangeStat> {
+    let path = file.get("path").and_then(Value::as_str)?;
+    let additions = file.get("additions").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let deletions = file.get("deletions").and_then(Value::as_u64).unwrap_or(0) as usize;
+    Some(
+        FileChangeStat::new(path, additions, deletions)
+            .with_count_projection(projection)
+            .with_content_hashes(
+                file.get("baseline_hash")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                file.get("result_hash")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            )
+            .with_content_projection(
+                file.get("baseline_content")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                file.get("result_content")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ),
+    )
 }
 
 fn conversation_usage_from_bridge_message(message: Value) -> Option<ConversationUsage> {

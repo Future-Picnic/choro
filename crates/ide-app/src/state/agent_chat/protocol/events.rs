@@ -229,6 +229,7 @@ pub(super) fn work_log_from_bridge_event(event: &Value) -> Option<WorkLogEntry> 
         .and_then(Value::as_str)
         .unwrap_or("Tool call");
     let kind = match event.get("kind").and_then(Value::as_str) {
+        Some("command") => WorkLogEntryKind::Command,
         Some("plan") => WorkLogEntryKind::Plan,
         Some("user_input") => WorkLogEntryKind::UserInput,
         Some("system") => WorkLogEntryKind::System,
@@ -265,7 +266,7 @@ pub(super) fn work_log_from_item(params: &Value, status: WorkLogStatus) -> Optio
         .unwrap_or("codex-item")
         .to_string();
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or("tool");
-    if item_type == "agentMessage" {
+    if matches!(item_type, "agentMessage" | "reasoning" | "fileChange") {
         return None;
     }
     let title = item
@@ -276,10 +277,8 @@ pub(super) fn work_log_from_item(params: &Value, status: WorkLogStatus) -> Optio
         .map(str::to_string)
         .unwrap_or_else(|| humanize_item_type(item_type));
     let kind = match item_type {
-        "reasoning" => WorkLogEntryKind::Step,
         "plan" => WorkLogEntryKind::Plan,
-        "commandExecution" => WorkLogEntryKind::Tool,
-        "fileChange" => WorkLogEntryKind::Tool,
+        "commandExecution" => WorkLogEntryKind::Command,
         _ => WorkLogEntryKind::Tool,
     };
     Some(WorkLogEntry::new(id.clone(), id, kind, title, status))
@@ -470,6 +469,32 @@ pub(super) fn file_stat_from_patch_change(change: &Value) -> Option<FileChangeSt
     let diff = change.get("diff").and_then(Value::as_str).unwrap_or("");
     let (additions, deletions) = count_unified_diff_lines(diff);
     Some(FileChangeStat::new(path, additions, deletions))
+}
+
+pub(super) fn item_type_from_params(params: &Value) -> Option<&str> {
+    params
+        .get("item")
+        .unwrap_or(params)
+        .get("type")
+        .and_then(Value::as_str)
+}
+
+/// Provider progress events can repeat a file as its patch evolves. Keep the
+/// newest provider-owned stat for that path instead of double-counting it.
+pub(super) fn upsert_file_change_stats(
+    target: &mut Vec<FileChangeStat>,
+    incoming: impl IntoIterator<Item = FileChangeStat>,
+) {
+    for file in incoming {
+        if let Some(existing) = target
+            .iter_mut()
+            .find(|existing| existing.path == file.path)
+        {
+            *existing = file;
+        } else {
+            target.push(file);
+        }
+    }
 }
 
 pub(super) fn changed_files_from_unified_diff(diff: &str) -> Vec<FileChangeStat> {
@@ -665,8 +690,73 @@ Do not implement while in Plan Mode.
 </collaboration_mode>"#;
 
 #[cfg(test)]
+mod work_log_tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_and_duplicate_file_change_items_do_not_become_work_logs() {
+        for item_type in ["reasoning", "fileChange", "agentMessage"] {
+            let params = json!({ "item": { "id": "item-1", "type": item_type } });
+            assert!(work_log_from_item(&params, WorkLogStatus::Completed).is_none());
+        }
+    }
+
+    #[test]
+    fn command_items_remain_visible_actions() {
+        let params = json!({
+            "item": {
+                "id": "command-1",
+                "type": "commandExecution",
+                "command": "cargo test -p ide-app"
+            }
+        });
+
+        let entry = work_log_from_item(&params, WorkLogStatus::Completed)
+            .expect("commands should remain in the activity timeline");
+
+        assert_eq!(entry.kind, WorkLogEntryKind::Command);
+        assert_eq!(entry.title, "cargo test -p ide-app");
+    }
+
+    #[test]
+    fn bridge_commands_keep_their_command_kind() {
+        let event = json!({
+            "id": "bash-1",
+            "type": "work_log",
+            "kind": "command",
+            "title": "Bash",
+            "status": "completed",
+            "detail": "npm test"
+        });
+
+        let entry = work_log_from_bridge_event(&event).expect("valid bridge work log");
+
+        assert_eq!(entry.kind, WorkLogEntryKind::Command);
+    }
+}
+
+#[cfg(test)]
 mod approval_tests {
     use super::*;
+
+    #[test]
+    fn repeated_patch_progress_replaces_only_the_matching_path() {
+        let mut target = vec![FileChangeStat::new("src/a.rs", 1, 0)];
+        upsert_file_change_stats(
+            &mut target,
+            [
+                FileChangeStat::new("src/a.rs", 4, 2),
+                FileChangeStat::new("src/b.rs", 3, 0),
+            ],
+        );
+        assert_eq!(
+            target,
+            vec![
+                FileChangeStat::new("src/a.rs", 4, 2),
+                FileChangeStat::new("src/b.rs", 3, 0),
+            ]
+        );
+    }
 
     #[test]
     fn command_approval_keeps_command_and_reason() {

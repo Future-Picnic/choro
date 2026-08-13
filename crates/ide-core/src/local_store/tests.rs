@@ -20,6 +20,292 @@ fn sample_project() -> Project {
 }
 
 #[test]
+fn chat_file_ledger_round_trips_exact_and_observed_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let agent_id = agent.id;
+    let entries = vec![
+        StoredChatFileLedgerEntry {
+            agent_id,
+            path: PathBuf::from("src/exact.rs"),
+            observed: false,
+            additions: 4,
+            deletions: 1,
+            baseline_hash: Some("before".into()),
+            result_hash: Some("after".into()),
+            baseline_content: Some("before\n".into()),
+            result_content: Some("after\n".into()),
+            updated_at: 10,
+        },
+        StoredChatFileLedgerEntry {
+            agent_id,
+            path: PathBuf::from("generated.css"),
+            observed: true,
+            additions: 8,
+            deletions: 0,
+            baseline_hash: None,
+            result_hash: None,
+            baseline_content: None,
+            result_content: None,
+            updated_at: 10,
+        },
+    ];
+
+    store
+        .replace_chat_file_ledger(agent_id, 1, &entries)
+        .unwrap();
+    let mut expected = entries;
+    expected.sort_by(|left, right| left.path.cmp(&right.path));
+    let ledger = store.load_chat_file_ledger(agent_id).unwrap().unwrap();
+    assert_eq!(ledger.revision, 1);
+    assert_eq!(ledger.entries, expected);
+}
+
+#[test]
+fn chat_file_ledger_replacement_removes_reverted_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let agent_id = agent.id;
+    store
+        .replace_chat_file_ledger(
+            agent_id,
+            1,
+            &[StoredChatFileLedgerEntry {
+                agent_id,
+                path: PathBuf::from("src/reverted.rs"),
+                observed: false,
+                additions: 1,
+                deletions: 0,
+                baseline_hash: Some("base".into()),
+                result_hash: Some("changed".into()),
+                baseline_content: Some("base\n".into()),
+                result_content: Some("changed\n".into()),
+                updated_at: 10,
+            }],
+        )
+        .unwrap();
+    store.replace_chat_file_ledger(agent_id, 2, &[]).unwrap();
+    assert!(store
+        .load_chat_file_ledger(agent_id)
+        .unwrap()
+        .unwrap()
+        .entries
+        .is_empty());
+}
+
+#[test]
+fn stale_chat_file_ledger_write_cannot_overwrite_a_newer_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+
+    let entry = |path: &str| StoredChatFileLedgerEntry {
+        agent_id: agent.id,
+        path: PathBuf::from(path),
+        observed: false,
+        additions: 1,
+        deletions: 0,
+        baseline_hash: None,
+        result_hash: None,
+        baseline_content: None,
+        result_content: None,
+        updated_at: 10,
+    };
+    store
+        .replace_chat_file_ledger(agent.id, 2, &[entry("newer.rs")])
+        .unwrap();
+    store
+        .replace_chat_file_ledger(agent.id, 1, &[entry("stale.rs")])
+        .unwrap();
+
+    let ledger = store.load_chat_file_ledger(agent.id).unwrap().unwrap();
+    assert_eq!(ledger.revision, 2);
+    assert_eq!(ledger.entries[0].path, PathBuf::from("newer.rs"));
+}
+
+#[test]
+fn concurrent_chat_file_ledger_writers_keep_the_newest_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+
+    let agent_id = agent.id;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let writer = |revision, path: &'static str| {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            let entry = StoredChatFileLedgerEntry {
+                agent_id,
+                path: PathBuf::from(path),
+                observed: false,
+                additions: 1,
+                deletions: 0,
+                baseline_hash: None,
+                result_hash: None,
+                baseline_content: None,
+                result_content: None,
+                updated_at: revision,
+            };
+            barrier.wait();
+            store
+                .replace_chat_file_ledger(agent_id, revision, &[entry])
+                .unwrap();
+        })
+    };
+    let stale = writer(1, "stale.rs");
+    let newest = writer(2, "newest.rs");
+    barrier.wait();
+    stale.join().unwrap();
+    newest.join().unwrap();
+
+    let ledger = store.load_chat_file_ledger(agent_id).unwrap().unwrap();
+    assert_eq!(ledger.revision, 2);
+    assert_eq!(ledger.entries[0].path, PathBuf::from("newest.rs"));
+}
+
+#[test]
+fn changed_file_receipt_and_ledger_roll_back_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+
+    let invalid_entry = StoredChatFileLedgerEntry {
+        agent_id: agent.id,
+        path: PathBuf::from("src/atomic.rs"),
+        observed: false,
+        additions: 1,
+        deletions: 0,
+        baseline_hash: None,
+        result_hash: None,
+        baseline_content: None,
+        result_content: None,
+        // Forces the ledger half of the transaction to fail after the receipt
+        // has been inserted.
+        updated_at: u64::MAX,
+    };
+    assert!(store
+        .persist_timeline_event_and_chat_file_ledger(
+            agent.id,
+            "changed_files",
+            Some("changed_files:turn:atomic".into()),
+            r#"{"type":"changed_files","files":[]}"#,
+            10,
+            1,
+            &[invalid_entry],
+        )
+        .is_err());
+
+    assert!(store.load_timeline_events(agent.id).unwrap().is_empty());
+    assert!(store.load_chat_file_ledger(agent.id).unwrap().is_none());
+}
+
+#[test]
+fn changed_file_receipt_and_ledger_commit_together() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+
+    let entry = StoredChatFileLedgerEntry {
+        agent_id: agent.id,
+        path: PathBuf::from("src/atomic.rs"),
+        observed: false,
+        additions: 1,
+        deletions: 0,
+        baseline_hash: None,
+        result_hash: None,
+        baseline_content: None,
+        result_content: None,
+        updated_at: 10,
+    };
+    store
+        .persist_timeline_event_and_chat_file_ledger(
+            agent.id,
+            "changed_files",
+            Some("changed_files:turn:atomic".into()),
+            r#"{"type":"changed_files","files":[]}"#,
+            10,
+            1,
+            std::slice::from_ref(&entry),
+        )
+        .unwrap();
+
+    assert_eq!(store.load_timeline_events(agent.id).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .load_chat_file_ledger(agent.id)
+            .unwrap()
+            .unwrap()
+            .entries,
+        vec![entry]
+    );
+}
+
+#[test]
+fn migrates_v29_to_chat_file_ledger_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DROP TABLE chat_file_ledger", ()).await?;
+                conn.execute("DROP TABLE chat_file_ledgers", ()).await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 30", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 29);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    store
+        .rt
+        .block_on(async {
+            let conn = store.connect().await?;
+            assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
+            assert!(table_exists(&conn, "chat_file_ledgers").await?);
+            assert!(table_exists(&conn, "chat_file_ledger").await?);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn migrates_v25_to_git_workflow_schema() {
     let dir = tempfile::tempdir().unwrap();
     {
@@ -2284,6 +2570,21 @@ fn export_import_round_trip() {
             1,
         )
         .unwrap();
+    let file_ledger = vec![StoredChatFileLedgerEntry {
+        agent_id: agent.id,
+        path: PathBuf::from("src/lib.rs"),
+        observed: false,
+        additions: 1,
+        deletions: 1,
+        baseline_hash: Some("before".into()),
+        result_hash: Some("after".into()),
+        baseline_content: Some("before\n".into()),
+        result_content: Some("after\n".into()),
+        updated_at: 2,
+    }];
+    source_store
+        .replace_chat_file_ledger(agent.id, 1, &file_ledger)
+        .unwrap();
     source_store
         .materialize_attachment_bytes(agent.id, "hello.txt", None, "txt", b"hello")
         .unwrap();
@@ -2332,6 +2633,14 @@ fn export_import_round_trip() {
     assert_eq!(
         target_store.load_timeline_events(agent.id).unwrap().len(),
         1
+    );
+    assert_eq!(
+        target_store
+            .load_chat_file_ledger(agent.id)
+            .unwrap()
+            .unwrap()
+            .entries,
+        file_ledger
     );
     assert_eq!(target_store.load_all_memories().unwrap(), vec![memory]);
     assert_eq!(target_store.load_attachments(agent.id).unwrap().len(), 1);

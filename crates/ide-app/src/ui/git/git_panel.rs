@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
@@ -31,7 +31,9 @@ use crate::notifications;
 use crate::state::{AgentRecords, GitState, GitStates, Workspace};
 use crate::ui::branch_icon::{branch_icon, commit_icon, pr_icon};
 use crate::ui::confirm::ConfirmDialog;
-use crate::ui::git::status_list::{render_section, split_entries, status_list_entries};
+use crate::ui::git::status_list::{
+    render_status_row, split_entries, status_list_entries, status_section_rows,
+};
 use crate::ui::split_button::{SplitButton, SplitPalette};
 
 mod branches;
@@ -352,7 +354,6 @@ pub struct GitPanel {
     branch_query: Entity<InputState>,
     branches_expanded: bool,
     pub(super) collapsed_status_folders: HashSet<String>,
-    pub(super) hovered_status_file: Option<(PathBuf, bool)>,
     // Branch-row hover reveals the expand chevron; PR-chip hover unfurls the
     // full pull-request title in place. Both are transient view state.
     pub(super) branch_row_hovered: bool,

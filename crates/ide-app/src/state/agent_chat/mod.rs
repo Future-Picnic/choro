@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub(crate) use changed_files::VisualizationArtifactFilter;
-pub use changed_files::{ChangedFilesSummary, FileChangeStat};
+pub use changed_files::{ChangedFilesSummary, FileChangeActivity, FileChangeStat};
 pub use code_review::{split_code_review, CodeReview, CodeReviewFinding, CodeReviewSeverity};
 pub use pending_approval::{PendingApproval, PendingApprovalKind};
 pub use pending_user_input::{PendingUserInput, PendingUserInputOption, PendingUserInputQuestion};
@@ -39,7 +39,9 @@ pub use work_log::{WorkLogEntry, WorkLogEntryKind, WorkLogStatus};
 
 use interactions::*;
 use persistence::*;
-pub use persistence::{persist_timeline_snapshot, timeline_item_from_store_event};
+pub use persistence::{
+    load_persisted_file_ledger, persist_timeline_snapshot, timeline_item_from_store_event,
+};
 use timeline::*;
 
 pub enum AgentChatEvent {
@@ -200,6 +202,7 @@ pub struct AgentChatMessageTag {
 pub enum AgentChatTimelineItem {
     Message(AgentChatMessage),
     WorkLog(WorkLogEntry),
+    FileChangeActivity(FileChangeActivity),
     PendingUserInput(PendingUserInput),
     ProposedPlan(ProposedPlan),
     CodeReview(CodeReview),
@@ -336,6 +339,13 @@ enum StoredTimelinePayload {
         updated_at: u64,
         count: usize,
     },
+    FileChangeActivity {
+        id: String,
+        turn_id: String,
+        file: StoredFileChange,
+        observed: bool,
+        updated_at: u64,
+    },
     PendingUserInput {
         request_id: String,
         questions: Vec<StoredPendingQuestion>,
@@ -360,6 +370,14 @@ enum StoredTimelinePayload {
     },
     ChangedFiles {
         files: Vec<StoredFileChange>,
+        #[serde(default)]
+        observed_files: Vec<StoredFileChange>,
+        #[serde(default)]
+        turn_id: Option<String>,
+        #[serde(default)]
+        attribution_version: u8,
+        #[serde(default)]
+        ledger_revision: u64,
         #[serde(default)]
         snapshot_id: Option<Uuid>,
         #[serde(default)]
@@ -485,6 +503,12 @@ struct StoredFileChange {
     path: String,
     additions: usize,
     deletions: usize,
+    #[serde(default)]
+    counts_are_projection: bool,
+    #[serde(default)]
+    baseline_hash: Option<String>,
+    #[serde(default)]
+    result_hash: Option<String>,
 }
 
 impl AgentChatState {
@@ -583,41 +607,43 @@ impl AgentChatState {
         let agent_id = agent.id;
         // Await the channel instead of polling on a timer: an idle chat costs
         // zero wake-ups, and the task ends when the backend's senders drop.
-        cx.spawn(async move |this, cx| loop {
-            let Ok(event) = event_rx.recv().await else {
-                break;
-            };
-            let Some(this) = this.upgrade() else {
-                break;
-            };
-            if this
-                .update(cx, |state, cx| {
-                    state.apply_backend_event(agent_id, generation, event, cx)
-                })
-                .is_err()
-            {
-                break;
-            }
-            // Drain what queued up behind the first event so a streaming
-            // burst is applied in one foreground pass — but bounded, with a
-            // yield after the cap, so a flooding backend cannot monopolize
-            // the main thread.
-            let mut drained = 0usize;
-            while let Ok(event) = event_rx.try_recv() {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(event) = event_rx.recv().await else {
+                    break;
+                };
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
                 if this
                     .update(cx, |state, cx| {
                         state.apply_backend_event(agent_id, generation, event, cx)
                     })
                     .is_err()
                 {
-                    return;
+                    break;
                 }
-                drained += 1;
-                if drained >= 128 {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(1))
-                        .await;
-                    drained = 0;
+                // Drain what queued up behind the first event so a streaming
+                // burst is applied in one foreground pass — but bounded, with a
+                // yield after the cap, so a flooding backend cannot monopolize
+                // the main thread.
+                let mut drained = 0usize;
+                while let Ok(event) = event_rx.try_recv() {
+                    if this
+                        .update(cx, |state, cx| {
+                            state.apply_backend_event(agent_id, generation, event, cx)
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    drained += 1;
+                    if drained >= 128 {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(1))
+                            .await;
+                        drained = 0;
+                    }
                 }
             }
         })
@@ -964,6 +990,21 @@ impl AgentChatState {
         record_user_stop: bool,
         cx: &mut Context<Self>,
     ) -> Option<ChatBackendStopSignal> {
+        // A force-stop cannot wait for the provider's normal terminal event.
+        // Promote the live action rows into the same immutable receipt shape
+        // so the interrupted turn still lands in the drawer and survives a
+        // relaunch.
+        let interrupted_summary = self
+            .sessions
+            .get(&agent_id)
+            .and_then(|session| pending_file_activity_summary(&session.timeline));
+        if let Some(summary) = interrupted_summary {
+            if let Some(session) = self.sessions.get_mut(&agent_id) {
+                if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
+                    persist_changed_files_turn(agent_id, receipt, ledger, cx);
+                }
+            }
+        }
         self.next_backend_generation(agent_id);
         let stop_signal = self.controllers.remove(&agent_id).map(|controller| {
             let stop_signal = controller.stop_signal();
@@ -1200,6 +1241,14 @@ impl AgentChatState {
                 upsert_timeline_work_log(&mut session.timeline, entry.clone());
                 persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
             }
+            ChatBackendEvent::FileChangeActivity(activity) => {
+                upsert_timeline_file_change_activity(&mut session.timeline, activity.clone());
+                persist_timeline_item(
+                    agent_id,
+                    AgentChatTimelineItem::FileChangeActivity(activity),
+                    cx,
+                );
+            }
             ChatBackendEvent::PendingUserInput(pending) => {
                 upsert_timeline_pending_user_input(&mut session.timeline, pending.clone());
                 persist_timeline_item(
@@ -1247,14 +1296,8 @@ impl AgentChatState {
                 );
             }
             ChatBackendEvent::ChangedFiles(summary) => {
-                session.changed_files = summary.clone();
-                if !summary.files.is_empty() {
-                    append_timeline_changed_files(&mut session.timeline, summary.clone());
-                    persist_timeline_item(
-                        agent_id,
-                        AgentChatTimelineItem::ChangedFiles(summary),
-                        cx,
-                    );
+                if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
+                    persist_changed_files_turn(agent_id, receipt, ledger, cx);
                 }
             }
             ChatBackendEvent::Usage(usage) => {
@@ -1422,6 +1465,42 @@ fn settle_hard_stopped_session(
     entry
 }
 
+fn apply_changed_files_summary(
+    session: &mut AgentChatSession,
+    summary: ChangedFilesSummary,
+) -> Option<(ChangedFilesSummary, ChangedFilesSummary)> {
+    if summary.is_empty() {
+        return None;
+    }
+    session.changed_files.merge_turn(&summary);
+    let mut receipt = summary;
+    receipt.ledger_revision = session.changed_files.ledger_revision;
+    append_timeline_changed_files(&mut session.timeline, receipt.clone());
+    Some((receipt, session.changed_files.clone()))
+}
+
+fn pending_file_activity_summary(
+    timeline: &[AgentChatTimelineItem],
+) -> Option<ChangedFilesSummary> {
+    let turn_id = timeline.iter().rev().find_map(|item| match item {
+        AgentChatTimelineItem::FileChangeActivity(activity) => Some(activity.turn_id.as_str()),
+        _ => None,
+    })?;
+    if timeline.iter().any(|item| {
+        matches!(item, AgentChatTimelineItem::ChangedFiles(summary) if summary.turn_id.as_deref() == Some(turn_id))
+    }) {
+        return None;
+    }
+    let summary = ChangedFilesSummary::from_activities(
+        turn_id,
+        timeline.iter().filter_map(|item| match item {
+            AgentChatTimelineItem::FileChangeActivity(activity) => Some(activity),
+            _ => None,
+        }),
+    );
+    (!summary.is_empty()).then_some(summary)
+}
+
 /// Structural half of the idle-retirement guard: nothing in-flight that a
 /// backend kill would lose, and at least one provider session id so the next
 /// submission can resume. The caller layers policy on top (idle duration,
@@ -1437,6 +1516,7 @@ fn session_safe_to_retire(session: &AgentChatSession) -> bool {
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn retirable_session() -> AgentChatSession {
         AgentChatSession {
@@ -1543,6 +1623,48 @@ mod retirement_tests {
             item,
             AgentChatTimelineItem::WorkLog(entry) if entry.title == "Stopped by user"
         )));
+    }
+
+    #[test]
+    fn interrupted_activity_still_closes_the_previous_turn_after_a_steer_message() {
+        let mut session = retirable_session();
+        session
+            .timeline
+            .push(AgentChatTimelineItem::FileChangeActivity(
+                FileChangeActivity::new(
+                    "edit:index",
+                    "turn-a",
+                    FileChangeStat::new("index.html", 23, 34),
+                    false,
+                    10,
+                ),
+            ));
+        session
+            .timeline
+            .push(AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: "continue with the next part".to_string(),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 11,
+            }));
+
+        let summary = pending_file_activity_summary(&session.timeline)
+            .expect("the interrupted provider turn should still have a receipt");
+        assert_eq!(summary.turn_id.as_deref(), Some("turn-a"));
+        assert_eq!(summary.files[0].path, PathBuf::from("index.html"));
+        apply_changed_files_summary(&mut session, summary)
+            .expect("receipt should update the cumulative ledger");
+
+        assert!(pending_file_activity_summary(&session.timeline).is_none());
+        assert!(session.timeline.iter().any(|item| matches!(
+            item,
+            AgentChatTimelineItem::ChangedFiles(summary)
+                if summary.turn_id.as_deref() == Some("turn-a")
+        )));
+        assert_eq!(
+            session.changed_files.files[0].path,
+            PathBuf::from("index.html")
+        );
     }
 }
 
