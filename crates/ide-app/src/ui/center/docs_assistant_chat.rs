@@ -247,7 +247,7 @@ impl CenterArea {
                     // Filter on the typed text, then rank like the chat `@`
                     // picker: name-prefix matches first, then by path, capped.
                     let mut matches = self
-                        .workspace_file_entries(project, &root)
+                        .workspace_file_entries(project, &root, cx)
                         .into_iter()
                         .filter(|file| {
                             query.is_empty()

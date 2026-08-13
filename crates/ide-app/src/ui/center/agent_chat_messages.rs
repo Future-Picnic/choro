@@ -1019,23 +1019,8 @@ impl CenterArea {
                 })
                 .unwrap_or_else(|| div().into_any_element()),
             AgentChatRow::ActivityGroup { start, end } => {
-                let activity = session.timeline.get(start..end).into_iter().flatten();
-                let entries = activity
-                    .clone()
-                    .filter_map(|item| match item {
-                        AgentChatTimelineItem::WorkLog(entry) if !is_noise_work_log(entry) => {
-                            Some(entry)
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let file_changes = activity
-                    .filter_map(|item| match item {
-                        AgentChatTimelineItem::FileChangeActivity(activity) => Some(activity),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                self.render_agent_work_log_group(agent.id, start, &entries, &file_changes, cx)
+                let activity = session.timeline.get(start..end).unwrap_or_default();
+                self.render_agent_work_log_group(agent, start, activity, cx)
             }
             AgentChatRow::ResumeSavedSession => self.render_agent_resume_saved_session(agent, cx),
             AgentChatRow::Activity => self.render_agent_activity_indicator(session, cx),

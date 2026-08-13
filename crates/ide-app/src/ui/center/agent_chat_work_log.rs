@@ -52,80 +52,40 @@ fn agent_activity_kind(session: &crate::state::agent_chat::AgentChatSession) -> 
 impl CenterArea {
     pub(super) fn render_agent_work_log_group(
         &self,
-        agent_id: Uuid,
+        agent: &AgentRecord,
         index: usize,
-        entries: &[&crate::state::agent_chat::WorkLogEntry],
-        file_changes: &[&crate::state::agent_chat::FileChangeActivity],
+        activity: &[AgentChatTimelineItem],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if entries.is_empty() {
-            return v_flex()
-                .w_full()
-                .gap_0p5()
-                .children(
-                    file_changes
-                        .iter()
-                        .map(|activity| self.render_file_change_activity(activity, cx)),
-                )
-                .into_any_element();
-        }
-        let primary_entries = entries
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry.kind == WorkLogEntryKind::Command
-                    || entry.status == WorkLogStatus::Failed
-                    || matches!(
-                        entry.kind,
-                        WorkLogEntryKind::System | WorkLogEntryKind::UserInput
-                    )
-            })
-            .collect::<Vec<_>>();
-        let secondary_entries = entries
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, entry)| {
-                entry.kind != WorkLogEntryKind::Command
-                    && entry.status != WorkLogStatus::Failed
-                    && !matches!(
-                        entry.kind,
-                        WorkLogEntryKind::System | WorkLogEntryKind::UserInput
-                    )
-            })
-            .collect::<Vec<_>>();
-        if secondary_entries.len() <= 1 {
-            return v_flex()
-                .w_full()
-                .gap_0p5()
-                .children(entries.iter().enumerate().map(|(offset, entry)| {
-                    self.render_agent_work_log_entry(agent_id, index + offset, entry, cx)
-                }))
-                .when(!file_changes.is_empty(), |group| {
-                    group.child(self.render_grouped_file_change_rows(file_changes, cx))
-                })
-                .into_any_element();
-        }
+        let agent_id = agent.id;
+        let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
         let expanded = self
             .agent_chat_expanded_work_log_groups
             .contains(&(agent_id, index));
-        let total = secondary_entries
-            .iter()
-            .map(|(_, entry)| entry.count.max(1))
-            .sum::<usize>();
-        let in_progress = secondary_entries.iter().any(|(_, entry)| {
+        let total = activity_step_count(activity, &artifact_filter);
+        let failed = activity.iter().any(|item| {
             matches!(
-                entry.status,
-                crate::state::agent_chat::WorkLogStatus::Pending
-                    | crate::state::agent_chat::WorkLogStatus::InProgress
+                item,
+                AgentChatTimelineItem::WorkLog(entry)
+                    if !is_noise_work_log(entry) && entry.status == WorkLogStatus::Failed
             )
         });
-        let (icon, tone) = if in_progress {
+        let in_progress = activity.iter().any(|item| {
+            matches!(
+                item,
+                AgentChatTimelineItem::WorkLog(entry)
+                    if !is_noise_work_log(entry)
+                        && matches!(entry.status, WorkLogStatus::Pending | WorkLogStatus::InProgress)
+            )
+        });
+        let (icon, tone) = if failed {
+            (IconName::TriangleAlert, crate::ui::design::rose(cx))
+        } else if in_progress {
             (IconName::Loader, crate::ui::design::amber(cx))
         } else {
             (IconName::Check, crate::ui::design::t3(cx))
         };
+        let summary = activity_step_summary(total, in_progress);
 
         v_flex()
             .w_full()
@@ -161,11 +121,7 @@ impl CenterArea {
                             .size(crate::ui::design::icon_sm())
                             .text_color(tone),
                     )
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(format!("Details · {total} actions")),
-                    )
+                    .child(div().font_weight(gpui::FontWeight::MEDIUM).child(summary))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let key = (agent_id, index);
                         if !this.agent_chat_expanded_work_log_groups.remove(&key) {
@@ -175,46 +131,33 @@ impl CenterArea {
                         cx.notify();
                     })),
             )
-            .when(!primary_entries.is_empty(), |group| {
-                group.child(
-                    v_flex()
-                        .ml_4()
-                        .gap_0p5()
-                        .children(primary_entries.iter().map(|(offset, entry)| {
-                            self.render_agent_work_log_entry(agent_id, index + offset, entry, cx)
-                        })),
-                )
-            })
-            .when(!file_changes.is_empty(), |group| {
-                group.child(self.render_grouped_file_change_rows(file_changes, cx))
-            })
             .when(expanded, |group| {
                 group.child(
                     v_flex()
                         .ml_4()
                         .gap_0p5()
-                        .children(secondary_entries.iter().map(|(offset, entry)| {
-                            self.render_agent_work_log_entry(agent_id, index + offset, entry, cx)
-                        })),
+                        .children(activity.iter().enumerate().filter_map(
+                            |(offset, item)| match item {
+                                AgentChatTimelineItem::WorkLog(entry)
+                                    if !is_noise_work_log(entry) =>
+                                {
+                                    Some(self.render_agent_work_log_entry(
+                                        agent_id,
+                                        index + offset,
+                                        entry,
+                                        cx,
+                                    ))
+                                }
+                                AgentChatTimelineItem::FileChangeActivity(file_change)
+                                    if !artifact_filter.is_artifact(&file_change.file.path) =>
+                                {
+                                    Some(self.render_file_change_activity(file_change, cx))
+                                }
+                                _ => None,
+                            },
+                        )),
                 )
             })
-            .into_any_element()
-    }
-
-    fn render_grouped_file_change_rows(
-        &self,
-        file_changes: &[&crate::state::agent_chat::FileChangeActivity],
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        v_flex()
-            .w_full()
-            .ml_4()
-            .gap_0p5()
-            .children(
-                file_changes
-                    .iter()
-                    .map(|activity| self.render_file_change_activity(activity, cx)),
-            )
             .into_any_element()
     }
 
@@ -419,5 +362,78 @@ impl CenterArea {
                 ),
             )
             .into_any_element()
+    }
+}
+
+fn activity_step_count(
+    activity: &[AgentChatTimelineItem],
+    artifact_filter: &VisualizationArtifactFilter,
+) -> usize {
+    activity
+        .iter()
+        .map(|item| match item {
+            AgentChatTimelineItem::WorkLog(entry) if !is_noise_work_log(entry) => {
+                entry.count.max(1)
+            }
+            AgentChatTimelineItem::FileChangeActivity(file_change)
+                if !artifact_filter.is_artifact(&file_change.file.path) =>
+            {
+                1
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+fn activity_step_summary(total: usize, in_progress: bool) -> String {
+    match (in_progress, total) {
+        (true, 1) => "Working on 1 step".to_string(),
+        (true, count) => format!("Working on {count} steps"),
+        (false, 1) => "Worked on 1 step".to_string(),
+        (false, count) => format!("Worked on {count} steps"),
+    }
+}
+
+#[cfg(test)]
+mod activity_group_tests {
+    use super::*;
+
+    #[test]
+    fn activity_summary_uses_clear_singular_and_progress_copy() {
+        assert_eq!(activity_step_summary(1, false), "Worked on 1 step");
+        assert_eq!(activity_step_summary(3, false), "Worked on 3 steps");
+        assert_eq!(activity_step_summary(2, true), "Working on 2 steps");
+    }
+
+    #[test]
+    fn activity_count_excludes_reasoning_and_counts_commands_and_file_edits() {
+        let activity = vec![
+            AgentChatTimelineItem::WorkLog(crate::state::agent_chat::WorkLogEntry::new(
+                "reasoning",
+                "reasoning",
+                WorkLogEntryKind::Step,
+                "Reasoning",
+                WorkLogStatus::Completed,
+            )),
+            AgentChatTimelineItem::WorkLog(crate::state::agent_chat::WorkLogEntry::new(
+                "command",
+                "command",
+                WorkLogEntryKind::Command,
+                "cargo test",
+                WorkLogStatus::Completed,
+            )),
+            AgentChatTimelineItem::FileChangeActivity(
+                crate::state::agent_chat::FileChangeActivity::new(
+                    "edit:src/main.rs",
+                    "turn-a",
+                    crate::state::agent_chat::FileChangeStat::new("src/main.rs", 2, 1),
+                    false,
+                    1,
+                ),
+            ),
+        ];
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        assert_eq!(activity_step_count(&activity, &filter), 2);
     }
 }

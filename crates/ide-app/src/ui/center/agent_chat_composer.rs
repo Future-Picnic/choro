@@ -1019,6 +1019,7 @@ impl CenterArea {
             mention,
             matches,
             selected,
+            loading,
         } = view;
         let selected = *selected;
 
@@ -1043,11 +1044,18 @@ impl CenterArea {
                         .items_center()
                         .text_size(crate::ui::design::text_ui())
                         .text_color(crate::ui::design::t3(cx))
-                        .child(
+                        .child(if *loading {
+                            gpui_component::spinner::Spinner::new()
+                                .xsmall()
+                                .into_any_element()
+                        } else {
                             gpui_component::Icon::new(IconName::File)
-                                .size(crate::ui::design::icon_md()),
-                        )
-                        .child(if mention.query.is_empty() {
+                                .size(crate::ui::design::icon_md())
+                                .into_any_element()
+                        })
+                        .child(if *loading {
+                            "Indexing project files…".to_string()
+                        } else if mention.query.is_empty() {
                             "No files in this project".to_string()
                         } else {
                             format!("No files matching {}", mention.query)

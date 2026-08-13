@@ -38,6 +38,7 @@ pub use verification::{split_verification, Verification, VerificationItem, Verif
 pub use work_log::{WorkLogEntry, WorkLogEntryKind, WorkLogStatus};
 
 use interactions::*;
+pub(crate) use persistence::persist_timeline_item;
 use persistence::*;
 pub use persistence::{
     load_persisted_file_ledger, persist_timeline_snapshot, timeline_item_from_store_event,

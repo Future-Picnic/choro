@@ -23,6 +23,7 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let _slow_operation = crate::ui::performance::UiOperationTimer::start("agent_chat.render");
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
         let compact_design_surface = surface.is_design();
@@ -118,7 +119,13 @@ impl CenterArea {
             .agent_chat_selected_agent_targets
             .get(&agent.id)
             .and_then(|target_id| self.agents.read(cx).agent(*target_id).cloned());
-        let has_attachments = !attached_files.is_empty();
+        let pending_attachment_count = self
+            .agent_chat_attachment_pastes_pending
+            .get(&agent.id)
+            .copied()
+            .unwrap_or_default();
+        let attachment_paste_pending = pending_attachment_count > 0;
+        let has_attachments = !attached_files.is_empty() || attachment_paste_pending;
         let has_pasted_text_blocks = !pasted_text_blocks.is_empty();
         let has_draft = !input.read(cx).value().trim().is_empty()
             || has_pasted_text_blocks
@@ -671,6 +678,17 @@ impl CenterArea {
                                                                 cx,
                                                             )
                                                         },
+                                                    ))
+                                                    .children((0..pending_attachment_count).map(
+                                                        |index| {
+                                                            self.render_agent_attachment_pending(
+                                                                (
+                                                                    "agent-chat-composer-attachment-pending",
+                                                                    index,
+                                                                ),
+                                                                cx,
+                                                            )
+                                                        },
                                                     )),
                                             )
                                         })
@@ -1107,7 +1125,8 @@ impl CenterArea {
                                         )
                                     })
                                     .child({
-                                        let can_send = has_draft || has_attachments;
+                                        let can_send = (has_draft || !attached_files.is_empty())
+                                            && !attachment_paste_pending;
                                         if is_running && !can_send {
                                             if compact_assistant_controls {
                                                 crate::ui::style::composer_stop(
@@ -1147,7 +1166,9 @@ impl CenterArea {
                                             )
                                             .icon(IconName::ArrowUp)
                                             .disabled(!can_send)
-                                            .tooltip(if can_send {
+                                            .tooltip(if attachment_paste_pending {
+                                                "Wait for the image to finish attaching"
+                                            } else if can_send {
                                                 "Start designing with the selected model"
                                             } else {
                                                 "Enter a design request before starting"

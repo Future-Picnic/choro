@@ -327,6 +327,27 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         for summary in summaries {
+            let summary_unchanged = self
+                .agent_summaries
+                .get(&summary.agent_id)
+                .is_some_and(|existing| existing == summary);
+            let summary_card_missing = self
+                .agent_chats
+                .read(cx)
+                .session(summary.agent_id)
+                .is_some_and(|session| {
+                    !session.timeline.iter().any(|item| {
+                        matches!(
+                            item,
+                            AgentChatTimelineItem::AgentSummary(card)
+                                if card.updated_at == summary.updated_at
+                                    && card.summary_text == summary.summary_text
+                        )
+                    })
+                });
+            if summary_unchanged && !summary_card_missing {
+                continue;
+            }
             let previous_updated_at = self
                 .agent_summaries
                 .get(&summary.agent_id)
@@ -347,7 +368,6 @@ impl CenterArea {
             if self.agents.read(cx).agent(summary.agent_id).is_none() {
                 continue;
             }
-            let mut timeline_to_persist = None;
             self.agent_chats.update(cx, |chats, cx| {
                 let Some(session) = chats.sessions.get_mut(&summary.agent_id) else {
                     return;
@@ -388,15 +408,19 @@ impl CenterArea {
                     }
                 };
                 if changed {
-                    timeline_to_persist = Some(session.timeline.clone());
+                    if let Some(card) = session.timeline.iter().find_map(|item| match item {
+                        AgentChatTimelineItem::AgentSummary(card) => Some(card.clone()),
+                        _ => None,
+                    }) {
+                        persist_timeline_item(
+                            summary.agent_id,
+                            AgentChatTimelineItem::AgentSummary(card),
+                            cx,
+                        );
+                    }
                     cx.notify();
                 }
             });
-            if let Some(timeline) = timeline_to_persist {
-                if let Err(error) = persist_timeline_snapshot(summary.agent_id, &timeline) {
-                    eprintln!("failed to persist agent summary card: {error:#}");
-                }
-            }
             if summary.updated_at > previous_updated_at {
                 self.maybe_propose_memory_from_summary(
                     summary.agent_id,
@@ -456,7 +480,6 @@ impl CenterArea {
                         kind: message.kind,
                         created_at: message.created_at,
                     };
-                    let mut timeline_to_persist = None;
                     this.agent_chats.update(cx, |chats, cx| {
                         let Some(session) = chats.sessions.get_mut(&source_agent_id) else {
                             return;
@@ -468,15 +491,14 @@ impl CenterArea {
                         }
                         session
                             .timeline
-                            .push(AgentChatTimelineItem::AgentMessage(card));
-                        timeline_to_persist = Some(session.timeline.clone());
+                            .push(AgentChatTimelineItem::AgentMessage(card.clone()));
+                        persist_timeline_item(
+                            source_agent_id,
+                            AgentChatTimelineItem::AgentMessage(card),
+                            cx,
+                        );
                         cx.notify();
                     });
-                    if let Some(timeline) = timeline_to_persist {
-                        if let Err(error) = persist_timeline_snapshot(source_agent_id, &timeline) {
-                            eprintln!("failed to persist outgoing agent message card: {error:#}");
-                        }
-                    }
                     cx.notify();
                 }
                 Err(error) => {
@@ -527,7 +549,6 @@ impl CenterArea {
                 kind: card_kind,
                 created_at: message.created_at,
             };
-            let mut timeline_to_persist = None;
             self.agent_chats.update(cx, |chats, cx| {
                 let session =
                     chats.ensure_session(message.target_agent_id, agent.title.clone(), cx);
@@ -537,16 +558,14 @@ impl CenterArea {
                     session
                         .timeline
                         .push(AgentChatTimelineItem::AgentMessage(card.clone()));
-                    timeline_to_persist = Some(session.timeline.clone());
+                    persist_timeline_item(
+                        message.target_agent_id,
+                        AgentChatTimelineItem::AgentMessage(card.clone()),
+                        cx,
+                    );
                     cx.notify();
                 }
             });
-            if let Some(timeline) = timeline_to_persist {
-                if let Err(error) = persist_timeline_snapshot(message.target_agent_id, &timeline) {
-                    eprintln!("failed to persist incoming agent message card: {error:#}");
-                    continue;
-                }
-            }
 
             // A returned answer belongs in the source conversation but must not
             // wake that agent or trigger a reply loop. Hydrate a previously

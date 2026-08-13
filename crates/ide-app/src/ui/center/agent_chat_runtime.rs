@@ -1102,6 +1102,15 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .agent_chat_attachment_pastes_pending
+            .get(&agent.id)
+            .copied()
+            .unwrap_or_default()
+            > 0
+        {
+            return;
+        }
         let draft = input.read(cx).value().trim().to_string();
         let selected_command = self.agent_chat_selected_commands.get(&agent.id).cloned();
         let preview_armed = self.agent_chat_preview_armed.contains(&agent.id);
@@ -2062,7 +2071,7 @@ impl CenterArea {
     pub(super) fn active_agent_chat_file_mention_view(
         &mut self,
         agent: &AgentRecord,
-        cx: &App,
+        cx: &mut Context<Self>,
     ) -> Option<ComposerFileMentionView> {
         let input = self.agent_chat_inputs.get(&agent.id)?.clone();
         let mention = active_composer_file_mention(&input.read(cx))?;
@@ -2074,7 +2083,8 @@ impl CenterArea {
             return None;
         }
         let (_, root) = self.project_by_id(agent.project_id, cx)?;
-        let files = self.workspace_file_entries(agent.project_id, &root);
+        let files = self.workspace_file_entries(agent.project_id, &root, cx);
+        let loading = self.composer_file_cache_loading.contains(&agent.project_id);
         let mut matches = composer_file_mention_matches(&mention, &files);
         matches.truncate(COMPOSER_FILE_MENTION_LIMIT.min(COMPOSER_PICKER_VISIBLE_LIMIT));
         let selected = self
@@ -2087,6 +2097,7 @@ impl CenterArea {
             mention,
             matches,
             selected,
+            loading,
         })
     }
 
@@ -2543,6 +2554,8 @@ impl CenterArea {
         announce: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        let _slow_operation =
+            crate::ui::performance::UiOperationTimer::start("agent_chat.clipboard_read");
         let has_project = self
             .workspace
             .read(cx)
@@ -2561,7 +2574,7 @@ impl CenterArea {
             }
             return false;
         };
-        let Some(image) = clipboard_image_from_item(&item) else {
+        let Some(image) = clipboard_image_from_item(item) else {
             if announce {
                 self.agent_start_errors
                     .insert(agent.id, "Clipboard does not contain an image.".into());
@@ -2569,25 +2582,51 @@ impl CenterArea {
             }
             return false;
         };
-        match materialize_agent_clipboard_image(agent.id, &image) {
-            Ok(path) => {
-                self.agent_chat_attached_files
-                    .entry(agent.id)
-                    .or_default()
-                    .push(path);
-                self.agent_start_errors.remove(&agent.id);
-                cx.notify();
-                true
-            }
-            Err(error) => {
-                if announce {
-                    self.agent_start_errors
-                        .insert(agent.id, format!("Could not attach image: {error:#}"));
-                    cx.notify();
+        let agent_id = agent.id;
+        *self
+            .agent_chat_attachment_pastes_pending
+            .entry(agent_id)
+            .or_default() += 1;
+        self.agent_start_errors.remove(&agent_id);
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { materialize_agent_clipboard_image(agent_id, &image) })
+                .await;
+            this.update(cx, |this, cx| {
+                let finished_all = this
+                    .agent_chat_attachment_pastes_pending
+                    .get_mut(&agent_id)
+                    .is_some_and(|pending| {
+                        *pending = pending.saturating_sub(1);
+                        *pending == 0
+                    });
+                if finished_all {
+                    this.agent_chat_attachment_pastes_pending.remove(&agent_id);
                 }
-                false
-            }
-        }
+                match result {
+                    Ok(path) => {
+                        this.agent_chat_attached_files
+                            .entry(agent_id)
+                            .or_default()
+                            .push(path);
+                        this.agent_start_errors.remove(&agent_id);
+                    }
+                    Err(error) => {
+                        // The paste action has already been consumed, so an
+                        // asynchronous failure must always remain visible.
+                        this.agent_start_errors
+                            .insert(agent_id, format!("Could not attach image: {error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        true
     }
 
     pub(super) fn paste_long_text_into_agent_chat(

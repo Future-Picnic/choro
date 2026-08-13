@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use gpui::{Context, EventEmitter};
@@ -15,6 +16,41 @@ use uuid::Uuid;
 use super::agent_chat::FileChangeStat;
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+static AGENT_SAVE_REVISION: AtomicU64 = AtomicU64::new(0);
+static AGENT_SAVE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+fn next_agent_save_revision() -> u64 {
+    AGENT_SAVE_REVISION.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+fn try_persist_agent_store(revision: u64, store: AgentStoreFile) -> anyhow::Result<()> {
+    let _guard = AGENT_SAVE_LOCK.lock();
+    if revision != AGENT_SAVE_REVISION.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    LocalStore::open_default().and_then(|local_store| local_store.save_agents(&store.agents))?;
+    store.save()?;
+    Ok(())
+}
+
+fn persist_agent_store(revision: u64, store: AgentStoreFile) {
+    if let Err(error) = try_persist_agent_store(revision, store) {
+        eprintln!("failed to save agents: {error:#}");
+    }
+}
+
+pub(crate) fn persist_agent_store_snapshot(
+    _revision: u64,
+    store: AgentStoreFile,
+) -> anyhow::Result<()> {
+    // This is a launch barrier, not a best-effort debounce. Always commit the
+    // captured record before the backend can call MCP, while sharing the same
+    // lock with normal saves so no writes overlap.
+    let _guard = AGENT_SAVE_LOCK.lock();
+    LocalStore::open_default().and_then(|local_store| local_store.save_agents(&store.agents))?;
+    store.save()?;
+    Ok(())
+}
 
 pub enum AgentRecordsEvent {
     Changed,
@@ -661,7 +697,7 @@ impl AgentRecords {
             agent.cli_session_id = cli_session_id;
         }
         if has_session_id {
-            self.save_immediately();
+            self.save_durable(cx);
         } else {
             self.schedule_save(cx);
         }
@@ -684,7 +720,7 @@ impl AgentRecords {
         agent.updated_at = now;
         // A dismissal must survive the next app launch even if the process
         // exits before the normal debounced save runs.
-        self.save_immediately();
+        self.save_durable(cx);
         cx.emit(AgentRecordsEvent::Changed);
         cx.notify();
     }
@@ -705,7 +741,7 @@ impl AgentRecords {
         agent.verification_closed = true;
         agent.updated_at = now;
         // Both completion evidence and the hard gate must survive restart.
-        self.save_immediately();
+        self.save_durable(cx);
         cx.emit(AgentRecordsEvent::Changed);
         cx.notify();
     }
@@ -719,7 +755,7 @@ impl AgentRecords {
         }
         agent.cli_session_id = Some(cli_session_id);
         agent.updated_at = agents::unix_now();
-        self.save_immediately();
+        self.save_durable(cx);
         cx.emit(AgentRecordsEvent::Changed);
         cx.notify();
     }
@@ -738,7 +774,7 @@ impl AgentRecords {
         }
         agent.chat_session_id = Some(chat_session_id);
         agent.updated_at = agents::unix_now();
-        self.save_immediately();
+        self.save_durable(cx);
         cx.emit(AgentRecordsEvent::Changed);
         cx.notify();
     }
@@ -746,14 +782,29 @@ impl AgentRecords {
     fn save_immediately(&mut self) {
         self.save_scheduled = false;
         let store = AgentStoreFile::new(self.records.clone());
-        if let Err(error) = LocalStore::open_default()
-            .and_then(|local_store| local_store.save_agents(&store.agents))
-        {
-            eprintln!("failed to save agents to local store: {error:#}");
-        }
-        if let Err(error) = store.save() {
-            eprintln!("failed to save agents: {error:#}");
-        }
+        persist_agent_store(next_agent_save_revision(), store);
+    }
+
+    /// Capture the exact durable state required before a newly-created agent
+    /// may start. The caller persists this snapshot on a background executor.
+    pub(crate) fn durable_snapshot(&mut self) -> (u64, AgentStoreFile) {
+        self.save_scheduled = false;
+        (
+            next_agent_save_revision(),
+            AgentStoreFile::new(self.records.clone()),
+        )
+    }
+
+    /// Persist restart-critical state immediately on the background executor.
+    /// Revisions plus the shared lock prevent an older snapshot from winning a
+    /// race with a newer session/status update.
+    fn save_durable(&mut self, cx: &mut Context<Self>) {
+        self.save_scheduled = false;
+        let revision = next_agent_save_revision();
+        let store = AgentStoreFile::new(self.records.clone());
+        cx.background_executor()
+            .spawn(async move { persist_agent_store(revision, store) })
+            .detach();
     }
 
     /// Flush any debounced agent-record changes before application shutdown.
@@ -775,17 +826,9 @@ impl AgentRecords {
                 })
                 .ok();
             if let Some(store) = store {
+                let revision = next_agent_save_revision();
                 cx.background_executor()
-                    .spawn(async move {
-                        if let Err(error) = LocalStore::open_default()
-                            .and_then(|local_store| local_store.save_agents(&store.agents))
-                        {
-                            eprintln!("failed to save agents to local store: {error:#}");
-                        }
-                        if let Err(error) = store.save() {
-                            eprintln!("failed to save agents: {error:#}");
-                        }
-                    })
+                    .spawn(async move { persist_agent_store(revision, store) })
                     .await;
             }
         })

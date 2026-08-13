@@ -114,7 +114,7 @@ use uuid::Uuid;
 
 use crate::actions::{CloseTab, NewTerminal, SaveFile, ToggleAgentPlanMode};
 use crate::state::agent_chat::{
-    persist_timeline_snapshot, split_code_review, split_verification,
+    persist_timeline_item, persist_timeline_snapshot, split_code_review, split_verification,
     timeline_item_from_store_event, AgentChatMessage, AgentChatMessageTag, AgentChatMessageTagKind,
     AgentChatSession, AgentChatStatus, AgentChatTimelineItem, AgentInteractionMode, CodeReview,
     ConversationUsage, QueuedChatTurn, Verification, VerificationStatus,
@@ -323,6 +323,8 @@ struct NewAgentComposer {
     preview_suggestion_dismissed: Option<String>,
     selected_mentions: Vec<ComposerMentionToken>,
     attached_files: Vec<PathBuf>,
+    /// Clipboard images currently being written off the GPUI thread.
+    attachment_pastes_pending: usize,
     /// Source-aware display name supplied by flows such as task/doc
     /// implementation. This stays separate from the full first-turn prompt.
     suggested_title: Option<String>,
@@ -538,6 +540,7 @@ struct ComposerFileMentionView {
     mention: ComposerFileMention,
     matches: Vec<ComposerFileEntry>,
     selected: usize,
+    loading: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1659,6 +1662,9 @@ pub struct CenterArea {
     agent_notes_inputs: HashMap<Uuid, Entity<InputState>>,
     agent_chat_inputs: HashMap<Uuid, Entity<InputState>>,
     agent_chat_attached_files: HashMap<Uuid, Vec<PathBuf>>,
+    /// Clipboard images currently being hashed, written, and registered off
+    /// the GPUI thread. Counts allow several quick pastes into one composer.
+    agent_chat_attachment_pastes_pending: HashMap<Uuid, usize>,
     agent_chat_pasted_text_blocks: HashMap<Uuid, Vec<PastedTextBlock>>,
     agent_chat_selected_commands: HashMap<Uuid, AgentCapability>,
     /// Naming requests already started in this app run. The second submitted
@@ -1860,6 +1866,9 @@ pub struct CenterArea {
     /// Memory ids already surfaced (or known to predate this app run). Identity
     /// avoids same-second cursor collisions and lets rows wait for chat hydration.
     memory_card_ids_seen: HashSet<Uuid>,
+    /// The first background Brain poll seeds caches without surfacing old
+    /// memories or summaries as newly-arrived cards.
+    brain_poll_bootstrapped: bool,
     /// Memory Undo operations currently committing their atomic DB deletion.
     memory_undos_pending: HashSet<Uuid>,
     /// Latest living summary rows, shared by timeline cards and the Notes drawer.
@@ -1916,6 +1925,7 @@ pub struct CenterArea {
     /// time someone taps the locked prompt, surfacing a one-time friendly nudge.
     onboarding_composer_nudged: bool,
     composer_file_cache: HashMap<ProjectId, Vec<ComposerFileEntry>>,
+    composer_file_cache_loading: HashSet<ProjectId>,
     composer_branch_query: Entity<InputState>,
     composer_model_query: Entity<InputState>,
     composer_branch_expanded: bool,

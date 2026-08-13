@@ -37,7 +37,7 @@ impl CenterArea {
                 global: memory.is_global(),
                 created_at: memory.created_at,
             };
-            let mut timeline_to_persist = None;
+            let mut surfaced = false;
             self.agent_chats.update(cx, |chats, cx| {
                 let Some(session) = chats.sessions.get_mut(&agent_id) else {
                     return;
@@ -50,24 +50,18 @@ impl CenterArea {
                     )
                 });
                 if duplicate {
-                    timeline_to_persist = Some(session.timeline.clone());
+                    surfaced = true;
                     return;
                 }
                 session
                     .timeline
                     .push(AgentChatTimelineItem::Memorized(card.clone()));
-                timeline_to_persist = Some(session.timeline.clone());
+                persist_timeline_item(agent_id, AgentChatTimelineItem::Memorized(card.clone()), cx);
+                surfaced = true;
                 cx.notify();
             });
-            if let Some(timeline) = timeline_to_persist {
-                match persist_timeline_snapshot(agent_id, &timeline) {
-                    Ok(()) => {
-                        self.memory_card_ids_seen.insert(memory.id);
-                    }
-                    Err(error) => {
-                        eprintln!("failed to persist memorized card: {error:#}");
-                    }
-                }
+            if surfaced {
+                self.memory_card_ids_seen.insert(memory.id);
             }
         }
     }

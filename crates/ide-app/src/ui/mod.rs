@@ -20,6 +20,7 @@ pub mod logo_spinner;
 pub mod onboarding;
 pub mod palette_ui;
 pub mod penpot_panel;
+pub(crate) mod performance;
 pub mod preset_editor;
 pub mod project_list;
 pub mod project_search;

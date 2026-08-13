@@ -27,6 +27,25 @@ pub(super) async fn insert_personal_task_async(
     Ok(())
 }
 
+pub(super) async fn update_personal_task_description_async(
+    conn: &Connection,
+    task_id: Uuid,
+    description_markdown: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE personal_tasks
+         SET description_markdown = ?1, updated_at = ?2
+         WHERE id = ?3",
+        (
+            description_markdown,
+            u64_to_i64(unix_now())?,
+            task_id.to_string(),
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn load_personal_tasks_async(
     conn: &Connection,
     project_id: Option<ProjectId>,

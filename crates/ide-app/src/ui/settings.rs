@@ -193,6 +193,8 @@ pub struct SettingsView {
     memories: Vec<ide_core::local_store::StoredMemory>,
     brain_summaries: Vec<ide_core::local_store::StoredAgentSummary>,
     brain_agents: Vec<AgentRecord>,
+    brain_search_index: HashMap<Uuid, String>,
+    brain_data_loading: bool,
     brain_project: Option<ide_core::ProjectId>,
     brain_search: Entity<InputState>,
     brain_expanded: bool,
@@ -444,14 +446,6 @@ impl SettingsView {
         });
         let cached_skills = AgentCapabilityCacheFile::load();
         let riffs = ChoroRiffStore::load().riffs;
-        let (memories, brain_summaries, brain_agents) = match LocalStore::open_default() {
-            Ok(store) => (
-                store.load_all_memories().unwrap_or_default(),
-                store.load_all_agent_summaries().unwrap_or_default(),
-                store.load_agents().unwrap_or_default(),
-            ),
-            Err(_) => (Vec::new(), Vec::new(), Vec::new()),
-        };
         let view = cx.new(|cx| {
             cx.subscribe(
                 &code_review_prompt,
@@ -525,9 +519,11 @@ impl SettingsView {
                 riffs,
                 riff_editor: None,
                 riffs_status: None,
-                memories,
-                brain_summaries,
-                brain_agents,
+                memories: Vec::new(),
+                brain_summaries: Vec::new(),
+                brain_agents: Vec::new(),
+                brain_search_index: HashMap::new(),
+                brain_data_loading: true,
                 brain_project: active_project
                     .or_else(|| projects.first().map(|project| project.id)),
                 brain_search,
@@ -553,7 +549,65 @@ impl SettingsView {
         });
         view.update(cx, |view, cx| view.refresh_process_snapshot(cx));
         view.update(cx, |view, cx| view.refresh_agent_skills(cx));
+        view.update(cx, |view, cx| view.refresh_brain_data(cx));
         view
+    }
+
+    fn refresh_brain_data(&mut self, cx: &mut Context<Self>) {
+        if !self.brain_data_loading {
+            self.brain_data_loading = true;
+            cx.notify();
+        }
+        cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = LocalStore::open_default()?;
+                    Ok::<_, anyhow::Error>((
+                        store.load_all_memories()?,
+                        store.load_all_agent_summaries()?,
+                        store.load_agents()?,
+                    ))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.brain_data_loading = false;
+                match loaded {
+                    Ok((memories, summaries, agents)) => {
+                        this.brain_search_index = summaries
+                            .iter()
+                            .map(|summary| {
+                                let agent_title = agents
+                                    .iter()
+                                    .find(|agent| agent.id == summary.agent_id)
+                                    .map(|agent| agent.title.as_str())
+                                    .unwrap_or_default();
+                                (
+                                    summary.agent_id,
+                                    format!(
+                                        "{}\n{}\n{}",
+                                        agent_title,
+                                        summary.summary_text,
+                                        summary.outcome_text.as_deref().unwrap_or_default()
+                                    )
+                                    .to_lowercase(),
+                                )
+                            })
+                            .collect();
+                        this.memories = memories;
+                        this.brain_summaries = summaries;
+                        this.brain_agents = agents;
+                        this.memory_status = None;
+                    }
+                    Err(error) => {
+                        this.memory_status = Some(format!("Could not load Brain data: {error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn select_theme(&mut self, name: String, cx: &mut Context<Self>) {

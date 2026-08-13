@@ -544,6 +544,17 @@ impl LocalStore {
         })
     }
 
+    pub fn update_personal_task_description(
+        &self,
+        task_id: Uuid,
+        description_markdown: &str,
+    ) -> Result<()> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            update_personal_task_description_async(&conn, task_id, description_markdown).await
+        })
+    }
+
     pub fn archive_personal_task(&self, task_id: Uuid, archived: bool) -> Result<()> {
         self.rt.block_on(async {
             let conn = self.connect().await?;

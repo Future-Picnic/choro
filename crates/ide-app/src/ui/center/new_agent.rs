@@ -105,6 +105,10 @@ impl CenterArea {
         access_mode: AgentAccessMode,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let attachment_paste_pending = self
+            .new_agent_composer
+            .as_ref()
+            .is_some_and(|composer| composer.attachment_pastes_pending > 0);
         let interaction_mode_label = if interaction_mode == AgentInteractionMode::Plan {
             "Plan"
         } else {
@@ -375,12 +379,27 @@ impl CenterArea {
                     .relative()
                     .flex_none()
                     .child(if crate::ui::onboarding::emphasizes_send(project, cx) {
-                        crate::ui::style::primary_button_compact("start-inline-agent", "Send", cx)
-                            .icon(gpui_component::IconName::ArrowUp)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.start_new_agent_composer(window, cx);
-                            }))
-                            .into_any_element()
+                        let button = crate::ui::style::primary_button_compact(
+                            "start-inline-agent",
+                            "Send",
+                            cx,
+                        )
+                        .icon(gpui_component::IconName::ArrowUp)
+                        .disabled(attachment_paste_pending)
+                        .tooltip(if attachment_paste_pending {
+                            "Wait for the image to finish attaching"
+                        } else {
+                            "Start agent"
+                        });
+                        if attachment_paste_pending {
+                            button.into_any_element()
+                        } else {
+                            button
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_new_agent_composer(window, cx);
+                                }))
+                                .into_any_element()
+                        }
                     } else {
                         // The Solo toggle recolors send to sky from the very
                         // first message — same signal as inside the agent.
@@ -398,13 +417,27 @@ impl CenterArea {
                         } else {
                             crate::ui::design::accent_2(cx)
                         };
-                        crate::ui::style::composer_send_in("start-inline-agent", send_fill, cx)
-                            .cursor_pointer()
-                            .hover(move |button| button.bg(send_hover))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.start_new_agent_composer(window, cx);
-                            }))
-                            .into_any_element()
+                        let button =
+                            crate::ui::style::composer_send_in("start-inline-agent", send_fill, cx)
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(if attachment_paste_pending {
+                                        "Wait for the image to finish attaching"
+                                    } else {
+                                        "Start agent"
+                                    })
+                                    .build(window, cx)
+                                });
+                        if attachment_paste_pending {
+                            button.opacity(0.55).into_any_element()
+                        } else {
+                            button
+                                .cursor_pointer()
+                                .hover(move |button| button.bg(send_hover))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_new_agent_composer(window, cx);
+                                }))
+                                .into_any_element()
+                        }
                     })
                     .child(crate::ui::onboarding::target_marker(
                         crate::ui::onboarding::SpotlightTarget::ComposerSend,
@@ -932,6 +965,7 @@ impl CenterArea {
             .cloned()
             .collect::<Vec<_>>();
         let attached_files = composer.attached_files.clone();
+        let attachment_pastes_pending = composer.attachment_pastes_pending;
         let error = composer.error.clone();
         let selected_project = composer.project;
         let selected_repository = composer.repository_path.clone();
@@ -1778,7 +1812,9 @@ impl CenterArea {
                                         )),
                                 )
                             })
-                            .when(!attached_files.is_empty(), |card| {
+                            .when(
+                                !attached_files.is_empty() || attachment_pastes_pending > 0,
+                                |card| {
                                 card.child(
                                     h_flex()
                                         .w_full()
@@ -1799,7 +1835,13 @@ impl CenterArea {
                                                     cx,
                                                 )
                                             },
-                                        )),
+                                        ))
+                                        .children((0..attachment_pastes_pending).map(|index| {
+                                            self.render_agent_attachment_pending(
+                                                ("new-agent-composer-attachment-pending", index),
+                                                cx,
+                                            )
+                                        })),
                                 )
                             }),
                     )

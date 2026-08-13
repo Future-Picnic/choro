@@ -121,7 +121,7 @@ impl Render for CenterArea {
                     .update(cx, |docs, _| docs.web_document_for_path(&doc.path))
                     .ok()?;
                 let files = self
-                    .workspace_file_entries(project, &doc.project_path)
+                    .workspace_file_entries(project, &doc.project_path, cx)
                     .into_iter()
                     .map(|entry| web_preview::DocEditorMention {
                         label: entry.name,

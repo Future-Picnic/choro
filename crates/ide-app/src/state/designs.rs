@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,7 @@ pub struct DesignsState {
     /// [`poll_refresh`](Self::poll_refresh) that catches externally-added assets
     /// (e.g. saved by an agent via the MCP `save_asset` tool).
     refresh_stamps: HashMap<ProjectId, Instant>,
+    refresh_in_flight: HashSet<ProjectId>,
 }
 
 impl EventEmitter<DesignsEvent> for DesignsState {}
@@ -32,13 +33,31 @@ impl DesignsState {
                 references: HashMap::new(),
                 selected: HashMap::new(),
                 refresh_stamps: HashMap::new(),
+                refresh_in_flight: HashSet::new(),
             };
-            state.reload_all(&workspace.read(cx).projects);
+            let project_ids = workspace
+                .read(cx)
+                .projects
+                .iter()
+                .map(|project| project.id)
+                .collect::<Vec<_>>();
+            for project_id in project_ids {
+                state.poll_refresh(project_id, cx);
+            }
             cx.subscribe(
                 &workspace,
                 |this: &mut Self, workspace, event: &WorkspaceEvent, cx| {
                     if matches!(event, WorkspaceEvent::ProjectsChanged) {
-                        this.reload_all(&workspace.read(cx).projects);
+                        let project_ids = workspace
+                            .read(cx)
+                            .projects
+                            .iter()
+                            .map(|project| project.id)
+                            .collect::<Vec<_>>();
+                        for project_id in project_ids {
+                            this.refresh_stamps.remove(&project_id);
+                            this.poll_refresh(project_id, cx);
+                        }
                         cx.notify();
                     }
                 },
@@ -48,26 +67,42 @@ impl DesignsState {
         })
     }
 
-    /// Re-read a project's references from disk if we haven't in a couple of
-    /// seconds, and notify only when they actually changed. Cheap enough to call
-    /// from the Assets panel's render — it's how agent-saved assets appear
-    /// without a restart, since the writing process can't signal us directly.
+    /// Re-read a project's references off the GPUI thread if we haven't in a
+    /// couple of seconds. It remains safe to call from render because render
+    /// only schedules work and never waits for storage.
     pub fn poll_refresh(&mut self, project: ProjectId, cx: &mut Context<Self>) {
         let now = Instant::now();
         let fresh = self
             .refresh_stamps
             .get(&project)
             .is_none_or(|last| now.duration_since(*last) > Duration::from_secs(2));
-        if !fresh {
+        if !fresh || self.refresh_in_flight.contains(&project) {
             return;
         }
         self.refresh_stamps.insert(project, now);
-        let before = self.references.get(&project).cloned().unwrap_or_default();
-        self.reload_project(project);
-        let after = self.references.get(&project).cloned().unwrap_or_default();
-        if before != after {
-            cx.notify();
-        }
+        self.refresh_in_flight.insert(project);
+        cx.spawn(async move |this, cx| {
+            let references = cx
+                .background_executor()
+                .spawn(async move {
+                    LocalStore::open_default()
+                        .and_then(|store| store.load_project_references(project))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.refresh_in_flight.remove(&project);
+                let Ok(references) = references else {
+                    return;
+                };
+                if this.references.get(&project) == Some(&references) {
+                    return;
+                }
+                this.apply_project_references(project, references);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn references_for_project(&self, project: ProjectId) -> Vec<ProjectReference> {
@@ -278,16 +313,14 @@ impl DesignsState {
         Ok(())
     }
 
-    fn reload_all(&mut self, projects: &[ide_core::Project]) {
-        for project in projects {
-            self.reload_project(project.id);
-        }
-    }
-
     fn reload_project(&mut self, project: ProjectId) {
         let references = LocalStore::open_default()
             .and_then(|store| store.load_project_references(project))
             .unwrap_or_default();
+        self.apply_project_references(project, references);
+    }
+
+    fn apply_project_references(&mut self, project: ProjectId, references: Vec<ProjectReference>) {
         let selected_valid = self
             .selected
             .get(&project)
