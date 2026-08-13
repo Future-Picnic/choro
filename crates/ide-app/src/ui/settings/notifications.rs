@@ -165,7 +165,7 @@ impl SettingsView {
                     )
                     .child(setting_group(
                         "Notification sound",
-                        "Play the macOS notification sound for new questions and approval requests. Completion notifications remain silent.",
+                        "Play Choro companion sounds for new questions, approvals, and completed work. macOS banners use the system sound for questions and approvals.",
                         crate::ui::style::segmented_container_quiet(cx)
                             .child(
                                 crate::ui::style::segment(

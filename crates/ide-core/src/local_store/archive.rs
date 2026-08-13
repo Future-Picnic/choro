@@ -16,6 +16,8 @@ pub(super) async fn clear_imported_tables(conn: &Connection) -> Result<()> {
         "memories",
         "chat_timeline_events",
         "chat_messages",
+        "chat_file_ledger",
+        "chat_file_ledgers",
         "agent_runtime_sessions",
         "agent_changed_files",
         "agent_linked_tasks",

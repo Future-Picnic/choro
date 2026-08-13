@@ -1,9 +1,24 @@
 use super::*;
+use std::collections::HashMap;
 
 struct OpenCodePermission {
     jsonrpc_id: Value,
     allow_option: Option<String>,
     reject_option: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenCodePathAttribution {
+    Exact,
+    Observed,
+}
+
+fn open_code_path_attribution(kind: Option<&str>) -> Option<OpenCodePathAttribution> {
+    match kind {
+        Some("edit" | "delete" | "move") => Some(OpenCodePathAttribution::Exact),
+        Some("execute") => Some(OpenCodePathAttribution::Observed),
+        _ => None,
+    }
 }
 
 /// The next thing the OpenCode run loop should react to.
@@ -48,6 +63,9 @@ struct OpenCodeRuntime {
     active_question: Option<Value>,
     queued_questions: VecDeque<Value>,
     changed_paths: HashSet<PathBuf>,
+    observed_changed_paths: HashSet<PathBuf>,
+    tool_changed_paths: HashMap<String, Vec<(PathBuf, bool)>>,
+    active_turn_id: String,
     deferred_turns: VecDeque<(String, AgentInteractionMode)>,
     /// True while a `session/prompt` is in flight. The question poller only
     /// needs its fast cadence during a turn — questions are asked by a running
@@ -163,6 +181,9 @@ fn run_open_code_acp(
         active_question: None,
         queued_questions: VecDeque::new(),
         changed_paths: HashSet::new(),
+        observed_changed_paths: HashSet::new(),
+        tool_changed_paths: HashMap::new(),
+        active_turn_id: next_request_id(),
         deferred_turns: VecDeque::new(),
         turn_active: Arc::new(AtomicBool::new(false)),
         agent,
@@ -288,7 +309,7 @@ impl OpenCodeRuntime {
             Ok(command) => return OpenCodeInbound::Command(command),
             Err(crossbeam_channel::TryRecvError::Empty) => {}
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                return OpenCodeInbound::CommandsClosed
+                return OpenCodeInbound::CommandsClosed;
             }
         }
         if self.assistant_stream.has_pending() {
@@ -388,6 +409,8 @@ impl OpenCodeRuntime {
         };
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
+        self.active_turn_id = next_request_id();
+        self.tool_changed_paths.clear();
         self.interaction_mode = mode;
         let is_plan = mode == AgentInteractionMode::Plan;
         self.events
@@ -450,7 +473,8 @@ impl OpenCodeRuntime {
         // Keep those paths until that resumed prompt completes, then start a
         // fresh batch for the following turn.
         self.changed_paths.clear();
-        if !changed.files.is_empty() {
+        self.observed_changed_paths.clear();
+        if !changed.is_empty() {
             let changed = capture_changed_files_snapshot(&self.agent, changed, "opencode-acp");
             self.events
                 .send_blocking(ChatBackendEvent::ChangedFiles(changed))
@@ -730,7 +754,33 @@ impl OpenCodeRuntime {
                 }
             }
             "tool_call" | "tool_call_update" => {
-                self.track_changed_paths(update);
+                let action_id = update
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(next_request_id);
+                let paths = self.track_changed_paths(update);
+                if !paths.is_empty() {
+                    let tracked = self
+                        .tool_changed_paths
+                        .entry(action_id.clone())
+                        .or_default();
+                    for path in paths {
+                        if !tracked.contains(&path) {
+                            tracked.push(path);
+                        }
+                    }
+                }
+                if matches!(
+                    update.get("status").and_then(Value::as_str),
+                    Some("completed" | "failed")
+                ) {
+                    let paths = self
+                        .tool_changed_paths
+                        .remove(&action_id)
+                        .unwrap_or_default();
+                    self.emit_file_change_activities(&action_id, &paths);
+                }
                 self.events
                     .send_blocking(ChatBackendEvent::WorkLog(open_code_tool_entry(update)))
                     .ok();
@@ -900,7 +950,15 @@ impl OpenCodeRuntime {
         Ok(())
     }
 
-    fn track_changed_paths(&mut self, update: &Value) {
+    fn track_changed_paths(&mut self, update: &Value) -> Vec<(PathBuf, bool)> {
+        let kind = update.get("kind").and_then(Value::as_str);
+        let Some(attribution) = open_code_path_attribution(kind) else {
+            // Reads often carry `locations`; treating those as mutations was
+            // another route for already-dirty files to leak into a chat.
+            return Vec::new();
+        };
+        let exact = attribution == OpenCodePathAttribution::Exact;
+        let mut paths = Vec::new();
         for location in update
             .get("locations")
             .and_then(Value::as_array)
@@ -910,32 +968,66 @@ impl OpenCodeRuntime {
             let Some(path) = location.get("path").and_then(Value::as_str) else {
                 continue;
             };
-            self.changed_paths.insert(project_relative_path(
-                self.agent.runtime_path(),
-                Path::new(path),
-            ));
+            let path = project_relative_path(self.agent.runtime_path(), Path::new(path));
+            if exact {
+                self.changed_paths.insert(path.clone());
+            } else {
+                self.observed_changed_paths.insert(path.clone());
+            }
+            if !paths.iter().any(|(existing, _)| existing == &path) {
+                paths.push((path, !exact));
+            }
         }
 
         // OpenCode's resumed ACP stream may omit `locations` from completed
         // tool calls. Recover mutation paths from raw input, but only for
         // mutation kinds so a read of an already-dirty file is not attributed
         // to the agent.
-        if matches!(
-            update.get("kind").and_then(Value::as_str),
-            Some("edit" | "delete" | "move")
-        ) {
+        if matches!(kind, Some("edit" | "delete" | "move")) {
             let Some(raw_input) = update.get("rawInput").and_then(Value::as_object) else {
-                return;
+                return paths;
             };
             for key in ["filePath", "filepath", "path", "oldPath", "newPath"] {
                 let Some(path) = raw_input.get(key).and_then(Value::as_str) else {
                     continue;
                 };
-                self.changed_paths.insert(project_relative_path(
-                    self.agent.runtime_path(),
-                    Path::new(path),
-                ));
+                let path = project_relative_path(self.agent.runtime_path(), Path::new(path));
+                self.changed_paths.insert(path.clone());
+                if !paths.iter().any(|(existing, _)| existing == &path) {
+                    paths.push((path, false));
+                }
             }
+        }
+        paths
+    }
+
+    fn emit_file_change_activities(&self, action_id: &str, paths: &[(PathBuf, bool)]) {
+        if paths.is_empty() {
+            return;
+        }
+        let summary = self.changed_files_summary();
+        for (path, observed) in paths {
+            let file = summary
+                .files
+                .iter()
+                .chain(&summary.observed_files)
+                .find(|file| project_relative_path(self.agent.runtime_path(), &file.path) == *path)
+                .cloned();
+            let Some(file) = file else {
+                continue;
+            };
+            let activity_id = format!("opencode:{action_id}:{}", path.to_string_lossy());
+            self.events
+                .send_blocking(ChatBackendEvent::FileChangeActivity(
+                    FileChangeActivity::new(
+                        activity_id,
+                        self.active_turn_id.clone(),
+                        file.as_count_projection(),
+                        *observed,
+                        unix_now(),
+                    ),
+                ))
+                .ok();
         }
     }
 
@@ -950,13 +1042,13 @@ impl OpenCodeRuntime {
         };
         let files = diffs
             .into_iter()
-            .filter(|diff| {
-                self.changed_paths.contains(&project_relative_path(
-                    self.agent.runtime_path(),
-                    &diff.path,
-                ))
-            })
-            .map(|diff| {
+            .filter_map(|diff| {
+                let path = project_relative_path(self.agent.runtime_path(), &diff.path);
+                let exact = self.changed_paths.contains(&path);
+                let observed = self.observed_changed_paths.contains(&path);
+                if !exact && !observed {
+                    return None;
+                }
                 let additions = diff
                     .hunks
                     .iter()
@@ -969,14 +1061,25 @@ impl OpenCodeRuntime {
                     .flat_map(|hunk| &hunk.lines)
                     .filter(|line| line.origin == ide_core::git::LineOrigin::Remove)
                     .count();
-                FileChangeStat::new(diff.path, additions, deletions)
+                Some((
+                    exact,
+                    FileChangeStat::new(diff.path, additions, deletions).as_count_projection(),
+                ))
             })
-            .collect();
-        ChangedFilesSummary {
-            files,
-            snapshot_id: None,
-            commit_sha: None,
-        }
+            .collect::<Vec<_>>();
+        ChangedFilesSummary::attributed(
+            self.active_turn_id.clone(),
+            files
+                .iter()
+                .filter(|(exact, _)| *exact)
+                .map(|(_, file)| file.clone())
+                .collect(),
+            files
+                .into_iter()
+                .filter(|(exact, _)| !exact)
+                .map(|(_, file)| file)
+                .collect(),
+        )
     }
 }
 
@@ -1380,7 +1483,12 @@ fn open_code_tool_entry(update: &Value) -> WorkLogEntry {
         .or_else(|| update.get("rawOutput"))
         .filter(|value| !value.is_null())
         .and_then(|value| serde_json::to_string_pretty(value).ok());
-    WorkLogEntry::new(id.clone(), id, WorkLogEntryKind::Tool, title, status)
+    let kind = if update.get("kind").and_then(Value::as_str) == Some("execute") {
+        WorkLogEntryKind::Command
+    } else {
+        WorkLogEntryKind::Tool
+    };
+    WorkLogEntry::new(id.clone(), id, kind, title, status)
         .detail(detail)
         .redact_sensitive()
 }
@@ -1394,6 +1502,35 @@ fn project_relative_path(project_path: &Path, path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_mutation_tools_receive_exact_path_attribution() {
+        assert_eq!(
+            open_code_path_attribution(Some("edit")),
+            Some(OpenCodePathAttribution::Exact)
+        );
+        assert_eq!(
+            open_code_path_attribution(Some("execute")),
+            Some(OpenCodePathAttribution::Observed)
+        );
+        assert_eq!(open_code_path_attribution(Some("read")), None);
+        assert_eq!(open_code_path_attribution(None), None);
+    }
+
+    #[test]
+    fn execute_tools_are_rendered_as_commands() {
+        let update = json!({
+            "toolCallId": "command-1",
+            "kind": "execute",
+            "title": "Run command",
+            "status": "completed",
+            "rawInput": { "command": "npm test" }
+        });
+
+        let entry = open_code_tool_entry(&update);
+
+        assert_eq!(entry.kind, WorkLogEntryKind::Command);
+    }
 
     #[test]
     fn converts_open_code_questions_to_existing_user_input_model() {

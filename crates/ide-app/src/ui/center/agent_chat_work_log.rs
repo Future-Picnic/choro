@@ -55,35 +55,73 @@ impl CenterArea {
         agent_id: Uuid,
         index: usize,
         entries: &[&crate::state::agent_chat::WorkLogEntry],
+        file_changes: &[&crate::state::agent_chat::FileChangeActivity],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if entries.len() == 1 {
-            return self.render_agent_work_log_entry(agent_id, index, entries[0], cx);
+        if entries.is_empty() {
+            return v_flex()
+                .w_full()
+                .gap_0p5()
+                .children(
+                    file_changes
+                        .iter()
+                        .map(|activity| self.render_file_change_activity(activity, cx)),
+                )
+                .into_any_element();
+        }
+        let primary_entries = entries
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.kind == WorkLogEntryKind::Command
+                    || entry.status == WorkLogStatus::Failed
+                    || matches!(
+                        entry.kind,
+                        WorkLogEntryKind::System | WorkLogEntryKind::UserInput
+                    )
+            })
+            .collect::<Vec<_>>();
+        let secondary_entries = entries
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.kind != WorkLogEntryKind::Command
+                    && entry.status != WorkLogStatus::Failed
+                    && !matches!(
+                        entry.kind,
+                        WorkLogEntryKind::System | WorkLogEntryKind::UserInput
+                    )
+            })
+            .collect::<Vec<_>>();
+        if secondary_entries.len() <= 1 {
+            return v_flex()
+                .w_full()
+                .gap_0p5()
+                .children(entries.iter().enumerate().map(|(offset, entry)| {
+                    self.render_agent_work_log_entry(agent_id, index + offset, entry, cx)
+                }))
+                .when(!file_changes.is_empty(), |group| {
+                    group.child(self.render_grouped_file_change_rows(file_changes, cx))
+                })
+                .into_any_element();
         }
         let expanded = self
             .agent_chat_expanded_work_log_groups
             .contains(&(agent_id, index));
-        let total = entries
+        let total = secondary_entries
             .iter()
-            .map(|entry| entry.count.max(1))
+            .map(|(_, entry)| entry.count.max(1))
             .sum::<usize>();
-        let previous = entries
-            .iter()
-            .map(|entry| entry.count.saturating_sub(1))
-            .sum::<usize>();
-        let failed = entries
-            .iter()
-            .any(|entry| entry.status == crate::state::agent_chat::WorkLogStatus::Failed);
-        let in_progress = entries.iter().any(|entry| {
+        let in_progress = secondary_entries.iter().any(|(_, entry)| {
             matches!(
                 entry.status,
                 crate::state::agent_chat::WorkLogStatus::Pending
                     | crate::state::agent_chat::WorkLogStatus::InProgress
             )
         });
-        let (icon, tone) = if failed {
-            (IconName::TriangleAlert, crate::ui::design::rose(cx))
-        } else if in_progress {
+        let (icon, tone) = if in_progress {
             (IconName::Loader, crate::ui::design::amber(cx))
         } else {
             (IconName::Check, crate::ui::design::t3(cx))
@@ -126,15 +164,8 @@ impl CenterArea {
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(format!("Worked on {total} steps")),
+                            .child(format!("Details · {total} actions")),
                     )
-                    .when(previous > 0, |row| {
-                        row.child(
-                            div()
-                                .text_color(crate::ui::design::t3(cx).opacity(0.72))
-                                .child(format!("+{previous} previous")),
-                        )
-                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let key = (agent_id, index);
                         if !this.agent_chat_expanded_work_log_groups.remove(&key) {
@@ -144,16 +175,46 @@ impl CenterArea {
                         cx.notify();
                     })),
             )
+            .when(!primary_entries.is_empty(), |group| {
+                group.child(
+                    v_flex()
+                        .ml_4()
+                        .gap_0p5()
+                        .children(primary_entries.iter().map(|(offset, entry)| {
+                            self.render_agent_work_log_entry(agent_id, index + offset, entry, cx)
+                        })),
+                )
+            })
+            .when(!file_changes.is_empty(), |group| {
+                group.child(self.render_grouped_file_change_rows(file_changes, cx))
+            })
             .when(expanded, |group| {
                 group.child(
                     v_flex()
                         .ml_4()
                         .gap_0p5()
-                        .children(entries.iter().enumerate().map(|(offset, entry)| {
+                        .children(secondary_entries.iter().map(|(offset, entry)| {
                             self.render_agent_work_log_entry(agent_id, index + offset, entry, cx)
                         })),
                 )
             })
+            .into_any_element()
+    }
+
+    fn render_grouped_file_change_rows(
+        &self,
+        file_changes: &[&crate::state::agent_chat::FileChangeActivity],
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        v_flex()
+            .w_full()
+            .ml_4()
+            .gap_0p5()
+            .children(
+                file_changes
+                    .iter()
+                    .map(|activity| self.render_file_change_activity(activity, cx)),
+            )
             .into_any_element()
     }
 
@@ -259,14 +320,6 @@ impl CenterArea {
                             })
                             .child(title),
                     )
-                    .when(entry.count > 1, |row| {
-                        row.child(
-                            div()
-                                .text_size(crate::ui::design::text_ui())
-                                .text_color(crate::ui::design::t3(cx).opacity(0.75))
-                                .child(format!("+{} previous", entry.count - 1)),
-                        )
-                    })
                     .when(expandable && !expanded, |row| {
                         row.child(
                             div()

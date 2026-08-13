@@ -188,6 +188,13 @@ pub(super) fn is_agent_stop_work_log(entry: &crate::state::agent_chat::WorkLogEn
     )
 }
 
+pub(super) fn is_noise_work_log(entry: &crate::state::agent_chat::WorkLogEntry) -> bool {
+    let title = entry.title.trim();
+    (entry.kind == WorkLogEntryKind::Step
+        && (title.eq_ignore_ascii_case("reasoning") || title.eq_ignore_ascii_case("thinking")))
+        || (entry.kind == WorkLogEntryKind::Tool && title.eq_ignore_ascii_case("file change"))
+}
+
 pub(super) fn agent_chat_rows(
     session: &AgentChatSession,
     include_activity: bool,
@@ -224,21 +231,39 @@ pub(super) fn agent_chat_rows(
                     rows.push(AgentChatRow::TimelineItem(index));
                     index += 1;
                 }
-                AgentChatTimelineItem::WorkLog(_) => {
+                AgentChatTimelineItem::WorkLog(_)
+                | AgentChatTimelineItem::FileChangeActivity(_) => {
                     let start = index;
-                    while matches!(
-                        session.timeline.get(index),
-                        Some(AgentChatTimelineItem::WorkLog(entry))
-                            if !is_agent_stop_work_log(entry)
-                    ) {
-                        index += 1;
+                    while let Some(item) = session.timeline.get(index) {
+                        match item {
+                            AgentChatTimelineItem::WorkLog(entry)
+                                if !is_agent_stop_work_log(entry) =>
+                            {
+                                index += 1;
+                            }
+                            AgentChatTimelineItem::FileChangeActivity(_) => index += 1,
+                            _ => break,
+                        }
                     }
-                    rows.push(AgentChatRow::WorkLogGroup { start, end: index });
+                    let has_visible_activity = session.timeline[start..index].iter().any(|item| {
+                        matches!(
+                            item,
+                            AgentChatTimelineItem::WorkLog(entry) if !is_noise_work_log(entry)
+                        ) || matches!(
+                            item,
+                            AgentChatTimelineItem::FileChangeActivity(activity)
+                                if !artifact_filter.is_artifact(&activity.file.path)
+                        )
+                    });
+                    if has_visible_activity {
+                        rows.push(AgentChatRow::ActivityGroup { start, end: index });
+                    }
                 }
                 AgentChatTimelineItem::ChangedFiles(summary)
                     if !summary
                         .files
                         .iter()
+                        .chain(&summary.observed_files)
                         .any(|file| !artifact_filter.is_artifact(&file.path)) =>
                 {
                     index += 1;
@@ -337,7 +362,7 @@ pub(super) fn agent_chat_row_fingerprint(
             // `remeasure_agent_chat_list`.
             _ => mix(3, *index, 0),
         },
-        AgentChatRow::WorkLogGroup { start, end } => mix(4, *start, *end as u64),
+        AgentChatRow::ActivityGroup { start, end } => mix(4, *start, *end as u64),
         AgentChatRow::ResumeSavedSession => mix(5, 0, 0),
         AgentChatRow::Activity => mix(6, 0, 0),
     }
@@ -399,6 +424,130 @@ pub(super) fn agent_changed_file_key(agent_id: Uuid, path: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::agent_chat::{
+        ChangedFilesSummary, FileChangeActivity, FileChangeStat, WorkLogEntry,
+    };
+
+    fn session_with_timeline(timeline: Vec<AgentChatTimelineItem>) -> AgentChatSession {
+        AgentChatSession {
+            agent_id: Uuid::nil(),
+            title: "Agent".to_string(),
+            chat_session_id: None,
+            cli_session_id: None,
+            hidden_from_notifications: false,
+            status: AgentChatStatus::Idle,
+            interaction_mode: AgentInteractionMode::Default,
+            composer_text: String::new(),
+            messages: Vec::new(),
+            timeline,
+            queued_turns: Vec::new(),
+            work_log: Vec::new(),
+            pending_user_input: None,
+            pending_approval: None,
+            proposed_plan: None,
+            changed_files: ChangedFilesSummary::default(),
+            usage: None,
+            started_running_at: None,
+            last_activity_at: 0,
+        }
+    }
+
+    #[test]
+    fn live_file_changes_stay_in_one_collapsed_activity_group() {
+        let work = |id: &str| {
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                id,
+                id,
+                WorkLogEntryKind::Tool,
+                "Tool",
+                WorkLogStatus::Completed,
+            ))
+        };
+        let session = session_with_timeline(vec![
+            work("before"),
+            AgentChatTimelineItem::FileChangeActivity(FileChangeActivity::new(
+                "edit:index",
+                "turn-a",
+                FileChangeStat::new("index.html", 23, 34),
+                false,
+                10,
+            )),
+            work("after"),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        let rows = agent_chat_rows(&session, false, false, &filter);
+
+        assert!(matches!(
+            rows.as_slice(),
+            [AgentChatRow::ActivityGroup { start: 0, end: 3 }]
+        ));
+    }
+
+    #[test]
+    fn user_messages_still_separate_activity_groups() {
+        let work = |id: &str| {
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                id,
+                id,
+                WorkLogEntryKind::Tool,
+                "Tool",
+                WorkLogStatus::Completed,
+            ))
+        };
+        let session = session_with_timeline(vec![
+            work("before"),
+            AgentChatTimelineItem::FileChangeActivity(FileChangeActivity::new(
+                "edit:index",
+                "turn-a",
+                FileChangeStat::new("index.html", 23, 34),
+                false,
+                10,
+            )),
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: "next turn".to_string(),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 11,
+            }),
+            work("after"),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        let rows = agent_chat_rows(&session, false, false, &filter);
+
+        assert!(matches!(
+            rows.as_slice(),
+            [
+                AgentChatRow::ActivityGroup { start: 0, end: 2 },
+                AgentChatRow::TimelineItem(2),
+                AgentChatRow::ActivityGroup { start: 3, end: 4 }
+            ]
+        ));
+    }
+
+    #[test]
+    fn generic_reasoning_and_duplicate_file_change_steps_are_hidden() {
+        let session = session_with_timeline(vec![
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                "reasoning-1",
+                "reasoning-1",
+                WorkLogEntryKind::Step,
+                "Reasoning",
+                WorkLogStatus::Completed,
+            )),
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                "file-change-1",
+                "file-change-1",
+                WorkLogEntryKind::Tool,
+                "File change",
+                WorkLogStatus::Completed,
+            )),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        assert!(agent_chat_rows(&session, false, false, &filter).is_empty());
+    }
 
     #[test]
     fn newest_turns_reverse_but_each_turn_keeps_reading_order() {

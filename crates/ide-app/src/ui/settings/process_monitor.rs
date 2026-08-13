@@ -2,10 +2,25 @@ use super::*;
 
 impl SettingsView {
     fn load_process_snapshot(projects: &[ProjectSource]) -> ProcessSnapshot {
-        let root_pid = std::process::id() as i32;
         let agents = LocalStore::open_default()
             .and_then(|store| store.load_agents())
             .unwrap_or_default();
+        Self::load_process_snapshot_inner(projects, &agents, true)
+    }
+
+    pub(crate) fn load_live_process_snapshot(
+        projects: &[ProjectSource],
+        agents: &[AgentRecord],
+    ) -> ProcessSnapshot {
+        Self::load_process_snapshot_inner(projects, agents, false)
+    }
+
+    fn load_process_snapshot_inner(
+        projects: &[ProjectSource],
+        agents: &[AgentRecord],
+        include_footprint: bool,
+    ) -> ProcessSnapshot {
+        let root_pid = std::process::id() as i32;
         let output = Command::new("ps")
             .args(["-axo", "pid=,ppid=,pgid=,rss=,%cpu=,command="])
             .output();
@@ -200,6 +215,10 @@ impl SettingsView {
                     .into(),
             error: None,
         };
+
+        if !include_footprint {
+            return snapshot;
+        }
 
         let footprint = Command::new("/usr/bin/footprint")
             .args([

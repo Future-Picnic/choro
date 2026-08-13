@@ -30,6 +30,10 @@ pub(super) fn compact_work_log_title(entry: &crate::state::agent_chat::WorkLogEn
         return "Tool call".to_string();
     }
 
+    if entry.kind == WorkLogEntryKind::Command {
+        return compact_command_title(entry);
+    }
+
     if !work_log_text_needs_collapse(title) {
         return title.to_string();
     }
@@ -50,6 +54,44 @@ pub(super) fn compact_work_log_title(entry: &crate::state::agent_chat::WorkLogEn
         compact.push('…');
     }
     compact
+}
+
+fn compact_command_title(entry: &crate::state::agent_chat::WorkLogEntry) -> String {
+    let detail_command = entry.detail.as_deref().and_then(|detail| {
+        serde_json::from_str::<serde_json::Value>(detail)
+            .ok()
+            .and_then(|value| {
+                ["command", "cmd", "script"]
+                    .into_iter()
+                    .find_map(|key| value.get(key).and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+            })
+    });
+    let generic_title = matches!(
+        entry.title.trim().to_ascii_lowercase().as_str(),
+        "bash" | "command" | "command execution" | "run command" | "shell"
+    );
+    let raw = detail_command
+        .as_deref()
+        .or_else(|| generic_title.then_some(entry.detail.as_deref()).flatten())
+        .unwrap_or(entry.title.as_str());
+    let first_line = raw
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or(raw);
+    let mut preview = first_line.trim();
+    for prefix in ["/bin/zsh -lc ", "/bin/bash -lc ", "/bin/sh -lc "] {
+        if let Some(command) = preview.strip_prefix(prefix) {
+            preview = command.trim().trim_matches(['\'', '"']);
+            break;
+        }
+    }
+    let preview_source = preview;
+    let mut preview = preview_source.chars().take(88).collect::<String>();
+    if preview_source.chars().count() > preview.chars().count() {
+        preview.push('…');
+    }
+    format!("Command · {preview}")
 }
 
 fn is_legacy_code_review_request(text: &str) -> bool {
@@ -278,6 +320,37 @@ mod tests {
             )
             .map(|(label, _)| label),
             Some("Verification skipped")
+        );
+    }
+
+    #[test]
+    fn command_title_uses_the_actual_command_instead_of_a_generic_shell_label() {
+        let entry = crate::state::agent_chat::WorkLogEntry::new(
+            "command-1",
+            "command-1",
+            WorkLogEntryKind::Command,
+            "Bash",
+            WorkLogStatus::Completed,
+        )
+        .detail(Some("npm test".to_string()));
+
+        assert_eq!(compact_work_log_title(&entry), "Command · npm test");
+    }
+
+    #[test]
+    fn command_title_extracts_commands_from_structured_tool_input() {
+        let entry = crate::state::agent_chat::WorkLogEntry::new(
+            "command-1",
+            "command-1",
+            WorkLogEntryKind::Command,
+            "Run command",
+            WorkLogStatus::Completed,
+        )
+        .detail(Some(r#"{"command":"cargo test -p ide-app"}"#.to_string()));
+
+        assert_eq!(
+            compact_work_log_title(&entry),
+            "Command · cargo test -p ide-app"
         );
     }
 }

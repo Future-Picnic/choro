@@ -1018,21 +1018,24 @@ impl CenterArea {
                     self.render_agent_chat_timeline_item(agent, row_index, index, item, window, cx)
                 })
                 .unwrap_or_else(|| div().into_any_element()),
-            AgentChatRow::WorkLogGroup { start, end } => {
-                let entries = session
-                    .timeline
-                    .get(start..end)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|item| {
-                        if let AgentChatTimelineItem::WorkLog(entry) = item {
+            AgentChatRow::ActivityGroup { start, end } => {
+                let activity = session.timeline.get(start..end).into_iter().flatten();
+                let entries = activity
+                    .clone()
+                    .filter_map(|item| match item {
+                        AgentChatTimelineItem::WorkLog(entry) if !is_noise_work_log(entry) => {
                             Some(entry)
-                        } else {
-                            None
                         }
+                        _ => None,
                     })
                     .collect::<Vec<_>>();
-                self.render_agent_work_log_group(agent.id, start, &entries, cx)
+                let file_changes = activity
+                    .filter_map(|item| match item {
+                        AgentChatTimelineItem::FileChangeActivity(activity) => Some(activity),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                self.render_agent_work_log_group(agent.id, start, &entries, &file_changes, cx)
             }
             AgentChatRow::ResumeSavedSession => self.render_agent_resume_saved_session(agent, cx),
             AgentChatRow::Activity => self.render_agent_activity_indicator(session, cx),
@@ -1070,6 +1073,9 @@ impl CenterArea {
             AgentChatTimelineItem::WorkLog(entry) => {
                 self.render_agent_work_log_entry(agent.id, index, entry, cx)
             }
+            AgentChatTimelineItem::FileChangeActivity(activity) => {
+                self.render_file_change_activity(activity, cx)
+            }
             AgentChatTimelineItem::PendingUserInput(_) => div().into_any_element(),
             AgentChatTimelineItem::ProposedPlan(plan) => {
                 self.render_proposed_plan_card(agent.id, row_index, plan, window, cx)
@@ -1081,7 +1087,7 @@ impl CenterArea {
                 self.render_verification_card(agent.id, verification, window, cx)
             }
             AgentChatTimelineItem::ChangedFiles(summary) => {
-                self.render_changed_files_card(agent, summary, window, cx)
+                self.render_changed_files_card(agent, index, summary, window, cx)
             }
             AgentChatTimelineItem::ShipResult(result) => {
                 self.render_ship_result_card(agent, result, window, cx)

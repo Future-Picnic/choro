@@ -126,6 +126,36 @@ struct AttentionState {
     unread: bool,
     delivered_revision: Option<String>,
     companion_seen_revision: Option<String>,
+    platform_banner: PlatformBannerState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlatformBannerState {
+    /// The coordinator has not reconciled this identifier with macOS yet. A
+    /// single removal is allowed so a banner left by an earlier app session
+    /// cannot survive after Choro decides it should be hidden.
+    Unknown,
+    /// No delivered or queued macOS banner is expected for this identifier.
+    Absent,
+    /// Choro submitted a delivery for this identifier. The platform may have
+    /// delivered it already or may still have it queued.
+    Presented,
+}
+
+impl AttentionState {
+    fn remove_platform_banner(&mut self) -> Option<NotificationAction> {
+        if self.platform_banner == PlatformBannerState::Absent {
+            return None;
+        }
+        self.platform_banner = PlatformBannerState::Absent;
+        Some(NotificationAction::Remove(notification_identifier(
+            &self.event,
+        )))
+    }
+
+    fn mark_platform_banner_presented(&mut self) {
+        self.platform_banner = PlatformBannerState::Presented;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +167,22 @@ enum NotificationAction {
         sound: bool,
     },
     Remove(String),
+    PlayCompanionSound(CompanionSound),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CompanionSound {
+    Done,
+    NeedsAttention,
+}
+
+impl CompanionSound {
+    fn for_category(category: AttentionCategory) -> Self {
+        match category {
+            AttentionCategory::Completed => Self::Done,
+            AttentionCategory::NeedsAction | AttentionCategory::Failed => Self::NeedsAttention,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -170,6 +216,7 @@ impl NotificationCoordinator {
         companion_enabled: bool,
     ) -> Vec<NotificationAction> {
         let mut actions = Vec::new();
+        let mut companion_sound: Option<CompanionSound> = None;
         let current_keys: HashSet<_> = events.iter().map(|event| event.key.clone()).collect();
 
         let stale_keys: Vec<_> = self
@@ -179,14 +226,17 @@ impl NotificationCoordinator {
             .cloned()
             .collect();
         for key in stale_keys {
-            if let Some(state) = self.attention.remove(&key) {
-                actions.push(NotificationAction::Remove(notification_identifier(
-                    &state.event,
-                )));
+            if let Some(mut state) = self.attention.remove(&key) {
+                actions.extend(state.remove_platform_banner());
             }
         }
 
         for event in events {
+            let is_new_revision = self.primed
+                && self
+                    .attention
+                    .get(&event.key)
+                    .map_or(true, |state| state.event.revision != event.revision);
             let suppressed_revision = (event.key.clone(), event.revision.clone());
             let suppressed = self.suppressed_revisions.remove(&suppressed_revision);
             let exact_agent_visible = app_active
@@ -201,6 +251,7 @@ impl NotificationCoordinator {
                     companion_seen_revision: None,
                     event: event.clone(),
                     unread: self.primed || event.key.category == AttentionCategory::NeedsAction,
+                    platform_banner: PlatformBannerState::Unknown,
                 });
 
             if state.event.revision != event.revision {
@@ -213,9 +264,7 @@ impl NotificationCoordinator {
                 state.unread = false;
                 state.delivered_revision = Some(state.event.revision.clone());
                 state.companion_seen_revision = Some(state.event.revision.clone());
-                actions.push(NotificationAction::Remove(notification_identifier(
-                    &state.event,
-                )));
+                actions.extend(state.remove_platform_banner());
                 continue;
             }
 
@@ -223,9 +272,7 @@ impl NotificationCoordinator {
                 state.unread = false;
                 state.delivered_revision = Some(state.event.revision.clone());
                 state.companion_seen_revision = Some(state.event.revision.clone());
-                actions.push(NotificationAction::Remove(notification_identifier(
-                    &state.event,
-                )));
+                actions.extend(state.remove_platform_banner());
                 continue;
             }
 
@@ -233,10 +280,13 @@ impl NotificationCoordinator {
             // Forget a previously delivered banner revision so an unread item
             // can be surfaced if the user later turns the companion off.
             if companion_enabled {
+                if is_new_revision && preferences.sound {
+                    let sound = CompanionSound::for_category(state.event.key.category);
+                    companion_sound =
+                        Some(companion_sound.map_or(sound, |current| current.max(sound)));
+                }
                 state.delivered_revision = None;
-                actions.push(NotificationAction::Remove(notification_identifier(
-                    &state.event,
-                )));
+                actions.extend(state.remove_platform_banner());
                 continue;
             }
 
@@ -251,9 +301,7 @@ impl NotificationCoordinator {
             };
             if !enabled || !state.unread {
                 if !enabled {
-                    actions.push(NotificationAction::Remove(notification_identifier(
-                        &state.event,
-                    )));
+                    actions.extend(state.remove_platform_banner());
                 }
                 continue;
             }
@@ -270,8 +318,12 @@ impl NotificationCoordinator {
                     && preferences.sound,
             });
             state.delivered_revision = Some(state.event.revision.clone());
+            state.mark_platform_banner_presented();
         }
 
+        if let Some(sound) = companion_sound {
+            actions.push(NotificationAction::PlayCompanionSound(sound));
+        }
         self.primed = true;
         actions
     }
@@ -301,9 +353,7 @@ impl NotificationCoordinator {
             state.delivered_revision = Some(state.event.revision.clone());
             state.companion_seen_revision = Some(state.event.revision.clone());
             self.suppressed_revisions.remove(&revision_key);
-            actions.push(NotificationAction::Remove(notification_identifier(
-                &state.event,
-            )));
+            actions.extend(state.remove_platform_banner());
         }
         actions
     }
@@ -320,9 +370,7 @@ impl NotificationCoordinator {
             state.unread = false;
             state.delivered_revision = Some(state.event.revision.clone());
             state.companion_seen_revision = Some(state.event.revision.clone());
-            actions.push(NotificationAction::Remove(notification_identifier(
-                &state.event,
-            )));
+            actions.extend(state.remove_platform_banner());
         }
         actions
     }
@@ -489,9 +537,48 @@ fn execute_actions(actions: Vec<NotificationAction>) {
                 sound,
             } => platform::deliver(&identifier, &title, &body, sound),
             NotificationAction::Remove(identifier) => platform::remove(&identifier),
+            NotificationAction::PlayCompanionSound(sound) => play_companion_sound(sound),
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+std::thread_local! {
+    static ACTIVE_COMPANION_SOUNDS: std::cell::RefCell<Vec<objc2::rc::Retained<objc2_app_kit::NSSound>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(target_os = "macos")]
+fn play_companion_sound(kind: CompanionSound) {
+    use objc2::AnyThread;
+    use objc2_app_kit::NSSound;
+    use objc2_foundation::NSData;
+
+    let bytes = match kind {
+        CompanionSound::Done => include_bytes!("../assets/sounds/choro-done.mp3").as_slice(),
+        CompanionSound::NeedsAttention => {
+            include_bytes!("../assets/sounds/choro-needs-attention.mp3").as_slice()
+        }
+    };
+    let data = NSData::with_bytes(bytes);
+    let Some(sound) = NSSound::initWithData(NSSound::alloc(), &data) else {
+        return;
+    };
+    if !sound.play() {
+        return;
+    }
+
+    // NSSound plays asynchronously, so retain active players until a later
+    // cue gives us a chance to discard the completed ones.
+    ACTIVE_COMPANION_SOUNDS.with(|active| {
+        let mut active = active.borrow_mut();
+        active.retain(|sound| sound.isPlaying());
+        active.push(sound);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn play_companion_sound(_kind: CompanionSound) {}
 
 fn update_dock_badge() {
     let count = unread_agent_count();
@@ -1338,6 +1425,275 @@ mod tests {
         assert!(after_hiding_again
             .iter()
             .any(|action| matches!(action, NotificationAction::Deliver { .. })));
+    }
+
+    #[test]
+    fn initial_companion_hydration_is_silent() {
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+
+        let actions = coordinator.synchronize_with_companion(
+            vec![event(agent, AttentionCategory::NeedsAction, "question-1")],
+            None,
+            false,
+            background_preferences(),
+            true,
+        );
+
+        assert!(actions
+            .iter()
+            .all(|action| !matches!(action, NotificationAction::PlayCompanionSound(_))));
+    }
+
+    #[test]
+    fn new_companion_attention_revision_plays_once() {
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+        let events = vec![event(agent, AttentionCategory::NeedsAction, "question-1")];
+
+        let first = coordinator.synchronize_with_companion(
+            events.clone(),
+            None,
+            false,
+            background_preferences(),
+            true,
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|action| matches!(
+                    action,
+                    NotificationAction::PlayCompanionSound(CompanionSound::NeedsAttention)
+                ))
+                .count(),
+            1
+        );
+
+        let repeated = coordinator.synchronize_with_companion(
+            events,
+            None,
+            false,
+            background_preferences(),
+            true,
+        );
+        assert!(repeated
+            .iter()
+            .all(|action| !matches!(action, NotificationAction::PlayCompanionSound(_))));
+    }
+
+    #[test]
+    fn companion_completion_uses_done_sound() {
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+
+        let actions = coordinator.synchronize_with_companion(
+            vec![event(agent, AttentionCategory::Completed, "turn-1")],
+            None,
+            false,
+            background_preferences(),
+            true,
+        );
+
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            NotificationAction::PlayCompanionSound(CompanionSound::Done)
+        )));
+    }
+
+    #[test]
+    fn companion_sound_respects_preference_and_visible_conversation() {
+        let project_id = ProjectId(Uuid::nil());
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+
+        let mut muted = background_preferences();
+        muted.sound = false;
+        let muted_actions = coordinator.synchronize_with_companion(
+            vec![event(agent, AttentionCategory::NeedsAction, "question-1")],
+            None,
+            false,
+            muted,
+            true,
+        );
+        assert!(muted_actions
+            .iter()
+            .all(|action| !matches!(action, NotificationAction::PlayCompanionSound(_))));
+
+        let visible_actions = coordinator.synchronize_with_companion(
+            vec![event(agent, AttentionCategory::NeedsAction, "question-2")],
+            Some(VisibleConversation {
+                project_id,
+                agent_id: agent,
+            }),
+            true,
+            background_preferences(),
+            true,
+        );
+        assert!(visible_actions
+            .iter()
+            .all(|action| !matches!(action, NotificationAction::PlayCompanionSound(_))));
+    }
+
+    #[test]
+    fn simultaneous_companion_cues_play_only_the_more_urgent_sound() {
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+
+        let actions = coordinator.synchronize_with_companion(
+            vec![
+                event(Uuid::new_v4(), AttentionCategory::Completed, "turn-1"),
+                event(Uuid::new_v4(), AttentionCategory::NeedsAction, "question-1"),
+            ],
+            None,
+            false,
+            background_preferences(),
+            true,
+        );
+
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| matches!(action, NotificationAction::PlayCompanionSound(_)))
+                .count(),
+            1
+        );
+        assert!(actions.iter().any(|action| matches!(
+            action,
+            NotificationAction::PlayCompanionSound(CompanionSound::NeedsAttention)
+        )));
+    }
+
+    #[test]
+    fn bundled_companion_sounds_match_the_approved_files() {
+        assert_eq!(
+            include_bytes!("../assets/sounds/choro-done.mp3").len(),
+            49_581
+        );
+        assert_eq!(
+            include_bytes!("../assets/sounds/choro-needs-attention.mp3").len(),
+            12_717
+        );
+    }
+
+    #[test]
+    fn unchanged_companion_updates_remove_each_banner_only_once() {
+        let agent = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+        let events = vec![event(agent, AttentionCategory::NeedsAction, "question-1")];
+
+        let first = coordinator.synchronize_with_companion(
+            events.clone(),
+            None,
+            false,
+            background_preferences(),
+            true,
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|action| matches!(action, NotificationAction::Remove(_)))
+                .count(),
+            1
+        );
+
+        for _ in 0..1_000 {
+            assert!(coordinator
+                .synchronize_with_companion(
+                    events.clone(),
+                    None,
+                    false,
+                    background_preferences(),
+                    true,
+                )
+                .is_empty());
+        }
+        assert_eq!(coordinator.companion_attention().len(), 1);
+    }
+
+    #[test]
+    fn unchanged_visible_conversation_removes_each_banner_only_once() {
+        let project_id = ProjectId(Uuid::nil());
+        let agent_id = Uuid::new_v4();
+        let visible = Some(VisibleConversation {
+            project_id,
+            agent_id,
+        });
+        let events = vec![event(
+            agent_id,
+            AttentionCategory::NeedsAction,
+            "question-1",
+        )];
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+
+        let first =
+            coordinator.synchronize(events.clone(), visible, true, background_preferences());
+        assert_eq!(
+            first
+                .iter()
+                .filter(|action| matches!(action, NotificationAction::Remove(_)))
+                .count(),
+            1
+        );
+        assert!(coordinator
+            .synchronize(events, visible, true, background_preferences())
+            .is_empty());
+    }
+
+    #[test]
+    fn unchanged_disabled_notification_removes_each_banner_only_once() {
+        let agent = Uuid::new_v4();
+        let mut preferences = background_preferences();
+        preferences.completion = CompletionNotifications::Never;
+        let events = vec![event(agent, AttentionCategory::Completed, "turn-1")];
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, preferences);
+
+        let first = coordinator.synchronize(events.clone(), None, false, preferences);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|action| matches!(action, NotificationAction::Remove(_)))
+                .count(),
+            1
+        );
+        assert!(coordinator
+            .synchronize(events, None, false, preferences)
+            .is_empty());
+    }
+
+    #[test]
+    fn repeated_acknowledgement_does_not_repeat_platform_removal() {
+        let project_id = ProjectId(Uuid::nil());
+        let agent_id = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+        coordinator.synchronize(
+            vec![event(
+                agent_id,
+                AttentionCategory::NeedsAction,
+                "question-1",
+            )],
+            None,
+            false,
+            background_preferences(),
+        );
+
+        let first = coordinator.acknowledge_agent(project_id, agent_id);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|action| matches!(action, NotificationAction::Remove(_)))
+                .count(),
+            1
+        );
+        assert!(coordinator
+            .acknowledge_agent(project_id, agent_id)
+            .is_empty());
     }
 
     #[test]

@@ -151,6 +151,12 @@ pub enum TimelineItemDto {
     },
     ChangedFiles {
         files: Vec<ChangedFileDto>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        observed_files: Vec<ChangedFileDto>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        #[serde(default, skip_serializing_if = "is_zero_u8")]
+        attribution_version: u8,
     },
     ShipResult {
         action: String,
@@ -169,6 +175,10 @@ pub enum TimelineItemDto {
         detail: Option<String>,
         created_at: u64,
     },
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

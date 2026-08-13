@@ -50,10 +50,10 @@ use ide_core::{
 use serde_json::{json, Value};
 
 use super::{
-    AgentChatStatus, AgentInteractionMode, ChangedFilesSummary, CodeReview, ConversationUsage,
-    FileChangeStat, ModelUsage, PendingApproval, PendingApprovalKind, PendingUserInput,
-    PendingUserInputOption, PendingUserInputQuestion, ProposedPlan, UsageTotals, Verification,
-    WorkLogEntry, WorkLogEntryKind, WorkLogStatus,
+    unix_now, AgentChatStatus, AgentInteractionMode, ChangedFilesSummary, CodeReview,
+    ConversationUsage, FileChangeActivity, FileChangeStat, ModelUsage, PendingApproval,
+    PendingApprovalKind, PendingUserInput, PendingUserInputOption, PendingUserInputQuestion,
+    ProposedPlan, UsageTotals, Verification, WorkLogEntry, WorkLogEntryKind, WorkLogStatus,
 };
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -110,7 +110,7 @@ fn next_backend_inbound(
         Ok(command) => return BackendInbound::Command(command),
         Err(crossbeam_channel::TryRecvError::Empty) => {}
         Err(crossbeam_channel::TryRecvError::Disconnected) => {
-            return BackendInbound::CommandsClosed
+            return BackendInbound::CommandsClosed;
         }
     }
     if flush_pending {
@@ -181,6 +181,7 @@ pub enum ChatBackendEvent {
         text: String,
     },
     WorkLog(WorkLogEntry),
+    FileChangeActivity(FileChangeActivity),
     PendingUserInput(PendingUserInput),
     PendingApproval(super::PendingApproval),
     ProposedPlan(ProposedPlan),
@@ -346,6 +347,10 @@ struct CodexRuntime {
     assistant_stream: StreamChunkBuffer,
     plan_buffer: String,
     pending_changed_files: Option<ChangedFilesSummary>,
+    pending_observed_files: Vec<FileChangeStat>,
+    active_turn_id: String,
+    command_ran_this_turn: bool,
+    active_command_item_id: Option<String>,
     pending_user_inputs: std::collections::HashMap<String, PendingRequest>,
     pending_approvals: std::collections::HashMap<String, PendingApprovalRequest>,
     deferred_turns: VecDeque<(String, AgentInteractionMode)>,
@@ -975,6 +980,10 @@ fn run_codex_app_server(
         assistant_stream: StreamChunkBuffer::new(),
         plan_buffer: String::new(),
         pending_changed_files: None,
+        pending_observed_files: Vec::new(),
+        active_turn_id: next_request_id(),
+        command_ran_this_turn: false,
+        active_command_item_id: None,
         pending_user_inputs: std::collections::HashMap::new(),
         pending_approvals: std::collections::HashMap::new(),
         deferred_turns: VecDeque::new(),

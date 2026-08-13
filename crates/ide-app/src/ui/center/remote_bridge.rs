@@ -537,7 +537,11 @@ impl CenterArea {
             .map(pending_approval_dto);
         let changed_files = live_session
             .as_ref()
-            .map(|session| changed_files_dto(&session.changed_files.files))
+            .map(|session| {
+                let mut files = changed_files_dto(&session.changed_files.files);
+                files.extend(changed_files_dto(&session.changed_files.observed_files));
+                files
+            })
             .filter(|files| !files.is_empty())
             .unwrap_or_else(|| {
                 agent
@@ -998,6 +1002,7 @@ fn timeline_item_dto(
             count: entry.count.max(1),
             updated_at: entry.updated_at,
         }),
+        AgentChatTimelineItem::FileChangeActivity(_) => None,
         AgentChatTimelineItem::PendingUserInput(_) => None,
         AgentChatTimelineItem::ProposedPlan(plan) => Some(TimelineItemDto::ProposedPlan {
             markdown: plan.markdown.clone(),
@@ -1025,6 +1030,9 @@ fn timeline_item_dto(
         }),
         AgentChatTimelineItem::ChangedFiles(summary) => Some(TimelineItemDto::ChangedFiles {
             files: changed_files_dto(&summary.files),
+            observed_files: changed_files_dto(&summary.observed_files),
+            turn_id: summary.turn_id.clone(),
+            attribution_version: summary.attribution_version,
         }),
         AgentChatTimelineItem::ShipResult(result) => Some(TimelineItemDto::ShipResult {
             action: result.action.clone(),

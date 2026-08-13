@@ -45,6 +45,21 @@ fn slash_matches_filter_enabled_commands() {
 }
 
 #[test]
+fn external_links_in_chat_lists_remain_clickable_markdown() {
+    let markdown = "- [Matrix official website](https://matrix.org/)";
+
+    assert_eq!(chat_message_display_markdown(markdown), markdown);
+}
+
+#[test]
+fn local_file_links_in_chat_lists_still_become_file_labels() {
+    assert_eq!(
+        chat_message_display_markdown("- [main.rs](/work/src/main.rs)"),
+        "- **main.rs**"
+    );
+}
+
+#[test]
 fn hash_mentions_are_boundary_safe_and_remove_into_a_stable_target_chip() {
     let mention = active_composer_agent_mention_in_text("ask #stor", "ask #stor".len())
         .expect("agent mention");
@@ -381,6 +396,20 @@ fn composer_attachment_preview_recognizes_supported_image_paths() {
 }
 
 #[test]
+fn external_non_image_attachment_is_passed_to_the_agent_by_absolute_path() {
+    let outside_file = PathBuf::from("/Users/choro/Desktop/Product brief.pdf");
+
+    let submission =
+        prompt_with_attached_files("Review this file", std::slice::from_ref(&outside_file));
+    let (visible_prompt, attached_files) = split_prompt_attached_files(&submission);
+
+    assert_eq!(visible_prompt, "Review this file");
+    assert_eq!(attached_files, vec![outside_file]);
+    assert!(submission.contains("Attached files:"));
+    assert!(submission.contains("/Users/choro/Desktop/Product brief.pdf"));
+}
+
+#[test]
 fn editing_a_queued_turn_restores_its_image_attachment() {
     let image = PathBuf::from("/tmp/choro-queued-image.png");
     let turn = QueuedChatTurn {
@@ -653,6 +682,39 @@ fn markdown_table_parses_header_and_rows() {
     assert_eq!(rows[1], vec!["Normal speech", "Converses with Choro"]);
     // Header + separator + both rows, stopping at the blank line.
     assert_eq!(consumed, 4);
+}
+
+#[test]
+fn markdown_table_ignores_surplus_empty_trailing_cells() {
+    let lines = vec![
+        "| Capability | Supabase | Convex | MongoDB Atlas |",
+        "| --- | --- | --- | --- |",
+        "| Team relationships | Excellent | Good | More manual |",
+        "| Rust desktop support | Mainly REST/WebSocket | Dedicated Rust client | Available | |",
+        "| Authentication | Database-level RLS | Backend checks | Built in |",
+        "",
+    ];
+
+    let (_, rows, consumed) = markdown_table(&lines, 0).expect("table");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[1].len(), 4);
+    assert_eq!(rows[1][3], "Available");
+    assert_eq!(rows[2][0], "Authentication");
+    assert_eq!(consumed, 5);
+}
+
+#[test]
+fn markdown_table_does_not_discard_surplus_non_empty_cells() {
+    let lines = vec![
+        "| Name | State |",
+        "| --- | --- |",
+        "| Choro | Ready | unexpected |",
+        "| Next | Waiting |",
+    ];
+
+    let (_, rows, consumed) = markdown_table(&lines, 0).expect("table");
+    assert!(rows.is_empty());
+    assert_eq!(consumed, 2);
 }
 
 #[test]

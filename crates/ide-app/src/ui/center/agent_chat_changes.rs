@@ -4,6 +4,7 @@ impl CenterArea {
     pub(super) fn render_changed_files_card(
         &self,
         agent: &AgentRecord,
+        _index: usize,
         summary: &crate::state::agent_chat::ChangedFilesSummary,
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -14,6 +15,14 @@ impl CenterArea {
             .iter()
             .filter(|file| !artifact_filter.is_artifact(&file.path))
             .collect::<Vec<_>>();
+        let visible_observed_files = summary
+            .observed_files
+            .iter()
+            .filter(|file| !artifact_filter.is_artifact(&file.path))
+            .collect::<Vec<_>>();
+        if visible_files.is_empty() && visible_observed_files.is_empty() {
+            return div().into_any_element();
+        }
         let total_additions = visible_files
             .iter()
             .map(|file| file.additions)
@@ -22,6 +31,15 @@ impl CenterArea {
             .iter()
             .map(|file| file.deletions)
             .sum::<usize>();
+        let observed_additions = visible_observed_files
+            .iter()
+            .map(|file| file.additions)
+            .sum::<usize>();
+        let observed_deletions = visible_observed_files
+            .iter()
+            .map(|file| file.deletions)
+            .sum::<usize>();
+        let all_count = visible_files.len() + visible_observed_files.len();
         let card_key = summary
             .snapshot_id
             .map(|id| id.as_u128() as u64)
@@ -49,28 +67,27 @@ impl CenterArea {
                             .child(
                                 div()
                                     .text_size(crate::ui::design::text_ui())
-                                    .font_weight(gpui::FontWeight::NORMAL)
                                     .text_color(crate::ui::design::t2(cx))
-                                    .child("Changed files"),
+                                    .child("Files changed"),
                             )
                             .child(
                                 div()
                                     .text_size(crate::ui::design::text_ui())
                                     .text_color(crate::ui::design::t3(cx))
-                                    .child(visible_files.len().to_string()),
+                                    .child(all_count.to_string()),
                             ),
                     )
                     .child(
                         div()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::sage(cx))
-                            .child(format!("+{total_additions}")),
+                            .child(format!("+{}", total_additions + observed_additions)),
                     )
                     .child(
                         div()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::rose(cx))
-                            .child(format!("-{total_deletions}")),
+                            .child(format!("-{}", total_deletions + observed_deletions)),
                     )
                     .child(div().flex_1())
                     .child(
@@ -129,21 +146,106 @@ impl CenterArea {
             .child(
                 v_flex()
                     .w_full()
-                    .children(
-                        visible_files
-                            .into_iter()
-                            .enumerate()
-                            .map(|(row_index, file)| {
-                                self.render_changed_file_flat_row(
-                                    agent,
-                                    summary.snapshot_id,
-                                    row_index,
-                                    file,
-                                    cx,
-                                )
-                            }),
-                    ),
+                    .children(visible_files.iter().enumerate().map(|(row_index, file)| {
+                        self.render_changed_file_flat_row(
+                            agent,
+                            summary.snapshot_id,
+                            row_index,
+                            file,
+                            cx,
+                        )
+                    }))
+                    .when(!visible_observed_files.is_empty(), |list| {
+                        list.child(change_receipt_section_label(
+                            if summary.attribution_version == 0 {
+                                "Earlier activity (unverified)"
+                            } else {
+                                "Observed from commands"
+                            },
+                            cx,
+                        ))
+                        .children(
+                            visible_observed_files
+                                .iter()
+                                .enumerate()
+                                .map(|(row_index, file)| {
+                                    self.render_changed_file_flat_row(
+                                        agent,
+                                        summary.snapshot_id,
+                                        visible_files.len() + row_index,
+                                        file,
+                                        cx,
+                                    )
+                                }),
+                        )
+                    }),
             )
+            .into_any_element()
+    }
+
+    pub(super) fn render_file_change_activity(
+        &self,
+        activity: &crate::state::agent_chat::FileChangeActivity,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let file = &activity.file;
+        let name = file
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.path.display().to_string());
+        let dir_label = changed_file_dir_label(&file.path);
+
+        h_flex()
+            .w_full()
+            .min_w(px(0.))
+            .items_center()
+            .gap_1p5()
+            .px_1()
+            .py(px(1.))
+            .text_size(crate::ui::design::text_ui())
+            .text_color(crate::ui::design::t3(cx))
+            .child(
+                gpui_component::Icon::new(IconName::FileText)
+                    .size(crate::ui::design::icon_sm())
+                    .text_color(crate::ui::design::t4(cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(crate::ui::design::FONT_MONO)
+                    .text_color(crate::ui::design::t2(cx))
+                    .child(name),
+            )
+            .when(file.additions > 0, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .font_family(crate::ui::design::FONT_MONO)
+                        .text_color(crate::ui::design::sage(cx))
+                        .child(format!("+{}", file.additions)),
+                )
+            })
+            .when(file.deletions > 0, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .font_family(crate::ui::design::FONT_MONO)
+                        .text_color(crate::ui::design::rose(cx))
+                        .child(format!("-{}", file.deletions)),
+                )
+            })
+            .when_some(dir_label, |row, dir| {
+                row.child(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .truncate()
+                        .text_size(crate::ui::design::text_label())
+                        .text_color(crate::ui::design::t4(cx))
+                        .child(dir),
+                )
+            })
             .into_any_element()
     }
 
@@ -267,4 +369,21 @@ impl CenterArea {
             }))
             .into_any_element()
     }
+}
+
+fn change_receipt_section_label(
+    label: &'static str,
+    cx: &mut Context<CenterArea>,
+) -> gpui::AnyElement {
+    div()
+        .px_2()
+        .py_1()
+        .border_b_1()
+        .border_color(crate::ui::design::line(cx))
+        .bg(crate::ui::design::surface(cx))
+        .text_size(crate::ui::design::text_label())
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(crate::ui::design::t3(cx))
+        .child(label)
+        .into_any_element()
 }

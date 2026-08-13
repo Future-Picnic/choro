@@ -677,7 +677,6 @@ impl CenterArea {
         let backend = self.agent_chats.update(cx, |chats, cx| {
             chats.stop_backend_for_lane_exit(agent.id, cx)
         });
-        self.agent_chat_terminal_open.remove(&agent.id);
         self.lane_preview_pending.remove(&agent.id);
 
         if let Some(lane_path) = agent.lane_path.as_ref() {

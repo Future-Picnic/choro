@@ -373,7 +373,7 @@ struct AgentFooterTask {
 enum AgentChatRow {
     Message(usize),
     TimelineItem(usize),
-    WorkLogGroup { start: usize, end: usize },
+    ActivityGroup { start: usize, end: usize },
     ResumeSavedSession,
     Activity,
 }
@@ -1802,7 +1802,6 @@ pub struct CenterArea {
     agent_chat_visualization_sync_stamps:
         HashMap<Uuid, agent_chat_visualization::ChatVisualizationSyncStamp>,
     agent_diff_drawers: HashMap<Uuid, AgentDiffDrawer>,
-    agent_chat_terminal_open: HashSet<Uuid>,
     agent_ship_pr_targets: HashMap<Uuid, (PathBuf, String)>,
     agent_ship_prs: HashMap<Uuid, crate::ui::git::git_panel::BranchPullRequest>,
     agent_ship_pr_checked_at: HashMap<Uuid, Instant>,

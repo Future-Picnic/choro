@@ -505,14 +505,6 @@ impl CenterArea {
                     .when_some(plan_drawer, |area, plan| {
                         area.child(self.render_agent_plan_drawer(&agent, &plan, window, cx))
                     })
-                    .when(
-                        agent.runtime == AgentRuntimeKind::Chat
-                            && detail_tab == AgentDetailTab::Terminal
-                            && self.agent_chat_terminal_open.contains(&agent.id),
-                        |area| {
-                            area.child(self.render_agent_chat_terminal_drawer(project, &agent, cx))
-                        },
-                    )
                     .child(self.render_agent_detail_switch_footer(&agent, detail_tab, cx)),
             )
             .into_any_element()

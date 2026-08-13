@@ -777,56 +777,41 @@ impl LocalStore {
         let payload_json = payload_json.into();
         self.rt.block_on(async {
             let conn = self.connect().await?;
-            if let Some(key) = event_key.as_deref() {
-                let mut rows = conn
-                    .query(
-                        "SELECT id, sequence, payload_json, created_at FROM chat_timeline_events
-                         WHERE agent_id = ?1 AND kind = ?2 AND event_key = ?3
-                         ORDER BY sequence DESC LIMIT 1",
-                        (agent_id.to_string(), kind.as_str(), key),
-                    )
-                    .await?;
-                if let Some(row) = rows.next().await? {
-                    let id = parse_uuid(&row.get::<String>(0)?)?;
-                    let sequence = row.get(1)?;
-                    let existing_payload_json: String = row.get(2)?;
-                    let existing_created_at = i64_to_u64(row.get(3)?)?;
-                    drop(rows);
-                    let keep_existing_payload = should_keep_existing_message_payload(
-                        kind.as_str(),
-                        event_key.as_deref(),
-                        &existing_payload_json,
-                        &payload_json,
-                    );
-                    let event = StoredTimelineEvent {
-                        id,
+            upsert_timeline_event_async(&conn, agent_id, kind, event_key, payload_json, created_at)
+                .await
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn persist_timeline_event_and_chat_file_ledger(
+        &self,
+        agent_id: Uuid,
+        kind: impl Into<String>,
+        event_key: Option<String>,
+        payload_json: impl Into<String>,
+        created_at: u64,
+        revision: u64,
+        entries: &[StoredChatFileLedgerEntry],
+    ) -> Result<()> {
+        let kind = kind.into();
+        let payload_json = payload_json.into();
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            execute_transaction(&conn, |conn| {
+                Box::pin(async move {
+                    upsert_timeline_event_async(
+                        conn,
                         agent_id,
                         kind,
                         event_key,
-                        payload_json: if keep_existing_payload {
-                            existing_payload_json
-                        } else {
-                            payload_json
-                        },
-                        sequence,
-                        created_at: created_at.max(existing_created_at),
-                    };
-                    insert_timeline_event_async(&conn, &event).await?;
-                    return Ok(event);
-                }
-            }
-            let sequence = next_sequence(&conn, "chat_timeline_events", agent_id).await?;
-            let event = StoredTimelineEvent {
-                id: Uuid::new_v4(),
-                agent_id,
-                kind,
-                event_key,
-                payload_json,
-                sequence,
-                created_at,
-            };
-            insert_timeline_event_async(&conn, &event).await?;
-            Ok(event)
+                        payload_json,
+                        created_at,
+                    )
+                    .await?;
+                    replace_chat_file_ledger_async(conn, agent_id, revision, entries).await
+                })
+            })
+            .await
         })
     }
 
@@ -834,6 +819,30 @@ impl LocalStore {
         self.rt.block_on(async {
             let conn = self.connect().await?;
             load_timeline_events_async(&conn, agent_id).await
+        })
+    }
+
+    pub fn replace_chat_file_ledger(
+        &self,
+        agent_id: Uuid,
+        revision: u64,
+        entries: &[StoredChatFileLedgerEntry],
+    ) -> Result<()> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            execute_transaction(&conn, |conn| {
+                Box::pin(async move {
+                    replace_chat_file_ledger_async(conn, agent_id, revision, entries).await
+                })
+            })
+            .await
+        })
+    }
+
+    pub fn load_chat_file_ledger(&self, agent_id: Uuid) -> Result<Option<StoredChatFileLedger>> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            load_chat_file_ledger_async(&conn, agent_id).await
         })
     }
 

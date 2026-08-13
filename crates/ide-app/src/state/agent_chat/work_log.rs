@@ -16,6 +16,7 @@ pub struct WorkLogEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkLogEntryKind {
     Tool,
+    Command,
     Step,
     Plan,
     UserInput,
@@ -70,11 +71,14 @@ impl WorkLogEntry {
     }
 
     pub fn merge(&mut self, next: WorkLogEntry) {
+        let same_action = self.id == next.id;
         self.title = next.title;
         self.detail = next.detail.or_else(|| self.detail.clone());
         self.status = next.status;
         self.updated_at = next.updated_at;
-        self.count += next.count;
+        if !same_action {
+            self.count += next.count;
+        }
     }
 }
 
@@ -100,6 +104,47 @@ mod tests {
         assert!(!debug.contains("secret-token-123"));
         assert!(!debug.contains("secret-password"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn lifecycle_updates_do_not_count_as_additional_actions() {
+        let mut entry = WorkLogEntry::new(
+            "command-1",
+            "command-1",
+            WorkLogEntryKind::Command,
+            "npm test",
+            WorkLogStatus::InProgress,
+        );
+        entry.merge(WorkLogEntry::new(
+            "command-1",
+            "command-1",
+            WorkLogEntryKind::Command,
+            "npm test",
+            WorkLogStatus::Completed,
+        ));
+
+        assert_eq!(entry.count, 1);
+        assert_eq!(entry.status, WorkLogStatus::Completed);
+    }
+
+    #[test]
+    fn distinct_actions_with_one_collapse_key_still_aggregate() {
+        let mut entry = WorkLogEntry::new(
+            "read-1",
+            "exploration",
+            WorkLogEntryKind::Tool,
+            "Read file",
+            WorkLogStatus::Completed,
+        );
+        entry.merge(WorkLogEntry::new(
+            "read-2",
+            "exploration",
+            WorkLogEntryKind::Tool,
+            "Read file",
+            WorkLogStatus::Completed,
+        ));
+
+        assert_eq!(entry.count, 2);
     }
 }
 

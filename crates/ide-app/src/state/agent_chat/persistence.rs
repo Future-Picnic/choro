@@ -28,6 +28,82 @@ pub fn persist_timeline_snapshot(
     Ok(())
 }
 
+pub fn load_persisted_file_ledger(agent_id: Uuid) -> Option<ChangedFilesSummary> {
+    let ledger = LocalStore::open_default()
+        .ok()?
+        .load_chat_file_ledger(agent_id)
+        .ok()??;
+    let mut summary = ChangedFilesSummary::default();
+    summary.attribution_version = 1;
+    summary.ledger_revision = ledger.revision;
+    for entry in ledger.entries {
+        let file = FileChangeStat::new(entry.path, entry.additions, entry.deletions)
+            .with_content_hashes(entry.baseline_hash, entry.result_hash)
+            .with_content_projection(entry.baseline_content, entry.result_content);
+        if entry.observed {
+            summary.observed_files.push(file);
+        } else {
+            summary.files.push(file);
+        }
+    }
+    Some(summary)
+}
+
+pub(super) fn persist_changed_files_turn(
+    agent_id: Uuid,
+    receipt: ChangedFilesSummary,
+    ledger: ChangedFilesSummary,
+    cx: &mut Context<AgentChatState>,
+) {
+    let Some((kind, event_key, payload_json, created_at)) =
+        stored_timeline_event_parts(&AgentChatTimelineItem::ChangedFiles(receipt))
+    else {
+        return;
+    };
+    let revision = ledger.ledger_revision;
+    let updated_at = unix_now();
+    let entries = ledger
+        .files
+        .iter()
+        .map(|file| (file, false))
+        .chain(ledger.observed_files.iter().map(|file| (file, true)))
+        .map(
+            |(file, observed)| ide_core::local_store::StoredChatFileLedgerEntry {
+                agent_id,
+                path: file.path.clone(),
+                observed,
+                additions: file.additions,
+                deletions: file.deletions,
+                baseline_hash: file.baseline_hash.clone(),
+                result_hash: file.result_hash.clone(),
+                baseline_content: file.baseline_content.clone(),
+                result_content: file.result_content.clone(),
+                updated_at,
+            },
+        )
+        .collect::<Vec<_>>();
+    cx.spawn(async move |_, cx| {
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(error) = LocalStore::open_default().and_then(|store| {
+                    store.persist_timeline_event_and_chat_file_ledger(
+                        agent_id,
+                        kind,
+                        event_key,
+                        payload_json,
+                        created_at,
+                        revision,
+                        &entries,
+                    )
+                }) {
+                    eprintln!("failed to persist changed-files turn: {error:#}");
+                }
+            })
+            .await;
+    })
+    .detach();
+}
+
 pub(super) fn persist_chat_message(
     agent_id: Uuid,
     message: AgentChatMessage,
@@ -135,6 +211,25 @@ pub(super) fn stored_timeline_event_parts(
     Some((kind, event_key, payload_json, created_at))
 }
 
+impl StoredFileChange {
+    fn from_stat(file: &FileChangeStat) -> Self {
+        Self {
+            path: file.path.to_string_lossy().to_string(),
+            additions: file.additions,
+            deletions: file.deletions,
+            counts_are_projection: file.counts_are_projection,
+            baseline_hash: file.baseline_hash.clone(),
+            result_hash: file.result_hash.clone(),
+        }
+    }
+
+    fn into_stat(self) -> FileChangeStat {
+        FileChangeStat::new(self.path, self.additions, self.deletions)
+            .with_count_projection(self.counts_are_projection)
+            .with_content_hashes(self.baseline_hash, self.result_hash)
+    }
+}
+
 impl StoredTimelinePayload {
     fn from_timeline_item(item: &AgentChatTimelineItem) -> Option<Self> {
         match item {
@@ -166,6 +261,13 @@ impl StoredTimelinePayload {
                 updated_at: entry.updated_at,
                 count: entry.count,
             }),
+            AgentChatTimelineItem::FileChangeActivity(activity) => Some(Self::FileChangeActivity {
+                id: activity.id.clone(),
+                turn_id: activity.turn_id.clone(),
+                file: StoredFileChange::from_stat(&activity.file),
+                observed: activity.observed,
+                updated_at: activity.updated_at,
+            }),
             AgentChatTimelineItem::PendingUserInput(_) => None,
             AgentChatTimelineItem::ProposedPlan(plan) => Some(Self::ProposedPlan {
                 id: plan.id.clone(),
@@ -186,6 +288,9 @@ impl StoredTimelinePayload {
             AgentChatTimelineItem::ChangedFiles(summary) => Some(Self::ChangedFiles {
                 snapshot_id: summary.snapshot_id,
                 commit_sha: summary.commit_sha.clone(),
+                turn_id: summary.turn_id.clone(),
+                attribution_version: summary.attribution_version,
+                ledger_revision: summary.ledger_revision,
                 files: summary
                     .files
                     .iter()
@@ -193,6 +298,21 @@ impl StoredTimelinePayload {
                         path: file.path.to_string_lossy().to_string(),
                         additions: file.additions,
                         deletions: file.deletions,
+                        counts_are_projection: file.counts_are_projection,
+                        baseline_hash: file.baseline_hash.clone(),
+                        result_hash: file.result_hash.clone(),
+                    })
+                    .collect(),
+                observed_files: summary
+                    .observed_files
+                    .iter()
+                    .map(|file| StoredFileChange {
+                        path: file.path.to_string_lossy().to_string(),
+                        additions: file.additions,
+                        deletions: file.deletions,
+                        counts_are_projection: file.counts_are_projection,
+                        baseline_hash: file.baseline_hash.clone(),
+                        result_hash: file.result_hash.clone(),
                     })
                     .collect(),
             }),
@@ -332,6 +452,15 @@ impl StoredTimelinePayload {
                 updated_at,
                 count,
             })),
+            Self::FileChangeActivity {
+                id,
+                turn_id,
+                file,
+                observed,
+                updated_at,
+            } => Some(AgentChatTimelineItem::FileChangeActivity(
+                FileChangeActivity::new(id, turn_id, file.into_stat(), observed, updated_at),
+            )),
             Self::PendingUserInput { .. } => None,
             Self::ProposedPlan {
                 id,
@@ -364,16 +493,40 @@ impl StoredTimelinePayload {
             }
             Self::ChangedFiles {
                 files,
+                observed_files,
+                turn_id,
+                attribution_version,
+                ledger_revision,
                 snapshot_id,
                 commit_sha,
-            } => Some(AgentChatTimelineItem::ChangedFiles(ChangedFilesSummary {
-                snapshot_id,
-                commit_sha,
-                files: files
-                    .into_iter()
-                    .map(|file| FileChangeStat::new(file.path, file.additions, file.deletions))
-                    .collect(),
-            })),
+            } => {
+                let restore = |file: StoredFileChange| {
+                    FileChangeStat::new(file.path, file.additions, file.deletions)
+                        .with_count_projection(file.counts_are_projection)
+                        .with_content_hashes(file.baseline_hash, file.result_hash)
+                };
+                let mut files = files.into_iter().map(restore).collect::<Vec<_>>();
+                let mut observed_files =
+                    observed_files.into_iter().map(restore).collect::<Vec<_>>();
+                // Events written before action attribution existed came from a
+                // whole-worktree diff. Preserve them for historical feedback,
+                // but never call them exact edits after hydration.
+                if attribution_version == 0 {
+                    observed_files.append(&mut files);
+                    for file in &mut observed_files {
+                        file.counts_are_projection = true;
+                    }
+                }
+                Some(AgentChatTimelineItem::ChangedFiles(ChangedFilesSummary {
+                    files,
+                    observed_files,
+                    turn_id,
+                    attribution_version,
+                    ledger_revision,
+                    snapshot_id,
+                    commit_sha,
+                }))
+            }
             Self::ShipResult {
                 id,
                 action,
@@ -520,6 +673,7 @@ impl StoredTimelinePayload {
         match self {
             Self::Message { .. } => "message",
             Self::WorkLog { .. } => "work_log",
+            Self::FileChangeActivity { .. } => "file_change_activity",
             Self::PendingUserInput { .. } => "pending_user_input",
             Self::ProposedPlan { .. } => "proposed_plan",
             Self::CodeReview { .. } => "code_review",
@@ -552,15 +706,24 @@ impl StoredTimelinePayload {
                 ),
             }),
             Self::WorkLog { id, .. } => Some(format!("work_log:{id}")),
+            Self::FileChangeActivity { id, .. } => Some(format!("file_change_activity:{id}")),
             Self::PendingUserInput { request_id, .. } => {
                 Some(format!("pending_user_input:{request_id}"))
             }
             Self::ProposedPlan { id, .. } => Some(format!("proposed_plan:{id}")),
             Self::CodeReview { id, .. } => Some(format!("code_review:{id}")),
             Self::Verification { id, .. } => Some(format!("verification:{id}")),
-            Self::ChangedFiles { files, .. } => {
+            Self::ChangedFiles {
+                turn_id,
+                files,
+                observed_files,
+                ..
+            } => {
+                if let Some(turn_id) = turn_id {
+                    return Some(format!("changed_files:turn:{turn_id}"));
+                }
                 let mut bytes = Vec::new();
-                for file in files {
+                for file in files.iter().chain(observed_files) {
                     bytes.extend_from_slice(file.path.as_bytes());
                     bytes.extend_from_slice(file.additions.to_string().as_bytes());
                     bytes.extend_from_slice(file.deletions.to_string().as_bytes());
@@ -581,6 +744,7 @@ impl StoredTimelinePayload {
         match self {
             Self::Message { created_at, .. } => *created_at,
             Self::WorkLog { updated_at, .. } => *updated_at,
+            Self::FileChangeActivity { updated_at, .. } => *updated_at,
             Self::ProposedPlan { implemented_at, .. } => implemented_at.unwrap_or_else(unix_now),
             Self::ShipResult { created_at, .. } => *created_at,
             Self::Rejoined { created_at, .. } => *created_at,
@@ -597,6 +761,7 @@ impl StoredTimelinePayload {
 pub(super) fn work_log_kind_label(kind: WorkLogEntryKind) -> &'static str {
     match kind {
         WorkLogEntryKind::Tool => "tool",
+        WorkLogEntryKind::Command => "command",
         WorkLogEntryKind::Step => "step",
         WorkLogEntryKind::Plan => "plan",
         WorkLogEntryKind::UserInput => "user_input",
@@ -607,6 +772,95 @@ pub(super) fn work_log_kind_label(kind: WorkLogEntryKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn attributed_file_receipt_round_trips_with_observed_changes_separate() {
+        let mut summary = ChangedFilesSummary::attributed(
+            "turn-42",
+            vec![FileChangeStat::new("src/exact.rs", 3, 1)
+                .with_content_hashes(Some("before".into()), Some("after".into()))],
+            vec![FileChangeStat::new("generated.css", 8, 0).as_count_projection()],
+        );
+        summary.ledger_revision = 7;
+        let item = AgentChatTimelineItem::ChangedFiles(summary);
+        let (_, event_key, payload, _) =
+            stored_timeline_event_parts(&item).expect("changed files event");
+        assert_eq!(event_key.as_deref(), Some("changed_files:turn:turn-42"));
+
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::ChangedFiles(restored) = restored else {
+            panic!("expected changed files");
+        };
+        assert_eq!(restored.turn_id.as_deref(), Some("turn-42"));
+        assert_eq!(restored.attribution_version, 1);
+        assert_eq!(restored.ledger_revision, 7);
+        assert_eq!(restored.files[0].path, PathBuf::from("src/exact.rs"));
+        assert_eq!(restored.files[0].baseline_hash.as_deref(), Some("before"));
+        assert_eq!(
+            restored.observed_files[0].path,
+            PathBuf::from("generated.css")
+        );
+        assert!(restored.observed_files[0].counts_are_projection);
+    }
+
+    #[test]
+    fn live_file_change_activity_round_trips_with_stable_identity() {
+        let item = AgentChatTimelineItem::FileChangeActivity(FileChangeActivity::new(
+            "codex:tool-7:index.html",
+            "turn-7",
+            FileChangeStat::new("index.html", 23, 34),
+            false,
+            42,
+        ));
+        let (kind, event_key, payload, created_at) =
+            stored_timeline_event_parts(&item).expect("file activity event");
+
+        assert_eq!(kind, "file_change_activity");
+        assert_eq!(
+            event_key.as_deref(),
+            Some("file_change_activity:codex:tool-7:index.html")
+        );
+        assert_eq!(created_at, 42);
+
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::FileChangeActivity(restored) = restored else {
+            panic!("expected live file activity");
+        };
+        assert_eq!(restored.turn_id, "turn-7");
+        assert_eq!(restored.file.path, PathBuf::from("index.html"));
+        assert_eq!(restored.file.additions, 23);
+        assert_eq!(restored.file.deletions, 34);
+    }
+
+    #[test]
+    fn pre_ledger_changed_files_restore_as_legacy_observations() {
+        let payload = r#"{
+            "type":"changed_files",
+            "files":[{"path":".agents/skills/generated.md","additions":20,"deletions":0}],
+            "snapshot_id":null,
+            "commit_sha":null
+        }"#;
+        let restored = serde_json::from_str::<StoredTimelinePayload>(payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::ChangedFiles(restored) = restored else {
+            panic!("expected changed files");
+        };
+        assert!(restored.files.is_empty());
+        assert_eq!(restored.attribution_version, 0);
+        assert_eq!(
+            restored.observed_files[0].path,
+            PathBuf::from(".agents/skills/generated.md")
+        );
+    }
 
     #[test]
     fn memorized_event_identity_matches_atomic_undo_contract() {
@@ -788,6 +1042,7 @@ mod tests {
 pub(super) fn parse_work_log_kind(kind: &str) -> WorkLogEntryKind {
     match kind {
         "tool" => WorkLogEntryKind::Tool,
+        "command" => WorkLogEntryKind::Command,
         "step" => WorkLogEntryKind::Step,
         "plan" => WorkLogEntryKind::Plan,
         "user_input" => WorkLogEntryKind::UserInput,
