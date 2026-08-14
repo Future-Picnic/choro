@@ -1791,6 +1791,51 @@ fn committed_write_survives_store_reopen() {
 }
 
 #[test]
+fn write_transaction_cannot_be_invalidated_by_a_competing_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+
+    store
+        .rt
+        .block_on(async {
+            let transaction_conn = store.connect().await?;
+            let competing_store = store.clone();
+            let (start_competing_write, wait_for_transaction) = tokio::sync::oneshot::channel();
+            let competing_write = tokio::spawn(async move {
+                wait_for_transaction.await.unwrap();
+                let conn = competing_store.connect().await?;
+                set_meta(&conn, "competing-write", "survived").await
+            });
+
+            execute_transaction(&transaction_conn, |conn| {
+                Box::pin(async move {
+                    // Establish a read snapshot before the transaction writes.
+                    let _ = get_meta(conn, "transaction-write").await?;
+                    start_competing_write.send(()).unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    set_meta(conn, "transaction-write", "survived").await
+                })
+            })
+            .await?;
+            competing_write.await??;
+
+            let verify_conn = store.connect().await?;
+            assert_eq!(
+                get_meta(&verify_conn, "transaction-write")
+                    .await?
+                    .as_deref(),
+                Some("survived")
+            );
+            assert_eq!(
+                get_meta(&verify_conn, "competing-write").await?.as_deref(),
+                Some("survived")
+            );
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn abrupt_writer_process() {
     let Some(root) = std::env::var_os("CHORO_TEST_ABRUPT_WRITER_ROOT") else {
         return;

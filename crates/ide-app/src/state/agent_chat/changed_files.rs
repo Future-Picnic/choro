@@ -184,6 +184,41 @@ impl ChangedFilesSummary {
             .retain(|file| !filter.is_artifact(&file.path));
     }
 
+    /// Collapse absolute and repository-relative spellings of the same path
+    /// into one final receipt row. A command diff is a projection of the
+    /// resulting worktree, so for a file the agent is known to have edited its
+    /// counts replace the individual tool-action delta.
+    pub fn reconcile_final_files(&mut self, repo_path: &Path) {
+        let mut exact = BTreeMap::<PathBuf, FileChangeStat>::new();
+        for file in self.files.drain(..) {
+            let mut file = file;
+            file.path = repo_relative_path(repo_path, &file.path);
+            exact.insert(file.path.clone(), file);
+        }
+
+        let mut observed = BTreeMap::<PathBuf, FileChangeStat>::new();
+        for file in self.observed_files.drain(..) {
+            let mut file = file;
+            file.path = repo_relative_path(repo_path, &file.path);
+            if let Some(edited) = exact.get_mut(&file.path) {
+                if file.counts_are_projection {
+                    apply_count_projection(edited, &file);
+                }
+            } else {
+                observed.insert(file.path.clone(), file);
+            }
+        }
+
+        self.files = exact.into_values().collect();
+        self.observed_files = observed.into_values().collect();
+    }
+
+    pub fn reconciled_final_files(&self, repo_path: &Path) -> Self {
+        let mut reconciled = self.clone();
+        reconciled.reconcile_final_files(repo_path);
+        reconciled
+    }
+
     /// Fold one immutable turn receipt into the chat-wide net ledger. Exact
     /// edits always win over observations for the same path. When an adapter
     /// provides content hashes, returning to the first baseline removes the
@@ -210,7 +245,13 @@ impl ChangedFilesSummary {
             merge_file_stat(&mut exact, file);
         }
         for file in &turn.observed_files {
-            if !exact.contains_key(&file.path) {
+            if let Some(edited) = exact.get_mut(&file.path) {
+                if file.counts_are_projection
+                    && turn.files.iter().any(|exact| exact.path == file.path)
+                {
+                    apply_count_projection(edited, file);
+                }
+            } else {
                 merge_file_stat(&mut observed, file);
             }
         }
@@ -222,6 +263,18 @@ impl ChangedFilesSummary {
         if turn.commit_sha.is_some() {
             self.commit_sha.clone_from(&turn.commit_sha);
         }
+    }
+}
+
+fn apply_count_projection(edited: &mut FileChangeStat, projection: &FileChangeStat) {
+    edited.additions = projection.additions;
+    edited.deletions = projection.deletions;
+    edited.counts_are_projection = true;
+    if projection.result_hash.is_some() {
+        edited.result_hash.clone_from(&projection.result_hash);
+    }
+    if projection.result_content.is_some() {
+        edited.result_content = bounded_content(projection.result_content.clone());
     }
 }
 
@@ -365,6 +418,10 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+fn repo_relative_path(repo_path: &Path, path: &Path) -> PathBuf {
+    normalize_path(path.strip_prefix(repo_path).unwrap_or(path))
 }
 
 impl FileChangeStat {
@@ -541,6 +598,44 @@ mod tests {
     }
 
     #[test]
+    fn final_observed_projection_wins_for_an_exactly_attributed_path() {
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "turn-a",
+            vec![FileChangeStat::new("tests.rs", 3, 1)],
+            vec![FileChangeStat::new("tests.rs", 45, 0).as_count_projection()],
+        ));
+
+        assert_eq!(ledger.files.len(), 1);
+        assert!(ledger.observed_files.is_empty());
+        assert_eq!(
+            (ledger.files[0].additions, ledger.files[0].deletions),
+            (45, 0)
+        );
+    }
+
+    #[test]
+    fn later_observation_does_not_rewrite_an_earlier_attributed_edit() {
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "turn-a",
+            vec![FileChangeStat::new("tests.rs", 45, 0)],
+            Vec::new(),
+        ));
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "turn-b",
+            Vec::new(),
+            vec![FileChangeStat::new("tests.rs", 99, 99).as_count_projection()],
+        ));
+
+        assert_eq!(ledger.files.len(), 1);
+        assert_eq!(
+            (ledger.files[0].additions, ledger.files[0].deletions),
+            (45, 0)
+        );
+    }
+
+    #[test]
     fn activities_fold_into_one_turn_receipt_without_promoting_observations() {
         let activities = [
             FileChangeActivity::new(
@@ -575,6 +670,45 @@ mod tests {
             PathBuf::from("generated.css")
         );
         assert_eq!(summary.turn_id.as_deref(), Some("turn-a"));
+    }
+
+    #[test]
+    fn final_projection_replaces_action_delta_without_duplicate_rows() {
+        let repo = Path::new("/projects/choro");
+        let mut summary = ChangedFilesSummary::attributed(
+            "turn-a",
+            vec![
+                FileChangeStat::new(
+                    "/projects/choro/crates/ide-core/src/local_store/schema.rs",
+                    8,
+                    2,
+                ),
+                FileChangeStat::new(
+                    "/projects/choro/crates/ide-core/src/local_store/tests.rs",
+                    3,
+                    1,
+                ),
+            ],
+            vec![
+                FileChangeStat::new("crates/ide-core/src/local_store/schema.rs", 8, 2)
+                    .as_count_projection(),
+                FileChangeStat::new("crates/ide-core/src/local_store/tests.rs", 45, 0)
+                    .as_count_projection(),
+            ],
+        );
+
+        summary.reconcile_final_files(repo);
+
+        assert!(summary.observed_files.is_empty());
+        assert_eq!(summary.files.len(), 2);
+        assert_eq!(summary.total_additions(), 53);
+        assert_eq!(summary.total_deletions(), 2);
+        let tests = summary
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("tests.rs"))
+            .unwrap();
+        assert_eq!((tests.additions, tests.deletions), (45, 0));
     }
 
     #[test]

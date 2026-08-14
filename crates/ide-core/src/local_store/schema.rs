@@ -1306,11 +1306,17 @@ pub(super) async fn execute_transaction<'a>(
     conn: &'a Connection,
     f: impl FnOnce(&'a Connection) -> TxFuture<'a>,
 ) -> Result<()> {
-    conn.execute("BEGIN", ()).await?;
+    // Every caller performs writes. Reserve the writer before the closure does
+    // any reads so another connection cannot commit between our read snapshot
+    // and our first write, which Turso rejects with BusySnapshot.
+    conn.execute("BEGIN IMMEDIATE", ()).await?;
     let result = f(conn).await;
     match result {
         Ok(()) => {
-            conn.execute("COMMIT", ()).await?;
+            if let Err(error) = conn.execute("COMMIT", ()).await {
+                let _ = conn.execute("ROLLBACK", ()).await;
+                return Err(error.into());
+            }
             Ok(())
         }
         Err(error) => {

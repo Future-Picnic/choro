@@ -66,7 +66,8 @@ struct OpenCodeRuntime {
     observed_changed_paths: HashSet<PathBuf>,
     tool_changed_paths: HashMap<String, Vec<(PathBuf, bool)>>,
     active_turn_id: String,
-    deferred_turns: VecDeque<(String, AgentInteractionMode)>,
+    deferred_turns: VecDeque<(String, AgentInteractionMode, bool)>,
+    read_only_turn: bool,
     /// True while a `session/prompt` is in flight. The question poller only
     /// needs its fast cadence during a turn — questions are asked by a running
     /// prompt — so an idle chat drops to a slow safety poll.
@@ -185,6 +186,7 @@ fn run_open_code_acp(
         tool_changed_paths: HashMap::new(),
         active_turn_id: next_request_id(),
         deferred_turns: VecDeque::new(),
+        read_only_turn: false,
         turn_active: Arc::new(AtomicBool::new(false)),
         agent,
     };
@@ -257,7 +259,7 @@ fn run_open_code_acp(
     }
 
     if !was_resumed && !runtime.agent.hidden_doc_assistant && !runtime.agent.doc.trim().is_empty() {
-        runtime.send_turn(runtime.agent.doc.clone(), initial_mode)?;
+        runtime.send_turn(runtime.agent.doc.clone(), initial_mode, false)?;
     }
     runtime.run_loop()
 }
@@ -270,8 +272,8 @@ impl OpenCodeRuntime {
                 return Ok(());
             }
             self.drain_questions()?;
-            if let Some((text, mode)) = self.deferred_turns.pop_front() {
-                self.send_turn(text, mode)?;
+            if let Some((text, mode, read_only)) = self.deferred_turns.pop_front() {
+                self.send_turn(text, mode, read_only)?;
                 continue;
             }
             match self.next_inbound() {
@@ -403,13 +405,19 @@ impl OpenCodeRuntime {
         Ok(())
     }
 
-    fn send_turn(&mut self, text: String, mode: AgentInteractionMode) -> anyhow::Result<()> {
+    fn send_turn(
+        &mut self,
+        text: String,
+        mode: AgentInteractionMode,
+        read_only: bool,
+    ) -> anyhow::Result<()> {
         let Some(session_id) = self.session_id.clone() else {
             return Err(anyhow!("OpenCode session is not ready"));
         };
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.active_turn_id = next_request_id();
+        self.read_only_turn = read_only;
         self.tool_changed_paths.clear();
         self.interaction_mode = mode;
         let is_plan = mode == AgentInteractionMode::Plan;
@@ -464,6 +472,15 @@ impl OpenCodeRuntime {
                     .send_blocking(ChatBackendEvent::Verification(Verification::new(
                         next_request_id(),
                         verification,
+                    )))
+                    .ok();
+            }
+            if let Some(checklist) = extract_review_checklist(&self.assistant_buffer) {
+                self.events
+                    .send_blocking(ChatBackendEvent::ReviewChecklist(ReviewChecklist::ready(
+                        "",
+                        &checklist,
+                        unix_now(),
                     )))
                     .ok();
             }
@@ -541,7 +558,11 @@ impl OpenCodeRuntime {
                 return Err(anyhow!("OpenCode ACP force-stopped"));
             }
             ChatBackendCommand::CancelTurn => self.cancel_turn()?,
-            ChatBackendCommand::SendTurn { text, mode } => self.send_turn(text, mode)?,
+            ChatBackendCommand::SendTurn {
+                text,
+                mode,
+                read_only,
+            } => self.send_turn(text, mode, read_only)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => self.access_mode = access_mode,
             ChatBackendCommand::UpdateModelEffort { effort, .. } => {
                 self.effort = effort.cli_value().to_string();
@@ -583,8 +604,12 @@ impl OpenCodeRuntime {
                     request_id,
                     approved,
                 }) => self.resolve_approval(request_id, approved)?,
-                Ok(ChatBackendCommand::SendTurn { text, mode }) => {
-                    self.deferred_turns.push_back((text, mode));
+                Ok(ChatBackendCommand::SendTurn {
+                    text,
+                    mode,
+                    read_only,
+                }) => {
+                    self.deferred_turns.push_back((text, mode, read_only));
                 }
                 Ok(ChatBackendCommand::UpdateModelEffort { effort, .. }) => {
                     self.effort = effort.cli_value().to_string();
@@ -877,12 +902,20 @@ impl OpenCodeRuntime {
         let allow_once = option(&["allow_once"]);
         let allow_always = option(&["allow_always"]);
         let reject = option(&["reject_once", "reject_always"]);
-        let automatic = match self.access_mode {
-            AgentAccessMode::FullAccess => allow_always.clone().or_else(|| allow_once.clone()),
-            AgentAccessMode::AutoAcceptEdits if matches!(tool_kind, "edit" | "delete" | "move") => {
-                allow_once.clone()
+        let automatic = if self.read_only_turn
+            && matches!(tool_kind, "execute" | "edit" | "delete" | "move")
+        {
+            return self.respond_permission(jsonrpc_id, reject);
+        } else {
+            match self.access_mode {
+                AgentAccessMode::FullAccess => allow_always.clone().or_else(|| allow_once.clone()),
+                AgentAccessMode::AutoAcceptEdits
+                    if matches!(tool_kind, "edit" | "delete" | "move") =>
+                {
+                    allow_once.clone()
+                }
+                _ => None,
             }
-            _ => None,
         };
         if let Some(option_id) = automatic {
             return self.respond_permission(jsonrpc_id, Some(option_id));

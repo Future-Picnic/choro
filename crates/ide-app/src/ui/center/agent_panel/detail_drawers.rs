@@ -408,10 +408,13 @@ impl CenterArea {
         let mut exact_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
         let mut observed_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            for file in &session.changed_files.files {
+            let reconciled = session
+                .changed_files
+                .reconciled_final_files(agent.runtime_path());
+            for file in &reconciled.files {
                 exact_files.insert(file.path.clone(), (file.additions, file.deletions));
             }
-            for file in &session.changed_files.observed_files {
+            for file in &reconciled.observed_files {
                 if !exact_files.contains_key(&file.path) {
                     observed_files.insert(file.path.clone(), (file.additions, file.deletions));
                 }

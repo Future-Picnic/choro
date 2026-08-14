@@ -3,6 +3,7 @@ use super::*;
 impl SettingsView {
     pub(super) fn render_generation_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let verification_mode = self.workspace.read(cx).verification_mode;
+        let review_checklist_mode = self.workspace.read(cx).review_checklist_mode;
         let generation_agent = self.workspace.read(cx).generation_agent.clone();
         let agent_defaults = self.workspace.read(cx).new_agent_defaults();
         let code_review_prompt = self.code_review_prompt.clone();
@@ -50,6 +51,34 @@ impl SettingsView {
                         });
                         cx.notify();
                     }))
+            })
+            .collect::<Vec<_>>();
+            let checklist_buttons = [
+                (ReviewChecklistMode::Automatic, "Automatic"),
+                (ReviewChecklistMode::Off, "Off"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (mode, label))| {
+                let button = if review_checklist_mode == mode {
+                    crate::ui::style::primary_button_compact(
+                        ("settings-review-checklist-mode", index),
+                        label,
+                        cx,
+                    )
+                } else {
+                    crate::ui::style::dialog_neutral_button(
+                        ("settings-review-checklist-mode", index),
+                        label,
+                        cx,
+                    )
+                };
+                button.on_click(cx.listener(move |this, _, _, cx| {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.set_review_checklist_mode(mode, cx);
+                    });
+                    cx.notify();
+                }))
             })
             .collect::<Vec<_>>();
             let provider_buttons = [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
@@ -221,6 +250,35 @@ impl SettingsView {
                                         .child(h_flex().w_full().gap_2().flex_wrap().children(default_model_buttons))
                                         .child(row_label("Effort"))
                                         .child(h_flex().w_full().gap_2().flex_wrap().children(default_effort_buttons)),
+                                )
+                                .child(
+                                    v_flex()
+                                        .w_full()
+                                        .gap_3()
+                                        .p_4()
+                                        .rounded(crate::ui::design::r_lg())
+                                        .border_1()
+                                        .border_color(crate::ui::design::line_2(cx))
+                                        .bg(crate::ui::design::surface(cx).opacity(0.55))
+                                        .child(
+                                            div()
+                                                .text_size(crate::ui::design::text_body())
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child("Manual review checklist"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(crate::ui::design::text_body())
+                                                .text_color(crate::ui::design::t3(cx))
+                                                .child("After a turn changes files, ask the same agent for a short read-only checklist of what you should check manually."),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .flex_wrap()
+                                                .children(checklist_buttons),
+                                        ),
                                 )
                                 .child(
                                     v_flex()

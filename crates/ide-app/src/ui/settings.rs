@@ -26,7 +26,8 @@ use crate::state::{
 use ide_core::{
     config::{
         CompletionNotifications, ConversationLayout, GenerationAgent, NewAgentDefaults,
-        ThemeMode as ConfigTheme, VerificationMode, DEFAULT_CODE_REVIEW_PROMPT,
+        ReviewChecklistMode, ThemeMode as ConfigTheme, VerificationMode,
+        DEFAULT_CODE_REVIEW_PROMPT,
     },
     local_store::LocalStore,
     AgentEffort, AgentKind, AgentModel, AgentRecord, ProjectId, VoiceAnnouncements,

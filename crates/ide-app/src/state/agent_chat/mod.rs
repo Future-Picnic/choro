@@ -11,6 +11,7 @@ mod pending_user_input;
 mod persistence;
 mod proposed_plan;
 pub(crate) mod protocol;
+mod review_checklist;
 mod timeline;
 mod usage;
 mod verification;
@@ -33,6 +34,10 @@ pub use pending_user_input::{PendingUserInput, PendingUserInputOption, PendingUs
 pub use proposed_plan::{split_proposed_plan, ProposedPlan};
 pub(crate) use protocol::ChatBackendStopSignal;
 use protocol::{spawn_chat_backend, ChatBackendCommand, ChatBackendController, ChatBackendEvent};
+pub use review_checklist::{
+    split_review_checklist, ReviewChecklist, ReviewChecklistItem, ReviewChecklistStatus,
+    REVIEW_CHECKLIST_REQUEST_MARKER,
+};
 pub use usage::{ConversationUsage, ModelUsage, UsageTotals};
 pub use verification::{split_verification, Verification, VerificationItem, VerificationStatus};
 pub use work_log::{WorkLogEntry, WorkLogEntryKind, WorkLogStatus};
@@ -47,6 +52,10 @@ use timeline::*;
 
 pub enum AgentChatEvent {
     Changed,
+    TurnFinished {
+        agent_id: Uuid,
+        source_turn_id: String,
+    },
 }
 
 impl EventEmitter<AgentChatEvent> for AgentChatState {}
@@ -208,6 +217,7 @@ pub enum AgentChatTimelineItem {
     ProposedPlan(ProposedPlan),
     CodeReview(CodeReview),
     Verification(Verification),
+    ReviewChecklist(ReviewChecklist),
     ChangedFiles(ChangedFilesSummary),
     ShipResult(ShipResult),
     Rejoined(RejoinedCard),
@@ -369,6 +379,14 @@ enum StoredTimelinePayload {
         markdown: String,
         expanded: bool,
     },
+    ReviewChecklist {
+        id: String,
+        source_turn_id: String,
+        status: String,
+        items: Vec<StoredReviewChecklistItem>,
+        expanded: bool,
+        created_at: u64,
+    },
     ChangedFiles {
         files: Vec<StoredFileChange>,
         #[serde(default)]
@@ -510,6 +528,18 @@ struct StoredFileChange {
     baseline_hash: Option<String>,
     #[serde(default)]
     result_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredReviewChecklistItem {
+    id: String,
+    #[serde(default)]
+    flow: Option<String>,
+    action: String,
+    #[serde(default)]
+    expected: Option<String>,
+    #[serde(default)]
+    checked: bool,
 }
 
 impl AgentChatState {
@@ -660,7 +690,11 @@ impl AgentChatState {
         cx: &mut Context<Self>,
     ) {
         if let Some(controller) = self.controllers.get(&agent_id) {
-            let _ = controller.send(ChatBackendCommand::SendTurn { text, mode });
+            let _ = controller.send(ChatBackendCommand::SendTurn {
+                text,
+                mode,
+                read_only: false,
+            });
         }
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             self.cancellation_requested.remove(&agent_id);
@@ -671,6 +705,31 @@ impl AgentChatState {
             session
                 .work_log
                 .retain(|entry| entry.kind != WorkLogEntryKind::Plan);
+            session.status = AgentChatStatus::Running;
+            session.pending_approval = None;
+            session.started_running_at = Some(unix_now());
+            session.last_activity_at = unix_now();
+        }
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn send_read_only_turn(
+        &mut self,
+        agent_id: Uuid,
+        text: String,
+        mode: AgentInteractionMode,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(controller) = self.controllers.get(&agent_id) {
+            let _ = controller.send(ChatBackendCommand::SendTurn {
+                text,
+                mode,
+                read_only: true,
+            });
+        }
+        if let Some(session) = self.sessions.get_mut(&agent_id) {
+            self.cancellation_requested.remove(&agent_id);
             session.status = AgentChatStatus::Running;
             session.pending_approval = None;
             session.started_running_at = Some(unix_now());
@@ -1136,7 +1195,12 @@ impl AgentChatState {
         // A failed runtime cannot receive another turn. Remove only the
         // controller for the current generation so the next submission starts
         // a fresh backend and resumes from the persisted provider session id.
-        if matches!(&event, ChatBackendEvent::Error(_)) {
+        let checklist_maintenance_error = matches!(&event, ChatBackendEvent::Error(_))
+            && self
+                .sessions
+                .get(&agent_id)
+                .is_some_and(|session| latest_user_is_review_checklist(&session.timeline));
+        if matches!(&event, ChatBackendEvent::Error(_)) && !checklist_maintenance_error {
             self.controllers.remove(&agent_id);
         }
         if self.cancellation_requested.contains(&agent_id) {
@@ -1201,6 +1265,7 @@ impl AgentChatState {
             }
             return;
         }
+        let previous_status = self.sessions.get(&agent_id).map(|session| session.status);
         let session = self.ensure_backend_event_session(agent_id, now);
         session.last_activity_at = now;
         match event {
@@ -1296,6 +1361,33 @@ impl AgentChatState {
                     cx,
                 );
             }
+            ChatBackendEvent::ReviewChecklist(mut checklist) => {
+                remove_review_checklist_blocks(&mut session.messages);
+                remove_review_checklist_blocks_from_timeline(&mut session.timeline);
+                if checklist.source_turn_id.is_empty() {
+                    if let Some(pending) = session.timeline.iter().rev().find_map(|item| match item
+                    {
+                        AgentChatTimelineItem::ReviewChecklist(candidate)
+                            if candidate.status == ReviewChecklistStatus::Pending =>
+                        {
+                            Some(candidate)
+                        }
+                        _ => None,
+                    }) {
+                        checklist.source_turn_id = pending.source_turn_id.clone();
+                        checklist.id = pending.id.clone();
+                        checklist.created_at = pending.created_at;
+                    } else {
+                        return;
+                    }
+                }
+                upsert_timeline_review_checklist(&mut session.timeline, checklist.clone());
+                persist_timeline_item(
+                    agent_id,
+                    AgentChatTimelineItem::ReviewChecklist(checklist),
+                    cx,
+                );
+            }
             ChatBackendEvent::ChangedFiles(summary) => {
                 if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
                     persist_changed_files_turn(agent_id, receipt, ledger, cx);
@@ -1322,26 +1414,91 @@ impl AgentChatState {
                 }
             }
             ChatBackendEvent::Error(error) => {
-                let error_message_id = format!("error-{}", session.messages.len());
-                let message = AgentChatMessage::Assistant {
-                    message_id: Some(error_message_id),
-                    text: error,
-                    created_at: now,
-                };
-                append_or_extend_message(&mut session.messages, message.clone());
-                append_or_extend_timeline_message(&mut session.timeline, message.clone());
-                persist_chat_message(agent_id, message, cx);
-                session.status = AgentChatStatus::Failed;
-                session.started_running_at = None;
-                session.pending_user_input = None;
-                session.pending_approval = None;
-                session
-                    .timeline
-                    .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
+                if checklist_maintenance_error {
+                    if let Some(checklist) =
+                        session
+                            .timeline
+                            .iter_mut()
+                            .rev()
+                            .find_map(|item| match item {
+                                AgentChatTimelineItem::ReviewChecklist(checklist)
+                                    if checklist.status == ReviewChecklistStatus::Pending =>
+                                {
+                                    Some(checklist)
+                                }
+                                _ => None,
+                            })
+                    {
+                        checklist.status = ReviewChecklistStatus::Failed;
+                        persist_timeline_item(
+                            agent_id,
+                            AgentChatTimelineItem::ReviewChecklist(checklist.clone()),
+                            cx,
+                        );
+                    }
+                    session.status = AgentChatStatus::Idle;
+                    session.started_running_at = None;
+                    session.pending_user_input = None;
+                    session.pending_approval = None;
+                } else {
+                    let error_message_id = format!("error-{}", session.messages.len());
+                    let message = AgentChatMessage::Assistant {
+                        message_id: Some(error_message_id),
+                        text: error,
+                        created_at: now,
+                    };
+                    append_or_extend_message(&mut session.messages, message.clone());
+                    append_or_extend_timeline_message(&mut session.timeline, message.clone());
+                    persist_chat_message(agent_id, message, cx);
+                    session.status = AgentChatStatus::Failed;
+                    session.started_running_at = None;
+                    session.pending_user_input = None;
+                    session.pending_approval = None;
+                    session
+                        .timeline
+                        .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
+                }
             }
         }
         let should_drain_queue =
             session.status == AgentChatStatus::Idle && !session.queued_turns.is_empty();
+        let failed_checklist = if previous_status == Some(AgentChatStatus::Running)
+            && session.status == AgentChatStatus::Idle
+            && latest_user_is_review_checklist(&session.timeline)
+        {
+            session
+                .timeline
+                .iter_mut()
+                .rev()
+                .find_map(|item| match item {
+                    AgentChatTimelineItem::ReviewChecklist(checklist)
+                        if checklist.status == ReviewChecklistStatus::Pending =>
+                    {
+                        checklist.status = ReviewChecklistStatus::Failed;
+                        Some(checklist.clone())
+                    }
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        if let Some(checklist) = failed_checklist {
+            persist_timeline_item(
+                agent_id,
+                AgentChatTimelineItem::ReviewChecklist(checklist),
+                cx,
+            );
+        }
+        let finished_source_turn = (previous_status == Some(AgentChatStatus::Running)
+            && session.status == AgentChatStatus::Idle)
+            .then(|| latest_changed_source_turn(&session.timeline))
+            .flatten();
+        if let Some(source_turn_id) = finished_source_turn {
+            cx.emit(AgentChatEvent::TurnFinished {
+                agent_id,
+                source_turn_id,
+            });
+        }
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
         if should_drain_queue {
@@ -1427,6 +1584,41 @@ impl AgentChatState {
     ) -> bool {
         self.apply_backend_identity_event(agent_id, event, now)
     }
+}
+
+fn latest_changed_source_turn(timeline: &[AgentChatTimelineItem]) -> Option<String> {
+    let latest_user = timeline.iter().rposition(|item| {
+        matches!(
+            item,
+            AgentChatTimelineItem::Message(AgentChatMessage::User { .. })
+        )
+    })?;
+    let user_is_maintenance = matches!(
+        timeline.get(latest_user),
+        Some(AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }))
+            if text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER)
+    );
+    if user_is_maintenance {
+        return None;
+    }
+    timeline[latest_user + 1..]
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            AgentChatTimelineItem::ChangedFiles(summary) if !summary.is_empty() => {
+                summary.turn_id.clone()
+            }
+            _ => None,
+        })
+}
+
+fn latest_user_is_review_checklist(timeline: &[AgentChatTimelineItem]) -> bool {
+    timeline.iter().rev().find_map(|item| match item {
+        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
+            Some(text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER))
+        }
+        _ => None,
+    }) == Some(true)
 }
 
 fn is_real_cli_session_id(agent_id: Uuid, session_id: &str) -> bool {
@@ -1666,6 +1858,47 @@ mod retirement_tests {
             session.changed_files.files[0].path,
             PathBuf::from("index.html")
         );
+    }
+
+    #[test]
+    fn completed_file_changing_turn_reports_only_its_targeted_source_turn() {
+        let timeline = vec![
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: "implement it".to_string(),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 1,
+            }),
+            AgentChatTimelineItem::ChangedFiles(ChangedFilesSummary::attributed(
+                "turn-7",
+                vec![FileChangeStat::new("src/main.rs", 2, 0)],
+                Vec::new(),
+            )),
+        ];
+
+        assert_eq!(
+            latest_changed_source_turn(&timeline).as_deref(),
+            Some("turn-7")
+        );
+    }
+
+    #[test]
+    fn checklist_maintenance_turn_never_recursively_requests_a_checklist() {
+        let timeline = vec![
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: format!("{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: turn-7"),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 1,
+            }),
+            AgentChatTimelineItem::ChangedFiles(ChangedFilesSummary::attributed(
+                "maintenance-turn",
+                vec![FileChangeStat::new("unexpected.rs", 1, 0)],
+                Vec::new(),
+            )),
+        ];
+
+        assert_eq!(latest_changed_source_turn(&timeline), None);
     }
 }
 

@@ -42,8 +42,150 @@ pub(super) const AGENT_VERIFY_FIX_PREFIX: &str =
 /// directive. Docs are referenced (not inlined) and plans are already bounded;
 /// tracker descriptions are the one unbounded input.
 const VERIFY_TASK_DESCRIPTION_MAX_CHARS: usize = 4000;
+const REVIEW_CHECKLIST_FILE_LIMIT: usize = 40;
 
 impl CenterArea {
+    pub(super) fn maybe_request_review_checklist(
+        &mut self,
+        agent_id: Uuid,
+        source_turn_id: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.workspace.read(cx).review_checklist_mode
+            != ide_core::config::ReviewChecklistMode::Automatic
+            || !self.agent_chats.read(cx).has_backend(agent_id)
+            || self
+                .agent_chats
+                .read(cx)
+                .has_review_checklist_for_turn(agent_id, &source_turn_id)
+        {
+            return false;
+        }
+        let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
+            return false;
+        };
+        if agent.hidden_doc_assistant || agent.design_context.is_some() {
+            return false;
+        }
+        let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
+        let (mode, files) = {
+            let chats = self.agent_chats.read(cx);
+            let Some(session) = chats.session(agent_id) else {
+                return false;
+            };
+            let Some(summary) = session.timeline.iter().rev().find_map(|item| match item {
+                AgentChatTimelineItem::ChangedFiles(summary)
+                    if summary.turn_id.as_deref() == Some(source_turn_id.as_str()) =>
+                {
+                    Some(summary)
+                }
+                _ => None,
+            }) else {
+                return false;
+            };
+            let files = summary
+                .files
+                .iter()
+                .chain(&summary.observed_files)
+                .filter(|file| !filter.is_artifact(&file.path))
+                .take(REVIEW_CHECKLIST_FILE_LIMIT)
+                .map(|file| {
+                    file.path
+                        .to_string_lossy()
+                        .chars()
+                        .take(240)
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            (session.interaction_mode, files)
+        };
+        if files.is_empty() {
+            return false;
+        }
+        let started = self.agent_chats.update(cx, |chats, cx| {
+            chats.begin_review_checklist(agent_id, source_turn_id.clone(), cx)
+        });
+        if !started {
+            return false;
+        }
+        let prompt = review_checklist_prompt(&source_turn_id, &files);
+        self.agent_chats.update(cx, |chats, cx| {
+            chats.append_message(
+                agent_id,
+                AgentChatMessage::User {
+                    text: prompt.clone(),
+                    display_text: None,
+                    tags: Vec::new(),
+                    created_at: unix_now_secs(),
+                },
+                cx,
+            );
+            chats.send_read_only_turn(agent_id, prompt, mode, cx);
+        });
+        true
+    }
+
+    pub(super) fn retry_agent_review_checklist(
+        &mut self,
+        agent_id: Uuid,
+        source_turn_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
+            return;
+        };
+        let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
+        let files = self
+            .agent_chats
+            .read(cx)
+            .session(agent_id)
+            .and_then(|session| {
+                session.timeline.iter().rev().find_map(|item| match item {
+                    AgentChatTimelineItem::ChangedFiles(summary)
+                        if summary.turn_id.as_deref() == Some(source_turn_id.as_str()) =>
+                    {
+                        Some(
+                            summary
+                                .files
+                                .iter()
+                                .chain(&summary.observed_files)
+                                .filter(|file| !filter.is_artifact(&file.path))
+                                .take(REVIEW_CHECKLIST_FILE_LIMIT)
+                                .map(|file| {
+                                    file.path
+                                        .to_string_lossy()
+                                        .chars()
+                                        .take(240)
+                                        .collect::<String>()
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        if files.is_empty() {
+            return;
+        }
+        let mode = self
+            .agent_chats
+            .read(cx)
+            .session(agent_id)
+            .map(|session| session.interaction_mode)
+            .unwrap_or(AgentInteractionMode::Default);
+        if !self.agent_chats.update(cx, |chats, cx| {
+            chats.retry_review_checklist(agent_id, &source_turn_id, cx)
+        }) {
+            return;
+        }
+        let prompt = review_checklist_prompt(&source_turn_id, &files);
+        if !self.dispatch_agent_chat_read_only_submission(agent_id, prompt, mode, cx) {
+            self.agent_chats.update(cx, |chats, cx| {
+                chats.fail_review_checklist(agent_id, &source_turn_id, cx)
+            });
+        }
+    }
     /// One shared stop path for both the composer stop control and Escape.
     /// `AgentChatState::stop_backend` escalates a second request while the
     /// session is cancelling into a force-stop of the backend process.
@@ -1340,6 +1482,26 @@ impl CenterArea {
             Vec::new(),
             fallback_mode,
             None,
+            false,
+            cx,
+        )
+    }
+
+    fn dispatch_agent_chat_read_only_submission(
+        &mut self,
+        agent_id: Uuid,
+        submission_text: String,
+        fallback_mode: AgentInteractionMode,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.dispatch_agent_chat_submission_inner(
+            agent_id,
+            submission_text,
+            None,
+            Vec::new(),
+            fallback_mode,
+            None,
+            true,
             cx,
         )
     }
@@ -1590,11 +1752,12 @@ impl CenterArea {
             tags,
             fallback_mode,
             Some(agent),
+            false,
             cx,
         )
     }
 
-    fn dispatch_agent_chat_submission_inner(
+    pub(super) fn dispatch_agent_chat_submission_inner(
         &mut self,
         agent_id: Uuid,
         mut submission_text: String,
@@ -1602,6 +1765,7 @@ impl CenterArea {
         tags: Vec<AgentChatMessageTag>,
         fallback_mode: AgentInteractionMode,
         fallback_agent: Option<AgentRecord>,
+        read_only: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         let has_backend = self.agent_chats.read(cx).has_backend(agent_id);
@@ -1620,6 +1784,9 @@ impl CenterArea {
             })
             .unwrap_or((fallback_mode, false));
         let is_running = is_running_status && has_backend;
+        if read_only && is_running {
+            return false;
+        }
 
         if self.agent_chat_hydrating.contains(&agent_id) {
             let has_resume_id = self
@@ -1642,6 +1809,7 @@ impl CenterArea {
                         display_text,
                         tags,
                         mode,
+                        read_only,
                     });
                 cx.notify();
                 return true;
@@ -1660,7 +1828,7 @@ impl CenterArea {
                 return false;
             };
             self.apply_live_chat_session_ids(&mut agent, cx);
-            if agent_has_backend_resume_id(&agent) {
+            if agent_has_backend_resume_id(&agent) && !read_only {
                 submission_text = summary_resume_submission_text(&submission_text, agent_id);
             }
             if !agent_has_backend_resume_id(&agent)
@@ -1713,6 +1881,7 @@ impl CenterArea {
                         display_text,
                         tags,
                         mode,
+                        read_only,
                     });
                 self.schedule_agent_chat_hydration(agent, cx);
                 return true;
@@ -1739,7 +1908,11 @@ impl CenterArea {
                     },
                     cx,
                 );
-                chats.send_turn(agent_id, submission_text.clone(), mode, cx);
+                if read_only {
+                    chats.send_read_only_turn(agent_id, submission_text.clone(), mode, cx);
+                } else {
+                    chats.send_turn(agent_id, submission_text.clone(), mode, cx);
+                }
             }
         });
         cx.notify();
@@ -2789,6 +2962,17 @@ fn bounded_verification_text(text: &str, max_chars: usize) -> String {
     format!("{}…\n[description truncated]", bounded.trim_end())
 }
 
+fn review_checklist_prompt(source_turn_id: &str, files: &[String]) -> String {
+    let files = files
+        .iter()
+        .map(|path| format!("- {path}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: {source_turn_id}\n\nYou just finished changing the files below. Inspect the implementation and prepare the smallest complete checklist for the human who returns later. This pass is read-only: do not edit files, run commands, run tests, or use mutation tools.\n\nChanged files:\n{files}\n\nReturn only one <review_checklist>…</review_checklist> block. Inside it:\n- Let the real feature scope determine the count. A focused change may need one or two checks; a product-sized feature may need dozens. Do not target an arbitrary item count.\n- One checkbox represents one complete user journey or independently failing behavior, not one click.\n- Merge adjacent steps that share a screen or can be checked in one pass. For example, do not create separate items for opening a folder, opening one record, and following its link; combine them into one core-flow check.\n- When the checklist spans multiple distinct workflows or feature areas, group items under concise Markdown headings such as `## Tasks` or `## Team members`. Do not add a heading to a focused single-flow checklist.\n- Within each flow, separate only distinct regression risks, edge cases, or setups that can fail independently.\n- Omit mere navigation, obvious UI existence checks, automated tests, and checks already completed unless they are the behavior that changed.\n- Order flows and checks by value. Each item must be a concise action followed by ` — ` and one concise expected result.\n- Avoid generic advice such as “test thoroughly”.\n- If no useful manual check remains, write exactly `No manual checks needed`.\n\nWrite nothing outside the block."
+    )
+}
+
 fn visual_review_image_metadata(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
         Some(("image/png", "png"))
@@ -2822,6 +3006,18 @@ fn visual_review_target_label(review: &ide_core::visual_review::VisualReviewSubm
 #[cfg(test)]
 mod verification_trigger_tests {
     use super::*;
+
+    #[test]
+    fn review_checklist_prompt_groups_clicks_into_complete_journeys() {
+        let prompt = review_checklist_prompt("turn-1", &["src/meetings.rs".to_string()]);
+
+        assert!(prompt.contains("real feature scope determine the count"));
+        assert!(prompt.contains("product-sized feature may need dozens"));
+        assert!(prompt.contains("one complete user journey"));
+        assert!(prompt.contains("combine them into one core-flow check"));
+        assert!(prompt.contains("group items under concise Markdown headings"));
+        assert!(prompt.contains("Do not add a heading to a focused single-flow checklist"));
+    }
 
     #[test]
     fn preview_review_attachments_keep_their_real_image_format() {

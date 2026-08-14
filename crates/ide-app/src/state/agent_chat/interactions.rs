@@ -3,6 +3,203 @@
 use super::*;
 
 impl AgentChatState {
+    pub fn has_review_checklist_for_turn(&self, agent_id: Uuid, source_turn_id: &str) -> bool {
+        self.sessions.get(&agent_id).is_some_and(|session| {
+            session.timeline.iter().any(|item| {
+                matches!(
+                    item,
+                    AgentChatTimelineItem::ReviewChecklist(checklist)
+                        if checklist.source_turn_id == source_turn_id
+                )
+            })
+        })
+    }
+
+    pub fn begin_review_checklist(
+        &mut self,
+        agent_id: Uuid,
+        source_turn_id: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return false;
+        };
+        if session.timeline.iter().any(|item| {
+            matches!(
+                item,
+                AgentChatTimelineItem::ReviewChecklist(checklist)
+                    if checklist.source_turn_id == source_turn_id
+            )
+        }) {
+            return false;
+        }
+        if let Some(previous) = session
+            .timeline
+            .iter_mut()
+            .rev()
+            .find_map(|item| match item {
+                AgentChatTimelineItem::ReviewChecklist(checklist) if checklist.expanded => {
+                    Some(checklist)
+                }
+                _ => None,
+            })
+        {
+            previous.expanded = false;
+            persist_timeline_item(
+                agent_id,
+                AgentChatTimelineItem::ReviewChecklist(previous.clone()),
+                cx,
+            );
+        }
+        let checklist = ReviewChecklist::pending(source_turn_id, unix_now());
+        session
+            .timeline
+            .push(AgentChatTimelineItem::ReviewChecklist(checklist.clone()));
+        persist_timeline_item(
+            agent_id,
+            AgentChatTimelineItem::ReviewChecklist(checklist),
+            cx,
+        );
+        session.last_activity_at = unix_now();
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+        true
+    }
+
+    pub fn retry_review_checklist(
+        &mut self,
+        agent_id: Uuid,
+        source_turn_id: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return false;
+        };
+        let Some(checklist) = session
+            .timeline
+            .iter_mut()
+            .rev()
+            .find_map(|item| match item {
+                AgentChatTimelineItem::ReviewChecklist(checklist)
+                    if checklist.source_turn_id == source_turn_id
+                        && checklist.status == ReviewChecklistStatus::Failed =>
+                {
+                    Some(checklist)
+                }
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        checklist.status = ReviewChecklistStatus::Pending;
+        checklist.items.clear();
+        checklist.expanded = true;
+        persist_timeline_item(
+            agent_id,
+            AgentChatTimelineItem::ReviewChecklist(checklist.clone()),
+            cx,
+        );
+        session.last_activity_at = unix_now();
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+        true
+    }
+
+    pub fn fail_review_checklist(
+        &mut self,
+        agent_id: Uuid,
+        source_turn_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return;
+        };
+        let Some(checklist) = session
+            .timeline
+            .iter_mut()
+            .rev()
+            .find_map(|item| match item {
+                AgentChatTimelineItem::ReviewChecklist(checklist)
+                    if checklist.source_turn_id == source_turn_id
+                        && checklist.status == ReviewChecklistStatus::Pending =>
+                {
+                    Some(checklist)
+                }
+                _ => None,
+            })
+        else {
+            return;
+        };
+        checklist.status = ReviewChecklistStatus::Failed;
+        persist_timeline_item(
+            agent_id,
+            AgentChatTimelineItem::ReviewChecklist(checklist.clone()),
+            cx,
+        );
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn toggle_review_checklist_item(
+        &mut self,
+        agent_id: Uuid,
+        checklist_id: &str,
+        item_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return;
+        };
+        let Some(checklist) = session.timeline.iter_mut().find_map(|item| match item {
+            AgentChatTimelineItem::ReviewChecklist(checklist) if checklist.id == checklist_id => {
+                Some(checklist)
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(item) = checklist.items.iter_mut().find(|item| item.id == item_id) else {
+            return;
+        };
+        item.checked = !item.checked;
+        persist_timeline_item(
+            agent_id,
+            AgentChatTimelineItem::ReviewChecklist(checklist.clone()),
+            cx,
+        );
+        session.last_activity_at = unix_now();
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn toggle_review_checklist_expanded(
+        &mut self,
+        agent_id: Uuid,
+        checklist_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.sessions.get_mut(&agent_id) else {
+            return;
+        };
+        let Some(checklist) = session.timeline.iter_mut().find_map(|item| match item {
+            AgentChatTimelineItem::ReviewChecklist(checklist) if checklist.id == checklist_id => {
+                Some(checklist)
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+        checklist.expanded = !checklist.expanded;
+        persist_timeline_item(
+            agent_id,
+            AgentChatTimelineItem::ReviewChecklist(checklist.clone()),
+            cx,
+        );
+        session.last_activity_at = unix_now();
+        cx.emit(AgentChatEvent::Changed);
+        cx.notify();
+    }
+
     pub fn select_pending_user_input_option(
         &mut self,
         agent_id: Uuid,

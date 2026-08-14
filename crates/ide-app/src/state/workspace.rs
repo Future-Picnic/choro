@@ -5,8 +5,8 @@ use std::time::Duration;
 use gpui::{Context, EventEmitter, PathPromptOptions};
 use ide_core::config::{
     AppConfig, CompanionMusicSettings, ConversationLayout, GenerationAgent, GitStatusGroupMode,
-    GitStatusViewMode, NavStyle, NewAgentDefaults, NotificationSettings, PanelSizes, ThemeMode,
-    VerificationMode, VoiceSettings,
+    GitStatusViewMode, NavStyle, NewAgentDefaults, NotificationSettings, PanelSizes,
+    ReviewChecklistMode, ThemeMode, VerificationMode, VoiceSettings,
 };
 use ide_core::local_store::LocalStore;
 use ide_core::{GitWorkflow, GitWorkflowRun, Project, ProjectId, ProjectSection, ProjectSectionId};
@@ -52,6 +52,7 @@ pub struct Workspace {
     pub code_review_output_instructions: String,
     pub memory_proposals_enabled: bool,
     pub verification_mode: VerificationMode,
+    pub review_checklist_mode: ReviewChecklistMode,
     pub design_browser_open_prompt_dismissed: bool,
     pub keymap: std::collections::HashMap<String, String>,
     pub expanded_projects: HashSet<ProjectId>,
@@ -127,6 +128,7 @@ impl Workspace {
             code_review_output_instructions: config.code_review_output_instructions,
             memory_proposals_enabled: config.memory_proposals_enabled,
             verification_mode: config.verification_mode,
+            review_checklist_mode: config.review_checklist_mode,
             design_browser_open_prompt_dismissed: config.design_browser_open_prompt_dismissed,
             keymap: config.keymap,
             expanded_projects,
@@ -239,6 +241,15 @@ impl Workspace {
             return;
         }
         self.verification_mode = mode;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_review_checklist_mode(&mut self, mode: ReviewChecklistMode, cx: &mut Context<Self>) {
+        if self.review_checklist_mode == mode {
+            return;
+        }
+        self.review_checklist_mode = mode;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -941,6 +952,7 @@ impl Workspace {
             code_review_output_instructions: self.code_review_output_instructions.clone(),
             memory_proposals_enabled: self.memory_proposals_enabled,
             verification_mode: self.verification_mode,
+            review_checklist_mode: self.review_checklist_mode,
             design_browser_open_prompt_dismissed: self.design_browser_open_prompt_dismissed,
             keymap: self.keymap.clone(),
             expanded_projects: self.expanded_projects.iter().copied().collect(),

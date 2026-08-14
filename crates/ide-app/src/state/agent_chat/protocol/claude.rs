@@ -46,7 +46,11 @@ impl ClaudeBridgeRuntime {
                     .ok();
                 self.write_json(&json!({ "type": "cancel_turn" }))?;
             }
-            ChatBackendCommand::SendTurn { text, mode } => self.send_turn(text, mode)?,
+            ChatBackendCommand::SendTurn {
+                text,
+                mode,
+                read_only,
+            } => self.send_turn(text, mode, read_only)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
@@ -82,6 +86,7 @@ impl ClaudeBridgeRuntime {
         &mut self,
         text: String,
         mode: AgentInteractionMode,
+        read_only: bool,
     ) -> anyhow::Result<()> {
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
@@ -106,6 +111,7 @@ impl ClaudeBridgeRuntime {
             "mcpServers": choro_mcp_servers_json(&self.agent),
             "designAssistant": is_design_assistant(&self.agent),
             "designPreviewReview": design_preview_review,
+            "readOnly": read_only,
         }))
     }
 
@@ -338,6 +344,15 @@ impl ClaudeBridgeRuntime {
                 .send_blocking(ChatBackendEvent::Verification(Verification::new(
                     next_request_id(),
                     verification,
+                )))
+                .ok();
+        }
+        if let Some(checklist) = extract_review_checklist(&self.assistant_buffer) {
+            self.events
+                .send_blocking(ChatBackendEvent::ReviewChecklist(ReviewChecklist::ready(
+                    "",
+                    &checklist,
+                    unix_now(),
                 )))
                 .ok();
         }

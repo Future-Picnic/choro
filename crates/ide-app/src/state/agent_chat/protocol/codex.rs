@@ -7,8 +7,8 @@ impl CodexRuntime {
                 self.assistant_stream.flush(&self.events);
                 break;
             }
-            if let Some((text, mode)) = self.deferred_turns.pop_front() {
-                self.send_turn(text, mode)?;
+            if let Some((text, mode, read_only)) = self.deferred_turns.pop_front() {
+                self.send_turn(text, mode, read_only)?;
                 continue;
             }
             match next_backend_inbound(
@@ -112,6 +112,7 @@ impl CodexRuntime {
         &mut self,
         text: String,
         mode: AgentInteractionMode,
+        read_only: bool,
     ) -> anyhow::Result<()> {
         let Some(thread_id) = self.thread_id.clone() else {
             return Err(anyhow!("Codex thread is not started"));
@@ -149,7 +150,9 @@ impl CodexRuntime {
         );
         let design_assistant = is_design_assistant(&self.agent);
         let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
-        let sandbox_policy = if design_assistant && !design_preview_review {
+        let sandbox_policy = if read_only {
+            json!({ "type": "readOnly" })
+        } else if design_assistant && !design_preview_review {
             json!({ "type": "readOnly" })
         } else if design_assistant {
             // Compare Review writes implementation code, but remains confined
@@ -194,7 +197,11 @@ impl CodexRuntime {
                 return Err(anyhow!("Codex app-server force-stopped"));
             }
             ChatBackendCommand::CancelTurn => self.cancel_turn()?,
-            ChatBackendCommand::SendTurn { text, mode } => self.send_turn(text, mode)?,
+            ChatBackendCommand::SendTurn {
+                text,
+                mode,
+                read_only,
+            } => self.send_turn(text, mode, read_only)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
@@ -241,8 +248,12 @@ impl CodexRuntime {
                     request_id,
                     approved,
                 }) => self.resolve_approval(request_id, approved)?,
-                Ok(ChatBackendCommand::SendTurn { text, mode }) => {
-                    self.deferred_turns.push_back((text, mode));
+                Ok(ChatBackendCommand::SendTurn {
+                    text,
+                    mode,
+                    read_only,
+                }) => {
+                    self.deferred_turns.push_back((text, mode, read_only));
                     self.events
                         .send_blocking(ChatBackendEvent::WorkLog(
                             WorkLogEntry::new(
@@ -529,7 +540,8 @@ impl CodexRuntime {
                 self.emit_pending_changed_files();
                 let review = extract_code_review(&self.assistant_buffer);
                 let verification = extract_verification(&self.assistant_buffer);
-                if review.is_some() || verification.is_some() {
+                let checklist = extract_review_checklist(&self.assistant_buffer);
+                if review.is_some() || verification.is_some() || checklist.is_some() {
                     if let Some(review) = review {
                         self.events
                             .send_blocking(ChatBackendEvent::CodeReview(CodeReview::new(
@@ -544,6 +556,13 @@ impl CodexRuntime {
                                 next_request_id(),
                                 verification,
                             )))
+                            .ok();
+                    }
+                    if let Some(checklist) = checklist {
+                        self.events
+                            .send_blocking(ChatBackendEvent::ReviewChecklist(
+                                ReviewChecklist::ready("", &checklist, unix_now()),
+                            ))
                             .ok();
                     }
                     self.events
@@ -930,6 +949,7 @@ pub(super) fn capture_changed_files_snapshot(
     source: &str,
 ) -> ChangedFilesSummary {
     let repo_path = agent.runtime_path().to_path_buf();
+    summary.reconcile_final_files(&repo_path);
     summary.remove_visualization_artifacts(agent.id, &repo_path);
     if summary.snapshot_id.is_some() || summary.files.is_empty() {
         return summary;

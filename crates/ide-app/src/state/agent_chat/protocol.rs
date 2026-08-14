@@ -53,7 +53,8 @@ use super::{
     unix_now, AgentChatStatus, AgentInteractionMode, ChangedFilesSummary, CodeReview,
     ConversationUsage, FileChangeActivity, FileChangeStat, ModelUsage, PendingApproval,
     PendingApprovalKind, PendingUserInput, PendingUserInputOption, PendingUserInputQuestion,
-    ProposedPlan, UsageTotals, Verification, WorkLogEntry, WorkLogEntryKind, WorkLogStatus,
+    ProposedPlan, ReviewChecklist, UsageTotals, Verification, WorkLogEntry, WorkLogEntryKind,
+    WorkLogStatus,
 };
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -146,6 +147,7 @@ pub enum ChatBackendCommand {
     SendTurn {
         text: String,
         mode: AgentInteractionMode,
+        read_only: bool,
     },
     UpdateAccessMode {
         access_mode: AgentAccessMode,
@@ -187,6 +189,7 @@ pub enum ChatBackendEvent {
     ProposedPlan(ProposedPlan),
     CodeReview(CodeReview),
     Verification(Verification),
+    ReviewChecklist(ReviewChecklist),
     ChangedFiles(ChangedFilesSummary),
     Usage(ConversationUsage),
     Status(AgentChatStatus),
@@ -353,7 +356,7 @@ struct CodexRuntime {
     active_command_item_id: Option<String>,
     pending_user_inputs: std::collections::HashMap<String, PendingRequest>,
     pending_approvals: std::collections::HashMap<String, PendingApprovalRequest>,
-    deferred_turns: VecDeque<(String, AgentInteractionMode)>,
+    deferred_turns: VecDeque<(String, AgentInteractionMode, bool)>,
     active_reconnect_work_log_id: Option<String>,
     model: Option<String>,
     effort: String,
@@ -545,7 +548,7 @@ fn run_claude_bridge(
         && !runtime.agent.hidden_doc_assistant
         && !runtime.agent.doc.trim().is_empty()
     {
-        runtime.send_turn(runtime.agent.doc.clone(), initial_mode)?;
+        runtime.send_turn(runtime.agent.doc.clone(), initial_mode, false)?;
     }
     runtime.run_loop()
 }
@@ -1074,7 +1077,7 @@ fn run_codex_app_server(
             .ok();
     }
     if !is_resuming_existing_thread && !agent.hidden_doc_assistant && !agent.doc.trim().is_empty() {
-        runtime.send_turn(agent.doc.clone(), initial_mode)?;
+        runtime.send_turn(agent.doc.clone(), initial_mode, false)?;
     }
 
     runtime.run_loop()

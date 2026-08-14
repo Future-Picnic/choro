@@ -1071,6 +1071,9 @@ impl CenterArea {
             AgentChatTimelineItem::Verification(verification) => {
                 self.render_verification_card(agent.id, verification, window, cx)
             }
+            AgentChatTimelineItem::ReviewChecklist(checklist) => {
+                self.render_review_checklist_card(agent.id, checklist, cx)
+            }
             AgentChatTimelineItem::ChangedFiles(summary) => {
                 self.render_changed_files_card(agent, index, summary, window, cx)
             }

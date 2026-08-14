@@ -198,6 +198,10 @@ impl CenterArea {
                     let normalized = Self::normalize_code_review_blocks(&mut timeline);
                     let normalized =
                         Self::normalize_verification_blocks(&mut timeline) || normalized;
+                    let normalized =
+                        Self::normalize_review_checklist_blocks(&mut timeline) || normalized;
+                    let normalized =
+                        Self::fail_orphaned_review_checklists(&mut timeline) || normalized;
                     // Repairing from the provider transcript parses the entire
                     // raw conversation. Keep that legacy repair for small,
                     // fully loaded histories only; it would defeat paging for
@@ -247,6 +251,8 @@ impl CenterArea {
                     }
                     Self::normalize_code_review_blocks(&mut timeline);
                     Self::normalize_verification_blocks(&mut timeline);
+                    Self::normalize_review_checklist_blocks(&mut timeline);
+                    Self::fail_orphaned_review_checklists(&mut timeline);
                     if let Err(error) = persist_timeline_snapshot(agent.id, &timeline) {
                         eprintln!("failed to backfill chat timeline from messages: {error:#}");
                     }
@@ -630,6 +636,105 @@ impl CenterArea {
         changed
     }
 
+    pub(super) fn normalize_review_checklist_blocks(
+        timeline: &mut Vec<AgentChatTimelineItem>,
+    ) -> bool {
+        let mut normalized = Vec::with_capacity(timeline.len());
+        let mut source_turn_id: Option<String> = None;
+        let mut changed = false;
+
+        for item in std::mem::take(timeline) {
+            match item {
+                AgentChatTimelineItem::Message(AgentChatMessage::User {
+                    text,
+                    display_text,
+                    tags,
+                    created_at,
+                }) if text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER) => {
+                    source_turn_id = text.lines().find_map(|line| {
+                        line.strip_prefix("Source turn: ")
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string)
+                    });
+                    normalized.push(AgentChatTimelineItem::Message(AgentChatMessage::User {
+                        text,
+                        display_text,
+                        tags,
+                        created_at,
+                    }));
+                }
+                AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                    message_id,
+                    text,
+                    created_at,
+                }) => {
+                    let (cleaned, checklist_body) =
+                        crate::state::agent_chat::split_review_checklist(&text);
+                    let Some(checklist_body) = checklist_body else {
+                        normalized.push(AgentChatTimelineItem::Message(
+                            AgentChatMessage::Assistant {
+                                message_id,
+                                text,
+                                created_at,
+                            },
+                        ));
+                        continue;
+                    };
+                    changed = true;
+                    if !cleaned.is_empty() {
+                        normalized.push(AgentChatTimelineItem::Message(
+                            AgentChatMessage::Assistant {
+                                message_id,
+                                text: cleaned,
+                                created_at,
+                            },
+                        ));
+                    }
+                    let Some(source_turn_id) = source_turn_id.take() else {
+                        continue;
+                    };
+                    let ready =
+                        ReviewChecklist::ready(source_turn_id.clone(), &checklist_body, created_at);
+                    if let Some(existing) =
+                        normalized.iter_mut().rev().find_map(|item| match item {
+                            AgentChatTimelineItem::ReviewChecklist(checklist)
+                                if checklist.source_turn_id == source_turn_id =>
+                            {
+                                Some(checklist)
+                            }
+                            _ => None,
+                        })
+                    {
+                        *existing = ready;
+                    } else {
+                        normalized.push(AgentChatTimelineItem::ReviewChecklist(ready));
+                    }
+                }
+                item => normalized.push(item),
+            }
+        }
+
+        *timeline = normalized;
+        changed
+    }
+
+    /// A pending checklist cannot still have a live backend after process
+    /// restart. Mark only initial hydration entries as retryable failures;
+    /// older-page normalization can also run while an active turn is pending.
+    fn fail_orphaned_review_checklists(timeline: &mut [AgentChatTimelineItem]) -> bool {
+        let mut changed = false;
+        for item in timeline {
+            if let AgentChatTimelineItem::ReviewChecklist(checklist) = item {
+                if checklist.status == ReviewChecklistStatus::Pending {
+                    checklist.status = ReviewChecklistStatus::Failed;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     pub(super) fn find_transcript_user(
         transcript: &[DocAssistantTranscriptMessage],
         start: usize,
@@ -703,6 +808,7 @@ impl CenterArea {
                 AgentChatTimelineItem::ChangedFiles(summary) => changed_files.merge_turn(summary),
                 AgentChatTimelineItem::CodeReview(_) => {}
                 AgentChatTimelineItem::Verification(_) => {}
+                AgentChatTimelineItem::ReviewChecklist(_) => {}
                 AgentChatTimelineItem::ShipResult(_) => {}
                 AgentChatTimelineItem::Rejoined(_) => {}
                 AgentChatTimelineItem::RejoinConflict(_) => {}
@@ -883,12 +989,25 @@ impl CenterArea {
                         .remove(&agent_id)
                         .unwrap_or_default();
                     for submission in pending_submissions {
-                        this.dispatch_agent_chat_submission_with_agent(
-                            &agent,
+                        if submission.read_only {
+                            if let Some(source_turn_id) = submission.text.lines().find_map(|line| {
+                                line.strip_prefix("Source turn: ")
+                                    .map(str::trim)
+                                    .filter(|value| !value.is_empty())
+                            }) {
+                                this.agent_chats.update(cx, |chats, cx| {
+                                    chats.retry_review_checklist(agent.id, source_turn_id, cx);
+                                });
+                            }
+                        }
+                        this.dispatch_agent_chat_submission_inner(
+                            agent.id,
                             submission.text,
                             submission.display_text,
                             submission.tags,
                             submission.mode,
+                            Some(agent.clone()),
+                            submission.read_only,
                             cx,
                         );
                     }
@@ -1000,6 +1119,7 @@ impl CenterArea {
                     older_timeline.append(&mut session.timeline);
                     Self::normalize_code_review_blocks(&mut older_timeline);
                     Self::normalize_verification_blocks(&mut older_timeline);
+                    Self::normalize_review_checklist_blocks(&mut older_timeline);
                     Self::hydrate_chat_session_from_timeline(session, &agent, older_timeline);
                     session.proposed_plan = proposed_plan;
                     let new_row_count = agent_chat_rows(
@@ -1225,5 +1345,59 @@ mod tests {
 
         assert!(!CenterArea::normalize_verification_blocks(&mut timeline));
         assert_eq!(timeline.len(), 2);
+    }
+
+    #[test]
+    fn checklist_normalization_rebuilds_card_and_removes_hidden_output() {
+        let mut timeline = vec![
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: format!("{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: turn-9"),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 1,
+            }),
+            AgentChatTimelineItem::ReviewChecklist(ReviewChecklist::pending("turn-9", 1)),
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                message_id: Some("assistant-9".to_string()),
+                text: "<review_checklist>\n- Open Settings — The option is visible\n</review_checklist>"
+                    .to_string(),
+                created_at: 2,
+            }),
+        ];
+
+        assert!(CenterArea::normalize_review_checklist_blocks(&mut timeline));
+        assert!(!timeline.iter().any(|item| matches!(
+            item,
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant { text, .. })
+                if text.contains("review_checklist")
+        )));
+        assert!(timeline.iter().any(|item| matches!(
+            item,
+            AgentChatTimelineItem::ReviewChecklist(checklist)
+                if checklist.status == ReviewChecklistStatus::Ready
+                    && checklist.items.len() == 1
+        )));
+    }
+
+    #[test]
+    fn only_startup_cleanup_fails_an_orphaned_pending_checklist() {
+        let mut timeline = vec![AgentChatTimelineItem::ReviewChecklist(
+            ReviewChecklist::pending("turn-live", 1),
+        )];
+
+        assert!(!CenterArea::normalize_review_checklist_blocks(
+            &mut timeline
+        ));
+        assert!(matches!(
+            &timeline[0],
+            AgentChatTimelineItem::ReviewChecklist(checklist)
+                if checklist.status == ReviewChecklistStatus::Pending
+        ));
+        assert!(CenterArea::fail_orphaned_review_checklists(&mut timeline));
+        assert!(matches!(
+            &timeline[0],
+            AgentChatTimelineItem::ReviewChecklist(checklist)
+                if checklist.status == ReviewChecklistStatus::Failed
+        ));
     }
 }
