@@ -123,6 +123,19 @@ impl CenterArea {
                 cx.notify();
             })
             .detach();
+            cx.subscribe(
+                &agent_chats,
+                |this: &mut Self, _, event: &AgentChatEvent, cx| {
+                    if let AgentChatEvent::TurnFinished {
+                        agent_id,
+                        source_turn_id,
+                    } = event
+                    {
+                        this.maybe_request_review_checklist(*agent_id, source_turn_id.clone(), cx);
+                    }
+                },
+            )
+            .detach();
             cx.observe(&docs, |_, _, cx| cx.notify()).detach();
             cx.subscribe(&docs, |this: &mut Self, _docs, event: &DocsEvent, cx| {
                 if let DocsEvent::OpenReference { doc_path, target } = event {

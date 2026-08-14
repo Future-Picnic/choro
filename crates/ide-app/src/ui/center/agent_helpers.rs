@@ -215,8 +215,27 @@ pub(super) fn agent_chat_rows(
         }
 
         let mut index = 0;
+        let mut hidden_review_checklist_turn = false;
         while index < session.timeline.len() {
             match &session.timeline[index] {
+                AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. })
+                    if text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER) =>
+                {
+                    hidden_review_checklist_turn = true;
+                    index += 1;
+                }
+                AgentChatTimelineItem::Message(AgentChatMessage::User { .. }) => {
+                    hidden_review_checklist_turn = false;
+                    rows.push(AgentChatRow::TimelineItem(index));
+                    index += 1;
+                }
+                AgentChatTimelineItem::ReviewChecklist(_) => {
+                    rows.push(AgentChatRow::TimelineItem(index));
+                    index += 1;
+                }
+                _ if hidden_review_checklist_turn => {
+                    index += 1;
+                }
                 AgentChatTimelineItem::PendingUserInput(pending)
                     if session
                         .pending_user_input
@@ -357,6 +376,17 @@ pub(super) fn agent_chat_row_fingerprint(
                 *index,
                 agent_chat_message_fingerprint_value(message, active_reveal),
             ),
+            Some(AgentChatTimelineItem::ReviewChecklist(checklist)) => {
+                let status = match checklist.status {
+                    ReviewChecklistStatus::Pending => 0,
+                    ReviewChecklistStatus::Ready => 1,
+                    ReviewChecklistStatus::Failed => 2,
+                };
+                let geometry = status
+                    + (checklist.items.len() as u64).wrapping_mul(8)
+                    + u64::from(checklist.expanded).wrapping_mul(4);
+                mix(7, *index, geometry)
+            }
             // Cards only change height through an explicit user action (expand,
             // collapse, apply), and every one of those paths already calls
             // `remeasure_agent_chat_list`.
@@ -628,5 +658,58 @@ mod tests {
             finalized_value,
             agent_chat_message_fingerprint_value(&message, None)
         );
+    }
+
+    #[test]
+    fn checklist_checkbox_updates_do_not_remeasure_the_virtualized_row() {
+        let checklist =
+            ReviewChecklist::ready("turn-1", "- Open Settings — The option is visible", 1);
+        let mut session =
+            session_with_timeline(vec![AgentChatTimelineItem::ReviewChecklist(checklist)]);
+        let row = AgentChatRow::TimelineItem(0);
+        let before = agent_chat_row_fingerprint(&row, &session, None);
+
+        let AgentChatTimelineItem::ReviewChecklist(checklist) = &mut session.timeline[0] else {
+            unreachable!();
+        };
+        checklist.items[0].checked = true;
+        let checked = agent_chat_row_fingerprint(&row, &session, None);
+        assert_eq!(before, checked);
+
+        let AgentChatTimelineItem::ReviewChecklist(checklist) = &mut session.timeline[0] else {
+            unreachable!();
+        };
+        checklist.expanded = false;
+        assert_ne!(checked, agent_chat_row_fingerprint(&row, &session, None));
+    }
+
+    #[test]
+    fn checklist_maintenance_transcript_is_hidden_while_the_card_remains_visible() {
+        let session = session_with_timeline(vec![
+            AgentChatTimelineItem::ReviewChecklist(ReviewChecklist::pending("turn-1", 1)),
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: format!("{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: turn-1"),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 2,
+            }),
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                message_id: Some("maintenance-output".to_string()),
+                text: "<review_checklist>partial".to_string(),
+                created_at: 3,
+            }),
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: "next request".to_string(),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 4,
+            }),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        assert!(matches!(
+            agent_chat_rows(&session, false, false, &filter).as_slice(),
+            [AgentChatRow::TimelineItem(0), AgentChatRow::TimelineItem(3)]
+        ));
     }
 }

@@ -10,12 +10,15 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
-        let visible_files = summary
+        // Reconcile again while rendering so receipts persisted by older app
+        // versions are fixed without requiring a data migration.
+        let reconciled = summary.reconciled_final_files(agent.runtime_path());
+        let visible_files = reconciled
             .files
             .iter()
             .filter(|file| !artifact_filter.is_artifact(&file.path))
             .collect::<Vec<_>>();
-        let visible_observed_files = summary
+        let visible_observed_files = reconciled
             .observed_files
             .iter()
             .filter(|file| !artifact_filter.is_artifact(&file.path))

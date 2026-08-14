@@ -199,6 +199,24 @@ pub(super) fn upsert_timeline_verification(
     }
 }
 
+pub(super) fn upsert_timeline_review_checklist(
+    timeline: &mut Vec<AgentChatTimelineItem>,
+    checklist: ReviewChecklist,
+) {
+    if let Some(AgentChatTimelineItem::ReviewChecklist(existing)) =
+        timeline.iter_mut().rev().find(|item| match item {
+            AgentChatTimelineItem::ReviewChecklist(existing) => {
+                existing.source_turn_id == checklist.source_turn_id
+            }
+            _ => false,
+        })
+    {
+        *existing = checklist;
+    } else {
+        timeline.push(AgentChatTimelineItem::ReviewChecklist(checklist));
+    }
+}
+
 pub(super) fn append_timeline_changed_files(
     timeline: &mut Vec<AgentChatTimelineItem>,
     summary: ChangedFilesSummary,
@@ -307,6 +325,28 @@ pub(super) fn remove_verification_blocks_from_timeline(timeline: &mut Vec<AgentC
     timeline.retain_mut(|item| match item {
         AgentChatTimelineItem::Message(AgentChatMessage::Assistant { text, .. }) => {
             *text = strip_tagged_blocks(text, "verification");
+            !text.trim().is_empty()
+        }
+        _ => true,
+    });
+}
+
+pub(super) fn remove_review_checklist_blocks(messages: &mut Vec<AgentChatMessage>) {
+    messages.retain_mut(|message| match message {
+        AgentChatMessage::Assistant { text, .. } => {
+            *text = strip_tagged_blocks(text, "review_checklist");
+            !text.trim().is_empty()
+        }
+        _ => true,
+    });
+}
+
+pub(super) fn remove_review_checklist_blocks_from_timeline(
+    timeline: &mut Vec<AgentChatTimelineItem>,
+) {
+    timeline.retain_mut(|item| match item {
+        AgentChatTimelineItem::Message(AgentChatMessage::Assistant { text, .. }) => {
+            *text = strip_tagged_blocks(text, "review_checklist");
             !text.trim().is_empty()
         }
         _ => true,

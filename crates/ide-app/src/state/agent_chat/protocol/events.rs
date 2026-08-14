@@ -575,6 +575,12 @@ pub(super) fn extract_verification(text: &str) -> Option<String> {
     (!verification.is_empty()).then(|| verification.to_string())
 }
 
+pub(super) fn extract_review_checklist(text: &str) -> Option<String> {
+    let start = text.find("<review_checklist>")? + "<review_checklist>".len();
+    let end = text[start..].find("</review_checklist>")? + start;
+    Some(text[start..end].trim().to_string())
+}
+
 pub(super) fn next_request_id() -> String {
     REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed).to_string()
 }

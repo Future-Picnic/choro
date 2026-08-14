@@ -28,6 +28,7 @@ let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
 let currentDesignAssistant = false;
 let currentDesignPreviewReview = false;
+let currentReadOnly = false;
 let usageSessionId = null;
 let usageRevision = 0;
 let cumulativeUsage = emptyUsage();
@@ -247,6 +248,7 @@ async function ensureRuntime(command) {
   currentAccessMode = command.accessMode || "bypassPermissions";
   currentDesignAssistant = Boolean(command.designAssistant);
   currentDesignPreviewReview = Boolean(command.designPreviewReview);
+  currentReadOnly = Boolean(command.readOnly);
   const resumeSessionId = command.sessionId || command.session_id || null;
   if (runtime) {
     if (typeof runtime.setPermissionMode === "function") {
@@ -309,6 +311,15 @@ function permissionModeFor(mode, accessMode) {
 }
 
 async function canUseTool(toolName, input, options) {
+  if (
+    currentReadOnly &&
+    !["Read", "Glob", "Grep"].includes(toolName)
+  ) {
+    return {
+      behavior: "deny",
+      message: "This Choro checklist pass is read-only. Inspect the project without running commands or changing files.",
+    };
+  }
   if (
     currentDesignAssistant &&
     typeof toolName === "string" &&

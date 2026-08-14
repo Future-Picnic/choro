@@ -30,6 +30,14 @@ pub enum VerificationMode {
     Off,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewChecklistMode {
+    #[default]
+    Automatic,
+    Off,
+}
+
 /// How the project activity switcher (Code / Agents / Tasks / DB / Context) is
 /// presented. This is a layout preference, independent of the color theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -521,6 +529,9 @@ pub struct AppConfig {
     /// immediately, or left alone.
     #[serde(default)]
     pub verification_mode: VerificationMode,
+    /// Whether file-changing turns automatically produce a manual checklist.
+    #[serde(default)]
+    pub review_checklist_mode: ReviewChecklistMode,
     /// Whether starting an implementation agent may open its linked design in
     /// the user's browser without showing the explanatory confirmation first.
     #[serde(default)]
@@ -559,6 +570,7 @@ impl Default for AppConfig {
             code_review_output_instructions: default_code_review_output_instructions(),
             memory_proposals_enabled: true,
             verification_mode: VerificationMode::Ask,
+            review_checklist_mode: ReviewChecklistMode::Automatic,
             design_browser_open_prompt_dismissed: false,
         }
     }
@@ -721,6 +733,7 @@ mod tests {
             code_review_output_instructions: default_code_review_output_instructions(),
             memory_proposals_enabled: true,
             verification_mode: VerificationMode::Ask,
+            review_checklist_mode: ReviewChecklistMode::Automatic,
             design_browser_open_prompt_dismissed: false,
         }
     }
@@ -920,6 +933,7 @@ mod tests {
         assert!(loaded.companion_enabled);
         assert_eq!(loaded.companion_music, CompanionMusicSettings::default());
         assert_eq!(loaded.verification_mode, VerificationMode::Ask);
+        assert_eq!(loaded.review_checklist_mode, ReviewChecklistMode::Automatic);
     }
 
     #[test]

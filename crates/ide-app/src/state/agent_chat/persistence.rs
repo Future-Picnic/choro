@@ -288,6 +288,29 @@ impl StoredTimelinePayload {
                 markdown: verification.markdown.clone(),
                 expanded: verification.expanded,
             }),
+            AgentChatTimelineItem::ReviewChecklist(checklist) => Some(Self::ReviewChecklist {
+                id: checklist.id.clone(),
+                source_turn_id: checklist.source_turn_id.clone(),
+                status: match checklist.status {
+                    ReviewChecklistStatus::Pending => "pending",
+                    ReviewChecklistStatus::Ready => "ready",
+                    ReviewChecklistStatus::Failed => "failed",
+                }
+                .to_string(),
+                items: checklist
+                    .items
+                    .iter()
+                    .map(|item| StoredReviewChecklistItem {
+                        id: item.id.clone(),
+                        flow: item.flow.clone(),
+                        action: item.action.clone(),
+                        expected: item.expected.clone(),
+                        checked: item.checked,
+                    })
+                    .collect(),
+                expanded: checklist.expanded,
+                created_at: checklist.created_at,
+            }),
             AgentChatTimelineItem::ChangedFiles(summary) => Some(Self::ChangedFiles {
                 snapshot_id: summary.snapshot_id,
                 commit_sha: summary.commit_sha.clone(),
@@ -494,6 +517,34 @@ impl StoredTimelinePayload {
                 verification.expanded = expanded;
                 Some(AgentChatTimelineItem::Verification(verification))
             }
+            Self::ReviewChecklist {
+                id,
+                source_turn_id,
+                status,
+                items,
+                expanded,
+                created_at,
+            } => Some(AgentChatTimelineItem::ReviewChecklist(ReviewChecklist {
+                id,
+                source_turn_id,
+                status: match status.as_str() {
+                    "ready" => ReviewChecklistStatus::Ready,
+                    "failed" => ReviewChecklistStatus::Failed,
+                    _ => ReviewChecklistStatus::Pending,
+                },
+                items: items
+                    .into_iter()
+                    .map(|item| ReviewChecklistItem {
+                        id: item.id,
+                        flow: item.flow,
+                        action: item.action,
+                        expected: item.expected,
+                        checked: item.checked,
+                    })
+                    .collect(),
+                expanded,
+                created_at,
+            })),
             Self::ChangedFiles {
                 files,
                 observed_files,
@@ -681,6 +732,7 @@ impl StoredTimelinePayload {
             Self::ProposedPlan { .. } => "proposed_plan",
             Self::CodeReview { .. } => "code_review",
             Self::Verification { .. } => "verification",
+            Self::ReviewChecklist { .. } => "review_checklist",
             Self::ChangedFiles { .. } => "changed_files",
             Self::ShipResult { .. } => "ship_result",
             Self::Rejoined { .. } => "rejoined",
@@ -716,6 +768,9 @@ impl StoredTimelinePayload {
             Self::ProposedPlan { id, .. } => Some(format!("proposed_plan:{id}")),
             Self::CodeReview { id, .. } => Some(format!("code_review:{id}")),
             Self::Verification { id, .. } => Some(format!("verification:{id}")),
+            Self::ReviewChecklist { source_turn_id, .. } => {
+                Some(format!("review_checklist:turn:{source_turn_id}"))
+            }
             Self::ChangedFiles {
                 turn_id,
                 files,
@@ -748,6 +803,7 @@ impl StoredTimelinePayload {
             Self::Message { created_at, .. } => *created_at,
             Self::WorkLog { updated_at, .. } => *updated_at,
             Self::FileChangeActivity { updated_at, .. } => *updated_at,
+            Self::ReviewChecklist { created_at, .. } => *created_at,
             Self::ProposedPlan { implemented_at, .. } => implemented_at.unwrap_or_else(unix_now),
             Self::ShipResult { created_at, .. } => *created_at,
             Self::Rejoined { created_at, .. } => *created_at,
@@ -808,6 +864,63 @@ mod tests {
             PathBuf::from("generated.css")
         );
         assert!(restored.observed_files[0].counts_are_projection);
+    }
+
+    #[test]
+    fn review_checklist_round_trips_checked_state_with_stable_turn_identity() {
+        let mut checklist = ReviewChecklist::ready(
+            "turn-42",
+            "## Settings\n- Open Settings — The automatic option is selected\n- Toggle it off — No checklist is generated",
+            55,
+        );
+        checklist.items[0].checked = true;
+        checklist.expanded = false;
+        let item = AgentChatTimelineItem::ReviewChecklist(checklist);
+
+        let (kind, event_key, payload, created_at) =
+            stored_timeline_event_parts(&item).expect("review checklist event");
+        assert_eq!(kind, "review_checklist");
+        assert_eq!(event_key.as_deref(), Some("review_checklist:turn:turn-42"));
+        assert_eq!(created_at, 55);
+
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::ReviewChecklist(restored) = restored else {
+            panic!("expected review checklist");
+        };
+        assert_eq!(restored.source_turn_id, "turn-42");
+        assert_eq!(restored.items[0].flow.as_deref(), Some("Settings"));
+        assert!(restored.items[0].checked);
+        assert!(!restored.expanded);
+    }
+
+    #[test]
+    fn older_review_checklist_items_default_to_no_flow() {
+        let payload = r#"{
+            "type":"review_checklist",
+            "id":"review-checklist-turn-1",
+            "source_turn_id":"turn-1",
+            "status":"ready",
+            "items":[{
+                "id":"check-1",
+                "action":"Open Settings",
+                "expected":"Settings opens",
+                "checked":false
+            }],
+            "expanded":true,
+            "created_at":1
+        }"#;
+
+        let restored = serde_json::from_str::<StoredTimelinePayload>(payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::ReviewChecklist(restored) = restored else {
+            panic!("expected review checklist");
+        };
+        assert_eq!(restored.items[0].flow, None);
     }
 
     #[test]

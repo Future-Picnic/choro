@@ -13,6 +13,7 @@ mod agent_chat_render_helpers;
 mod agent_chat_resume;
 mod agent_chat_reveal;
 mod agent_chat_review;
+mod agent_chat_review_checklist;
 mod agent_chat_runtime;
 mod agent_chat_ship;
 mod agent_chat_timeline;
@@ -115,10 +116,11 @@ use uuid::Uuid;
 use crate::actions::{CloseTab, NewTerminal, SaveFile, ToggleAgentPlanMode};
 use crate::state::agent_chat::{
     persist_timeline_item, persist_timeline_snapshot, split_code_review, split_verification,
-    timeline_item_from_store_event, AgentChatMessage, AgentChatMessageTag, AgentChatMessageTagKind,
-    AgentChatSession, AgentChatStatus, AgentChatTimelineItem, AgentInteractionMode, CodeReview,
-    ConversationUsage, QueuedChatTurn, Verification, VerificationStatus,
-    VisualizationArtifactFilter, WorkLogEntryKind, WorkLogStatus,
+    timeline_item_from_store_event, AgentChatEvent, AgentChatMessage, AgentChatMessageTag,
+    AgentChatMessageTagKind, AgentChatSession, AgentChatStatus, AgentChatTimelineItem,
+    AgentInteractionMode, CodeReview, ConversationUsage, QueuedChatTurn, ReviewChecklist,
+    ReviewChecklistStatus, Verification, VerificationStatus, VisualizationArtifactFilter,
+    WorkLogEntryKind, WorkLogStatus, REVIEW_CHECKLIST_REQUEST_MARKER,
 };
 use crate::state::docs::{
     clean_doc_label, DocEntry as WorkspaceDocEntry, DocsEvent, DOCS_DIR_NAME,
@@ -386,6 +388,7 @@ struct PostHydrationAgentChatSubmission {
     display_text: Option<String>,
     tags: Vec<AgentChatMessageTag>,
     mode: AgentInteractionMode,
+    read_only: bool,
 }
 
 #[derive(Clone, Debug)]

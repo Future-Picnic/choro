@@ -1253,6 +1253,22 @@ pub fn checkbox(id: impl Into<ElementId>, checked: bool, cx: &App) -> Stateful<D
         })
 }
 
+/// One bounded manual-check row inside a chat checklist card. The feature owns
+/// its click handler; the shared geometry keeps future checklist surfaces from
+/// drifting into a parallel control treatment.
+pub fn review_checklist_row(cx: &App) -> Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.))
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded(design::r_md())
+        .cursor_pointer()
+        .hover(|row| row.bg(design::hover(cx).opacity(0.55)))
+}
+
 // ---- icon button ----
 
 /// A small icon-only action affordance (the `+`, `⋯`, collapse chevrons).

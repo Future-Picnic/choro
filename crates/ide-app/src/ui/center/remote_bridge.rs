@@ -1072,6 +1072,7 @@ fn timeline_item_dto(
         // Desktop-only for now: the proposal card needs accept/dismiss
         // actions the remote protocol doesn't carry yet.
         AgentChatTimelineItem::MemoryProposal(_) => None,
+        AgentChatTimelineItem::ReviewChecklist(_) => None,
         AgentChatTimelineItem::AgentSummary(card) => Some(TimelineItemDto::Notice {
             title: "Agent summary".to_string(),
             detail: Some(card.summary_text.clone()),
