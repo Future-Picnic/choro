@@ -257,6 +257,20 @@ impl AgentRecords {
         cx.notify();
     }
 
+    pub fn set_origin(&mut self, id: Uuid, origin: ide_core::AgentOrigin, cx: &mut Context<Self>) {
+        let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id) else {
+            return;
+        };
+        if agent.origin.as_ref() == Some(&origin) {
+            return;
+        }
+        agent.origin = Some(origin);
+        agent.updated_at = agents::unix_now();
+        self.schedule_save(cx);
+        cx.emit(AgentRecordsEvent::Changed);
+        cx.notify();
+    }
+
     pub fn update_effort(&mut self, id: Uuid, effort: AgentEffort, cx: &mut Context<Self>) {
         let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id) else {
             return;

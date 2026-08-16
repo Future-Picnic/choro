@@ -571,6 +571,11 @@ pub struct AgentRecord {
     pub linked_tasks: Vec<TaskRef>,
     #[serde(default)]
     pub source_task: Option<TaskRef>,
+    /// Product-owned provenance for agents created outside Choro's native
+    /// composer. This is structured so integrations never have to infer
+    /// identity from a user-editable title or prompt.
+    #[serde(default)]
+    pub origin: Option<AgentOrigin>,
     #[serde(default)]
     pub changed_files: Vec<AgentChangedFile>,
     #[serde(default)]
@@ -662,6 +667,7 @@ impl AgentRecord {
             source_doc: None,
             linked_tasks: Vec::new(),
             source_task: None,
+            origin: None,
             changed_files: Vec::new(),
             hidden_doc_assistant: false,
             design_context: None,
@@ -845,6 +851,29 @@ impl AgentRecord {
     /// leftover lane folder still awaits cleanup.
     pub fn is_active_solo(&self) -> bool {
         self.is_solo() && self.solo_rejoined_branch.is_none()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentOrigin {
+    PocketComet {
+        workspace_id: String,
+        project_id: String,
+        task_id: String,
+        task_title: String,
+    },
+}
+
+impl AgentOrigin {
+    pub fn is_pocketcomet(&self) -> bool {
+        matches!(self, Self::PocketComet { .. })
+    }
+
+    pub fn pocketcomet_task_id(&self) -> Option<&str> {
+        match self {
+            Self::PocketComet { task_id, .. } => Some(task_id),
+        }
     }
 }
 
@@ -1653,6 +1682,7 @@ mod tests {
             source_doc: None,
             linked_tasks: Vec::new(),
             source_task: None,
+            origin: None,
             changed_files: Vec::new(),
             hidden_doc_assistant: false,
             design_context: None,

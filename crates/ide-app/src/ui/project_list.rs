@@ -1226,6 +1226,18 @@ impl ProjectList {
                 cx.stop_propagation();
                 this.open_agent(project, agent_id, window, cx);
             }))
+            .when(
+                agent
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.is_pocketcomet()),
+                |row| {
+                    row.child(crate::ui::design::indicator::pocketcomet_icon(
+                        crate::ui::design::accent(cx),
+                        crate::ui::design::icon_sm(),
+                    ))
+                },
+            )
             // A Solo wears its fork before the name, sky-marked like everywhere.
             .when(agent.is_active_solo(), |row| {
                 row.child(crate::ui::design::indicator::solo_icon(

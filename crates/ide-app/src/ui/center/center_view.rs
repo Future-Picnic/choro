@@ -120,19 +120,28 @@ impl CenterArea {
                 this.maybe_finalize_doc_assistant_titles(cx);
                 this.maybe_auto_verify(cx);
                 this.maybe_finish_summary_maintenance(cx);
+                this.maybe_start_pending_pocketcomet_handoffs(cx);
                 cx.notify();
             })
             .detach();
             cx.subscribe(
                 &agent_chats,
-                |this: &mut Self, _, event: &AgentChatEvent, cx| {
-                    if let AgentChatEvent::TurnFinished {
+                |this: &mut Self, _, event: &AgentChatEvent, cx| match event {
+                    AgentChatEvent::TurnFinished {
                         agent_id,
                         source_turn_id,
-                    } = event
-                    {
-                        this.maybe_request_review_checklist(*agent_id, source_turn_id.clone(), cx);
+                    } => {
+                        let review_started = this.maybe_request_review_checklist(
+                            *agent_id,
+                            source_turn_id.clone(),
+                            cx,
+                        );
+                        this.schedule_pocketcomet_handoff(*agent_id, review_started, cx);
                     }
+                    AgentChatEvent::WorkFinished { agent_id } => {
+                        this.schedule_pocketcomet_handoff(*agent_id, false, cx);
+                    }
+                    AgentChatEvent::Changed => {}
                 },
             )
             .detach();
@@ -728,6 +737,7 @@ impl CenterArea {
                 agent_summary_requests_pending: HashMap::new(),
                 agent_summary_silent_requests: HashSet::new(),
                 agent_summary_maintenance_status_seen: HashMap::new(),
+                pocketcomet_handoffs_pending: HashSet::new(),
                 agent_record_status_seen: HashMap::new(),
                 agent_messages_inflight: HashSet::new(),
                 memory_distills_inflight: HashSet::new(),

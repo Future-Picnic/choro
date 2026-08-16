@@ -107,9 +107,9 @@ use ide_core::local_store::{
 use ide_core::{
     doc_assistant, penpot_assistant, AgentAccessMode, AgentConnectedContextExtras,
     AgentConnectedDesign, AgentConnectedPullRequest, AgentEffort, AgentKind, AgentModel,
-    AgentRecord, AgentRuntimeKind, AgentStatus, AppConfig, DocAssistantMessage, DocAssistantRecord,
-    DocAssistantRole, DocAssistantTranscriptMessage, LaneProfile, Project, ProjectId,
-    ProjectReference, TaskDetail, TaskRef, TaskSummary,
+    AgentOrigin, AgentRecord, AgentRuntimeKind, AgentStatus, AppConfig, DocAssistantMessage,
+    DocAssistantRecord, DocAssistantRole, DocAssistantTranscriptMessage, LaneProfile, Project,
+    ProjectId, ProjectReference, TaskDetail, TaskRef, TaskSummary,
 };
 use uuid::Uuid;
 
@@ -1882,6 +1882,9 @@ pub struct CenterArea {
     /// their final assistant response settles back to Idle.
     agent_summary_silent_requests: HashSet<Uuid>,
     agent_summary_maintenance_status_seen: HashMap<Uuid, AgentChatStatus>,
+    /// PocketComet handoffs waiting for the automatic review-checklist pass to
+    /// finish before their dedicated read-only summary turn begins.
+    pocketcomet_handoffs_pending: HashSet<Uuid>,
     /// Last terminal task state observed, used for Done/Rejected checkpoints.
     agent_record_status_seen: HashMap<Uuid, AgentStatus>,
     /// Inbox rows currently being surfaced and dispatched.

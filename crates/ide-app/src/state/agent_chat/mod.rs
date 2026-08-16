@@ -52,6 +52,12 @@ use timeline::*;
 
 pub enum AgentChatEvent {
     Changed,
+    /// A provider-backed work turn settled normally. Unlike `TurnFinished`,
+    /// this does not require a user message or changed-files receipt, so
+    /// remotely launched agents can reliably react to completion too.
+    WorkFinished {
+        agent_id: Uuid,
+    },
     TurnFinished {
         agent_id: Uuid,
         source_turn_id: String,
@@ -1489,8 +1495,8 @@ impl AgentChatState {
                 cx,
             );
         }
-        let finished_source_turn = (previous_status == Some(AgentChatStatus::Running)
-            && session.status == AgentChatStatus::Idle)
+        let work_finished = is_work_completion_transition(previous_status, session.status);
+        let finished_source_turn = work_finished
             .then(|| latest_changed_source_turn(&session.timeline))
             .flatten();
         if let Some(source_turn_id) = finished_source_turn {
@@ -1498,6 +1504,9 @@ impl AgentChatState {
                 agent_id,
                 source_turn_id,
             });
+        }
+        if work_finished {
+            cx.emit(AgentChatEvent::WorkFinished { agent_id });
         }
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
@@ -1584,6 +1593,13 @@ impl AgentChatState {
     ) -> bool {
         self.apply_backend_identity_event(agent_id, event, now)
     }
+}
+
+fn is_work_completion_transition(
+    previous: Option<AgentChatStatus>,
+    current: AgentChatStatus,
+) -> bool {
+    previous == Some(AgentChatStatus::Running) && current == AgentChatStatus::Idle
 }
 
 fn latest_changed_source_turn(timeline: &[AgentChatTimelineItem]) -> Option<String> {
@@ -1880,6 +1896,27 @@ mod retirement_tests {
             latest_changed_source_turn(&timeline).as_deref(),
             Some("turn-7")
         );
+    }
+
+    #[test]
+    fn remote_work_completion_does_not_require_a_user_timeline_message() {
+        let timeline = vec![AgentChatTimelineItem::ChangedFiles(
+            ChangedFilesSummary::attributed(
+                "remote-turn",
+                vec![FileChangeStat::new("mock.html", 15, 0)],
+                Vec::new(),
+            ),
+        )];
+
+        assert_eq!(latest_changed_source_turn(&timeline), None);
+        assert!(is_work_completion_transition(
+            Some(AgentChatStatus::Running),
+            AgentChatStatus::Idle,
+        ));
+        assert!(!is_work_completion_transition(
+            Some(AgentChatStatus::Running),
+            AgentChatStatus::WaitingForUser,
+        ));
     }
 
     #[test]

@@ -21,6 +21,13 @@ pub struct ProjectDto {
     pub id: String,
     pub name: String,
     pub agent_count: usize,
+    pub repositories: Vec<RepositoryDto>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepositoryDto {
+    pub name: String,
+    pub path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,11 +48,47 @@ pub struct AgentListItemDto {
     pub solo: bool,
     #[serde(default)]
     pub solo_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<AgentOriginDto>,
+}
+
+/// The deliberately small status payload used by local integrations for
+/// frequent synchronization. It must stay independent from transcript and
+/// timeline hydration so reading it is safe on the GPUI thread.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSyncStateDto {
+    pub agent_id: String,
+    pub status: String,
+    pub last_activity_at: u64,
+    pub needs_attention: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSyncBatchDto {
+    pub device_id: String,
+    pub agents: Vec<AgentSyncStateDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AgentSyncRequest {
+    pub agent_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConfigurationCatalogDto {
     pub providers: Vec<ProviderConfigurationDto>,
+    pub defaults: AgentDefaultsDto,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentDefaultsDto {
+    pub provider: String,
+    pub model: String,
+    pub effort: String,
+    pub access_mode: String,
+    pub solo: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -242,6 +285,44 @@ pub struct CreateAgentRequest {
     /// more than one repository; optional for repository-scoped normal agents.
     #[serde(default)]
     pub repository_path: Option<String>,
+    /// Stable retry identity supplied by the caller. Choro also deduplicates
+    /// PocketComet agents by their structured origin across app restarts.
+    #[serde(default)]
+    pub client_command_id: Option<String>,
+    #[serde(default)]
+    pub origin: Option<AgentOriginDto>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentOriginDto {
+    PocketComet {
+        workspace_id: String,
+        project_id: String,
+        task_id: String,
+        task_title: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct UpdateAgentStatusRequest {
+    pub status: String,
+    pub client_command_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompletedTurnsDto {
+    pub turns: Vec<CompletedTurnDto>,
+    pub latest_sequence: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompletedTurnDto {
+    pub id: String,
+    pub sequence: i64,
+    pub response: String,
+    pub completed_at: u64,
+    pub changed_files: Vec<ChangedFileDto>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -382,6 +463,7 @@ pub enum RemoteEvent {
     ProjectChanged { project_id: String },
     AgentChanged { agent_id: String },
     AgentDeleted { agent_id: String },
+    AgentTurnCompleted { agent_id: String, sequence: i64 },
 }
 
 #[cfg(test)]
@@ -417,6 +499,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(request.repository_path.as_deref(), Some("frontend"));
+    }
+
+    #[test]
+    fn pocketcomet_origin_has_a_structured_wire_identity() {
+        let request: CreateAgentRequest = serde_json::from_str(
+            r#"{"project_id":"choro-project","prompt":"implement","origin":{"kind":"pocket_comet","workspace_id":"workspace-1","project_id":"project-1","task_id":"task-1","task_title":"Ship it"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request.origin,
+            Some(AgentOriginDto::PocketComet {
+                workspace_id: "workspace-1".into(),
+                project_id: "project-1".into(),
+                task_id: "task-1".into(),
+                task_title: "Ship it".into(),
+            })
+        );
     }
 
     #[test]

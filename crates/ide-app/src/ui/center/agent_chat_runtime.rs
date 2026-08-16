@@ -24,6 +24,10 @@ pub(super) const AGENT_CODE_REVIEW_FIX_PREFIX: &str =
 /// timeline collapses the turn to a "Sent for verification" chip.
 pub(super) const AGENT_VERIFY_REQUEST_MARKER: &str = "<!-- choro:verify -->";
 
+/// Marks the read-only maintenance turn that turns a finished PocketComet task
+/// into one purpose-written handoff instead of mirroring Choro's transcript.
+pub(super) const POCKETCOMET_HANDOFF_REQUEST_MARKER: &str = "<!-- choro:pocketcomet-handoff -->";
+
 /// Records that the user declined verification for this agent. Unlike the
 /// transient decision panel, this marker is persisted with the timeline so
 /// later turns and app restarts do not revive either verification prompt.
@@ -44,7 +48,96 @@ pub(super) const AGENT_VERIFY_FIX_PREFIX: &str =
 const VERIFY_TASK_DESCRIPTION_MAX_CHARS: usize = 4000;
 const REVIEW_CHECKLIST_FILE_LIMIT: usize = 40;
 
+fn pocketcomet_handoff_prompt() -> String {
+    format!(
+        "{POCKETCOMET_HANDOFF_REQUEST_MARKER}\nThe implementation work immediately before this request has finished. Write the final task update that PocketComet should show.\n\nReturn only concise plain text, at most 1,200 characters:\n- Open with one sentence stating the outcome.\n- Add a short `What changed` list containing only user-relevant results.\n- Add one `Verification` line with the checks that actually passed.\n- Add `Needs attention` only when there is a real decision or follow-up for the user.\n\nUse completed, past-tense language. Do not narrate your process, tools, skills, intermediate messages, or review steps. Do not include image Markdown, attachment filenames, or local filesystem paths. Do not perform more work or change files."
+    )
+}
+
+fn latest_user_turn_is_pocketcomet_handoff(timeline: &[AgentChatTimelineItem]) -> bool {
+    timeline.iter().rev().find_map(|item| match item {
+        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
+            Some(text.starts_with(POCKETCOMET_HANDOFF_REQUEST_MARKER))
+        }
+        _ => None,
+    }) == Some(true)
+}
+
 impl CenterArea {
+    pub(super) fn schedule_pocketcomet_handoff(
+        &mut self,
+        agent_id: Uuid,
+        wait_for_review: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let is_pocketcomet = self.agents.read(cx).agent(agent_id).is_some_and(|agent| {
+            matches!(agent.origin.as_ref(), Some(AgentOrigin::PocketComet { .. }))
+        });
+        if !is_pocketcomet
+            || self.pocketcomet_handoffs_pending.contains(&agent_id)
+            || self
+                .agent_chats
+                .read(cx)
+                .session(agent_id)
+                .is_some_and(|session| latest_user_turn_is_pocketcomet_handoff(&session.timeline))
+        {
+            return false;
+        }
+        if wait_for_review || self.agent_summary_silent_requests.contains(&agent_id) {
+            self.pocketcomet_handoffs_pending.insert(agent_id);
+            cx.notify();
+            return true;
+        }
+        self.request_pocketcomet_handoff(agent_id, cx)
+    }
+
+    fn request_pocketcomet_handoff(&mut self, agent_id: Uuid, cx: &mut Context<Self>) -> bool {
+        let mode = self
+            .agent_chats
+            .read(cx)
+            .session(agent_id)
+            .map(|session| session.interaction_mode)
+            .unwrap_or(AgentInteractionMode::Default);
+        self.agent_summary_silent_requests.insert(agent_id);
+        let sent = self.dispatch_agent_chat_read_only_submission(
+            agent_id,
+            pocketcomet_handoff_prompt(),
+            mode,
+            cx,
+        );
+        if !sent {
+            self.agent_summary_silent_requests.remove(&agent_id);
+        }
+        sent
+    }
+
+    pub(super) fn maybe_start_pending_pocketcomet_handoffs(&mut self, cx: &mut Context<Self>) {
+        let (ready, abandoned) = {
+            let chats = self.agent_chats.read(cx);
+            let mut ready = Vec::new();
+            let mut abandoned = Vec::new();
+            for agent_id in &self.pocketcomet_handoffs_pending {
+                match chats.session(*agent_id).map(|session| session.status) {
+                    Some(AgentChatStatus::Idle)
+                        if !self.agent_summary_silent_requests.contains(agent_id) =>
+                    {
+                        ready.push(*agent_id)
+                    }
+                    Some(AgentChatStatus::Failed) | None => abandoned.push(*agent_id),
+                    _ => {}
+                }
+            }
+            (ready, abandoned)
+        };
+        for agent_id in ready {
+            self.pocketcomet_handoffs_pending.remove(&agent_id);
+            self.request_pocketcomet_handoff(agent_id, cx);
+        }
+        for agent_id in abandoned {
+            self.pocketcomet_handoffs_pending.remove(&agent_id);
+        }
+    }
+
     pub(super) fn maybe_request_review_checklist(
         &mut self,
         agent_id: Uuid,
@@ -3006,6 +3099,18 @@ fn visual_review_target_label(review: &ide_core::visual_review::VisualReviewSubm
 #[cfg(test)]
 mod verification_trigger_tests {
     use super::*;
+
+    #[test]
+    fn pocketcomet_handoff_prompt_requests_a_bounded_result_not_process_chatter() {
+        let prompt = pocketcomet_handoff_prompt();
+
+        assert!(prompt.starts_with(POCKETCOMET_HANDOFF_REQUEST_MARKER));
+        assert!(prompt.contains("What changed"));
+        assert!(prompt.contains("Verification"));
+        assert!(prompt.contains("Needs attention"));
+        assert!(prompt.contains("Do not narrate your process"));
+        assert!(prompt.contains("Do not perform more work or change files"));
+    }
 
     #[test]
     fn review_checklist_prompt_groups_clicks_into_complete_journeys() {

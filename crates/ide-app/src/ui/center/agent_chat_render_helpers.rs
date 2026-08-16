@@ -113,6 +113,8 @@ pub(super) fn code_review_request_chip(text: &str) -> Option<(&'static str, Icon
         Some(("Applying review fixes", IconName::CircleCheck))
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_REQUEST_MARKER) {
         Some(("Sent for verification", IconName::CircleCheck))
+    } else if text.starts_with(super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER) {
+        Some(("Preparing PocketComet update", IconName::ArrowUp))
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_FIX_PREFIX) {
         Some(("Addressing verification gaps", IconName::Replace))
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_DISMISS_MARKER)
@@ -320,6 +322,18 @@ mod tests {
             )
             .map(|(label, _)| label),
             Some("Verification skipped")
+        );
+    }
+
+    #[test]
+    fn pocketcomet_handoff_renders_as_a_compact_chip() {
+        assert_eq!(
+            code_review_request_chip(&format!(
+                "{}\nPrepare the update.",
+                super::super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER
+            ))
+            .map(|(label, _)| label),
+            Some("Preparing PocketComet update")
         );
     }
 

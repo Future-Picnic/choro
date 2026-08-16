@@ -62,6 +62,12 @@ pub fn solo_icon(color: Hsla, size: gpui::Pixels) -> Div {
     lucide_icon(lucide_icons::Icon::Shuffle, color, size)
 }
 
+/// The PocketComet origin mark. Orbit is a concrete link between a task and
+/// its running Choro agent, and remains distinct from Choro's Solo fork mark.
+pub fn pocketcomet_icon(color: Hsla, size: gpui::Pixels) -> Div {
+    lucide_icon(lucide_icons::Icon::Orbit, color, size)
+}
+
 /// A header-subline indicator with a supplied icon element. This keeps custom
 /// product glyphs (for example the existing pull-request icon) on the same
 /// type, spacing, and text tokens as standard library icons.

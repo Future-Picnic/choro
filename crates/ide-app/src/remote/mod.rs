@@ -6,10 +6,11 @@ mod server;
 use tokio::sync::oneshot;
 
 use dto::{
-    AgentListItemDto, AgentSnapshotDto, AnswerQuestionRequest, CommandAcceptedResponse,
-    ConfigurationCatalogDto, CreateAgentRequest, DismissPlanRequest, FileDiffDto, ProjectDto,
-    ResolveApprovalRequest, ResolvePlanRequest, SendMessageRequest, ShipPreviewDto, ShipRequest,
-    UpdateAgentConfigurationRequest, VerificationFixRequest,
+    AgentListItemDto, AgentSnapshotDto, AgentSyncStateDto, AnswerQuestionRequest,
+    CommandAcceptedResponse, CompletedTurnsDto, ConfigurationCatalogDto, CreateAgentRequest,
+    DismissPlanRequest, FileDiffDto, ProjectDto, ResolveApprovalRequest, ResolvePlanRequest,
+    SendMessageRequest, ShipPreviewDto, ShipRequest, UpdateAgentConfigurationRequest,
+    UpdateAgentStatusRequest, VerificationFixRequest,
 };
 
 pub use auth::{DevicePermission, PairedDevice, PairingError, RemoteAuth};
@@ -69,9 +70,27 @@ pub enum RemoteCommand {
         agent_id: String,
         response: oneshot::Sender<RemoteResult<AgentSnapshotDto>>,
     },
+    SyncAgents {
+        agent_ids: Vec<String>,
+        response: oneshot::Sender<RemoteResult<Vec<AgentSyncStateDto>>>,
+    },
     CreateAgent {
         request: CreateAgentRequest,
         response: oneshot::Sender<RemoteResult<AgentSnapshotDto>>,
+    },
+    OpenAgent {
+        agent_id: String,
+        response: oneshot::Sender<RemoteResult<AgentSnapshotDto>>,
+    },
+    UpdateAgentStatus {
+        agent_id: String,
+        request: UpdateAgentStatusRequest,
+        response: oneshot::Sender<RemoteResult<AgentSnapshotDto>>,
+    },
+    CompletedTurns {
+        agent_id: String,
+        after_sequence: i64,
+        response: oneshot::Sender<RemoteResult<CompletedTurnsDto>>,
     },
     SendMessage {
         agent_id: String,

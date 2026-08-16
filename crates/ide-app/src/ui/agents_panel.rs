@@ -543,6 +543,18 @@ impl AgentsPanel {
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.open_agent(agent_id, window, cx);
             }))
+            .when(
+                agent
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.is_pocketcomet()),
+                |row| {
+                    row.child(crate::ui::design::indicator::pocketcomet_icon(
+                        crate::ui::design::accent(cx),
+                        crate::ui::design::icon_sm(),
+                    ))
+                },
+            )
             // Solo marker: the agent works on its own lane, not the active branch.
             .when(agent.is_active_solo(), |row| {
                 row.child(crate::ui::design::indicator::solo_icon(
