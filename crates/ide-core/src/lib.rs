@@ -23,8 +23,8 @@ pub mod watcher;
 pub use agents::{
     prompt_with_connected_context, AgentAccessMode, AgentChangedFile, AgentChat,
     AgentConnectedContextExtras, AgentConnectedDesign, AgentConnectedPullRequest,
-    AgentDesignContext, AgentEffort, AgentKind, AgentModel, AgentRecord, AgentRuntimeKind,
-    AgentStatus, AgentStoreFile, LaneProfile,
+    AgentDesignContext, AgentEffort, AgentKind, AgentModel, AgentOrigin, AgentRecord,
+    AgentRuntimeKind, AgentStatus, AgentStoreFile, LaneProfile,
 };
 pub use blocking_guard::mark_ui_thread;
 pub use branding::{APP_ID, APP_NAME, DOCS_DIR_NAME};

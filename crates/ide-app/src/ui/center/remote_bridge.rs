@@ -1,21 +1,28 @@
 use super::*;
 
 use crate::remote::dto::{
-    AccessModeConfigurationDto, AgentListItemDto, AgentSnapshotDto, ApprovalDecisionDto,
-    ChangedFileDto, CommandAcceptedResponse, ConfigurationCatalogDto, DiffHunkDto, DiffLineDto,
-    EffortConfigurationDto, FileDiffDto, InteractionModeDto, MessageImageDto,
-    ModelConfigurationDto, PendingApprovalDto, PendingOptionDto, PendingQuestionDto,
-    PendingUserInputDto, ProjectDto, ProviderConfigurationDto, ShipStateDto, TimelineItemDto,
-    VerificationItemDto,
+    AccessModeConfigurationDto, AgentDefaultsDto, AgentListItemDto, AgentOriginDto,
+    AgentSnapshotDto, AgentSyncStateDto, ApprovalDecisionDto, ChangedFileDto,
+    CommandAcceptedResponse, CompletedTurnDto, CompletedTurnsDto, ConfigurationCatalogDto,
+    DiffHunkDto, DiffLineDto, EffortConfigurationDto, FileDiffDto, InteractionModeDto,
+    MessageImageDto, ModelConfigurationDto, PendingApprovalDto, PendingOptionDto,
+    PendingQuestionDto, PendingUserInputDto, ProjectDto, ProviderConfigurationDto, RepositoryDto,
+    ShipStateDto, TimelineItemDto, VerificationItemDto,
 };
 use crate::remote::{RemoteCommand, RemoteError, RemoteResult};
 use crate::state::agent_chat::VerificationStatus;
+
+struct RemoteCompletedTurnContext {
+    agent_id: Uuid,
+    idle: bool,
+    changed_files: Vec<ChangedFileDto>,
+}
 
 impl CenterArea {
     pub(crate) fn handle_remote_command(&mut self, command: RemoteCommand, cx: &mut Context<Self>) {
         match command {
             RemoteCommand::GetConfiguration { response } => {
-                let _ = response.send(Ok(remote_configuration_catalog()));
+                let _ = response.send(Ok(self.remote_configuration_catalog(cx)));
             }
             RemoteCommand::ListProjects { response } => {
                 let _ = response.send(Ok(self.remote_projects(cx)));
@@ -29,13 +36,101 @@ impl CenterArea {
                 let _ = response.send(result);
             }
             RemoteCommand::GetAgent { agent_id, response } => {
-                let result = parse_agent_id(&agent_id)
-                    .and_then(|agent_id| self.remote_agent_snapshot(agent_id, cx));
+                let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    let agent = self
+                        .agents
+                        .read(cx)
+                        .agent(agent_id)
+                        .cloned()
+                        .filter(|agent| !agent.hidden_doc_assistant)
+                        .ok_or_else(|| RemoteError::not_found("agent not found"))?;
+                    let snapshot = self.remote_agent_snapshot(agent_id, cx)?;
+                    Ok((agent, snapshot))
+                });
+                match result {
+                    Ok((agent, snapshot)) if snapshot.timeline.is_empty() => {
+                        cx.background_executor()
+                            .spawn(async move {
+                                let hydration = Self::load_chat_session_hydration(&agent);
+                                let snapshot =
+                                    hydrate_remote_agent_snapshot(snapshot, &agent, hydration);
+                                let _ = response.send(Ok(snapshot));
+                            })
+                            .detach();
+                    }
+                    Ok((_, snapshot)) => {
+                        let _ = response.send(Ok(snapshot));
+                    }
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                    }
+                }
+            }
+            RemoteCommand::SyncAgents {
+                agent_ids,
+                response,
+            } => {
+                let result = self.remote_agent_sync_states(agent_ids, cx);
                 let _ = response.send(result);
             }
             RemoteCommand::CreateAgent { request, response } => {
                 let result = self.remote_create_agent(request, cx);
                 let _ = response.send(result);
+            }
+            RemoteCommand::OpenAgent { agent_id, response } => {
+                let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    let agent = self
+                        .agents
+                        .read(cx)
+                        .agent(agent_id)
+                        .cloned()
+                        .ok_or_else(|| RemoteError::not_found("agent not found"))?;
+                    self.workspace.update(cx, |workspace, cx| {
+                        workspace.set_active(agent.project_id, cx)
+                    });
+                    self.agents.update(cx, |agents, cx| {
+                        agents.select(agent.project_id, agent_id, cx)
+                    });
+                    self.new_agent_composer = None;
+                    self.set_view_mode(CenterMode::Agents, cx);
+                    self.remote_agent_snapshot(agent_id, cx)
+                });
+                let _ = response.send(result);
+            }
+            RemoteCommand::UpdateAgentStatus {
+                agent_id,
+                request,
+                response,
+            } => {
+                let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    if !self.accept_remote_command_id(&request.client_command_id) {
+                        return self.remote_agent_snapshot(agent_id, cx);
+                    }
+                    if self.agents.read(cx).agent(agent_id).is_none() {
+                        return Err(RemoteError::not_found("agent not found"));
+                    }
+                    let status = parse_wire_value::<AgentStatus>(&request.status, "status")?;
+                    self.agents
+                        .update(cx, |agents, cx| agents.update_status(agent_id, status, cx));
+                    self.remote_agent_snapshot(agent_id, cx)
+                });
+                let _ = response.send(result);
+            }
+            RemoteCommand::CompletedTurns {
+                agent_id,
+                after_sequence,
+                response,
+            } => {
+                let context = parse_agent_id(&agent_id)
+                    .and_then(|agent_id| self.remote_completed_turn_context(agent_id, cx));
+                cx.background_executor()
+                    .spawn(async move {
+                        let result = context.and_then(|context| {
+                            completed_turns_from_store(context, after_sequence)
+                        });
+                        let _ = response.send(result);
+                    })
+                    .detach();
             }
             RemoteCommand::SendMessage {
                 agent_id,
@@ -467,6 +562,24 @@ impl CenterArea {
                     .iter()
                     .filter(|agent| agent.project_id == project.id && !agent.hidden_doc_assistant)
                     .count(),
+                repositories: self
+                    .git_states
+                    .read(cx)
+                    .repositories(project.id)
+                    .into_iter()
+                    .filter_map(|git| {
+                        let git = git.read(cx);
+                        git.is_repo.then(|| RepositoryDto {
+                            name: git
+                                .repo_path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("Repository")
+                                .to_string(),
+                            path: git.repo_path.to_string_lossy().to_string(),
+                        })
+                    })
+                    .collect(),
             })
             .collect()
     }
@@ -513,19 +626,9 @@ impl CenterArea {
             .unwrap_or_else(|| "Unknown project".into());
 
         let live_session = self.agent_chats.read(cx).session(agent_id).cloned();
-        let hydration = if live_session
-            .as_ref()
-            .is_none_or(|session| session.timeline.is_empty())
-        {
-            Self::load_chat_session_hydration(&agent)
-        } else {
-            None
-        };
         let timeline = live_session
             .as_ref()
-            .filter(|session| !session.timeline.is_empty())
             .map(|session| session.timeline.clone())
-            .or_else(|| hydration.map(|hydration| hydration.timeline))
             .unwrap_or_default();
         let pending_user_input = live_session
             .as_ref()
@@ -619,7 +722,97 @@ impl CenterArea {
             needs_attention,
             solo: agent.is_active_solo(),
             solo_branch: agent.solo_branch.clone(),
+            origin: agent.origin.as_ref().map(agent_origin_dto),
         }
+    }
+
+    fn remote_agent_sync_states(
+        &self,
+        agent_ids: Vec<String>,
+        cx: &App,
+    ) -> RemoteResult<Vec<AgentSyncStateDto>> {
+        let parsed_ids = agent_ids
+            .into_iter()
+            .map(|agent_id| parse_agent_id(&agent_id))
+            .collect::<RemoteResult<Vec<_>>>()?;
+        let agents = self.agents.read(cx);
+        let chats = self.agent_chats.read(cx);
+        Ok(parsed_ids
+            .into_iter()
+            .filter_map(|agent_id| {
+                let agent = agents
+                    .agent(agent_id)
+                    .filter(|agent| !agent.hidden_doc_assistant)?;
+                let session = chats.session(agent_id);
+                let (status, last_activity_at, needs_attention, attention_reason) = session
+                    .map(|session| {
+                        let attention_reason = agent_sync_attention_reason(session);
+                        (
+                            chat_status_label(session.status).to_string(),
+                            session.last_activity_at,
+                            attention_reason.is_some(),
+                            attention_reason,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            if agent.started_at.is_some() {
+                                "idle".to_string()
+                            } else {
+                                "not_started".to_string()
+                            },
+                            agent.updated_at,
+                            false,
+                            None,
+                        )
+                    });
+                Some(AgentSyncStateDto {
+                    agent_id: agent_id.to_string(),
+                    status,
+                    last_activity_at,
+                    needs_attention,
+                    attention_reason,
+                })
+            })
+            .collect())
+    }
+
+    fn remote_completed_turn_context(
+        &self,
+        agent_id: Uuid,
+        cx: &App,
+    ) -> RemoteResult<RemoteCompletedTurnContext> {
+        let agent = self
+            .agents
+            .read(cx)
+            .agent(agent_id)
+            .cloned()
+            .filter(|agent| !agent.hidden_doc_assistant)
+            .ok_or_else(|| RemoteError::not_found("agent not found"))?;
+        let session = self.agent_chats.read(cx).session(agent_id);
+        let changed_files = session
+            .map(|session| {
+                let mut files = changed_files_dto(&session.changed_files.files);
+                files.extend(changed_files_dto(&session.changed_files.observed_files));
+                files
+            })
+            .filter(|files| !files.is_empty())
+            .unwrap_or_else(|| {
+                agent
+                    .changed_files
+                    .iter()
+                    .map(|file| ChangedFileDto {
+                        path: file.path.to_string_lossy().to_string(),
+                        additions: file.additions,
+                        deletions: file.deletions,
+                    })
+                    .collect()
+            });
+        Ok(RemoteCompletedTurnContext {
+            agent_id,
+            idle: session.is_none_or(|session| matches!(session.status, AgentChatStatus::Idle)),
+            changed_files,
+        })
     }
 
     fn remote_generated_image_path(
@@ -681,6 +874,17 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> RemoteResult<AgentSnapshotDto> {
         let project_id = parse_project_id(&request.project_id)?;
+        if let Some(origin) = request.origin.as_ref() {
+            if let Some(existing) = self
+                .agents
+                .read(cx)
+                .all_records()
+                .into_iter()
+                .find(|agent| origin_matches(agent.origin.as_ref(), origin))
+            {
+                return self.remote_agent_snapshot(existing.id, cx);
+            }
+        }
         let prompt = request.prompt.trim().to_string();
         if prompt.is_empty() {
             return Err(RemoteError::bad_request("prompt cannot be empty"));
@@ -708,18 +912,55 @@ impl CenterArea {
                     .take(72)
                     .collect()
             });
+        let title = if matches!(
+            request.origin.as_ref(),
+            Some(AgentOriginDto::PocketComet { .. })
+        ) && !title.starts_with("PocketComet · ")
+        {
+            format!("PocketComet · {title}")
+        } else {
+            title
+        };
+        let defaults = self.workspace.read(cx).new_agent_defaults();
         let provider = request
             .provider
             .as_deref()
             .map(|value| parse_wire_value::<AgentKind>(value, "provider"))
             .transpose()?
-            .unwrap_or(AgentKind::Codex);
-        let model = request
-            .model
-            .as_deref()
-            .map(|value| parse_wire_value::<AgentModel>(value, "model"))
-            .transpose()?
-            .unwrap_or_else(|| AgentModel::default_for(provider));
+            .unwrap_or(defaults.provider);
+        let external_model = if provider == AgentKind::OpenCode {
+            let requested = request
+                .model
+                .as_deref()
+                .or(defaults.external_model_id.as_deref())
+                .ok_or_else(|| RemoteError::bad_request("choose an OpenCode model"))?;
+            Some(
+                self.open_code_catalog
+                    .models
+                    .iter()
+                    .find(|model| model.id == requested)
+                    .cloned()
+                    .ok_or_else(|| RemoteError::bad_request("OpenCode model is not available"))?,
+            )
+        } else {
+            None
+        };
+        let model = if provider == AgentKind::OpenCode {
+            AgentModel::OpenCode
+        } else {
+            request
+                .model
+                .as_deref()
+                .map(|value| parse_wire_value::<AgentModel>(value, "model"))
+                .transpose()?
+                .unwrap_or_else(|| {
+                    if defaults.provider == provider {
+                        defaults.model
+                    } else {
+                        AgentModel::default_for(provider)
+                    }
+                })
+        };
         if !model.belongs_to(provider) {
             return Err(RemoteError::bad_request(
                 "model does not belong to the selected provider",
@@ -731,7 +972,13 @@ impl CenterArea {
             .map(|value| parse_wire_value::<AgentEffort>(value, "effort"))
             .transpose()?
             .map(|effort| model.normalize_effort(effort))
-            .unwrap_or_else(|| model.default_effort());
+            .unwrap_or_else(|| {
+                if defaults.provider == provider {
+                    model.normalize_effort(defaults.effort)
+                } else {
+                    model.default_effort()
+                }
+            });
         let access_mode = resolve_remote_access_mode(request.access_mode.as_deref())?;
         let repository_paths = self
             .git_states
@@ -751,7 +998,7 @@ impl CenterArea {
         )
         .map_err(RemoteError::bad_request)?;
         let agent_id = self.agents.update(cx, |agents, cx| {
-            agents.create_agent(
+            let agent_id = agents.create_agent(
                 project.id,
                 project.path.clone(),
                 repository_path,
@@ -768,7 +1015,14 @@ impl CenterArea {
                 None,
                 AgentStatus::Todo,
                 cx,
-            )
+            );
+            if let Some(model) = external_model.clone() {
+                agents.update_external_model(agent_id, model.id, model.name, model.variants, cx);
+            }
+            if let Some(origin) = request.origin.clone().map(agent_origin) {
+                agents.set_origin(agent_id, origin, cx);
+            }
+            agent_id
         });
         if request.solo {
             let branch = ide_core::lanes::solo_branch_name(&title, agent_id);
@@ -819,11 +1073,10 @@ impl CenterArea {
         self.remote_command_ids.insert(command_id.to_string());
         true
     }
-}
 
-fn remote_configuration_catalog() -> ConfigurationCatalogDto {
-    ConfigurationCatalogDto {
-        providers: [AgentKind::Codex, AgentKind::Claude]
+    fn remote_configuration_catalog(&self, cx: &App) -> ConfigurationCatalogDto {
+        let defaults = self.workspace.read(cx).new_agent_defaults();
+        let mut providers = [AgentKind::Codex, AgentKind::Claude]
             .into_iter()
             .map(|provider| ProviderConfigurationDto {
                 id: wire_value(provider),
@@ -855,8 +1108,239 @@ fn remote_configuration_catalog() -> ConfigurationCatalogDto {
                     })
                     .collect(),
             })
-            .collect(),
+            .collect::<Vec<_>>();
+        if !self.open_code_catalog.models.is_empty() {
+            providers.push(ProviderConfigurationDto {
+                id: wire_value(AgentKind::OpenCode),
+                label: AgentKind::OpenCode.label().to_string(),
+                models: self
+                    .open_code_catalog
+                    .models
+                    .iter()
+                    .map(|model| ModelConfigurationDto {
+                        id: model.id.clone(),
+                        label: model.name.clone(),
+                        short_label: model.name.clone(),
+                        efforts: AgentEffort::supported_variants(&model.variants)
+                            .into_iter()
+                            .map(|effort| EffortConfigurationDto {
+                                id: wire_value(effort),
+                                label: effort.label().to_string(),
+                                description: effort.menu_label().to_string(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+                access_modes: AgentAccessMode::ALL
+                    .into_iter()
+                    .map(|access_mode| AccessModeConfigurationDto {
+                        id: wire_value(access_mode),
+                        label: access_mode.label_for(AgentKind::OpenCode).to_string(),
+                        description: access_mode.description_for(AgentKind::OpenCode).to_string(),
+                    })
+                    .collect(),
+            });
+        }
+        ConfigurationCatalogDto {
+            providers,
+            defaults: AgentDefaultsDto {
+                provider: wire_value(defaults.provider),
+                model: defaults
+                    .external_model_id
+                    .filter(|_| defaults.provider == AgentKind::OpenCode)
+                    .unwrap_or_else(|| wire_value(defaults.model)),
+                effort: wire_value(defaults.effort),
+                access_mode: wire_value(AgentAccessMode::FullAccess),
+                solo: false,
+            },
+        }
     }
+}
+
+fn agent_origin_dto(origin: &AgentOrigin) -> AgentOriginDto {
+    match origin {
+        AgentOrigin::PocketComet {
+            workspace_id,
+            project_id,
+            task_id,
+            task_title,
+        } => AgentOriginDto::PocketComet {
+            workspace_id: workspace_id.clone(),
+            project_id: project_id.clone(),
+            task_id: task_id.clone(),
+            task_title: task_title.clone(),
+        },
+    }
+}
+
+fn agent_origin(origin: AgentOriginDto) -> AgentOrigin {
+    match origin {
+        AgentOriginDto::PocketComet {
+            workspace_id,
+            project_id,
+            task_id,
+            task_title,
+        } => AgentOrigin::PocketComet {
+            workspace_id,
+            project_id,
+            task_id,
+            task_title,
+        },
+    }
+}
+
+fn origin_matches(origin: Option<&AgentOrigin>, requested: &AgentOriginDto) -> bool {
+    match (origin, requested) {
+        (
+            Some(AgentOrigin::PocketComet {
+                workspace_id,
+                task_id,
+                ..
+            }),
+            AgentOriginDto::PocketComet {
+                workspace_id: requested_workspace,
+                task_id: requested_task,
+                ..
+            },
+        ) => workspace_id == requested_workspace && task_id == requested_task,
+        _ => false,
+    }
+}
+
+fn agent_sync_attention_reason(
+    session: &crate::state::agent_chat::AgentChatSession,
+) -> Option<String> {
+    if let Some(pending) = session.pending_user_input.as_ref() {
+        if let Some(question) = pending
+            .questions
+            .get(pending.question_index)
+            .or_else(|| pending.questions.first())
+        {
+            let header = question.header.trim();
+            let question = question.question.trim();
+            return Some(match (header.is_empty(), question.is_empty()) {
+                (false, false) => format!("{header}: {question}"),
+                (false, true) => header.to_string(),
+                (true, false) => question.to_string(),
+                (true, true) => "Choro is waiting for your response.".to_string(),
+            });
+        }
+        return Some("Choro is waiting for your response.".to_string());
+    }
+    if let Some(pending) = session.pending_approval.as_ref() {
+        let title = pending.title.trim();
+        let detail = pending.detail.as_deref().map(str::trim).unwrap_or_default();
+        return Some(match (title.is_empty(), detail.is_empty()) {
+            (false, false) => format!("{title}: {detail}"),
+            (false, true) => title.to_string(),
+            (true, false) => detail.to_string(),
+            (true, true) => "Choro needs approval before it can continue.".to_string(),
+        });
+    }
+    match session.status {
+        AgentChatStatus::PlanReady => Some("A proposed plan is ready for your review in Choro.".into()),
+        AgentChatStatus::Failed => {
+            Some("Choro stopped before completing the task. Open Choro to inspect the failure and continue.".into())
+        }
+        _ => None,
+    }
+}
+
+fn completed_turns_from_store(
+    context: RemoteCompletedTurnContext,
+    after_sequence: i64,
+) -> RemoteResult<CompletedTurnsDto> {
+    let messages = ide_core::local_store::LocalStore::open_default()
+        .and_then(|store| store.load_chat_messages(context.agent_id))
+        .map_err(|error| RemoteError::internal(format!("could not read agent turns: {error:#}")))?;
+    let handoff = latest_completed_handoff(messages, after_sequence, context.idle);
+    let latest_sequence = handoff
+        .as_ref()
+        .map_or(after_sequence, |message| message.sequence);
+    let turns = handoff
+        .into_iter()
+        .map(|message| CompletedTurnDto {
+            id: message
+                .backend_message_id
+                .clone()
+                .unwrap_or_else(|| message.id.to_string()),
+            sequence: message.sequence,
+            response: message.text,
+            completed_at: message.created_at,
+            changed_files: context.changed_files.clone(),
+        })
+        .collect();
+    Ok(CompletedTurnsDto {
+        turns,
+        latest_sequence,
+    })
+}
+
+/// PocketComet is a task handoff surface, not a mirror of Choro's transcript.
+/// Wait until the whole agent is idle, then return only the final assistant
+/// response from the latest user-authored work cycle. Automatic maintenance
+/// turns must not replace that result.
+fn latest_completed_handoff(
+    messages: Vec<ide_core::local_store::StoredChatMessage>,
+    after_sequence: i64,
+    agent_is_idle: bool,
+) -> Option<ide_core::local_store::StoredChatMessage> {
+    if !agent_is_idle {
+        return None;
+    }
+
+    // A remotely created agent keeps its launch prompt on the agent record;
+    // its durable chat-message history can therefore begin with assistant
+    // output. Treat those leading responses as the implicit initial work cycle.
+    let mut capture_assistant = true;
+    let mut handoff = None;
+    for message in messages {
+        match message.role.as_str() {
+            "user" => {
+                capture_assistant = !is_internal_maintenance_turn(&message.text);
+                if capture_assistant {
+                    handoff = None;
+                }
+            }
+            "assistant" if capture_assistant && !message.text.trim().is_empty() => {
+                handoff = Some(message);
+            }
+            _ => {}
+        }
+    }
+
+    handoff.filter(|message| message.sequence > after_sequence)
+}
+
+fn is_internal_maintenance_turn(text: &str) -> bool {
+    let text = text.trim_start();
+    text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER)
+        || text.starts_with(super::agent_chat_brain::SUMMARY_REQUEST_MARKER)
+        || text.starts_with(super::agent_chat_runtime::AGENT_CODE_REVIEW_REQUEST_MARKER)
+        || text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_REQUEST_MARKER)
+        || text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_DISMISS_MARKER)
+        || text.starts_with(super::agent_chat_runtime::AGENT_REVERIFY_DISMISS_MARKER)
+}
+
+fn hydrate_remote_agent_snapshot(
+    mut snapshot: AgentSnapshotDto,
+    agent: &AgentRecord,
+    hydration: Option<AgentChatHydration>,
+) -> AgentSnapshotDto {
+    if !snapshot.timeline.is_empty() {
+        return snapshot;
+    }
+    let Some(hydration) = hydration else {
+        return snapshot;
+    };
+    let fixable_id = fixable_verification_id(&hydration.timeline);
+    let rejoin_cleanup_pending = agent.lane_path.is_some() && agent.solo_rejoined_branch.is_some();
+    snapshot.timeline = hydration
+        .timeline
+        .iter()
+        .filter_map(|item| timeline_item_dto(item, fixable_id.as_deref(), rejoin_cleanup_pending))
+        .collect();
+    snapshot
 }
 
 fn wire_value<T: serde::Serialize>(value: T) -> String {
@@ -1362,10 +1846,135 @@ fn pending_approval_dto(pending: &crate::state::agent_chat::PendingApproval) -> 
 mod tests {
     use super::*;
 
+    fn stored_message(
+        role: &str,
+        text: &str,
+        sequence: i64,
+    ) -> ide_core::local_store::StoredChatMessage {
+        ide_core::local_store::StoredChatMessage {
+            id: Uuid::from_u128(sequence as u128 + 1),
+            agent_id: Uuid::nil(),
+            role: role.into(),
+            text: text.into(),
+            sequence,
+            created_at: sequence as u64 + 100,
+            backend_message_id: Some(format!("message-{sequence}")),
+        }
+    }
+
     #[test]
     fn invalid_ids_are_bad_requests() {
         assert_eq!(parse_agent_id("not-a-uuid").unwrap_err().status, 400);
         assert_eq!(parse_project_id("not-a-uuid").unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn completed_handoff_waits_for_idle_and_keeps_only_the_final_response() {
+        let messages = vec![
+            stored_message("user", "Build the feature", 0),
+            stored_message("assistant", "I am inspecting the project.", 1),
+            stored_message("assistant", "Implemented and verified the feature.", 2),
+        ];
+
+        assert!(latest_completed_handoff(messages.clone(), -1, false).is_none());
+        assert_eq!(
+            latest_completed_handoff(messages, -1, true).unwrap().text,
+            "Implemented and verified the feature."
+        );
+    }
+
+    #[test]
+    fn completed_handoff_supports_remote_agents_without_a_persisted_user_message() {
+        let messages = vec![
+            stored_message("assistant", "I am inspecting the project.", 0),
+            stored_message("assistant", "Implemented and verified the feature.", 1),
+        ];
+
+        assert!(latest_completed_handoff(messages.clone(), -1, false).is_none());
+        assert_eq!(
+            latest_completed_handoff(messages, -1, true).unwrap().text,
+            "Implemented and verified the feature."
+        );
+    }
+
+    #[test]
+    fn dedicated_pocketcomet_update_replaces_the_ordinary_final_message() {
+        let messages = vec![
+            stored_message("assistant", "Implemented the feature.", 0),
+            stored_message(
+                "user",
+                "<!-- choro:review-checklist -->\nInspect the implementation.",
+                1,
+            ),
+            stored_message("assistant", "The review checklist is ready.", 2),
+            stored_message(
+                "user",
+                super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER,
+                3,
+            ),
+            stored_message(
+                "assistant",
+                "The feature was implemented and verified.\n\nWhat changed:\n- Added the task handoff.\n\nVerification: Focused tests passed.",
+                4,
+            ),
+        ];
+
+        assert_eq!(
+            latest_completed_handoff(messages, -1, true)
+                .unwrap()
+                .sequence,
+            4
+        );
+    }
+
+    #[test]
+    fn completed_handoff_ignores_internal_review_chatter_and_honors_the_cursor() {
+        let messages = vec![
+            stored_message("user", "Build the feature", 0),
+            stored_message("assistant", "Implemented and verified the feature.", 1),
+            stored_message(
+                "user",
+                "<!-- choro:review-checklist -->\nInspect the implementation.",
+                2,
+            ),
+            stored_message("assistant", "I am running the review gate.", 3),
+        ];
+
+        assert_eq!(
+            latest_completed_handoff(messages.clone(), -1, true)
+                .unwrap()
+                .sequence,
+            1
+        );
+        assert!(latest_completed_handoff(messages, 1, true).is_none());
+    }
+
+    #[test]
+    fn completed_handoff_ignores_maintenance_after_the_pocketcomet_update() {
+        let messages = vec![
+            stored_message(
+                "user",
+                super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER,
+                0,
+            ),
+            stored_message("assistant", "Implemented and verified the feature.", 1),
+            stored_message("user", super::agent_chat_brain::SUMMARY_REQUEST_MARKER, 2),
+            stored_message("assistant", "The Brain summary was saved.", 3),
+            stored_message(
+                "user",
+                super::agent_chat_runtime::AGENT_VERIFY_REQUEST_MARKER,
+                4,
+            ),
+            stored_message(
+                "assistant",
+                "<verification>Everything passed.</verification>",
+                5,
+            ),
+        ];
+
+        let handoff = latest_completed_handoff(messages, -1, true).unwrap();
+        assert_eq!(handoff.sequence, 1);
+        assert_eq!(handoff.text, "Implemented and verified the feature.");
     }
 
     #[test]

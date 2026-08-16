@@ -1,6 +1,6 @@
 use super::*;
 use crate::agents::{
-    AgentAccessMode, AgentEffort, AgentKind, AgentModel, AgentRuntimeKind, AgentStatus,
+    AgentAccessMode, AgentEffort, AgentKind, AgentModel, AgentOrigin, AgentRuntimeKind, AgentStatus,
 };
 use crate::git::read::fixtures::{commit_all, repo_with_commit, workdir};
 use crate::git::{DiffHunk, DiffLine};
@@ -1144,6 +1144,26 @@ fn verification_completion_round_trips_through_the_store() {
     let mut agent = sample_agent(&project);
     agent.verification_completed_at = Some(42);
     agent.verification_closed = true;
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(&[agent.clone()]).unwrap();
+
+    assert_eq!(store.load_agents().unwrap(), vec![agent]);
+}
+
+#[test]
+fn pocketcomet_origin_round_trips_through_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let mut agent = sample_agent(&project);
+    agent.origin = Some(AgentOrigin::PocketComet {
+        workspace_id: "workspace-1".into(),
+        project_id: "project-1".into(),
+        task_id: "task-1".into(),
+        task_title: "Implement the integration".into(),
+    });
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
     let mut config = AppConfig::default();
     config.projects = vec![project];

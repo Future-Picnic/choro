@@ -39,6 +39,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_brain_schema(conn).await?;
         ensure_verification_closed_column(conn).await?;
         ensure_chat_file_ledger_schema(conn).await?;
+        ensure_agent_origin_column(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -521,6 +522,31 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             })
         })
         .await?;
+    }
+    if current < 31 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_agent_origin_column_inner(conn).await?;
+                record_schema_version(conn, 31).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_agent_origin_column(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_agent_origin_column_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_agent_origin_column_inner(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "agents", "origin_json").await? {
+        conn.execute("ALTER TABLE agents ADD COLUMN origin_json TEXT", ())
+            .await?;
     }
     Ok(())
 }

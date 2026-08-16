@@ -17,9 +17,10 @@ use serde_json::json;
 use tokio::sync::{broadcast, oneshot};
 
 use super::dto::{
-    AnswerQuestionRequest, CommandAcceptedResponse, CompletePairingRequest, CreateAgentRequest,
-    DismissPlanRequest, HealthResponse, RemoteEvent, ResolveApprovalRequest, ResolvePlanRequest,
-    SendMessageRequest, ShipRequest, UpdateAgentConfigurationRequest, VerificationFixRequest,
+    AgentSyncBatchDto, AgentSyncRequest, AnswerQuestionRequest, CommandAcceptedResponse,
+    CompletePairingRequest, CreateAgentRequest, DismissPlanRequest, HealthResponse, RemoteEvent,
+    ResolveApprovalRequest, ResolvePlanRequest, SendMessageRequest, ShipRequest,
+    UpdateAgentConfigurationRequest, UpdateAgentStatusRequest, VerificationFixRequest,
 };
 use super::{
     DevicePermission, PairedDevice, PairingError, RemoteAuth, RemoteCommand, RemoteError,
@@ -262,11 +263,22 @@ fn configured_address() -> SocketAddr {
 
 fn router(state: ServerState) -> Router {
     let protected = Router::new()
+        .route(
+            "/v1/device",
+            get(current_device).delete(revoke_current_device),
+        )
         .route("/v1/configuration", get(configuration))
         .route("/v1/projects", get(list_projects))
         .route("/v1/projects/{project_id}/agents", get(list_agents))
+        .route("/v1/agents/sync", post(sync_agents))
         .route("/v1/agents/{agent_id}", get(get_agent))
         .route("/v1/agents", post(create_agent))
+        .route("/v1/agents/{agent_id}/open", post(open_agent))
+        .route("/v1/agents/{agent_id}/status", post(update_agent_status))
+        .route(
+            "/v1/agents/{agent_id}/completed-turns",
+            get(completed_turns),
+        )
         .route("/v1/agents/{agent_id}/messages", post(send_message))
         .route(
             "/v1/agents/{agent_id}/configuration",
@@ -317,7 +329,7 @@ async fn health() -> Json<HealthResponse> {
         status: "ok".into(),
         app_version: env!("CARGO_PKG_VERSION").into(),
         host_name: std::env::var("HOSTNAME").unwrap_or_else(|_| "Choro Mac".into()),
-        protocol_version: 3,
+        protocol_version: 5,
         authentication_required: true,
     })
 }
@@ -354,7 +366,7 @@ async fn complete_pairing(
             .into_response(),
         Err(PairingError::DeviceLimit) => (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "Revoke an old phone before pairing another one" })),
+            Json(json!({ "error": "Revoke an old device before pairing another one" })),
         )
             .into_response(),
         Err(PairingError::Storage(error)) => api_error(RemoteError::internal(format!(
@@ -373,7 +385,11 @@ async fn require_authentication(
         .as_deref()
         .and_then(|token| state.auth.authorize_device(token, None))
     {
-        if request.method() != Method::GET && !may_mutate(device.permission) {
+        if request.method() != Method::GET
+            && request.uri().path() != "/v1/device"
+            && request.uri().path() != "/v1/agents/sync"
+            && !may_mutate(device.permission)
+        {
             return permission_denied();
         }
         request.extensions_mut().insert(device);
@@ -381,9 +397,26 @@ async fn require_authentication(
     }
     (
         StatusCode::UNAUTHORIZED,
-        Json(json!({ "error": "This iPhone is not paired with Choro Desktop" })),
+        Json(json!({ "error": "This device is not paired with Choro Desktop" })),
     )
         .into_response()
+}
+
+async fn current_device(Extension(device): Extension<PairedDevice>) -> Json<PairedDevice> {
+    Json(device)
+}
+
+async fn revoke_current_device(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+) -> Response {
+    match state.auth.revoke(&device.id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => api_error(RemoteError::not_found("paired device not found")),
+        Err(error) => api_error(RemoteError::internal(format!(
+            "Could not revoke paired device: {error:?}"
+        ))),
+    }
 }
 
 fn request_token(headers: &HeaderMap) -> Option<String> {
@@ -436,6 +469,42 @@ async fn get_agent(State(state): State<ServerState>, Path(agent_id): Path<String
     .await
 }
 
+async fn sync_agents(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+    Json(request): Json<AgentSyncRequest>,
+) -> Response {
+    if request.agent_ids.len() > 250 {
+        return api_error(RemoteError::bad_request(
+            "agent sync accepts at most 250 identities",
+        ));
+    }
+    let (response_tx, response_rx) = oneshot::channel();
+    if state
+        .commands
+        .send(RemoteCommand::SyncAgents {
+            agent_ids: request.agent_ids,
+            response: response_tx,
+        })
+        .await
+        .is_err()
+    {
+        return api_error(RemoteError::internal(
+            "desktop command bridge is unavailable",
+        ));
+    }
+    match tokio::time::timeout(COMMAND_TIMEOUT, response_rx).await {
+        Ok(Ok(Ok(agents))) => Json(AgentSyncBatchDto {
+            device_id: device.id,
+            agents,
+        })
+        .into_response(),
+        Ok(Ok(Err(error))) => api_error(error),
+        Ok(Err(_)) => api_error(RemoteError::internal("desktop command was cancelled")),
+        Err(_) => api_error(RemoteError::internal("desktop command timed out")),
+    }
+}
+
 async fn create_agent(
     State(state): State<ServerState>,
     Extension(device): Extension<PairedDevice>,
@@ -446,6 +515,46 @@ async fn create_agent(
     }
     command(&state, |response| RemoteCommand::CreateAgent {
         request,
+        response,
+    })
+    .await
+}
+
+async fn open_agent(State(state): State<ServerState>, Path(agent_id): Path<String>) -> Response {
+    command(&state, |response| RemoteCommand::OpenAgent {
+        agent_id,
+        response,
+    })
+    .await
+}
+
+async fn update_agent_status(
+    State(state): State<ServerState>,
+    Path(agent_id): Path<String>,
+    Json(request): Json<UpdateAgentStatusRequest>,
+) -> Response {
+    command(&state, |response| RemoteCommand::UpdateAgentStatus {
+        agent_id,
+        request,
+        response,
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct CompletedTurnsQuery {
+    #[serde(default)]
+    after_sequence: i64,
+}
+
+async fn completed_turns(
+    State(state): State<ServerState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<CompletedTurnsQuery>,
+) -> Response {
+    command(&state, |response| RemoteCommand::CompletedTurns {
+        agent_id,
+        after_sequence: query.after_sequence.max(-1),
         response,
     })
     .await
@@ -737,7 +846,7 @@ fn may_set_access_mode(permission: DevicePermission, access_mode: Option<&str>) 
 fn permission_denied() -> Response {
     (
         StatusCode::FORBIDDEN,
-        Json(json!({ "error": "This iPhone is not allowed to perform that action" })),
+        Json(json!({ "error": "This device is not allowed to perform that action" })),
     )
         .into_response()
 }
@@ -746,7 +855,7 @@ fn full_access_required() -> Response {
     (
         StatusCode::FORBIDDEN,
         Json(json!({
-            "error": "This action requires Full access for this iPhone. Change its permission in Desktop Settings → Remote access."
+            "error": "This action requires Full access for this device. Change its permission in Desktop Settings → Remote access."
         })),
     )
         .into_response()

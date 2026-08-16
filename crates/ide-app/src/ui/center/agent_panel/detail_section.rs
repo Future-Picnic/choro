@@ -109,7 +109,10 @@ impl CenterArea {
         // copy rather than a shadow inside its lane.
         let project_path = agent.project_path.clone();
         let solo_branch = agent.solo_branch.clone();
-        let has_header_metadata = !linked_tasks.is_empty()
+        let pocketcomet_task = agent.origin.as_ref().and_then(pocketcomet_task_link);
+        let is_from_pocketcomet = pocketcomet_task.is_some();
+        let has_header_metadata = pocketcomet_task.is_some()
+            || !linked_tasks.is_empty()
             || agent_ship_pr.is_some()
             || !linked_docs.is_empty()
             || !linked_design_indicators.is_empty();
@@ -245,6 +248,14 @@ impl CenterArea {
                                     // A Solo wears just the fork by its name —
                                     // branch and actions live in the lane card
                                     // above the composer.
+                                    .when(is_from_pocketcomet, |row| {
+                                        row.child(
+                                            crate::ui::design::indicator::pocketcomet_icon(
+                                                crate::ui::design::accent(cx),
+                                                crate::ui::design::icon_sm(),
+                                            ),
+                                        )
+                                    })
                                     .when(solo_branch.is_some(), |row| {
                                         row.child(crate::ui::design::indicator::solo_icon(
                                             crate::ui::design::sky(cx),
@@ -302,6 +313,30 @@ impl CenterArea {
                                             crate::ui::onboarding::SpotlightTarget::AgentContext,
                                             cx,
                                         ))
+                                        .when_some(pocketcomet_task.clone(), |row, task| {
+                                            let tooltip = SharedString::from(format!(
+                                                "Open “{}” in PocketComet",
+                                                task.full_title
+                                            ));
+                                            let url = task.url.clone();
+                                            row.child(
+                                                crate::ui::design::indicator::subline_link_with_icon(
+                                                    ("agent-pocketcomet-task", agent_id.as_u128() as u64),
+                                                    crate::ui::design::indicator::pocketcomet_icon(
+                                                        crate::ui::design::accent(cx),
+                                                        crate::ui::design::icon_ind(),
+                                                    ),
+                                                    SharedString::from(task.label),
+                                                    cx,
+                                                )
+                                                .tooltip(move |window, cx| {
+                                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                                })
+                                                .on_click(move |_, _, _| {
+                                                    crate::ui::git::git_panel::open_url(&url)
+                                                }),
+                                            )
+                                        })
                                         .children(linked_tasks.iter().enumerate().map(
                                             |(index, task)| {
                                                 let task = task.clone();
@@ -508,5 +543,94 @@ impl CenterArea {
                     .child(self.render_agent_detail_switch_footer(&agent, detail_tab, cx)),
             )
             .into_any_element()
+    }
+}
+
+const POCKETCOMET_TASK_LABEL_CHARS: usize = 32;
+
+#[derive(Clone)]
+struct PocketCometTaskLink {
+    label: String,
+    full_title: String,
+    url: String,
+}
+
+fn pocketcomet_task_link(origin: &AgentOrigin) -> Option<PocketCometTaskLink> {
+    let AgentOrigin::PocketComet {
+        workspace_id,
+        project_id,
+        task_id,
+        task_title,
+    } = origin;
+    let full_title = task_title.trim();
+    let mut url = url::Url::parse("pocketcomet://task").ok()?;
+    url.path_segments_mut().ok()?.push(task_id);
+    url.query_pairs_mut()
+        .append_pair("workspace_id", workspace_id)
+        .append_pair("project_id", project_id);
+    Some(PocketCometTaskLink {
+        label: compact_pocketcomet_task_label(full_title),
+        full_title: if full_title.is_empty() {
+            "PocketComet task".to_string()
+        } else {
+            full_title.to_string()
+        },
+        url: url.into(),
+    })
+}
+
+fn compact_pocketcomet_task_label(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        return "PocketComet task".to_string();
+    }
+    if title.chars().count() <= POCKETCOMET_TASK_LABEL_CHARS {
+        return title.to_string();
+    }
+    let mut label = title
+        .chars()
+        .take(POCKETCOMET_TASK_LABEL_CHARS - 1)
+        .collect::<String>();
+    label.push('…');
+    label
+}
+
+#[cfg(test)]
+mod pocketcomet_task_link_tests {
+    use super::*;
+
+    #[test]
+    fn task_link_uses_a_compact_title_and_encoded_identity() {
+        let origin = AgentOrigin::PocketComet {
+            workspace_id: "workspace one".into(),
+            project_id: "project/one".into(),
+            task_id: "task/one".into(),
+            task_title: "Implement the extremely long PocketComet task link".into(),
+        };
+
+        let link = pocketcomet_task_link(&origin).unwrap();
+        assert_eq!(link.label.chars().count(), POCKETCOMET_TASK_LABEL_CHARS);
+        assert!(link.label.ends_with('…'));
+        assert_eq!(
+            link.full_title,
+            "Implement the extremely long PocketComet task link"
+        );
+        let url = url::Url::parse(&link.url).unwrap();
+        assert_eq!(url.host_str(), Some("task"));
+        assert_eq!(url.path(), "/task%2Fone");
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "workspace_id")
+                .unwrap()
+                .1,
+            "workspace one"
+        );
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "project_id")
+                .unwrap()
+                .1,
+            "project/one"
+        );
     }
 }

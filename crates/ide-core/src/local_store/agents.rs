@@ -15,9 +15,9 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
              chat_session_id, ship_pr_repo_path, ship_pr_branch, created_at, updated_at, started_at,
              external_model_id, external_model_label, external_model_variants,
              lane_path, solo_branch, solo_base_branch, solo_rejoined_branch, lane_profile,
-             verification_completed_at, verification_closed)
+             verification_completed_at, verification_closed, origin_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)
              ON CONFLICT(id) DO UPDATE SET
                  project_id = excluded.project_id,
                  project_path = excluded.project_path,
@@ -49,7 +49,8 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
                  solo_rejoined_branch = excluded.solo_rejoined_branch,
                  lane_profile = excluded.lane_profile,
                  verification_completed_at = excluded.verification_completed_at,
-                 verification_closed = excluded.verification_closed",
+                 verification_closed = excluded.verification_closed,
+                 origin_json = excluded.origin_json",
             params![
                 agent.id.to_string(),
                 agent.project_id.0.to_string(),
@@ -86,6 +87,11 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
                     .map(u64_to_i64)
                     .transpose()?,
                 bool_to_i64(agent.is_verification_closed()),
+                agent
+                    .origin
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
             ],
         )
         .await?;
@@ -179,7 +185,7 @@ pub(super) async fn load_agents_async(conn: &Connection) -> Result<Vec<AgentReco
              chat_session_id, ship_pr_repo_path, ship_pr_branch, created_at, updated_at, started_at,
              external_model_id, external_model_label, external_model_variants,
              lane_path, solo_branch, solo_base_branch, solo_rejoined_branch, lane_profile,
-             verification_completed_at, verification_closed
+             verification_completed_at, verification_closed, origin_json
              FROM agents ORDER BY updated_at DESC",
             (),
         )
@@ -224,6 +230,8 @@ pub(super) async fn load_agents_async(conn: &Connection) -> Result<Vec<AgentReco
                 .and_then(LaneProfile::parse_str),
             verification_completed_at: opt_i64(&row, 30)?.map(i64_to_u64).transpose()?,
             verification_closed: row.get::<i64>(31)? != 0,
+            origin: opt_text(&row, 32)?
+                .and_then(|value| serde_json::from_str::<AgentOrigin>(&value).ok()),
             linked_docs: linked_docs.get(&id).cloned().unwrap_or_default(),
             linked_tasks: linked_tasks.linked.get(&id).cloned().unwrap_or_default(),
             source_task: linked_tasks.source.get(&id).cloned(),

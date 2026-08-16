@@ -38,9 +38,10 @@ fn is_silent_summary_completion(
 
 fn latest_user_turn_is_summary_request(timeline: &[AgentChatTimelineItem]) -> bool {
     timeline.iter().rev().find_map(|item| match item {
-        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
-            Some(text.starts_with(SUMMARY_REQUEST_MARKER))
-        }
+        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => Some(
+            text.starts_with(SUMMARY_REQUEST_MARKER)
+                || text.starts_with(super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER),
+        ),
         _ => None,
     }) == Some(true)
 }
@@ -158,6 +159,12 @@ impl CenterArea {
                     .agent_summary_maintenance_status_seen
                     .insert(*agent_id, session.status);
                 if self.agent_summary_silent_requests.contains(agent_id)
+                    && session.status == AgentChatStatus::Failed
+                {
+                    self.agent_summary_silent_requests.remove(agent_id);
+                    continue;
+                }
+                if self.agent_summary_silent_requests.contains(agent_id)
                     && is_silent_summary_completion(previous, session.status)
                     && latest_user_turn_is_summary_request(&session.timeline)
                 {
@@ -202,6 +209,10 @@ impl CenterArea {
                 .is_some_and(|status| !matches!(status, AgentStatus::Done | AgentStatus::Rejected))
                 && matches!(agent.status, AgentStatus::Done | AgentStatus::Rejected)
                 && self.agent_chats.read(cx).has_backend(agent.id)
+                && !agent
+                    .origin
+                    .as_ref()
+                    .is_some_and(AgentOrigin::is_pocketcomet)
             {
                 candidates.push(agent.id);
             }
@@ -864,6 +875,21 @@ mod tests {
 
         assert!(!latest_user_turn_is_summary_request(&earlier_turn));
         assert!(latest_user_turn_is_summary_request(&summary_turn));
+    }
+
+    #[test]
+    fn pocketcomet_handoff_is_silent_maintenance_too() {
+        let timeline = vec![AgentChatTimelineItem::Message(AgentChatMessage::User {
+            text: format!(
+                "{}\nPrepare the task update.",
+                super::super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER
+            ),
+            display_text: None,
+            tags: Vec::new(),
+            created_at: 1,
+        })];
+
+        assert!(latest_user_turn_is_summary_request(&timeline));
     }
 
     fn stored_message(kind: &str, text: &str) -> StoredAgentMessage {
