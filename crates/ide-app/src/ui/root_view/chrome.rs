@@ -573,6 +573,12 @@ impl RootView {
         let active_project = self.workspace.read(cx).active;
         let design_connection_pending = self.penpot.read(cx).connection_pending();
         let design_connection_needs_attention = self.penpot.read(cx).connection_needs_attention();
+        let pocketcomet_paired = self
+            .remote_auth
+            .snapshot()
+            .devices
+            .iter()
+            .any(|device| device.name.starts_with("PocketComet on "));
         // The design's `.rail` sits on `sink` — the darkest plane, one step below
         // the `nav` sidebar — so the rail reads as its own deepest column.
         let panel_bg = crate::ui::design::sink(cx);
@@ -793,6 +799,15 @@ impl RootView {
                         .border_l_1()
                         .border_color(style::hairline(cx)),
                 )
+                .when(pocketcomet_paired, |rail| {
+                    rail.child(item(
+                        "rail-pocketcomet",
+                        RailIcon::Lucide(lucide_icons::Icon::Orbit),
+                        "PocketComet",
+                        ProjectActivity::PocketComet,
+                        cx,
+                    ))
+                })
                 .child(self.rail_footer(cx))
             })
     }

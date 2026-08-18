@@ -88,6 +88,15 @@ impl ClaudeBridgeRuntime {
         mode: AgentInteractionMode,
         read_only: bool,
     ) -> anyhow::Result<()> {
+        let system_prompt = if self.agent.hidden_doc_assistant {
+            format!(
+                "{}\n\n{}",
+                self.agent.doc,
+                super::CHORO_NATIVE_TOOL_INSTRUCTIONS
+            )
+        } else {
+            super::CHORO_NATIVE_TOOL_INSTRUCTIONS.to_string()
+        };
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.events
@@ -106,7 +115,7 @@ impl ClaudeBridgeRuntime {
             "model": self.model,
             "effort": self.effort,
             "accessMode": self.access_mode.claude_permission_mode(),
-            "systemPrompt": self.agent.hidden_doc_assistant.then_some(self.agent.doc.as_str()),
+            "systemPrompt": system_prompt,
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
             "designAssistant": is_design_assistant(&self.agent),

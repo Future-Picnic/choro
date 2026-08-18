@@ -54,12 +54,21 @@ pub(super) async fn save_projects_async(conn: &Connection, projects: &[Project])
             ],
         )
         .await?;
+        let mut presets = project.presets.clone();
+        for pending in load_pending_project_presets(conn, project.id).await? {
+            if !presets
+                .iter()
+                .any(|preset| preset.name.eq_ignore_ascii_case(&pending.name))
+            {
+                presets.push(pending);
+            }
+        }
         conn.execute(
             "DELETE FROM project_presets WHERE project_id = ?1",
             [project.id.0.to_string()],
         )
         .await?;
-        for (index, preset) in project.presets.iter().enumerate() {
+        for (index, preset) in presets.iter().enumerate() {
             conn.execute(
                 "INSERT INTO project_presets (id, project_id, name, command, sort_order)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -73,6 +82,11 @@ pub(super) async fn save_projects_async(conn: &Connection, projects: &[Project])
             )
             .await?;
         }
+        conn.execute(
+            "DELETE FROM pending_project_script_presets WHERE project_id = ?1",
+            [project.id.0.to_string()],
+        )
+        .await?;
         conn.execute(
             "DELETE FROM project_db_connections WHERE project_id = ?1",
             [project.id.0.to_string()],
@@ -134,6 +148,55 @@ pub(super) async fn save_projects_async(conn: &Connection, projects: &[Project])
         save_project_git_workflows(conn, project).await?;
     }
     Ok(())
+}
+
+pub(super) async fn queue_project_preset_async(
+    conn: &Connection,
+    project_id: ProjectId,
+    preset: &ScriptPreset,
+) -> Result<(ScriptPreset, bool)> {
+    let mut rows = conn
+        .query(
+            "SELECT id, name, command
+             FROM (
+                 SELECT id, name, command FROM project_presets WHERE project_id = ?1
+                 UNION ALL
+                 SELECT id, name, command FROM pending_project_script_presets WHERE project_id = ?1
+             )
+             WHERE name = ?2 COLLATE NOCASE
+             LIMIT 1",
+            (project_id.0.to_string(), preset.name.as_str()),
+        )
+        .await?;
+    if let Some(row) = rows.next().await? {
+        let existing = ScriptPreset {
+            id: parse_uuid(&row.get::<String>(0)?)?,
+            name: row.get(1)?,
+            command: row.get(2)?,
+        };
+        if existing.command.trim() == preset.command.trim() {
+            return Ok((existing, false));
+        }
+        return Err(anyhow!(
+            "a Choro script named \"{}\" already exists with a different command; choose a different name or edit it in Choro",
+            existing.name
+        ));
+    }
+    drop(rows);
+    conn.execute(
+        "INSERT INTO pending_project_script_presets
+         (id, project_id, name, command, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        (
+            preset.id.to_string(),
+            project_id.0.to_string(),
+            preset.name.as_str(),
+            preset.command.as_str(),
+            u64_to_i64(unix_now())?,
+        ),
+    )
+    .await?;
+    Ok((preset.clone(), true))
 }
 
 async fn delete_missing_project_rows(
@@ -412,6 +475,55 @@ pub(super) async fn load_project_presets(
             id: parse_uuid(&row.get::<String>(0)?)?,
             name: row.get(2)?,
             command: row.get(3)?,
+        });
+    }
+    drop(rows);
+    let mut pending_rows = conn
+        .query(
+            "SELECT id, project_id, name, command
+             FROM pending_project_script_presets
+             ORDER BY project_id ASC, created_at ASC",
+            (),
+        )
+        .await?;
+    while let Some(row) = pending_rows.next().await? {
+        let project_id = ProjectId(parse_uuid(&row.get::<String>(1)?)?);
+        let name: String = row.get(2)?;
+        let project_presets = presets.entry(project_id).or_default();
+        if project_presets
+            .iter()
+            .any(|preset| preset.name.eq_ignore_ascii_case(&name))
+        {
+            continue;
+        }
+        project_presets.push(ScriptPreset {
+            id: parse_uuid(&row.get::<String>(0)?)?,
+            name,
+            command: row.get(3)?,
+        });
+    }
+    Ok(presets)
+}
+
+async fn load_pending_project_presets(
+    conn: &Connection,
+    project_id: ProjectId,
+) -> Result<Vec<ScriptPreset>> {
+    let mut rows = conn
+        .query(
+            "SELECT id, name, command
+             FROM pending_project_script_presets
+             WHERE project_id = ?1
+             ORDER BY created_at ASC",
+            [project_id.0.to_string()],
+        )
+        .await?;
+    let mut presets = Vec::new();
+    while let Some(row) = rows.next().await? {
+        presets.push(ScriptPreset {
+            id: parse_uuid(&row.get::<String>(0)?)?,
+            name: row.get(1)?,
+            command: row.get(2)?,
         });
     }
     Ok(presets)

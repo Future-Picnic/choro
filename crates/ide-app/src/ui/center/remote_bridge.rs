@@ -158,7 +158,11 @@ impl CenterArea {
                             .unwrap_or_else(|| "Agent".into());
                         chats.ensure_session(agent_id, title, cx).interaction_mode = mode;
                     });
-                    self.dispatch_agent_chat_submission(agent_id, text.to_string(), mode, cx);
+                    if self.dispatch_agent_chat_submission(agent_id, text.to_string(), mode, cx) {
+                        self.agents.update(cx, |agents, cx| {
+                            agents.update_status(agent_id, AgentStatus::InProgress, cx)
+                        });
+                    }
                     Ok(CommandAcceptedResponse { accepted: true })
                 });
                 let _ = response.send(result);
@@ -260,6 +264,9 @@ impl CenterArea {
                         }
                         chats.submit_pending_user_input(agent_id, cx);
                     });
+                    self.agents.update(cx, |agents, cx| {
+                        agents.update_status(agent_id, AgentStatus::InProgress, cx)
+                    });
                     // Remote answers arrive as plain strings; picks come back
                     // as option labels (multi-select comma-joined). Only
                     // genuinely typed answers feed the memory-proposal pass.
@@ -317,7 +324,11 @@ impl CenterArea {
                         .ok_or_else(|| {
                             RemoteError::conflict("agent has no plan awaiting a decision")
                         })?;
-                    self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx);
+                    if self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx) {
+                        self.agents.update(cx, |agents, cx| {
+                            agents.update_status(agent_id, AgentStatus::InProgress, cx)
+                        });
+                    }
                     // Phone-typed plan feedback feeds the same memory-proposal
                     // pass as desktop feedback; the card renders on desktop.
                     if !feedback.is_empty() {
@@ -560,7 +571,14 @@ impl CenterArea {
                 name: project.name.clone(),
                 agent_count: agents
                     .iter()
-                    .filter(|agent| agent.project_id == project.id && !agent.hidden_doc_assistant)
+                    .filter(|agent| {
+                        agent.project_id == project.id
+                            && !agent.hidden_doc_assistant
+                            && !agent
+                                .origin
+                                .as_ref()
+                                .is_some_and(AgentOrigin::is_pocketcomet_chat)
+                    })
                     .count(),
                 repositories: self
                     .git_states
@@ -880,7 +898,9 @@ impl CenterArea {
                 .read(cx)
                 .all_records()
                 .into_iter()
-                .find(|agent| origin_matches(agent.origin.as_ref(), origin))
+                .find(|agent| {
+                    agent.project_id == project_id && origin_matches(agent.origin.as_ref(), origin)
+                })
             {
                 return self.remote_agent_snapshot(existing.id, cx);
             }
@@ -1170,6 +1190,29 @@ fn agent_origin_dto(origin: &AgentOrigin) -> AgentOriginDto {
             task_id: task_id.clone(),
             task_title: task_title.clone(),
         },
+        AgentOrigin::PocketCometChat {
+            workspace_id,
+            workspace_name,
+            project_id,
+            project_name,
+            teammate_id,
+            teammate_name,
+            conversation_id,
+            conversation_name,
+            thread_id,
+            thread_title,
+        } => AgentOriginDto::PocketCometChat {
+            workspace_id: workspace_id.clone(),
+            workspace_name: workspace_name.clone(),
+            project_id: project_id.clone(),
+            project_name: project_name.clone(),
+            teammate_id: teammate_id.clone(),
+            teammate_name: teammate_name.clone(),
+            conversation_id: conversation_id.clone(),
+            conversation_name: conversation_name.clone(),
+            thread_id: thread_id.clone(),
+            thread_title: thread_title.clone(),
+        },
     }
 }
 
@@ -1185,6 +1228,29 @@ fn agent_origin(origin: AgentOriginDto) -> AgentOrigin {
             project_id,
             task_id,
             task_title,
+        },
+        AgentOriginDto::PocketCometChat {
+            workspace_id,
+            workspace_name,
+            project_id,
+            project_name,
+            teammate_id,
+            teammate_name,
+            conversation_id,
+            conversation_name,
+            thread_id,
+            thread_title,
+        } => AgentOrigin::PocketCometChat {
+            workspace_id,
+            workspace_name,
+            project_id,
+            project_name,
+            teammate_id,
+            teammate_name,
+            conversation_id,
+            conversation_name,
+            thread_id,
+            thread_title,
         },
     }
 }
@@ -1203,6 +1269,30 @@ fn origin_matches(origin: Option<&AgentOrigin>, requested: &AgentOriginDto) -> b
                 ..
             },
         ) => workspace_id == requested_workspace && task_id == requested_task,
+        (
+            Some(AgentOrigin::PocketCometChat {
+                workspace_id,
+                project_id,
+                teammate_id,
+                conversation_id,
+                thread_id,
+                ..
+            }),
+            AgentOriginDto::PocketCometChat {
+                workspace_id: requested_workspace,
+                project_id: requested_project,
+                teammate_id: requested_teammate,
+                conversation_id: requested_conversation,
+                thread_id: requested_thread,
+                ..
+            },
+        ) => {
+            workspace_id == requested_workspace
+                && project_id == requested_project
+                && teammate_id == requested_teammate
+                && conversation_id == requested_conversation
+                && thread_id == requested_thread
+        }
         _ => false,
     }
 }
@@ -1866,6 +1956,62 @@ mod tests {
     fn invalid_ids_are_bad_requests() {
         assert_eq!(parse_agent_id("not-a-uuid").unwrap_err().status, 400);
         assert_eq!(parse_project_id("not-a-uuid").unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn pocketcomet_chat_dedupe_is_scoped_to_its_thread_and_project() {
+        let stored = AgentOrigin::PocketCometChat {
+            workspace_id: "workspace-1".into(),
+            workspace_name: "Acme".into(),
+            project_id: "project-1".into(),
+            project_name: "Launch".into(),
+            teammate_id: "agent-1".into(),
+            teammate_name: "Choro".into(),
+            conversation_id: "conversation-1".into(),
+            conversation_name: "#product".into(),
+            thread_id: "thread-1".into(),
+            thread_title: "First title".into(),
+        };
+        let same_thread = AgentOriginDto::PocketCometChat {
+            workspace_id: "workspace-1".into(),
+            workspace_name: "Renamed workspace".into(),
+            project_id: "project-1".into(),
+            project_name: "Renamed project".into(),
+            teammate_id: "agent-1".into(),
+            teammate_name: "Choro".into(),
+            conversation_id: "conversation-1".into(),
+            conversation_name: "#renamed".into(),
+            thread_id: "thread-1".into(),
+            thread_title: "Updated title".into(),
+        };
+        let other_thread = AgentOriginDto::PocketCometChat {
+            workspace_id: "workspace-1".into(),
+            workspace_name: "Renamed workspace".into(),
+            project_id: "project-1".into(),
+            project_name: "Renamed project".into(),
+            teammate_id: "agent-1".into(),
+            teammate_name: "Choro".into(),
+            conversation_id: "conversation-1".into(),
+            conversation_name: "#renamed".into(),
+            thread_id: "thread-2".into(),
+            thread_title: "Updated title".into(),
+        };
+        let other_teammate = AgentOriginDto::PocketCometChat {
+            workspace_id: "workspace-1".into(),
+            workspace_name: "Renamed workspace".into(),
+            project_id: "project-1".into(),
+            project_name: "Renamed project".into(),
+            teammate_id: "agent-2".into(),
+            teammate_name: "Architecture Choro".into(),
+            conversation_id: "conversation-1".into(),
+            conversation_name: "#renamed".into(),
+            thread_id: "thread-1".into(),
+            thread_title: "Updated title".into(),
+        };
+
+        assert!(origin_matches(Some(&stored), &same_thread));
+        assert!(!origin_matches(Some(&stored), &other_thread));
+        assert!(!origin_matches(Some(&stored), &other_teammate));
     }
 
     #[test]

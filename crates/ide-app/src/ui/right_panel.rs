@@ -205,7 +205,7 @@ impl Render for RightPanel {
                     .child(self.services_panel.clone())
                     .into_any_element();
             }
-            ProjectActivity::Code | ProjectActivity::Agents => {}
+            ProjectActivity::Code | ProjectActivity::Agents | ProjectActivity::PocketComet => {}
         }
 
         let selected = match (activity, self.selected) {

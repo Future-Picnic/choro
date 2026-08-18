@@ -92,6 +92,19 @@ impl AgentRecords {
     pub fn records_for_project(&self, project: ProjectId) -> Vec<AgentRecord> {
         agents::agents_for_project(&self.records, project)
             .into_iter()
+            .filter(|agent| {
+                !agent
+                    .origin
+                    .as_ref()
+                    .is_some_and(ide_core::AgentOrigin::is_pocketcomet_chat)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn all_records_for_project(&self, project: ProjectId) -> Vec<AgentRecord> {
+        agents::agents_for_project(&self.records, project)
+            .into_iter()
             .cloned()
             .collect()
     }
@@ -105,22 +118,38 @@ impl AgentRecords {
             .get(&project)
             .copied()
             .filter(|id| {
-                self.records
-                    .iter()
-                    .any(|agent| agent.project_id == project && agent.id == *id)
+                self.records.iter().any(|agent| {
+                    agent.project_id == project
+                        && agent.id == *id
+                        && !agent
+                            .origin
+                            .as_ref()
+                            .is_some_and(ide_core::AgentOrigin::is_pocketcomet_chat)
+                })
             })
             .or_else(|| {
                 agents::agents_for_project(&self.records, project)
-                    .first()
+                    .into_iter()
+                    .find(|agent| {
+                        !agent
+                            .origin
+                            .as_ref()
+                            .is_some_and(ide_core::AgentOrigin::is_pocketcomet_chat)
+                    })
                     .map(|agent| agent.id)
             })
     }
 
     pub fn explicitly_selected_agent_id(&self, project: ProjectId) -> Option<Uuid> {
         self.selected.get(&project).copied().filter(|id| {
-            self.records
-                .iter()
-                .any(|agent| agent.project_id == project && agent.id == *id)
+            self.records.iter().any(|agent| {
+                agent.project_id == project
+                    && agent.id == *id
+                    && !agent
+                        .origin
+                        .as_ref()
+                        .is_some_and(ide_core::AgentOrigin::is_pocketcomet_chat)
+            })
         })
     }
 
@@ -705,7 +734,8 @@ impl AgentRecords {
         let now = agents::unix_now();
         agent.started_at = Some(now);
         agent.updated_at = now;
-        agent.status = AgentStatus::InProgress;
+        // Starting or resuming a provider is runtime bookkeeping. Only an
+        // explicit user message or status choice may reopen the task.
         let has_session_id = cli_session_id.is_some();
         if has_session_id {
             agent.cli_session_id = cli_session_id;
@@ -1000,6 +1030,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![newest.id, older.id]
         );
+    }
+
+    #[test]
+    fn pocketcomet_chats_are_hidden_from_project_agents_but_remain_addressable() {
+        let project = ProjectId(Uuid::new_v4());
+        let visible = AgentRecord::new(
+            project,
+            PathBuf::from("/tmp/app"),
+            "Implementation agent",
+            "Do it",
+            AgentKind::Codex,
+            AgentModel::CodexDefault,
+            AgentEffort::Medium,
+            AgentAccessMode::FullAccess,
+        );
+        let mut chat = visible.clone();
+        chat.id = Uuid::new_v4();
+        chat.title = "PocketComet chat".into();
+        chat.updated_at += 1;
+        chat.origin = Some(ide_core::AgentOrigin::PocketCometChat {
+            workspace_id: "workspace-1".into(),
+            workspace_name: "Acme".into(),
+            project_id: "project-1".into(),
+            project_name: "Launch".into(),
+            teammate_id: "agent-1".into(),
+            teammate_name: "Choro".into(),
+            conversation_id: "conversation-1".into(),
+            conversation_name: "#product".into(),
+            thread_id: "thread-1".into(),
+            thread_title: "Should we ship this?".into(),
+        });
+        let records = AgentRecords {
+            records: vec![visible.clone(), chat.clone()],
+            selected: HashMap::new(),
+            save_scheduled: false,
+        };
+
+        assert_eq!(records.records_for_project(project), vec![visible.clone()]);
+        assert_eq!(records.selected_agent_id(project), Some(visible.id));
+        assert_eq!(records.all_records_for_project(project).len(), 2);
+        assert_eq!(records.agent(chat.id).map(|agent| agent.id), Some(chat.id));
     }
 
     #[test]

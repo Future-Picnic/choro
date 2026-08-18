@@ -776,7 +776,10 @@ impl ProjectList {
     ) -> (bool, usize) {
         let mut working = false;
         let mut waiting = 0;
-        for agent in records.iter().filter(|agent| agent.project_id == project) {
+        for agent in records
+            .iter()
+            .filter(|agent| agent.project_id == project && !agent.status.is_finished())
+        {
             match self.runtime_for_agent(project, agent, cx) {
                 ProjectAgentRuntime::Working => working = true,
                 ProjectAgentRuntime::Waiting => waiting += 1,
@@ -1003,6 +1006,9 @@ impl ProjectList {
         agent: &AgentRecord,
         cx: &App,
     ) -> ProjectAgentRuntime {
+        if agent.status.is_finished() {
+            return ProjectAgentRuntime::Idle;
+        }
         if agent.runtime == AgentRuntimeKind::Chat {
             let (status, session_id, last_activity_at) = self
                 .agent_chats
@@ -1384,6 +1390,9 @@ impl ProjectList {
         for project in &state.projects {
             let project_name = SharedString::from(project.name.clone());
             for agent in self.agents.read(cx).records_for_project(project.id) {
+                if agent.status.is_finished() {
+                    continue;
+                }
                 let pinned = self.attention_pinned == Some(agent.id);
                 if pinned
                     || self.runtime_for_agent(project.id, &agent, cx)

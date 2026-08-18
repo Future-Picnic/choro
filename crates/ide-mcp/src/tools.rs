@@ -7,6 +7,8 @@
 
 use std::{
     fs,
+    fs::OpenOptions,
+    io::Write as _,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -18,7 +20,7 @@ use serde_json::{json, Value};
 use ide_core::local_store::LocalStore;
 use ide_core::{
     AppConfig, Project, ProjectReferenceKind, TaskComment, TaskContentBlock, TaskDetail,
-    TaskRichText, TaskSummary, TaskTrackerClient, TaskTrackerConnection,
+    TaskRichText, TaskSummary, TaskTrackerClient, TaskTrackerConnection, DOCS_DIR_NAME,
 };
 
 /// Largest image we'll inline as base64, to avoid blowing up the agent's
@@ -185,6 +187,8 @@ impl Default for ToolRegistry {
                 Box::new(TaskListTool),
                 Box::new(TaskImageTool),
                 Box::new(SaveAssetTool),
+                Box::new(CreateChoroDocTool),
+                Box::new(CreateChoroScriptTool),
                 Box::new(ProjectPreviewOpenTool),
                 Box::new(ProjectPreviewSnapshotTool),
                 Box::new(ProjectPreviewClickTool),
@@ -755,6 +759,390 @@ impl Tool for SaveAssetTool {
         Ok(vec![text_content(format!(
             "{saved}. It will appear in the Assets panel."
         ))])
+    }
+}
+
+// ── Choro-native project artifacts ─────────────────────────────────────────
+
+struct CreateChoroDocTool;
+
+impl Tool for CreateChoroDocTool {
+    fn name(&self) -> &'static str {
+        "create_choro_doc"
+    }
+    fn title(&self) -> &'static str {
+        "Create a Choro document"
+    }
+    fn description(&self) -> &'static str {
+        "Create a native document in this project's Choro Docs panel. Use this only when the user \
+         explicitly asks for a 'Choro doc', a document 'in Choro Docs', or equivalent wording. \
+         Do not use it for ordinary repository documentation or other files. When it applies, use \
+         this tool instead of writing a .choro file directly."
+    }
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "The document title"
+                },
+                "markdown": {
+                    "type": "string",
+                    "description": "Optional initial Markdown content. When present, it replaces the template body."
+                },
+                "template": {
+                    "type": "string",
+                    "enum": ["blank", "feature-prd", "technical-design", "research-spike", "decision-record"],
+                    "description": "Optional starter structure used when markdown is omitted; defaults to blank"
+                }
+            },
+            "required": ["title"]
+        })
+    }
+    fn call(&self, ctx: &ServerContext, args: &Value) -> Result<Vec<Value>> {
+        let title = required_trimmed_arg(args, "title")?;
+        if title.len() > 4_096 {
+            return Err(anyhow!("Choro document title is too long"));
+        }
+        let template = args
+            .get("template")
+            .and_then(Value::as_str)
+            .unwrap_or("blank");
+        let markdown = args
+            .get("markdown")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|markdown| !markdown.is_empty());
+        let blocks = match markdown {
+            Some(markdown) => markdown_to_choro_blocks(markdown, title),
+            None => choro_template_blocks(template, title)?,
+        };
+        let document = json!({
+            "version": 1,
+            "format": "blocknote",
+            "title": title,
+            "blocks": blocks,
+        });
+        let mut bytes = serde_json::to_vec_pretty(&document)?;
+        bytes.push(b'\n');
+
+        let project = ctx.project()?;
+        let docs_dir = project.path.join(DOCS_DIR_NAME);
+        fs::create_dir_all(&docs_dir)
+            .with_context(|| format!("failed to create {}", docs_dir.display()))?;
+        let path = create_unique_choro_doc(&docs_dir, title, &bytes)?;
+        let relative = path.strip_prefix(&project.path).unwrap_or(&path);
+        Ok(vec![text_content(format!(
+            "Created the Choro document \"{title}\" at {}. It will appear in the Docs panel.",
+            relative.display()
+        ))])
+    }
+}
+
+struct CreateChoroScriptTool;
+
+impl Tool for CreateChoroScriptTool {
+    fn name(&self) -> &'static str {
+        "create_choro_script"
+    }
+    fn title(&self) -> &'static str {
+        "Create a Choro header script"
+    }
+    fn description(&self) -> &'static str {
+        "Add a named command to this project's Choro Scripts control in the top header. Use this \
+         only when the user explicitly asks for a 'Choro script', a script in Choro's top header, \
+         or equivalent wording. Do not use it merely because the user asks to create a normal \
+         repository script or run a command."
+    }
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Short label shown in Choro's Scripts menu"
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Shell command Choro should run for this script"
+                }
+            },
+            "required": ["name", "command"]
+        })
+    }
+    fn call(&self, ctx: &ServerContext, args: &Value) -> Result<Vec<Value>> {
+        let name = required_trimmed_arg(args, "name")?;
+        let command = required_trimmed_arg(args, "command")?;
+        if name.len() > 160 {
+            return Err(anyhow!("Choro script name is too long"));
+        }
+        if command.len() > 16_384 {
+            return Err(anyhow!("Choro script command is too long"));
+        }
+
+        let project = ctx.project()?;
+        let (preset, created) = ctx.store()?.create_project_script_preset(
+            project.id,
+            name.to_string(),
+            command.to_string(),
+        )?;
+        if created {
+            Ok(vec![text_content(format!(
+                "Created the Choro script \"{name}\". It will appear in the top-header Scripts menu."
+            ))])
+        } else {
+            Ok(vec![text_content(format!(
+                "The Choro script \"{}\" already exists in the top-header Scripts menu.",
+                preset.name
+            ))])
+        }
+    }
+}
+
+fn required_trimmed_arg<'a>(args: &'a Value, name: &str) -> Result<&'a str> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("provide a non-empty \"{name}\" argument"))
+}
+
+fn choro_template_blocks(template: &str, title: &str) -> Result<Vec<Value>> {
+    let sections: &[(&str, &str)] = match template {
+        "blank" => &[],
+        "feature-prd" => &[
+            ("Problem", "paragraph"),
+            ("Goal", "paragraph"),
+            ("Users", "paragraph"),
+            ("Requirements", "bulletListItem"),
+            ("Out of Scope", "bulletListItem"),
+            ("Open Questions", "bulletListItem"),
+            ("Acceptance Criteria", "checkListItem"),
+        ],
+        "technical-design" => &[
+            ("Context", "paragraph"),
+            ("Proposed Design", "paragraph"),
+            ("Affected Systems", "bulletListItem"),
+            ("Data and APIs", "paragraph"),
+            ("Trade-offs", "bulletListItem"),
+            ("Rollout and Migration", "paragraph"),
+            ("Testing", "checkListItem"),
+        ],
+        "research-spike" => &[
+            ("Question", "paragraph"),
+            ("Constraints", "bulletListItem"),
+            ("Findings", "paragraph"),
+            ("Options", "numberedListItem"),
+            ("Recommendation", "paragraph"),
+            ("Remaining Unknowns", "bulletListItem"),
+        ],
+        "decision-record" => &[
+            ("Context", "paragraph"),
+            ("Decision", "paragraph"),
+            ("Alternatives Considered", "bulletListItem"),
+            ("Reasoning", "paragraph"),
+            ("Consequences", "bulletListItem"),
+        ],
+        other => return Err(anyhow!("unknown Choro document template \"{other}\"")),
+    };
+    let mut blocks = vec![json!({
+        "type": "heading",
+        "props": { "level": 1 },
+        "content": title,
+    })];
+    if sections.is_empty() {
+        blocks.push(json!({ "type": "paragraph", "content": "" }));
+    } else {
+        for (heading, block_type) in sections {
+            blocks.push(json!({
+                "type": "heading",
+                "props": { "level": 2 },
+                "content": heading,
+            }));
+            blocks.push(json!({ "type": block_type, "content": "" }));
+        }
+    }
+    Ok(blocks)
+}
+
+fn markdown_to_choro_blocks(markdown: &str, title: &str) -> Vec<Value> {
+    let mut blocks = Vec::new();
+    let mut paragraph = Vec::new();
+    let mut code_lines = Vec::new();
+    let mut code_language = String::new();
+    let mut in_code = false;
+
+    let flush_paragraph = |blocks: &mut Vec<Value>, paragraph: &mut Vec<&str>| {
+        if !paragraph.is_empty() {
+            blocks.push(json!({ "type": "paragraph", "content": paragraph.join("\n") }));
+            paragraph.clear();
+        }
+    };
+
+    for line in markdown.lines() {
+        if let Some(language) = line.trim().strip_prefix("```") {
+            if in_code {
+                blocks.push(json!({
+                    "type": "codeBlock",
+                    "props": { "language": code_language },
+                    "content": code_lines.join("\n"),
+                }));
+                code_lines.clear();
+                code_language.clear();
+                in_code = false;
+            } else {
+                flush_paragraph(&mut blocks, &mut paragraph);
+                code_language = language.trim().to_string();
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            code_lines.push(line);
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            flush_paragraph(&mut blocks, &mut paragraph);
+            continue;
+        }
+        let structured = if let Some(content) = trimmed.strip_prefix("### ") {
+            Some(json!({ "type": "heading", "props": { "level": 3 }, "content": content }))
+        } else if let Some(content) = trimmed.strip_prefix("## ") {
+            Some(json!({ "type": "heading", "props": { "level": 2 }, "content": content }))
+        } else if let Some(content) = trimmed.strip_prefix("# ") {
+            Some(json!({ "type": "heading", "props": { "level": 1 }, "content": content }))
+        } else if let Some(content) = trimmed.strip_prefix("- [ ] ") {
+            Some(json!({
+                "type": "checkListItem",
+                "props": { "checked": false },
+                "content": content,
+            }))
+        } else if let Some(content) = trimmed
+            .strip_prefix("- [x] ")
+            .or_else(|| trimmed.strip_prefix("- [X] "))
+        {
+            Some(json!({
+                "type": "checkListItem",
+                "props": { "checked": true },
+                "content": content,
+            }))
+        } else if let Some(content) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            Some(json!({ "type": "bulletListItem", "content": content }))
+        } else if let Some(content) = ordered_list_content(trimmed) {
+            Some(json!({ "type": "numberedListItem", "content": content }))
+        } else if let Some(content) = trimmed.strip_prefix("> ") {
+            Some(json!({ "type": "quote", "content": content }))
+        } else {
+            None
+        };
+        if let Some(block) = structured {
+            flush_paragraph(&mut blocks, &mut paragraph);
+            blocks.push(block);
+        } else {
+            paragraph.push(trimmed);
+        }
+    }
+    flush_paragraph(&mut blocks, &mut paragraph);
+    if in_code {
+        blocks.push(json!({
+            "type": "codeBlock",
+            "props": { "language": code_language },
+            "content": code_lines.join("\n"),
+        }));
+    }
+    if !blocks.first().is_some_and(|block| {
+        block.get("type").and_then(Value::as_str) == Some("heading")
+            && block.pointer("/props/level").and_then(Value::as_u64) == Some(1)
+    }) {
+        blocks.insert(
+            0,
+            json!({ "type": "heading", "props": { "level": 1 }, "content": title }),
+        );
+    }
+    blocks
+}
+
+fn ordered_list_content(line: &str) -> Option<&str> {
+    let (number, content) = line.split_once(". ")?;
+    (!number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit())).then_some(content)
+}
+
+fn create_unique_choro_doc(dir: &Path, title: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let stem = choro_doc_slug(title);
+    let temp_path = dir.join(format!(".{stem}.{}.tmp", uuid::Uuid::new_v4()));
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .with_context(|| format!("failed to create {}", temp_path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("failed to write {}", temp_path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temp_path.display()))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+
+    for index in 1.. {
+        let file_name = if index == 1 {
+            format!("{stem}.choro")
+        } else {
+            format!("{stem}-{index}.choro")
+        };
+        let path = dir.join(file_name);
+        match fs::hard_link(&temp_path, &path) {
+            Ok(()) => {
+                if let Err(error) = fs::remove_file(&temp_path) {
+                    eprintln!(
+                        "ide-mcp: created {} but could not clean up temporary file {}: {error}",
+                        path.display(),
+                        temp_path.display()
+                    );
+                }
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(error).with_context(|| format!("failed to publish {}", path.display()));
+            }
+        }
+    }
+    unreachable!()
+}
+
+fn choro_doc_slug(title: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+    for ch in title.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            if slug.len() >= 80 {
+                break;
+            }
+            slug.push(ch.to_ascii_lowercase());
+            previous_dash = false;
+        } else if !previous_dash && !slug.is_empty() {
+            slug.push('-');
+            previous_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "untitled".to_string()
+    } else {
+        slug
     }
 }
 
@@ -1578,6 +1966,8 @@ mod tests {
         assert!(names.contains(&"task_list".to_string()));
         assert!(names.contains(&"task_image".to_string()));
         assert!(names.contains(&"save_asset".to_string()));
+        assert!(names.contains(&"create_choro_doc".to_string()));
+        assert!(names.contains(&"create_choro_script".to_string()));
         assert!(names.contains(&"preview_open".to_string()));
         assert!(names.contains(&"preview_snapshot".to_string()));
         assert!(names.contains(&"preview_click".to_string()));
@@ -1609,6 +1999,95 @@ mod tests {
             reply.pointer("/inputSchema/required"),
             Some(&json!(["request_id", "message"]))
         );
+    }
+
+    #[test]
+    fn create_choro_doc_writes_a_native_document_in_the_project_docs_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        let project_path = dir.path().join("project");
+        fs::create_dir_all(&project_path).unwrap();
+        let store = LocalStore::open(root.clone()).unwrap();
+        let project = Project::from_path(project_path.clone());
+        let mut config = AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        drop(store);
+        let ctx = ServerContext::new(Some(project.id.0), None, Some(root));
+
+        CreateChoroDocTool
+            .call(
+                &ctx,
+                &json!({
+                    "title": "Checkout Plan",
+                    "markdown": "## Goal\n\nShip checkout.\n\n- [ ] Add tests\n- [x] Implement checkout"
+                }),
+            )
+            .unwrap();
+
+        let path = project_path.join("choro_docs/checkout-plan.choro");
+        let document: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(document["version"], 1);
+        assert_eq!(document["format"], "blocknote");
+        assert_eq!(document["title"], "Checkout Plan");
+        assert_eq!(document["blocks"][0]["type"], "heading");
+        let checklist: Vec<&Value> = document["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "checkListItem")
+            .collect();
+        assert_eq!(checklist.len(), 2);
+        assert_eq!(checklist[0]["props"]["checked"], false);
+        assert_eq!(checklist[1]["props"]["checked"], true);
+    }
+
+    #[test]
+    fn create_unique_choro_doc_does_not_overwrite_an_existing_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("checkout-plan.choro");
+        fs::write(&existing, b"existing").unwrap();
+
+        let created = create_unique_choro_doc(dir.path(), "Checkout Plan", b"new").unwrap();
+
+        assert_eq!(created, dir.path().join("checkout-plan-2.choro"));
+        assert_eq!(fs::read(existing).unwrap(), b"existing");
+        assert_eq!(fs::read(created).unwrap(), b"new");
+        assert!(fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+    }
+
+    #[test]
+    fn create_choro_script_appends_a_project_header_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        let project_path = dir.path().join("project");
+        fs::create_dir_all(&project_path).unwrap();
+        let store = LocalStore::open(root.clone()).unwrap();
+        let project = Project::from_path(project_path);
+        let mut config = AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        drop(store);
+        let ctx = ServerContext::new(Some(project.id.0), None, Some(root.clone()));
+
+        CreateChoroScriptTool
+            .call(
+                &ctx,
+                &json!({ "name": "Preview", "command": "npm run dev" }),
+            )
+            .unwrap();
+
+        let loaded = LocalStore::open_existing(root)
+            .unwrap()
+            .load_workspace_config(AppConfig::default())
+            .unwrap();
+        let preset = &loaded.projects[0].presets[0];
+        assert_eq!(preset.name, "Preview");
+        assert_eq!(preset.command, "npm run dev");
     }
 
     #[test]

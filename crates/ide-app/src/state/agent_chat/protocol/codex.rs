@@ -877,6 +877,15 @@ mod usage_tests {
             Some("workspaceWrite")
         );
     }
+
+    #[test]
+    fn developer_instructions_scope_choro_native_creation_tools() {
+        let instructions = codex_developer_instructions("base", None, None);
+
+        assert!(instructions.contains("create_choro_doc"));
+        assert!(instructions.contains("create_choro_script"));
+        assert!(instructions.contains("Do not use these tools for ordinary repository"));
+    }
 }
 
 fn codex_turn_sandbox_policy(
@@ -911,6 +920,9 @@ fn codex_developer_instructions(
     document_instructions: Option<&str>,
 ) -> String {
     let mut instructions = base.to_string();
+    instructions.push_str("\n\n<choro_native_tools>\n");
+    instructions.push_str(super::CHORO_NATIVE_TOOL_INSTRUCTIONS);
+    instructions.push_str("\n</choro_native_tools>");
     if let Some(document_instructions) = document_instructions
         .map(str::trim)
         .filter(|instructions| !instructions.is_empty())

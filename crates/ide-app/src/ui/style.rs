@@ -1299,6 +1299,76 @@ pub fn header_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &App) ->
         )
 }
 
+/// A compact header action backed by the Lucide icon font. Use this when the
+/// requested Lucide glyph is not represented by gpui-component's SVG enum.
+pub fn header_lucide_icon_button(
+    id: impl Into<ElementId>,
+    icon: lucide_icons::Icon,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(px(CONTROL_H_COMPACT))
+        .w(px(CONTROL_H_COMPACT))
+        .child(design::indicator::lucide_icon(
+            icon,
+            design::t3(cx),
+            design::icon(),
+        ))
+}
+
+/// A labelled utility toggle anchored in a panel footer/status bar. The active
+/// treatment stays neutral so diagnostic tools remain visible without reading
+/// like a primary workflow action.
+pub fn panel_footer_toggle_button(
+    id: impl Into<ElementId>,
+    icon: lucide_icons::Icon,
+    label: impl Into<SharedString>,
+    active: bool,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .h(design::control_h_sm())
+        .px_2()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if active {
+                    design::surface_2(cx)
+                } else {
+                    transparent
+                })
+                .foreground(if active {
+                    design::t1(cx)
+                } else {
+                    design::t2(cx)
+                })
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+        .child(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .child(design::indicator::lucide_icon(
+                    icon,
+                    if active {
+                        design::t1(cx)
+                    } else {
+                        design::t3(cx)
+                    },
+                    design::icon_sm(),
+                ))
+                .child(label.into()),
+        )
+}
+
 /// Header icon action for app-owned SVG glyphs that are not represented by
 /// `IconName`. Geometry and interaction treatment match `header_icon_button`.
 pub fn header_svg_button(id: impl Into<ElementId>, icon: impl IntoElement, _cx: &App) -> Button {

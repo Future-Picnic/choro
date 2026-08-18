@@ -114,6 +114,7 @@ impl CenterArea {
         match activity {
             ProjectActivity::Code => self.show_code(cx),
             ProjectActivity::Agents => self.show_agents(cx),
+            ProjectActivity::PocketComet => self.show_pocketcomet(cx),
             ProjectActivity::Tasks => self.show_tasks(cx),
             ProjectActivity::Db => self.show_db(cx),
             ProjectActivity::Docs => self.set_context_mode(ContextMode::Docs, cx),
@@ -133,6 +134,10 @@ impl CenterArea {
         self.agents_panel_reset_epoch = self.agents_panel_reset_epoch.wrapping_add(1);
         self.set_view_mode(CenterMode::Agents, cx);
         cx.notify();
+    }
+
+    pub fn show_pocketcomet(&mut self, cx: &mut Context<Self>) {
+        self.set_view_mode(CenterMode::PocketComet, cx);
     }
 
     pub fn show_tasks(&mut self, cx: &mut Context<Self>) {

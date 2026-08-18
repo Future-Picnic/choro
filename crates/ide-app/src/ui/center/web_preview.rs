@@ -45,6 +45,10 @@ pub enum WebPreviewIntent {
 
 #[derive(Clone, Debug)]
 pub enum ProjectPreviewMessage {
+    ConsoleEntry {
+        project_id: ProjectId,
+        entry: ProjectPreviewConsoleEntry,
+    },
     ToggleFocusMode {
         project_id: ProjectId,
     },
@@ -123,6 +127,42 @@ pub enum ProjectPreviewMessage {
         command_id: Uuid,
         message: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProjectPreviewConsoleLevel {
+    Debug,
+    Log,
+    Info,
+    Warn,
+    Error,
+}
+
+impl ProjectPreviewConsoleLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Debug => "DEBUG",
+            Self::Log => "LOG",
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+
+    pub fn is_error(self) -> bool {
+        self == Self::Error
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPreviewConsoleEntry {
+    pub level: ProjectPreviewConsoleLevel,
+    pub message: String,
+    pub source: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
 }
 
 /// The deliberately narrow set of messages accepted from page-adjacent
@@ -426,8 +466,8 @@ mod imp {
 
     use super::{
         penpot_message_matches_surface, AsyncApp, DocEditorMessage, PenpotMessage,
-        PenpotSidebarTab, ProjectId, ProjectPreviewInspectorMessage, ProjectPreviewMessage, Uuid,
-        VisualizationTheme, WebPreviewIntent, MAX_VISUALIZATION_BYTES,
+        PenpotSidebarTab, ProjectId, ProjectPreviewConsoleEntry, ProjectPreviewInspectorMessage,
+        ProjectPreviewMessage, Uuid, VisualizationTheme, WebPreviewIntent, MAX_VISUALIZATION_BYTES,
     };
 
     const MAX_DOC_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -439,9 +479,13 @@ mod imp {
         include_str!("../../../assets/web/project-preview-inspector.js");
     const PROJECT_PREVIEW_AGENT_JS: &str =
         include_str!("../../../assets/web/project-preview-agent.js");
+    const PROJECT_PREVIEW_CONSOLE_JS: &str =
+        include_str!("../../../assets/web/project-preview-console.js");
     const PROJECT_PREVIEW_CONTENT_WORLD: &str = "Choro Project Preview";
     const PROJECT_PREVIEW_MESSAGE_HANDLER: &str = "choroPreview";
+    const PROJECT_PREVIEW_CONSOLE_MESSAGE_HANDLER: &str = "choroPreviewConsole";
     const MAX_PROJECT_PREVIEW_MESSAGE_BYTES: usize = 256 * 1024;
+    const MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES: usize = 32 * 1024;
 
     struct ProjectPreviewMessageHandlerIvars {
         project_id: ProjectId,
@@ -457,6 +501,16 @@ mod imp {
         }
         serde_json::from_str(body)
             .map_err(|error| format!("The Preview review message was invalid: {error}"))
+    }
+
+    fn decode_project_preview_console_entry(
+        body: &str,
+    ) -> Result<ProjectPreviewConsoleEntry, String> {
+        if body.len() > MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES {
+            return Err("The Preview console message was too large.".to_string());
+        }
+        serde_json::from_str(body)
+            .map_err(|error| format!("The Preview console message was invalid: {error}"))
     }
 
     fn bind_project_preview_message(
@@ -628,6 +682,52 @@ mod imp {
         }
     );
 
+    struct ProjectPreviewConsoleMessageHandlerIvars {
+        project_id: ProjectId,
+        messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
+        app: AsyncApp,
+    }
+
+    define_class!(
+        #[unsafe(super(NSObject))]
+        #[name = "ChoroProjectPreviewConsoleMessageHandler"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = ProjectPreviewConsoleMessageHandlerIvars]
+        struct ProjectPreviewConsoleMessageHandler;
+
+        unsafe impl NSObjectProtocol for ProjectPreviewConsoleMessageHandler {}
+
+        unsafe impl WKScriptMessageHandler for ProjectPreviewConsoleMessageHandler {
+            #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+            fn did_receive(
+                this: &ProjectPreviewConsoleMessageHandler,
+                _controller: &WKUserContentController,
+                message: &WKScriptMessage,
+            ) {
+                let body = unsafe { message.body() };
+                let Ok(body) = body.downcast::<NSString>() else {
+                    eprintln!("project preview console sent a non-string message");
+                    return;
+                };
+                let entry = match decode_project_preview_console_entry(&body.to_string()) {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        eprintln!("invalid project preview console message: {error}");
+                        return;
+                    }
+                };
+                enqueue_project_preview_message(
+                    &this.ivars().messages,
+                    &this.ivars().app,
+                    ProjectPreviewMessage::ConsoleEntry {
+                        project_id: this.ivars().project_id,
+                        entry,
+                    },
+                );
+            }
+        }
+    );
+
     impl ProjectPreviewMessageHandler {
         fn install(
             controller: Retained<WKUserContentController>,
@@ -679,6 +779,48 @@ mod imp {
                 );
                 controller.addUserScript(&user_script);
                 controller.addUserScript(&agent_script);
+            }
+        }
+    }
+
+    impl ProjectPreviewConsoleMessageHandler {
+        fn install(
+            controller: Retained<WKUserContentController>,
+            project_id: ProjectId,
+            messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
+            app: AsyncApp,
+            main_thread: MainThreadMarker,
+        ) {
+            let handler =
+                main_thread
+                    .alloc::<Self>()
+                    .set_ivars(ProjectPreviewConsoleMessageHandlerIvars {
+                        project_id,
+                        messages,
+                        app,
+                    });
+            let handler: Retained<Self> = unsafe { msg_send![super(handler), init] };
+            let protocol_handler = ProtocolObject::from_ref(&*handler);
+            let page_world = unsafe { WKContentWorld::pageWorld(main_thread) };
+            let user_script = unsafe {
+                WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
+                    main_thread.alloc::<WKUserScript>(),
+                    &NSString::from_str(PROJECT_PREVIEW_CONSOLE_JS),
+                    WKUserScriptInjectionTime::AtDocumentStart,
+                    true,
+                    &page_world,
+                )
+            };
+            unsafe {
+                // This page-world bridge accepts console entries only. Keeping
+                // it separate prevents previewed code from forging inspector or
+                // agent-control messages that live in Choro's isolated world.
+                controller.addScriptMessageHandler_contentWorld_name(
+                    protocol_handler,
+                    &page_world,
+                    &NSString::from_str(PROJECT_PREVIEW_CONSOLE_MESSAGE_HANDLER),
+                );
+                controller.addUserScript(&user_script);
             }
         }
     }
@@ -924,9 +1066,30 @@ mod imp {
             }
         }
 
-        fn reload(&self) -> Result<(), String> {
+        fn reload_from_origin(&self) -> Result<(), String> {
             match self {
-                Self::WebKit(webview) => webview.reload().map_err(|error| error.to_string()),
+                Self::WebKit(webview) => {
+                    // Reload the document WebKit is currently showing, not the
+                    // configured Preview intent URL. `reloadFromOrigin` also
+                    // revalidates resources so this acts like a real browser
+                    // refresh while debugging local changes.
+                    unsafe {
+                        webview.webview().reloadFromOrigin();
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        fn current_url(&self) -> Option<String> {
+            match self {
+                Self::WebKit(webview) => unsafe {
+                    webview
+                        .webview()
+                        .URL()
+                        .and_then(|url| url.absoluteString())
+                        .map(|url| url.to_string())
+                },
             }
         }
 
@@ -994,6 +1157,7 @@ mod imp {
         /// intent pending until that row becomes visible again.
         pub fn set_intent(&mut self, intent: Option<WebPreviewIntent>) -> bool {
             let had_active = self.active.is_some();
+            self.cache_active_project_preview_live_url();
 
             let incoming_penpot = intent
                 .as_ref()
@@ -1268,7 +1432,7 @@ mod imp {
             }
             active
                 .webview
-                .reload()
+                .reload_from_origin()
                 .map_err(|error| format!("Could not reload Preview: {error}"))
         }
 
@@ -1339,11 +1503,7 @@ mod imp {
             ) {
                 return Err("That project's Preview is not active.".to_string());
             }
-            // Do not call Wry's `WebView::url()` here. On macOS, Wry 0.52.1
-            // unwraps WKWebView.URL internally, but WebKit may legitimately
-            // return nil while the native view is being created or torn down.
-            // Page-load and same-document navigation events maintain this
-            // cache without making render-time native lifecycle assumptions.
+            self.cache_active_project_preview_live_url();
             self.project_preview_live_urls
                 .borrow()
                 .get(&project_id)
@@ -1353,6 +1513,46 @@ mod imp {
                     _ => None,
                 })
                 .ok_or_else(|| "The project Preview URL is not ready yet.".to_string())
+        }
+
+        /// Return the most recent live URL even when another project's webview
+        /// is active. Keep page uses this to rebuild a torn-down project at the
+        /// route the user was actually debugging.
+        pub fn cached_project_preview_live_url(&self, project_id: ProjectId) -> Option<String> {
+            self.cache_active_project_preview_live_url();
+            self.project_preview_live_urls
+                .borrow()
+                .get(&project_id)
+                .cloned()
+        }
+
+        pub fn is_project_preview_active(&self, project_id: ProjectId) -> bool {
+            self.active.as_ref().is_some_and(|active| {
+                matches!(
+                    active.intent,
+                    WebPreviewIntent::ProjectPreview {
+                        project_id: active_project,
+                        ..
+                    } if active_project == project_id
+                )
+            })
+        }
+
+        fn cache_active_project_preview_live_url(&self) {
+            let Some(active) = self.active.as_ref() else {
+                return;
+            };
+            let WebPreviewIntent::ProjectPreview { project_id, .. } = &active.intent else {
+                return;
+            };
+            let Some(url) = active.webview.current_url() else {
+                return;
+            };
+            if url != "about:blank" {
+                self.project_preview_live_urls
+                    .borrow_mut()
+                    .insert(*project_id, url);
+            }
         }
 
         pub fn execute_project_preview_agent_command(
@@ -2770,6 +2970,13 @@ mod imp {
                 ProjectPreviewMessageHandler::install(
                     webview.manager(),
                     *project_id,
+                    preview_messages.clone(),
+                    app.clone(),
+                    main_thread,
+                );
+                ProjectPreviewConsoleMessageHandler::install(
+                    webview.manager(),
+                    *project_id,
                     preview_messages,
                     app,
                     main_thread,
@@ -3187,13 +3394,14 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
         use uuid::Uuid;
 
         use super::{
-            bind_project_preview_message, decode_project_preview_message, design_export_file_name,
-            inject_visualization_chrome, penpot_assistant_initialization_script,
-            penpot_chrome_sync_script, penpot_left_sidebar_collapse_script,
-            penpot_message_matches_surface, penpot_sidebar_tab_script, penpot_theme_sync_script,
-            preview_key_event_data, project_preview_message_live_url, same_surface,
-            surface_visible, unique_design_download_path, PenpotMessage, PenpotSidebarTab,
-            MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
+            bind_project_preview_message, decode_project_preview_console_entry,
+            decode_project_preview_message, design_export_file_name, inject_visualization_chrome,
+            penpot_assistant_initialization_script, penpot_chrome_sync_script,
+            penpot_left_sidebar_collapse_script, penpot_message_matches_surface,
+            penpot_sidebar_tab_script, penpot_theme_sync_script, preview_key_event_data,
+            project_preview_message_live_url, same_surface, surface_visible,
+            unique_design_download_path, PenpotMessage, PenpotSidebarTab,
+            MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
 
         #[test]
@@ -3211,7 +3419,7 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             );
         }
         use crate::ui::center::web_preview::{
-            PenpotTheme, ProjectPreviewMessage, WebPreviewIntent,
+            PenpotTheme, ProjectPreviewConsoleLevel, ProjectPreviewMessage, WebPreviewIntent,
         };
 
         fn test_penpot_theme() -> PenpotTheme {
@@ -3331,6 +3539,24 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
         fn inspector_cannot_forge_native_capture_completion() {
             let forged = r#"{"kind":"captureReady","agentId":"00000000-0000-0000-0000-000000000001","imageBase64":"AA=="}"#;
             assert!(decode_project_preview_message(forged).is_err());
+        }
+
+        #[test]
+        fn console_bridge_accepts_only_bounded_typed_entries() {
+            let entry = decode_project_preview_console_entry(
+                r#"{"level":"error","message":"Boom","source":"http://localhost/app.js","line":7,"column":11}"#,
+            )
+            .expect("valid console entry");
+
+            assert_eq!(entry.level, ProjectPreviewConsoleLevel::Error);
+            assert_eq!(entry.message, "Boom");
+            assert_eq!(entry.line, Some(7));
+            assert!(decode_project_preview_console_entry(
+                r#"{"level":"fatal","message":"Nope","source":null,"line":null,"column":null}"#,
+            )
+            .is_err());
+            let oversized = "x".repeat(MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES + 1);
+            assert!(decode_project_preview_console_entry(&oversized).is_err());
         }
 
         #[test]
@@ -3672,6 +3898,15 @@ mod imp {
             _project_id: ide_core::project::ProjectId,
         ) -> Result<String, String> {
             Err("Project Preview is only available on macOS.".to_string())
+        }
+        pub fn cached_project_preview_live_url(
+            &self,
+            _project_id: ide_core::project::ProjectId,
+        ) -> Option<String> {
+            None
+        }
+        pub fn is_project_preview_active(&self, _project_id: ide_core::project::ProjectId) -> bool {
+            false
         }
         pub fn execute_project_preview_agent_command(
             &self,

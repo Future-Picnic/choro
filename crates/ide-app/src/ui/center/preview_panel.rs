@@ -1,5 +1,76 @@
 use super::*;
 
+const MAX_PROJECT_PREVIEW_CONSOLE_ENTRIES: usize = 500;
+const PROJECT_PREVIEW_CONSOLE_HEIGHT: f32 = 220.0;
+
+fn project_preview_console_source(
+    entry: &web_preview::ProjectPreviewConsoleEntry,
+) -> Option<String> {
+    let source = entry.source.as_deref()?.trim();
+    if source.is_empty() {
+        return None;
+    }
+    let source = url::Url::parse(source)
+        .ok()
+        .and_then(|url| {
+            let path = url.path();
+            let tail = path.rsplit('/').find(|part| !part.is_empty());
+            tail.map(ToOwned::to_owned)
+                .or_else(|| url.host_str().map(ToOwned::to_owned))
+        })
+        .unwrap_or_else(|| source.to_string());
+    Some(match (entry.line, entry.column) {
+        (Some(line), Some(column)) => format!("{source}:{line}:{column}"),
+        (Some(line), None) => format!("{source}:{line}"),
+        _ => source,
+    })
+}
+
+fn mounted_project_preview(
+    ui: &mut ProjectPreviewUiState,
+    source_url: &str,
+    observed_revision: u64,
+    cached_live_url: Option<&str>,
+    preview_is_active: bool,
+) -> (String, u64) {
+    let continuing_source = ui.mounted_source_url.as_deref() == Some(source_url);
+    if !continuing_source {
+        ui.mounted_source_url = Some(source_url.to_string());
+        ui.mounted_revision = None;
+        ui.mounted_intent_url = Some(source_url.to_string());
+    }
+
+    let revision = if ui.keep_page {
+        *ui.mounted_revision.get_or_insert(observed_revision)
+    } else {
+        ui.mounted_revision = Some(observed_revision);
+        observed_revision
+    };
+    let url = if !ui.keep_page {
+        ui.mounted_intent_url = Some(source_url.to_string());
+        source_url.to_string()
+    } else if continuing_source && !preview_is_active {
+        let url = cached_live_url
+            .filter(|url| restorable_project_preview_url(url))
+            .unwrap_or(source_url)
+            .to_string();
+        ui.mounted_intent_url = Some(url.clone());
+        url
+    } else {
+        ui.mounted_intent_url
+            .get_or_insert_with(|| source_url.to_string())
+            .clone()
+    };
+    (url, revision)
+}
+
+fn restorable_project_preview_url(value: &str) -> bool {
+    if value == "about:blank" {
+        return false;
+    }
+    url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "file"))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SoloPreviewOwner {
     agent_id: Uuid,
@@ -1177,17 +1248,30 @@ impl CenterArea {
                 revision: 0,
             });
         }
-        // Fresh agent work bumps the refresh counter; folding it into the
-        // revision makes the webview re-render without a manual reload.
+        // Fresh agent work bumps the refresh counter. Normally that revision
+        // rebuilds the webview, but Keep page freezes the mounted revision so
+        // background work cannot reopen the configured start URL.
         let refresh = self
             .project_preview_refresh
             .get(&project)
             .copied()
             .unwrap_or(0);
+        let observed_revision = choice.revision.wrapping_add(refresh);
+        let preview_host = self.project_preview_host();
+        let preview_host = preview_host.read(cx);
+        let cached_live_url = preview_host.cached_project_preview_live_url(project);
+        let preview_is_active = preview_host.is_project_preview_active(project);
+        let (url, revision) = mounted_project_preview(
+            self.project_preview_ui.entry(project).or_default(),
+            &choice.url,
+            observed_revision,
+            cached_live_url.as_deref(),
+            preview_is_active,
+        );
         Some(web_preview::WebPreviewIntent::ProjectPreview {
             project_id: project,
-            url: choice.url,
-            revision: choice.revision.wrapping_add(refresh),
+            url,
+            revision,
         })
     }
 
@@ -1201,6 +1285,18 @@ impl CenterArea {
             .update(cx, |host, _| host.take_project_preview_messages());
         for message in messages {
             match message {
+                web_preview::ProjectPreviewMessage::ConsoleEntry { project_id, entry } => {
+                    let ui = self.project_preview_ui.entry(project_id).or_default();
+                    if ui.console_entries.len() >= MAX_PROJECT_PREVIEW_CONSOLE_ENTRIES {
+                        ui.console_entries.pop_front();
+                    }
+                    ui.console_entries.push_back(entry);
+                    if ui.console_open {
+                        ui.console_scroll
+                            .scroll_to_item(ui.console_entries.len().saturating_sub(1));
+                    }
+                    cx.notify();
+                }
                 web_preview::ProjectPreviewMessage::ToggleFocusMode { project_id } => {
                     if self
                         .active_project(cx)
@@ -1503,6 +1599,13 @@ impl CenterArea {
                     finished,
                     url,
                 } => {
+                    if !finished && url != "about:blank" {
+                        self.project_preview_ui
+                            .entry(project_id)
+                            .or_default()
+                            .console_entries
+                            .clear();
+                    }
                     self.project_preview_page_load_changed(project_id, finished, url, window, cx);
                 }
                 web_preview::ProjectPreviewMessage::AgentSnapshotReady {
@@ -1843,9 +1946,213 @@ impl CenterArea {
             .get(&project)
             .map(|ui| ui.viewport)
             .unwrap_or_default();
+        let keep_page = self
+            .project_preview_ui
+            .get(&project)
+            .is_some_and(|ui| ui.keep_page);
+        let (console_open, console_entries, console_scroll) = self
+            .project_preview_ui
+            .get(&project)
+            .map(|ui| {
+                (
+                    ui.console_open,
+                    ui.console_entries.iter().cloned().collect::<Vec<_>>(),
+                    ui.console_scroll.clone(),
+                )
+            })
+            .unwrap_or_else(|| (false, Vec::new(), ScrollHandle::new()));
+        let console_error_count = console_entries
+            .iter()
+            .filter(|entry| entry.level.is_error())
+            .count();
+        let console_visible = console_open && active.is_some() && !active_is_simulator;
         let mobile_viewport = viewport == ProjectPreviewViewport::Mobile;
         let host_for_canvas = self.project_preview_host().clone();
         let inspecting = self.project_preview_inspecting == Some(project);
+
+        let console_rows = console_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let tone = match entry.level {
+                    web_preview::ProjectPreviewConsoleLevel::Error => crate::ui::design::rose(cx),
+                    web_preview::ProjectPreviewConsoleLevel::Warn => crate::ui::design::amber(cx),
+                    web_preview::ProjectPreviewConsoleLevel::Info => crate::ui::design::sky(cx),
+                    web_preview::ProjectPreviewConsoleLevel::Debug
+                    | web_preview::ProjectPreviewConsoleLevel::Log => crate::ui::design::t3(cx),
+                };
+                let source = project_preview_console_source(entry);
+                let message_lines = if entry.message.is_empty() {
+                    vec!["(empty message)".to_string()]
+                } else {
+                    entry.message.lines().map(ToOwned::to_owned).collect()
+                };
+
+                h_flex()
+                    .id(("project-preview-console-entry", index))
+                    .w_full()
+                    .min_w(px(0.))
+                    .items_start()
+                    .gap_2()
+                    .px_2p5()
+                    .py_1p5()
+                    .border_b_1()
+                    .border_color(crate::ui::design::line(cx).opacity(0.28))
+                    .when(entry.level.is_error(), |row| {
+                        row.bg(crate::ui::design::rose(cx).opacity(0.045))
+                    })
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .flex_none()
+                            .pt(px(1.))
+                            .font_family(crate::ui::design::FONT_MONO)
+                            .text_size(crate::ui::design::text_label())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tone)
+                            .child(entry.level.label()),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_0p5()
+                            .font_family(crate::ui::design::FONT_MONO)
+                            .text_size(crate::ui::design::text_file())
+                            .line_height(gpui::relative(1.38))
+                            .text_color(crate::ui::design::t2(cx))
+                            .children(
+                                message_lines
+                                    .into_iter()
+                                    .map(|line| div().w_full().whitespace_normal().child(line)),
+                            )
+                            .when_some(source, |column, source| {
+                                column.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(crate::ui::design::text_label())
+                                        .text_color(crate::ui::design::t4(cx))
+                                        .child(source),
+                                )
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+
+        let console_summary = match (console_entries.len(), console_error_count) {
+            (0, _) => "No messages".to_string(),
+            (messages, 0) => format!("{messages} messages"),
+            (messages, errors) => format!("{messages} messages · {errors} errors"),
+        };
+        let console_panel = v_flex()
+            .h(px(PROJECT_PREVIEW_CONSOLE_HEIGHT))
+            .flex_none()
+            .w_full()
+            .border_t_1()
+            .border_color(crate::ui::design::line(cx).opacity(0.5))
+            .bg(crate::ui::design::base(cx))
+            .child(
+                h_flex()
+                    .h(px(30.))
+                    .flex_none()
+                    .w_full()
+                    .px_2p5()
+                    .gap_2()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(crate::ui::design::line(cx).opacity(0.35))
+                    .bg(crate::ui::design::surface(cx))
+                    .child(crate::ui::design::indicator::lucide_icon(
+                        lucide_icons::Icon::Terminal,
+                        crate::ui::design::t2(cx),
+                        crate::ui::design::icon_sm(),
+                    ))
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_ui())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child("Console"),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(crate::ui::design::text_label())
+                            .text_color(if console_error_count > 0 {
+                                crate::ui::design::rose(cx)
+                            } else {
+                                crate::ui::design::t4(cx)
+                            })
+                            .child(console_summary),
+                    )
+                    .child(
+                        style::context_panel_action_button(
+                            "project-preview-console-clear",
+                            IconName::Delete,
+                            "Clear",
+                            cx,
+                        )
+                        .disabled(console_entries.is_empty())
+                        .tooltip("Clear Preview console")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.project_preview_ui
+                                .entry(project)
+                                .or_default()
+                                .console_entries
+                                .clear();
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        style::header_icon_button(
+                            "project-preview-console-close",
+                            IconName::Close,
+                            cx,
+                        )
+                        .tooltip("Close Console")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.project_preview_ui
+                                .entry(project)
+                                .or_default()
+                                .console_open = false;
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("project-preview-console-entries")
+                    .track_scroll(&console_scroll)
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scrollbar()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .when(console_rows.is_empty(), |list| {
+                        list.child(
+                            v_flex()
+                                .size_full()
+                                .items_center()
+                                .justify_center()
+                                .gap_1()
+                                .text_color(crate::ui::design::t3(cx))
+                                .child(
+                                    div()
+                                        .text_size(crate::ui::design::text_ui())
+                                        .child("No console messages"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(crate::ui::design::text_label())
+                                        .child("Logs and page errors will appear here."),
+                                ),
+                        )
+                    })
+                    .children(console_rows),
+            )
+            .into_any_element();
 
         v_flex()
             .size_full()
@@ -1917,13 +2224,13 @@ impl CenterArea {
                         })),
                     )
                     .child(
-                        style::header_icon_button(
+                        style::header_lucide_icon_button(
                             "project-preview-reload",
-                            IconName::Redo2,
+                            lucide_icons::Icon::RotateCw,
                             cx,
                         )
                         .disabled(active.is_none() || active_is_simulator)
-                        .tooltip("Reload Preview")
+                        .tooltip("Reload the current Preview URL")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             match this
                                 .project_preview_host()
@@ -1940,6 +2247,34 @@ impl CenterArea {
                             cx.notify();
                         })),
                     )
+                    .when(!active_is_simulator, |header| {
+                        header.child(
+                            style::header_workspace_toggle_button(
+                                "project-preview-keep-page",
+                                IconName::EyeOff,
+                                "Keep page",
+                                keep_page,
+                                cx,
+                            )
+                            .disabled(active.is_none())
+                            .tooltip(if keep_page {
+                                "Background reloads are blocked; Reload refreshes the current URL"
+                            } else {
+                                "Prevent background changes from reloading Preview"
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let ui = this.project_preview_ui.entry(project).or_default();
+                                ui.keep_page = !ui.keep_page;
+                                ui.status = Some(if ui.keep_page {
+                                    "Keeping the current page · automatic reloads are off"
+                                        .to_string()
+                                } else {
+                                    "Automatic Preview reloads resumed".to_string()
+                                });
+                                cx.notify();
+                            })),
+                        )
+                    })
                     .when(!active_is_simulator, |header| header.child(
                         style::context_panel_action_button(
                             "project-preview-viewport",
@@ -2151,6 +2486,7 @@ impl CenterArea {
                         )
                     }),
             )
+            .when(console_visible, |panel| panel.child(console_panel))
             .child(
                 h_flex()
                     .h(px(28.))
@@ -2173,7 +2509,43 @@ impl CenterArea {
                                 crate::ui::design::t4(cx)
                             }),
                     )
-                    .child(div().truncate().child(status)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .child(status),
+                    )
+                    .child(
+                        style::panel_footer_toggle_button(
+                            "project-preview-console-toggle",
+                            lucide_icons::Icon::Terminal,
+                            if console_error_count > 0 {
+                                format!("Console ({console_error_count})")
+                            } else {
+                                "Console".to_string()
+                            },
+                            console_visible,
+                            cx,
+                        )
+                        .disabled(active.is_none() || active_is_simulator)
+                        .tooltip(if active_is_simulator {
+                            "Console is available for web previews"
+                        } else if console_open {
+                            "Hide Preview console"
+                        } else {
+                            "Show logs and page errors"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let ui = this.project_preview_ui.entry(project).or_default();
+                            ui.console_open = !ui.console_open;
+                            if ui.console_open && !ui.console_entries.is_empty() {
+                                ui.console_scroll
+                                    .scroll_to_item(ui.console_entries.len().saturating_sub(1));
+                            }
+                            cx.notify();
+                        })),
+                    ),
             )
             .into_any_element()
     }
@@ -2235,11 +2607,12 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        explicit_preview_choice, normalize_project_preview_url, preview_choice_matches_agent,
-        preview_control_policy_allows_url, preview_control_security_policy, preview_server_origin,
-        resized_project_preview_ratio, stored_preview_is_available, take_latest_preview_scope,
-        PreviewChoice, PreviewScope, ProjectPreviewUiState, ProjectPreviewViewport,
-        SoloPreviewOwner, PROJECT_PREVIEW_PANEL_MAX_RATIO, PROJECT_PREVIEW_PANEL_MIN,
+        explicit_preview_choice, mounted_project_preview, normalize_project_preview_url,
+        preview_choice_matches_agent, preview_control_policy_allows_url,
+        preview_control_security_policy, preview_server_origin, resized_project_preview_ratio,
+        stored_preview_is_available, take_latest_preview_scope, PreviewChoice, PreviewScope,
+        ProjectPreviewUiState, ProjectPreviewViewport, SoloPreviewOwner,
+        PROJECT_PREVIEW_PANEL_MAX_RATIO, PROJECT_PREVIEW_PANEL_MIN,
     };
 
     #[test]
@@ -2276,6 +2649,76 @@ mod tests {
         assert_eq!(
             states.entry(second).or_default().viewport,
             ProjectPreviewViewport::Desktop
+        );
+    }
+
+    #[test]
+    fn keep_page_freezes_revisions_and_restores_route_after_project_switch() {
+        let mut ui = ProjectPreviewUiState::default();
+
+        assert_eq!(
+            mounted_project_preview(&mut ui, "http://localhost:5173/", 4, None, false),
+            ("http://localhost:5173/".to_string(), 4)
+        );
+        assert_eq!(
+            mounted_project_preview(&mut ui, "http://localhost:5173/", 7, None, true),
+            ("http://localhost:5173/".to_string(), 7)
+        );
+
+        ui.keep_page = true;
+        assert_eq!(
+            mounted_project_preview(
+                &mut ui,
+                "http://localhost:5173/",
+                9,
+                Some("http://localhost:5173/debug/item-4"),
+                true,
+            ),
+            ("http://localhost:5173/".to_string(), 7)
+        );
+        assert_eq!(
+            mounted_project_preview(
+                &mut ui,
+                "http://localhost:5173/",
+                12,
+                Some("http://localhost:5173/debug/item-4"),
+                false,
+            ),
+            ("http://localhost:5173/debug/item-4".to_string(), 7)
+        );
+        assert_eq!(
+            mounted_project_preview(
+                &mut ui,
+                "http://localhost:5173/",
+                12,
+                Some("http://localhost:5173/debug/item-4"),
+                true,
+            ),
+            ("http://localhost:5173/debug/item-4".to_string(), 7)
+        );
+
+        ui.keep_page = false;
+        assert_eq!(
+            mounted_project_preview(&mut ui, "http://localhost:5173/", 12, None, true),
+            ("http://localhost:5173/".to_string(), 12)
+        );
+    }
+
+    #[test]
+    fn keep_page_does_not_restore_a_previous_preview_source() {
+        let mut ui = ProjectPreviewUiState::default();
+        let _ = mounted_project_preview(&mut ui, "http://localhost:5173/", 4, None, false);
+        ui.keep_page = true;
+
+        assert_eq!(
+            mounted_project_preview(
+                &mut ui,
+                "http://localhost:4173/",
+                8,
+                Some("http://localhost:5173/debug"),
+                true,
+            ),
+            ("http://localhost:4173/".to_string(), 8)
         );
     }
 

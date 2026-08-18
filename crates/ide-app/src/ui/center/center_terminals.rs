@@ -19,6 +19,7 @@ impl CenterArea {
                 | CenterMode::Db
                 | CenterMode::Docs
                 | CenterMode::Design
+                | CenterMode::PocketComet
         ) {
             self.set_view_mode(CenterMode::Split, cx);
         }

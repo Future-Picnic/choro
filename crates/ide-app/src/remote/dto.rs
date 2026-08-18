@@ -302,6 +302,18 @@ pub enum AgentOriginDto {
         task_id: String,
         task_title: String,
     },
+    PocketCometChat {
+        workspace_id: String,
+        workspace_name: String,
+        project_id: String,
+        project_name: String,
+        teammate_id: String,
+        teammate_name: String,
+        conversation_id: String,
+        conversation_name: String,
+        thread_id: String,
+        thread_title: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -514,6 +526,29 @@ mod tests {
                 project_id: "project-1".into(),
                 task_id: "task-1".into(),
                 task_title: "Ship it".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn pocketcomet_chat_origin_keeps_thread_and_project_identity() {
+        let request: CreateAgentRequest = serde_json::from_str(
+            r##"{"project_id":"choro-project","prompt":"answer","origin":{"kind":"pocket_comet_chat","workspace_id":"workspace-1","workspace_name":"Acme","project_id":"project-1","project_name":"Launch","teammate_id":"agent-1","teammate_name":"Choro","conversation_id":"conversation-1","conversation_name":"#product","thread_id":"message-1","thread_title":"Should we ship this?"}}"##,
+        )
+        .unwrap();
+        assert_eq!(
+            request.origin,
+            Some(AgentOriginDto::PocketCometChat {
+                workspace_id: "workspace-1".into(),
+                workspace_name: "Acme".into(),
+                project_id: "project-1".into(),
+                project_name: "Launch".into(),
+                teammate_id: "agent-1".into(),
+                teammate_name: "Choro".into(),
+                conversation_id: "conversation-1".into(),
+                conversation_name: "#product".into(),
+                thread_id: "message-1".into(),
+                thread_title: "Should we ship this?".into(),
             })
         );
     }

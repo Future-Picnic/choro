@@ -1,6 +1,18 @@
 use super::agent_naming::{implementation_agent_title, initial_agent_title};
 use super::*;
 
+fn update_new_agent_draft(
+    drafts: &mut HashMap<ProjectId, String>,
+    project: ProjectId,
+    value: String,
+) {
+    if value.is_empty() {
+        drafts.remove(&project);
+    } else {
+        drafts.insert(project, value);
+    }
+}
+
 impl CenterArea {
     pub fn open_agent(&mut self, agent_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
         let Some((project, _)) = self.active_project(cx) else {
@@ -106,17 +118,33 @@ impl CenterArea {
         let default_model = agent_defaults.model;
         self.workspace
             .update(cx, |workspace, cx| workspace.set_active(project, cx));
+        let saved_draft = self
+            .new_agent_drafts
+            .get(&project)
+            .cloned()
+            .unwrap_or_default();
         let prompt = cx.new(|cx| {
             InputState::new(window, cx)
                 .auto_grow(4, 8)
                 .placeholder("Do anything — / skills, @ files, @@ docs, ## projects")
         });
-        prompt.update(cx, |input, cx| input.focus(window, cx));
+        prompt.update(cx, |input, cx| {
+            if !saved_draft.is_empty() {
+                input.set_value(saved_draft.clone(), window, cx);
+                input.set_cursor_position(
+                    input_position_for_byte_offset(&saved_draft, saved_draft.len()),
+                    window,
+                    cx,
+                );
+            }
+            input.focus(window, cx);
+        });
         // Keep the doc-mention picker live as the prompt is edited: re-render on
         // every change and reset the highlight/dismissal so a narrowing query
         // always starts at the top and a dismissed picker reopens.
         cx.subscribe(&prompt, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                let mut draft_update = None;
                 if let Some(composer) = this.new_agent_composer.as_mut() {
                     composer.slash_selection = 0;
                     composer.project_mention_selected = 0;
@@ -148,6 +176,10 @@ impl CenterArea {
                     {
                         composer.preview_armed = true;
                     }
+                    draft_update = Some((composer.project, value));
+                }
+                if let Some((project, value)) = draft_update {
+                    update_new_agent_draft(&mut this.new_agent_drafts, project, value);
                 }
                 cx.notify();
             }
@@ -485,6 +517,7 @@ impl CenterArea {
                 cx,
             );
         });
+        self.new_agent_drafts.remove(&project);
         self.new_agent_composer = None;
         cx.notify();
         let window_handle = window.window_handle();
@@ -882,5 +915,37 @@ impl CenterArea {
             composer.error = None;
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_agent_drafts_are_kept_per_project_and_cleared_when_empty() {
+        let first = ProjectId(Uuid::new_v4());
+        let second = ProjectId(Uuid::new_v4());
+        let mut drafts = HashMap::new();
+
+        update_new_agent_draft(&mut drafts, first, "First project draft".into());
+        update_new_agent_draft(&mut drafts, second, "Second project draft".into());
+
+        assert_eq!(
+            drafts.get(&first).map(String::as_str),
+            Some("First project draft")
+        );
+        assert_eq!(
+            drafts.get(&second).map(String::as_str),
+            Some("Second project draft")
+        );
+
+        update_new_agent_draft(&mut drafts, first, String::new());
+
+        assert!(!drafts.contains_key(&first));
+        assert_eq!(
+            drafts.get(&second).map(String::as_str),
+            Some("Second project draft")
+        );
     }
 }

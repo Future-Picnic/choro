@@ -46,6 +46,7 @@ mod markdown;
 mod new_agent;
 mod new_agent_recents;
 mod penpot;
+mod pocketcomet;
 pub mod preset_bar;
 mod preview_control_ipc;
 mod preview_panel;
@@ -82,9 +83,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     canvas, div, img, list, prelude::FluentBuilder, px, rems, svg, App, AppContext, ClipboardEntry,
-    ClipboardItem, Context, DragMoveEvent, Entity, ExternalPaths, ImageFormat, InteractiveElement,
-    IntoElement, ListAlignment, ListState, MouseButton, MouseDownEvent, ObjectFit, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window,
+    ClipboardItem, Context, DragMoveEvent, Entity, ExternalPaths, FontWeight, ImageFormat,
+    InteractiveElement, IntoElement, ListAlignment, ListState, MouseButton, MouseDownEvent,
+    ObjectFit, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, StyledImage, Window,
 };
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
@@ -1485,6 +1487,8 @@ pub enum CenterMode {
     Terminal,
     /// AI agent chat terminals (Claude/Codex), full height.
     Agents,
+    /// Cross-project PocketComet activity and thread-scoped Choro chats.
+    PocketComet,
     /// Issue tracker board/detail view, full height.
     Tasks,
     /// Cross-project "My Tasks" list (to-do + in-progress), full height.
@@ -1503,6 +1507,7 @@ pub enum CenterMode {
 pub enum ProjectActivity {
     Code,
     Agents,
+    PocketComet,
     Tasks,
     Db,
     Docs,
@@ -1523,6 +1528,7 @@ impl CenterMode {
         match self {
             CenterMode::Split | CenterMode::Files | CenterMode::Terminal => ProjectActivity::Code,
             CenterMode::Agents => ProjectActivity::Agents,
+            CenterMode::PocketComet => ProjectActivity::PocketComet,
             CenterMode::Tasks | CenterMode::MyTasks => ProjectActivity::Tasks,
             CenterMode::Db => ProjectActivity::Db,
             CenterMode::Docs => ProjectActivity::Docs,
@@ -1591,12 +1597,47 @@ impl ProjectPreviewViewport {
     }
 }
 
-#[derive(Default)]
 struct ProjectPreviewUiState {
     open: bool,
     status: Option<String>,
     viewport: ProjectPreviewViewport,
     url_editing: bool,
+    console_open: bool,
+    console_entries: VecDeque<web_preview::ProjectPreviewConsoleEntry>,
+    console_scroll: ScrollHandle,
+    /// Keep the live browser on its current route while agent file updates
+    /// continue in the background. Manual Reload remains available.
+    keep_page: bool,
+    /// Last revision mounted in the native webview. While `keep_page` is on,
+    /// holding this value stable prevents a background rebuild from reopening
+    /// the configured start URL.
+    mounted_revision: Option<u64>,
+    /// Configured source associated with `mounted_revision` and the host's
+    /// cached live URL. This prevents a deliberate source change from restoring
+    /// the previous source's page.
+    mounted_source_url: Option<String>,
+    /// URL used to create the current native webview. It stays stable while
+    /// that view is active, then advances to the cached live route only when
+    /// Keep page restores a torn-down preview.
+    mounted_intent_url: Option<String>,
+}
+
+impl Default for ProjectPreviewUiState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            status: None,
+            viewport: ProjectPreviewViewport::default(),
+            url_editing: false,
+            console_open: false,
+            console_entries: VecDeque::new(),
+            console_scroll: ScrollHandle::new(),
+            keep_page: false,
+            mounted_revision: None,
+            mounted_source_url: None,
+            mounted_intent_url: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1927,6 +1968,9 @@ pub struct CenterArea {
     doc_assistant_panel_width: f32,
     doc_assistant_resize: Option<DocAssistantResizeState>,
     new_agent_composer: Option<NewAgentComposer>,
+    /// Unsent new-agent prompt text, retained independently for each project
+    /// while the user moves through existing conversations.
+    new_agent_drafts: HashMap<ProjectId, String>,
     /// The tour locks the composer on its send steps; this flips true the first
     /// time someone taps the locked prompt, surfacing a one-time friendly nudge.
     onboarding_composer_nudged: bool,
@@ -1945,6 +1989,8 @@ pub struct CenterArea {
     // The active agent-chat composer uses the same width-aware collapse for
     // contextual actions such as Code review and Ship.
     agent_chat_rail_compact: bool,
+    pocketcomet_project_filter: Option<ProjectId>,
+    pocketcomet_selected_chat: Option<Uuid>,
     pub view_mode: CenterMode,
     last_code_mode: CenterMode,
     view_history_back: Vec<CenterMode>,

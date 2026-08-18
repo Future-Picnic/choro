@@ -641,6 +641,9 @@ impl CenterArea {
         project: ProjectId,
         cx: &App,
     ) -> AgentRuntime {
+        if agent.status.is_finished() {
+            return AgentRuntime::Idle;
+        }
         if agent.runtime == AgentRuntimeKind::Chat {
             let (status, session_id, last_activity_at) = self
                 .agent_chats
@@ -1493,6 +1496,9 @@ impl CenterArea {
             cx,
         );
         if submitted {
+            self.agents.update(cx, |agents, cx| {
+                agents.update_status(agent.id, AgentStatus::InProgress, cx)
+            });
             if let Some((first_message, second_message)) = auto_name_context {
                 self.request_agent_auto_name(agent.clone(), first_message, second_message, cx);
             }
@@ -1539,6 +1545,9 @@ impl CenterArea {
                     .and_then(|session| session.pending_user_input.clone());
                 self.agent_chats.update(cx, |chats, cx| {
                     chats.submit_pending_user_input(agent_id, cx);
+                });
+                self.agents.update(cx, |agents, cx| {
+                    agents.update_status(agent_id, AgentStatus::InProgress, cx)
                 });
                 if let Some(pending) = pending {
                     let pairs = pending
@@ -1688,7 +1697,11 @@ impl CenterArea {
                     mode,
                     cx,
                 );
-                if !sent {
+                if sent {
+                    this.agents.update(cx, |agents, cx| {
+                        agents.update_status(agent_id, AgentStatus::InProgress, cx)
+                    });
+                } else {
                     this.project_preview_review_ids_seen.remove(&review_id);
                 }
             })
@@ -2810,7 +2823,11 @@ impl CenterArea {
 
         input.update(cx, |input, cx| input.set_value("", window, cx));
         self.agent_chat_pasted_text_blocks.remove(&agent_id);
-        self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx);
+        if self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx) {
+            self.agents.update(cx, |agents, cx| {
+                agents.update_status(agent_id, AgentStatus::InProgress, cx)
+            });
+        }
         self.acknowledge_agent_chat_seen(agent_id, cx);
     }
 

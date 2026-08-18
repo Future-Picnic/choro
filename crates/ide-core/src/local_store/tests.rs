@@ -20,6 +20,64 @@ fn sample_project() -> Project {
 }
 
 #[test]
+fn queued_project_script_survives_a_stale_workspace_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-script-project"));
+    let mut stale_config = AppConfig::default();
+    stale_config.projects.push(project.clone());
+    store.save_workspace_config(&stale_config).unwrap();
+
+    let (_, created) = store
+        .create_project_script_preset(project.id, "Preview", "npm run dev")
+        .unwrap();
+    assert!(created);
+    store.save_workspace_config(&stale_config).unwrap();
+
+    let loaded = store.load_workspace_config(AppConfig::default()).unwrap();
+    assert_eq!(loaded.projects[0].presets.len(), 1);
+    assert_eq!(loaded.projects[0].presets[0].name, "Preview");
+    assert_eq!(loaded.projects[0].presets[0].command, "npm run dev");
+}
+
+#[test]
+fn concurrent_project_script_creates_resolve_to_one_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-concurrent-script-project"));
+    let project_id = project.id;
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let create = || {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            store
+                .create_project_script_preset(project_id, "Preview", "npm run dev")
+                .unwrap()
+        })
+    };
+    let first = create();
+    let second = create();
+    barrier.wait();
+    let first = first.join().unwrap();
+    let second = second.join().unwrap();
+
+    assert_ne!(first.1, second.1);
+    assert_eq!(first.0.id, second.0.id);
+    let loaded = store.load_workspace_config(AppConfig::default()).unwrap();
+    assert_eq!(loaded.projects[0].presets.len(), 1);
+    let error = store
+        .create_project_script_preset(project_id, "preview", "npm start")
+        .unwrap_err();
+    assert!(error.to_string().contains("different command"));
+}
+
+#[test]
 fn chat_file_ledger_round_trips_exact_and_observed_entries() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
@@ -1163,6 +1221,32 @@ fn pocketcomet_origin_round_trips_through_the_store() {
         project_id: "project-1".into(),
         task_id: "task-1".into(),
         task_title: "Implement the integration".into(),
+    });
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(&[agent.clone()]).unwrap();
+
+    assert_eq!(store.load_agents().unwrap(), vec![agent]);
+}
+
+#[test]
+fn pocketcomet_chat_origin_round_trips_through_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let mut agent = sample_agent(&project);
+    agent.origin = Some(AgentOrigin::PocketCometChat {
+        workspace_id: "workspace-1".into(),
+        workspace_name: "Acme".into(),
+        project_id: "project-1".into(),
+        project_name: "Launch".into(),
+        teammate_id: "agent-1".into(),
+        teammate_name: "Choro".into(),
+        conversation_id: "conversation-1".into(),
+        conversation_name: "#product".into(),
+        thread_id: "thread-1".into(),
+        thread_title: "Should we ship this?".into(),
     });
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
     let mut config = AppConfig::default();

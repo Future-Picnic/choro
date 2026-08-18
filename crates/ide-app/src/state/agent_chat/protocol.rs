@@ -60,6 +60,7 @@ use super::{
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CHAT_STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
 const CHAT_STREAM_MAX_BUFFER_BYTES: usize = 160;
+const CHORO_NATIVE_TOOL_INSTRUCTIONS: &str = "When the user explicitly asks for a Choro doc, a document in Choro Docs, or equivalent wording, use the Choro MCP create_choro_doc tool instead of writing a .choro file directly. When the user explicitly asks for a Choro script or a command in Choro's top-header Scripts control, use create_choro_script. Do not use these tools for ordinary repository documents, files, scripts, or commands.";
 
 /// Events flow to the GPUI foreground through an awaitable channel so the
 /// per-chat consumer task sleeps until a backend actually produces something,
