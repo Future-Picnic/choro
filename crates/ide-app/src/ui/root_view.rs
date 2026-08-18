@@ -933,8 +933,9 @@ impl Render for RootView {
             .clone()
             .map(|view| self.render_settings_screen(view, cx));
         let activity = self.center.read(cx).activity();
-        let show_context_panel =
-            self.show_right && activity != crate::ui::center::ProjectActivity::Design;
+        let show_context_panel = self.show_right
+            && activity != crate::ui::center::ProjectActivity::Design
+            && activity != crate::ui::center::ProjectActivity::PocketComet;
 
         // Project activity navigation is a single product treatment: a
         // full-height rail to the right of the Git panel. Keeping it fixed

@@ -126,13 +126,16 @@ impl CenterArea {
                     .id("services-center-scroll")
                     .flex_1()
                     .min_h(px(0.))
+                    .items_center()
                     .overflow_y_scrollbar()
                     .child(
                         v_flex()
                             .w_full()
-                            .max_w(crate::ui::design::center_column_max_w())
+                            // Match the chat column: use the available center-pane
+                            // width, then stay centered once the readable cap is hit.
+                            .max_w(crate::ui::design::agent_chat_content_max_w())
                             .mx_auto()
-                            .px(crate::ui::design::center_column_pad_x())
+                            .px(crate::ui::design::agent_chat_gutter_x())
                             .py(crate::ui::design::center_column_pad_y())
                             .child(body),
                     ),

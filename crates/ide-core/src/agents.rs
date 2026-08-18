@@ -103,6 +103,12 @@ impl AgentStatus {
             Self::Rejected => "Rejected",
         }
     }
+
+    /// A user-set terminal task state. Runtime activity may continue for
+    /// maintenance, but it must not reopen attention or change this status.
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Done | Self::Rejected)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -863,16 +869,36 @@ pub enum AgentOrigin {
         task_id: String,
         task_title: String,
     },
+    PocketCometChat {
+        workspace_id: String,
+        workspace_name: String,
+        project_id: String,
+        project_name: String,
+        teammate_id: String,
+        teammate_name: String,
+        conversation_id: String,
+        conversation_name: String,
+        thread_id: String,
+        thread_title: String,
+    },
 }
 
 impl AgentOrigin {
     pub fn is_pocketcomet(&self) -> bool {
-        matches!(self, Self::PocketComet { .. })
+        matches!(
+            self,
+            Self::PocketComet { .. } | Self::PocketCometChat { .. }
+        )
+    }
+
+    pub fn is_pocketcomet_chat(&self) -> bool {
+        matches!(self, Self::PocketCometChat { .. })
     }
 
     pub fn pocketcomet_task_id(&self) -> Option<&str> {
         match self {
             Self::PocketComet { task_id, .. } => Some(task_id),
+            Self::PocketCometChat { .. } => None,
         }
     }
 }
@@ -1629,6 +1655,15 @@ fn list_codex_chats(cwd: &Path) -> Vec<AgentChat> {
 mod tests {
     use super::*;
     use crate::Project;
+
+    #[test]
+    fn only_done_and_rejected_are_finished_statuses() {
+        assert!(!AgentStatus::Backlog.is_finished());
+        assert!(!AgentStatus::Todo.is_finished());
+        assert!(!AgentStatus::InProgress.is_finished());
+        assert!(AgentStatus::Done.is_finished());
+        assert!(AgentStatus::Rejected.is_finished());
+    }
 
     #[test]
     fn resume_commands() {

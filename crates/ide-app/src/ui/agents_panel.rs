@@ -239,6 +239,9 @@ impl AgentsPanel {
         let mut events = Vec::new();
 
         for agent in records {
+            if agent.status.is_finished() {
+                continue;
+            }
             let Some(project_name) = project_names.get(&agent.project_id) else {
                 continue;
             };
@@ -363,6 +366,9 @@ impl AgentsPanel {
     }
 
     fn runtime_for(&self, agent: &AgentRecord, project: ProjectId, cx: &App) -> AgentRunStatus {
+        if agent.status.is_finished() {
+            return AgentRunStatus::Idle;
+        }
         if agent.runtime == AgentRuntimeKind::Chat {
             let (status, session_id, last_activity_at) = self
                 .agent_chats

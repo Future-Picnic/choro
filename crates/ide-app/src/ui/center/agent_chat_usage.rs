@@ -76,10 +76,10 @@ fn render_usage_panel(
     };
     let summary = match provider {
         AgentKind::Codex if totals.cache_read_tokens > 0 => {
-            "Reported by Codex. Cached input is included in both Input and Total."
+            "Reported by Codex. Regular excludes cached input; Input still includes it."
         }
         AgentKind::Claude if totals.cache_read_tokens > 0 => {
-            "Reported by Claude Code. Cached reads are included in Total."
+            "Reported by Claude Code. Regular excludes cached input."
         }
         AgentKind::OpenCode => "Includes the full OpenCode session, including resumed work.",
         _ => "Token counts reported by the provider for this conversation.",
@@ -117,8 +117,16 @@ fn render_usage_panel(
                 .w_full()
                 .gap_2()
                 .child(usage_metric(
-                    "Total tokens",
-                    format_usage_count(totals.total_tokens()),
+                    if !shows_cost && totals.cache_read_tokens > 0 {
+                        "Regular tokens"
+                    } else {
+                        "Total tokens"
+                    },
+                    format_usage_count(if !shows_cost && totals.cache_read_tokens > 0 {
+                        regular_token_count(totals)
+                    } else {
+                        totals.total_tokens()
+                    }),
                     cx,
                 ))
                 .when(shows_cost, |metrics| {
@@ -297,8 +305,8 @@ fn format_usage_count(value: u64) -> String {
 fn format_token_usage_label(totals: &UsageTotals) -> String {
     if totals.cache_read_tokens > 0 {
         format!(
-            "Usage ({} total · {} cached)",
-            format_usage_count_compact(totals.total_tokens()),
+            "Usage ({} regular · {} cached)",
+            format_usage_count_compact(regular_token_count(totals)),
             format_usage_count_compact(totals.cache_read_tokens)
         )
     } else {
@@ -338,13 +346,19 @@ fn format_usage_count_compact(value: u64) -> String {
 fn format_token_usage_detail(totals: &UsageTotals) -> String {
     if totals.cache_read_tokens > 0 {
         format!(
-            "{} tokens · {} cached",
-            format_usage_count(totals.total_tokens()),
+            "{} regular · {} cached",
+            format_usage_count(regular_token_count(totals)),
             format_usage_count(totals.cache_read_tokens)
         )
     } else {
         format!("{} tokens", format_usage_count(totals.total_tokens()))
     }
+}
+
+fn regular_token_count(totals: &UsageTotals) -> u64 {
+    totals
+        .total_tokens()
+        .saturating_sub(totals.cache_read_tokens)
 }
 
 #[cfg(test)]
@@ -360,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn makes_cached_input_visible_in_token_usage_labels() {
+    fn separates_regular_and_cached_token_usage() {
         let totals = UsageTotals {
             reported_total_tokens: 11_694_308,
             cache_read_tokens: 11_211_008,
@@ -369,11 +383,11 @@ mod tests {
 
         assert_eq!(
             format_token_usage_label(&totals),
-            "Usage (11.7M total · 11.2M cached)"
+            "Usage (483K regular · 11.2M cached)"
         );
         assert_eq!(
             format_token_usage_detail(&totals),
-            "11,694,308 tokens · 11,211,008 cached"
+            "483,300 regular · 11,211,008 cached"
         );
     }
 

@@ -561,7 +561,10 @@ fn pocketcomet_task_link(origin: &AgentOrigin) -> Option<PocketCometTaskLink> {
         project_id,
         task_id,
         task_title,
-    } = origin;
+    } = origin
+    else {
+        return None;
+    };
     let full_title = task_title.trim();
     let mut url = url::Url::parse("pocketcomet://task").ok()?;
     url.path_segments_mut().ok()?.push(task_id);

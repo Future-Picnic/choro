@@ -137,14 +137,6 @@ fn replied_request_id(message: &StoredAgentMessage) -> Option<Uuid> {
         .ok()
 }
 
-fn agent_message_target_status(kind: &str, current: AgentStatus) -> AgentStatus {
-    if agent_message_should_wake_target(kind) {
-        AgentStatus::InProgress
-    } else {
-        current
-    }
-}
-
 impl CenterArea {
     pub(super) fn maybe_finish_summary_maintenance(&mut self, cx: &mut Context<Self>) {
         let mut silent_completions = Vec::new();
@@ -481,6 +473,9 @@ impl CenterArea {
             this.update(cx, |this, cx| match result {
                 Ok(message) => {
                     this.agent_start_errors.remove(&source_agent_id);
+                    this.agents.update(cx, |agents, cx| {
+                        agents.update_status(target_agent_id, AgentStatus::InProgress, cx)
+                    });
                     let card = AgentMessageCard {
                         id: message.id,
                         source_agent_id,
@@ -621,12 +616,6 @@ impl CenterArea {
                 cx,
             ) {
                 continue;
-            }
-            let target_status = agent_message_target_status(&message.kind, agent.status);
-            if target_status != agent.status {
-                self.agents.update(cx, |agents, cx| {
-                    agents.update_status(message.target_agent_id, target_status, cx)
-                });
             }
             // Requests require a durable `agent_reply`. Keep the database row
             // pending until that reply is saved, while suppressing duplicate
@@ -951,22 +940,6 @@ mod tests {
         assert!(!agent_message_should_wake_target("reply"));
         assert!(!agent_message_should_wake_target("collision"));
         assert!(!agent_message_should_wake_target("agent"));
-        assert_eq!(
-            agent_message_target_status("ask", AgentStatus::Done),
-            AgentStatus::InProgress
-        );
-        assert_eq!(
-            agent_message_target_status("delegate", AgentStatus::Rejected),
-            AgentStatus::InProgress
-        );
-        assert_eq!(
-            agent_message_target_status("reply", AgentStatus::Done),
-            AgentStatus::Done
-        );
-        assert_eq!(
-            agent_message_target_status("collision", AgentStatus::Done),
-            AgentStatus::Done
-        );
     }
 
     #[test]

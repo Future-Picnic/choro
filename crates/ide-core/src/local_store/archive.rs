@@ -29,6 +29,7 @@ pub(super) async fn clear_imported_tables(conn: &Connection) -> Result<()> {
         "project_git_workflows",
         "project_task_tracker_connections",
         "project_db_connections",
+        "pending_project_script_presets",
         "project_presets",
         "projects",
         "project_sections",

@@ -286,6 +286,7 @@ impl Render for CenterArea {
             }
             CenterMode::Terminal => self.render_terminal_section(project, cx),
             CenterMode::Agents => self.render_agent_section(project, window, cx),
+            CenterMode::PocketComet => self.render_pocketcomet_section(cx),
             CenterMode::Tasks | CenterMode::MyTasks => {
                 self.render_tasks_section(project, window, cx)
             }

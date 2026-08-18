@@ -139,6 +139,14 @@ impl CenterArea {
                         this.schedule_pocketcomet_handoff(*agent_id, review_started, cx);
                     }
                     AgentChatEvent::WorkFinished { agent_id } => {
+                        if let Err(error) = this.workspace.update(cx, |workspace, cx| {
+                            workspace.refresh_project_presets_from_store(cx)
+                        }) {
+                            eprintln!(
+                                "could not refresh Choro scripts after agent work: {error:#}"
+                            );
+                        }
+                        this.docs.update(cx, |docs, cx| docs.refresh(cx));
                         this.schedule_pocketcomet_handoff(*agent_id, false, cx);
                     }
                     AgentChatEvent::Changed => {}
@@ -764,6 +772,7 @@ impl CenterArea {
                 doc_assistant_panel_width: 440.0,
                 doc_assistant_resize: None,
                 new_agent_composer: None,
+                new_agent_drafts: HashMap::new(),
                 onboarding_composer_nudged: false,
                 composer_file_cache: HashMap::new(),
                 composer_file_cache_loading: HashSet::new(),
@@ -774,6 +783,8 @@ impl CenterArea {
                 composer_model_provider: None,
                 open_code_catalog: OpenCodeCatalog::default(),
                 agent_chat_rail_compact: false,
+                pocketcomet_project_filter: None,
+                pocketcomet_selected_chat: None,
                 view_mode: CenterMode::Agents,
                 last_code_mode: CenterMode::Split,
                 view_history_back: Vec::new(),

@@ -40,6 +40,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_verification_closed_column(conn).await?;
         ensure_chat_file_ledger_schema(conn).await?;
         ensure_agent_origin_column(conn).await?;
+        ensure_pending_project_script_presets_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -533,6 +534,30 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 32 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_pending_project_script_presets_schema_inner(conn).await?;
+                record_schema_version(conn, 32).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_pending_project_script_presets_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_pending_project_script_presets_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_pending_project_script_presets_schema_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V32 {
+        conn.execute(statement, ()).await?;
+    }
     Ok(())
 }
 
@@ -1006,6 +1031,20 @@ const SCHEMA_V30: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_chat_file_ledger_agent_attribution_path
         ON chat_file_ledger(agent_id, attribution, path)",
+];
+
+const SCHEMA_V32: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS pending_project_script_presets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL COLLATE NOCASE,
+        command TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(project_id, name),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_pending_project_script_presets_project_created
+        ON pending_project_script_presets(project_id, created_at ASC)",
 ];
 
 pub(super) async fn schema_version(conn: &Connection) -> Result<u32> {

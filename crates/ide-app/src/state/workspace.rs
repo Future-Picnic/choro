@@ -644,6 +644,33 @@ impl Workspace {
         }
     }
 
+    /// Pull only run-script presets from the store after an external Choro
+    /// integration may have changed them. Other in-memory workspace settings
+    /// remain authoritative and are intentionally left untouched.
+    pub fn refresh_project_presets_from_store(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<bool> {
+        let persisted = LocalStore::open_default()?
+            .load_workspace_config(AppConfig::default())?
+            .projects;
+        let mut changed = false;
+        for project in &mut self.projects {
+            let Some(saved) = persisted.iter().find(|saved| saved.id == project.id) else {
+                continue;
+            };
+            if project.presets != saved.presets {
+                project.presets = saved.presets.clone();
+                changed = true;
+            }
+        }
+        if changed {
+            cx.emit(WorkspaceEvent::ProjectsChanged);
+            cx.notify();
+        }
+        Ok(changed)
+    }
+
     pub fn update_db_connections(
         &mut self,
         id: ProjectId,

@@ -189,6 +189,41 @@ impl LocalStore {
         })
     }
 
+    /// Queue one run-script preset for the next workspace save without allowing a stale
+    /// workspace snapshot to erase it. This is used by project-scoped integrations such as
+    /// Choro's MCP server.
+    pub fn create_project_script_preset(
+        &self,
+        project_id: ProjectId,
+        name: impl Into<String>,
+        command: impl Into<String>,
+    ) -> Result<(ScriptPreset, bool)> {
+        let preset = ScriptPreset {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            command: command.into(),
+        };
+        let stored_preset = preset.clone();
+        let outcome = self.rt.block_on(async {
+            let conn = self.connect().await?;
+            let outcome = std::cell::RefCell::new(None);
+            execute_transaction(&conn, |conn| {
+                let outcome = &outcome;
+                Box::pin(async move {
+                    outcome.replace(Some(
+                        queue_project_preset_async(conn, project_id, &stored_preset).await?,
+                    ));
+                    Ok(())
+                })
+            })
+            .await?;
+            outcome
+                .into_inner()
+                .context("script preset transaction did not produce an outcome")
+        })?;
+        Ok(outcome)
+    }
+
     pub fn load_agents(&self) -> Result<Vec<AgentRecord>> {
         self.rt.block_on(async {
             let conn = self.connect().await?;

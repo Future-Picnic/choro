@@ -17,6 +17,7 @@ use crate::tools::{ServerContext, ToolRegistry};
 
 /// The newest protocol revision we advertise when a client doesn't pin one.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
+const CHORO_NATIVE_TOOL_INSTRUCTIONS: &str = "Use create_choro_doc only when the user explicitly asks for a Choro doc, a document in Choro Docs, or equivalent wording. Use create_choro_script only when the user explicitly asks for a Choro script or a command in Choro's top-header Scripts control. When either request applies, use the matching Choro MCP tool instead of directly writing a .choro file or modifying Choro state. Ordinary repository documents, files, scripts, and commands should continue to use the normal coding tools.";
 
 pub struct Server {
     ctx: ServerContext,
@@ -101,6 +102,7 @@ impl Server {
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
+            "instructions": CHORO_NATIVE_TOOL_INSTRUCTIONS,
             "serverInfo": {
                 "name": "ide-mcp",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -123,4 +125,32 @@ fn error(id: Option<Value>, code: i64, message: &str) -> Value {
         "id": id.unwrap_or(Value::Null),
         "error": { "code": code, "message": message },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_scopes_choro_native_creation_instructions() {
+        let server = Server {
+            ctx: ServerContext {
+                project_id: None,
+                agent_id: None,
+                store: None,
+            },
+            tools: ToolRegistry::default(),
+        };
+        let initialized = server.initialize_result(&json!({
+            "params": { "protocolVersion": DEFAULT_PROTOCOL_VERSION }
+        }));
+        let instructions = initialized
+            .get("instructions")
+            .and_then(Value::as_str)
+            .unwrap();
+
+        assert!(instructions.contains("explicitly asks for a Choro doc"));
+        assert!(instructions.contains("create_choro_script"));
+        assert!(instructions.contains("Ordinary repository documents"));
+    }
 }
