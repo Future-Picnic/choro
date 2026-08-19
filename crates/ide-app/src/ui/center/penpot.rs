@@ -1741,6 +1741,28 @@ impl CenterArea {
                     this.reconnect_penpot(cx);
                 }))
         });
+        let browser_url = self.penpot.read(cx).selected_design_web_url(project);
+        let open_in_browser_action = browser_url.as_ref().map(|url| {
+            let url = url.clone();
+            style::secondary_button_compact("penpot-open-in-browser", "Open in Browser")
+                .icon(IconName::ExternalLink)
+                .tooltip("Open this authenticated design in your default browser")
+                .on_click(move |_, _, _| {
+                    crate::ui::git::git_panel::open_url(&url);
+                })
+        });
+        let copy_browser_link_action = browser_url.map(|url| {
+            style::ghost_button_compact("penpot-copy-browser-link", "Copy Link")
+                .icon(IconName::Copy)
+                .tooltip("Copy the authenticated design link for another browser")
+                .on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                    window.push_notification(
+                        Notification::success("Authenticated Design link copied"),
+                        cx,
+                    );
+                })
+        });
         let compare_action = if self.penpot_compare_open {
             style::accent_button_compact("penpot-close-compare", "Close Compare", cx)
                 .icon(IconName::Replace)
@@ -1827,6 +1849,8 @@ impl CenterArea {
                     .child(
                         crate::ui::design::header::actions()
                             .children(reconnect_action)
+                            .children(open_in_browser_action)
+                            .children(copy_browser_link_action)
                             .child(compare_action)
                             .children(implement_action),
                     ),

@@ -442,6 +442,15 @@ mod imp {
 
     use base64::Engine as _;
     use block2::RcBlock;
+    use cef::rc::Rc as _;
+    use cef::{
+        browser_host_create_browser, BeforeDownloadCallback, Browser, BrowserSettings, CefString,
+        Client, DisplayHandler, DownloadHandler, DownloadItem, DownloadItemCallback, Frame,
+        ImplBeforeDownloadCallback, ImplBrowser, ImplBrowserHost, ImplClient, ImplDisplayHandler,
+        ImplDownloadHandler, ImplDownloadItem, ImplFrame, ImplLifeSpanHandler, ImplLoadHandler,
+        LifeSpanHandler, LoadHandler, LogSeverity, RuntimeStyle, State, WindowInfo, WrapClient,
+        WrapDisplayHandler, WrapDownloadHandler, WrapLifeSpanHandler, WrapLoadHandler,
+    };
     use gpui::{Bounds, Pixels, Window};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
@@ -449,8 +458,9 @@ mod imp {
         define_class, msg_send, ClassType, DeclaredClass, MainThreadMarker, MainThreadOnly,
     };
     use objc2_app_kit::{
-        NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSEvent,
-        NSEventModifierFlags, NSEventType, NSImage, NSPasteboard, NSPasteboardWriting,
+        NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep,
+        NSBitmapImageRepPropertyKey, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
+        NSPasteboard, NSPasteboardWriting, NSView,
     };
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_foundation::{
@@ -460,6 +470,7 @@ mod imp {
         WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
         WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
     };
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewExtMacOS};
@@ -486,6 +497,7 @@ mod imp {
     const PROJECT_PREVIEW_CONSOLE_MESSAGE_HANDLER: &str = "choroPreviewConsole";
     const MAX_PROJECT_PREVIEW_MESSAGE_BYTES: usize = 256 * 1024;
     const MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES: usize = 32 * 1024;
+    const CHROMIUM_IPC_PREFIX: &str = "__CHORO_DESIGN_IPC__";
 
     struct ProjectPreviewMessageHandlerIvars {
         project_id: ProjectId,
@@ -1033,6 +1045,7 @@ mod imp {
 
     enum WebSurface {
         WebKit(WebView),
+        Chromium(ChromiumSurface),
     }
 
     impl WebSurface {
@@ -1041,6 +1054,7 @@ mod imp {
                 Self::WebKit(webview) => webview
                     .set_visible(visible)
                     .map_err(|error| error.to_string()),
+                Self::Chromium(surface) => surface.set_visible(visible),
             }
         }
 
@@ -1049,12 +1063,14 @@ mod imp {
                 Self::WebKit(webview) => webview
                     .set_bounds(to_rect(bounds))
                     .map_err(|error| error.to_string()),
+                Self::Chromium(surface) => surface.set_bounds(bounds),
             }
         }
 
         fn load_url(&self, url: &str) -> Result<(), String> {
             match self {
                 Self::WebKit(webview) => webview.load_url(url).map_err(|error| error.to_string()),
+                Self::Chromium(surface) => surface.load_url(url),
             }
         }
 
@@ -1063,6 +1079,7 @@ mod imp {
                 Self::WebKit(webview) => webview
                     .evaluate_script(script)
                     .map_err(|error| error.to_string()),
+                Self::Chromium(surface) => surface.evaluate_script(script),
             }
         }
 
@@ -1078,6 +1095,7 @@ mod imp {
                     }
                     Ok(())
                 }
+                Self::Chromium(surface) => surface.reload_from_origin(),
             }
         }
 
@@ -1090,12 +1108,469 @@ mod imp {
                         .and_then(|url| url.absoluteString())
                         .map(|url| url.to_string())
                 },
+                Self::Chromium(surface) => surface.current_url(),
             }
         }
 
         fn webkit(&self) -> Option<&WebView> {
             match self {
                 Self::WebKit(webview) => Some(webview),
+                Self::Chromium(_) => None,
+            }
+        }
+    }
+
+    struct ChromiumSurfaceState {
+        browser: Option<Browser>,
+        pending_url: Option<String>,
+        pending_scripts: VecDeque<String>,
+        initialization_script: String,
+        closing: bool,
+        downloads: HashMap<u32, PathBuf>,
+        messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
+        app: AsyncApp,
+    }
+
+    struct ChromiumSurface {
+        state: Arc<Mutex<ChromiumSurfaceState>>,
+        container: Retained<NSView>,
+    }
+
+    impl ChromiumSurface {
+        fn new(
+            url: &str,
+            initialization_script: String,
+            bounds: Bounds<Pixels>,
+            window: &Window,
+            messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
+            app: AsyncApp,
+        ) -> Result<Self, String> {
+            if !crate::chromium::is_ready() {
+                return Err("Chromium has not finished initializing".to_string());
+            }
+            let main_thread = MainThreadMarker::new()
+                .ok_or_else(|| "Design must create Chromium on the main thread".to_string())?;
+            let handle = HasWindowHandle::window_handle(window)
+                .map_err(|error| format!("could not read Choro's native window: {error}"))?;
+            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                return Err("Choro did not provide an AppKit window".to_string());
+            };
+            let parent = unsafe { &*(appkit.ns_view.as_ptr() as *const NSView) };
+            let frame = appkit_frame(parent, bounds);
+            let container = NSView::initWithFrame(main_thread.alloc::<NSView>(), frame);
+            container.setAutoresizesSubviews(true);
+            parent.addSubview(&container);
+
+            let state = Arc::new(Mutex::new(ChromiumSurfaceState {
+                browser: None,
+                pending_url: None,
+                pending_scripts: VecDeque::new(),
+                initialization_script,
+                closing: false,
+                downloads: HashMap::new(),
+                messages,
+                app,
+            }));
+            let mut client = ChoroDesignClient::new(state.clone());
+            let cef_bounds = cef::Rect {
+                x: 0,
+                y: 0,
+                width: frame.size.width.max(1.0).round() as i32,
+                height: frame.size.height.max(1.0).round() as i32,
+            };
+            let window_info = WindowInfo {
+                runtime_style: RuntimeStyle::ALLOY,
+                ..Default::default()
+            }
+            .set_as_child(
+                Retained::as_ptr(&container) as *mut std::ffi::c_void,
+                &cef_bounds,
+            );
+            let browser_settings = BrowserSettings {
+                webgl: State::ENABLED,
+                javascript_access_clipboard: State::ENABLED,
+                ..Default::default()
+            };
+            crate::chromium::browser_creation_started();
+            if browser_host_create_browser(
+                Some(&window_info),
+                Some(&mut client),
+                Some(&CefString::from(url)),
+                Some(&browser_settings),
+                None,
+                None,
+            ) != 1
+            {
+                crate::chromium::browser_creation_failed();
+                container.removeFromSuperview();
+                return Err("CEF rejected the Design browser creation request".to_string());
+            }
+
+            Ok(Self { state, container })
+        }
+
+        fn browser(&self) -> Option<Browser> {
+            self.state.lock().ok()?.browser.clone()
+        }
+
+        fn set_visible(&self, visible: bool) -> Result<(), String> {
+            self.container.setHidden(!visible);
+            Ok(())
+        }
+
+        fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
+            let parent = unsafe { self.container.superview() }
+                .ok_or_else(|| "Chromium Design surface was detached".to_string())?;
+            self.container.setFrame(appkit_frame(&parent, bounds));
+            if let Some(browser) = self.browser() {
+                if let Some(host) = browser.host() {
+                    let view = host.window_handle() as *mut NSView;
+                    if !view.is_null() {
+                        unsafe {
+                            (&*view).setFrame(self.container.bounds());
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        fn load_url(&self, url: &str) -> Result<(), String> {
+            if let Some(frame) = self.browser().and_then(|browser| browser.main_frame()) {
+                frame.load_url(Some(&CefString::from(url)));
+                return Ok(());
+            }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Chromium Design state was unavailable".to_string())?;
+            state.pending_url = Some(url.to_string());
+            Ok(())
+        }
+
+        fn evaluate_script(&self, script: &str) -> Result<(), String> {
+            if let Some(frame) = self.browser().and_then(|browser| browser.main_frame()) {
+                execute_chromium_script(&frame, script);
+                return Ok(());
+            }
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Chromium Design state was unavailable".to_string())?;
+            state.pending_scripts.push_back(script.to_string());
+            Ok(())
+        }
+
+        fn reload_from_origin(&self) -> Result<(), String> {
+            let browser = self
+                .browser()
+                .ok_or_else(|| "Chromium Design is still starting".to_string())?;
+            browser.reload_ignore_cache();
+            Ok(())
+        }
+
+        fn current_url(&self) -> Option<String> {
+            self.browser()
+                .and_then(|browser| browser.main_frame())
+                .map(|frame| {
+                    let url = frame.url();
+                    CefString::from(&url).to_string()
+                })
+                .filter(|url| !url.is_empty())
+        }
+    }
+
+    impl Drop for ChromiumSurface {
+        fn drop(&mut self) {
+            self.container.setHidden(true);
+            self.container.removeFromSuperview();
+            let browser = self.state.lock().ok().and_then(|mut state| {
+                state.closing = true;
+                state.browser.clone()
+            });
+            if let Some(host) = browser.and_then(|browser| browser.host()) {
+                host.close_browser(1);
+            }
+        }
+    }
+
+    fn appkit_frame(parent: &NSView, bounds: Bounds<Pixels>) -> CGRect {
+        let x = f32::from(bounds.origin.x) as f64;
+        let y = f32::from(bounds.origin.y) as f64;
+        let width = (f32::from(bounds.size.width) as f64).max(1.0);
+        let height = (f32::from(bounds.size.height) as f64).max(1.0);
+        let origin_y = if parent.isFlipped() {
+            y
+        } else {
+            parent.frame().size.height - y - height
+        };
+        CGRect::new(CGPoint::new(x, origin_y), CGSize::new(width, height))
+    }
+
+    fn execute_chromium_script(frame: &Frame, script: &str) {
+        frame.execute_java_script(
+            Some(&CefString::from(script)),
+            Some(&CefString::from("choro://design")),
+            0,
+        );
+    }
+
+    fn report_chromium_export(
+        state: &Arc<Mutex<ChromiumSurfaceState>>,
+        success: bool,
+        file_name: String,
+    ) {
+        let (messages, app) = match state.lock() {
+            Ok(state) => (state.messages.clone(), state.app.clone()),
+            Err(_) => return,
+        };
+        if let Ok(mut messages) = messages.lock() {
+            messages.push_back(PenpotMessage::ExportFinished { success, file_name });
+        }
+        let _ = app.refresh();
+    }
+
+    cef::wrap_client! {
+        struct ChoroDesignClient {
+            state: Arc<Mutex<ChromiumSurfaceState>>,
+        }
+
+        impl Client {
+            fn display_handler(&self) -> Option<DisplayHandler> {
+                Some(ChoroDesignDisplayHandler::new(self.state.clone()))
+            }
+
+            fn download_handler(&self) -> Option<DownloadHandler> {
+                Some(ChoroDesignDownloadHandler::new(self.state.clone()))
+            }
+
+            fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+                Some(ChoroDesignLifeSpanHandler::new(self.state.clone()))
+            }
+
+            fn load_handler(&self) -> Option<LoadHandler> {
+                Some(ChoroDesignLoadHandler::new(self.state.clone()))
+            }
+        }
+    }
+
+    cef::wrap_display_handler! {
+        struct ChoroDesignDisplayHandler {
+            state: Arc<Mutex<ChromiumSurfaceState>>,
+        }
+
+        impl DisplayHandler {
+            fn on_console_message(
+                &self,
+                _browser: Option<&mut Browser>,
+                _level: LogSeverity,
+                message: Option<&CefString>,
+                _source: Option<&CefString>,
+                _line: i32,
+            ) -> i32 {
+                let Some(body) = message
+                    .map(CefString::to_string)
+                    .and_then(|message| message.strip_prefix(CHROMIUM_IPC_PREFIX).map(str::to_owned))
+                else {
+                    return 0;
+                };
+                if body.len() > MAX_PENPOT_MESSAGE_BYTES {
+                    eprintln!("Design Chromium message exceeded the size limit");
+                    return 1;
+                }
+                let message = match serde_json::from_str::<PenpotMessage>(&body) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        eprintln!("invalid Design Chromium message: {error}");
+                        return 1;
+                    }
+                };
+                let (messages, app) = match self.state.lock() {
+                    Ok(state) => (state.messages.clone(), state.app.clone()),
+                    Err(_) => return 1,
+                };
+                if let Ok(mut messages) = messages.lock() {
+                    messages.push_back(message);
+                }
+                let _ = app.refresh();
+                1
+            }
+        }
+    }
+
+    cef::wrap_life_span_handler! {
+        struct ChoroDesignLifeSpanHandler {
+            state: Arc<Mutex<ChromiumSurfaceState>>,
+        }
+
+        impl LifeSpanHandler {
+            fn on_after_created(&self, browser: Option<&mut Browser>) {
+                let Some(browser) = browser else {
+                    return;
+                };
+                crate::chromium::register_browser(browser);
+                if let Some(host) = browser.host() {
+                    let view = host.window_handle() as *mut NSView;
+                    if !view.is_null() {
+                        unsafe {
+                            (&*view).setAutoresizingMask(
+                                NSAutoresizingMaskOptions::ViewWidthSizable
+                                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+                            );
+                        }
+                    }
+                }
+
+                let (closing, pending_url, pending_scripts) = match self.state.lock() {
+                    Ok(mut state) => {
+                        state.browser = Some(browser.clone());
+                        (
+                            state.closing,
+                            state.pending_url.take(),
+                            state.pending_scripts.drain(..).collect::<Vec<_>>(),
+                        )
+                    }
+                    Err(_) => return,
+                };
+                if closing {
+                    if let Some(host) = browser.host() {
+                        host.close_browser(1);
+                    }
+                    return;
+                }
+                let Some(frame) = browser.main_frame() else {
+                    return;
+                };
+                if let Some(url) = pending_url {
+                    frame.load_url(Some(&CefString::from(url.as_str())));
+                }
+                for script in pending_scripts {
+                    execute_chromium_script(&frame, &script);
+                }
+            }
+
+            fn on_before_close(&self, browser: Option<&mut Browser>) {
+                let Some(browser) = browser else {
+                    return;
+                };
+                crate::chromium::unregister_browser(browser);
+                if let Ok(mut state) = self.state.lock() {
+                    state.browser = None;
+                }
+            }
+        }
+    }
+
+    cef::wrap_load_handler! {
+        struct ChoroDesignLoadHandler {
+            state: Arc<Mutex<ChromiumSurfaceState>>,
+        }
+
+        impl LoadHandler {
+            fn on_load_end(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                _http_status_code: i32,
+            ) {
+                let Some(frame) = frame.filter(|frame| frame.is_main() != 0) else {
+                    return;
+                };
+                let script = match self.state.lock() {
+                    Ok(state) => state.initialization_script.clone(),
+                    Err(_) => return,
+                };
+                execute_chromium_script(frame, &script);
+            }
+        }
+    }
+
+    cef::wrap_download_handler! {
+        struct ChoroDesignDownloadHandler {
+            state: Arc<Mutex<ChromiumSurfaceState>>,
+        }
+
+        impl DownloadHandler {
+            fn can_download(
+                &self,
+                _browser: Option<&mut Browser>,
+                _url: Option<&CefString>,
+                _request_method: Option<&CefString>,
+            ) -> i32 {
+                1
+            }
+
+            fn on_before_download(
+                &self,
+                _browser: Option<&mut Browser>,
+                download_item: Option<&mut DownloadItem>,
+                suggested_name: Option<&CefString>,
+                callback: Option<&mut BeforeDownloadCallback>,
+            ) -> i32 {
+                let (Some(download_item), Some(callback)) = (download_item, callback) else {
+                    return 0;
+                };
+                let suggested_name = suggested_name
+                    .map(CefString::to_string)
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        let name = download_item.suggested_file_name();
+                        CefString::from(&name).to_string()
+                    });
+                let suggested_path = Path::new(&suggested_name);
+                let target = match design_download_destination(suggested_path) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        eprintln!("could not prepare Chromium Design export: {error}");
+                        report_chromium_export(
+                            &self.state,
+                            false,
+                            design_export_file_name(suggested_path),
+                        );
+                        return 0;
+                    }
+                };
+                if let Ok(mut state) = self.state.lock() {
+                    state.downloads.insert(download_item.id(), target.clone());
+                }
+                callback.cont(
+                    Some(&CefString::from(target.to_string_lossy().as_ref())),
+                    0,
+                );
+                1
+            }
+
+            fn on_download_updated(
+                &self,
+                _browser: Option<&mut Browser>,
+                download_item: Option<&mut DownloadItem>,
+                _callback: Option<&mut DownloadItemCallback>,
+            ) {
+                let Some(download_item) = download_item else {
+                    return;
+                };
+                let success = download_item.is_complete() != 0;
+                let finished = success
+                    || download_item.is_canceled() != 0
+                    || download_item.is_interrupted() != 0;
+                if !finished {
+                    return;
+                }
+                let target = self
+                    .state
+                    .lock()
+                    .ok()
+                    .and_then(|mut state| state.downloads.remove(&download_item.id()));
+                let Some(target) = target else {
+                    return;
+                };
+                let file_name = design_export_file_name(&target);
+                if success {
+                    eprintln!("Design export saved to {}", target.display());
+                } else {
+                    eprintln!("Design export failed: {file_name}");
+                }
+                report_chromium_export(&self.state, success, file_name);
             }
         }
     }
@@ -2562,23 +3037,19 @@ mod imp {
         "#
     }
 
-    fn penpot_assistant_initialization_script(
+    fn penpot_initialization_script(
         assistant_open: bool,
         compare_open: bool,
         surface_id: Uuid,
         theme: &super::PenpotTheme,
+        webkit_workarounds: bool,
     ) -> String {
         let surface_id =
             serde_json::to_string(&surface_id).unwrap_or_else(|_| "\"invalid\"".to_string());
         let theme = serde_json::to_string(theme).expect("Design theme serializes to JSON");
-        format!(
-            r##"(() => {{
-                const assistantOpen = {assistant_open};
-                const compareOpen = {compare_open};
-                const surfaceId = {surface_id};
-                const theme = {theme};
-                window.__choroTheme = theme;
-                {key_guard}
+        let embedded_workarounds = if webkit_workarounds {
+            format!(
+                r##"{key_guard}
                 const installEmbeddedTextEditorFix = () => {{
                     if (document.getElementById("choro-embedded-penpot-fixes")) return;
                     const style = document.createElement("style");
@@ -2601,7 +3072,20 @@ mod imp {
                     `;
                     (document.head || document.documentElement).appendChild(style);
                 }};
-                installEmbeddedTextEditorFix();
+                installEmbeddedTextEditorFix();"##,
+                key_guard = penpot_embedded_key_guard_script()
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            r##"(() => {{
+                const assistantOpen = {assistant_open};
+                const compareOpen = {compare_open};
+                const surfaceId = {surface_id};
+                const theme = {theme};
+                window.__choroTheme = theme;
+                {embedded_workarounds}
                 try {{
                     window.sessionStorage.setItem("choro.assistant.open", String(assistantOpen));
                 }} catch (_) {{}}
@@ -2693,7 +3177,50 @@ mod imp {
                 }};
                 syncMcp();
             }})();"##,
-            key_guard = penpot_embedded_key_guard_script()
+            embedded_workarounds = embedded_workarounds
+        )
+    }
+
+    fn penpot_assistant_initialization_script(
+        assistant_open: bool,
+        compare_open: bool,
+        surface_id: Uuid,
+        theme: &super::PenpotTheme,
+    ) -> String {
+        penpot_initialization_script(assistant_open, compare_open, surface_id, theme, true)
+    }
+
+    fn penpot_chromium_initialization_script(
+        assistant_open: bool,
+        compare_open: bool,
+        surface_id: Uuid,
+        theme: &super::PenpotTheme,
+    ) -> String {
+        let bridge = format!(
+            r##"(() => {{
+                if (!window.ipc || window.ipc.__choroEngine !== "chromium") {{
+                    const bridge = Object.freeze({{
+                        __choroEngine: "chromium",
+                        postMessage(value) {{
+                            console.debug({prefix} + String(value));
+                        }},
+                    }});
+                    try {{
+                        Object.defineProperty(window, "ipc", {{
+                            configurable: true,
+                            value: bridge,
+                        }});
+                    }} catch (_) {{
+                        window.ipc = bridge;
+                    }}
+                }}
+            }})();"##,
+            prefix = serde_json::to_string(CHROMIUM_IPC_PREFIX)
+                .expect("static Chromium IPC prefix is valid JSON")
+        );
+        format!(
+            "{bridge}\n{}",
+            penpot_initialization_script(assistant_open, compare_open, surface_id, theme, false,)
         )
     }
 
@@ -2832,6 +3359,29 @@ mod imp {
             WebPreviewIntent::PenpotUrl { url, theme } => {
                 let surface_id = penpot_surface_id
                     .ok_or_else(|| "Design surface identity is missing".to_string())?;
+                let chromium_requested = !std::env::var("CHORO_DESIGN_ENGINE")
+                    .is_ok_and(|engine| engine.eq_ignore_ascii_case("webkit"));
+                if chromium_requested && crate::chromium::is_ready() {
+                    let chromium_script = penpot_chromium_initialization_script(
+                        penpot_assistant_open,
+                        penpot_compare_open,
+                        surface_id,
+                        theme,
+                    );
+                    match ChromiumSurface::new(
+                        url,
+                        chromium_script,
+                        bounds,
+                        window,
+                        penpot_messages.clone(),
+                        app.clone(),
+                    ) {
+                        Ok(surface) => return Ok(WebSurface::Chromium(surface)),
+                        Err(error) => {
+                            eprintln!("Chromium Design surface unavailable; using WebKit: {error}");
+                        }
+                    }
+                }
                 let script = penpot_assistant_initialization_script(
                     penpot_assistant_open,
                     penpot_compare_open,
@@ -3397,10 +3947,10 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             bind_project_preview_message, decode_project_preview_console_entry,
             decode_project_preview_message, design_export_file_name, inject_visualization_chrome,
             penpot_assistant_initialization_script, penpot_chrome_sync_script,
-            penpot_left_sidebar_collapse_script, penpot_message_matches_surface,
-            penpot_sidebar_tab_script, penpot_theme_sync_script, preview_key_event_data,
-            project_preview_message_live_url, same_surface, surface_visible,
-            unique_design_download_path, PenpotMessage, PenpotSidebarTab,
+            penpot_chromium_initialization_script, penpot_left_sidebar_collapse_script,
+            penpot_message_matches_surface, penpot_sidebar_tab_script, penpot_theme_sync_script,
+            preview_key_event_data, project_preview_message_live_url, same_surface,
+            surface_visible, unique_design_download_path, PenpotMessage, PenpotSidebarTab,
             MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
 
@@ -3762,6 +4312,21 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             assert!(script.contains(r#"type: "mcpStatus""#));
             assert!(script.contains("api.setTheme(theme)"));
             assert!(script.contains(r#"window.__choroTheme = theme"#));
+        }
+
+        #[test]
+        fn chromium_design_uses_its_console_bridge_without_webkit_workarounds() {
+            let script = penpot_chromium_initialization_script(
+                false,
+                false,
+                Uuid::from_u128(1),
+                &test_penpot_theme(),
+            );
+
+            assert!(script.contains("__CHORO_DESIGN_IPC__"));
+            assert!(script.contains("window.ipc"));
+            assert!(!script.contains("choro-embedded-penpot-fixes"));
+            assert!(script.contains("api.ensureMcpConnected"));
         }
 
         #[test]
