@@ -47,6 +47,7 @@ const bundledFiles = [
   "vendor/smart-turn-rs/LICENSE",
   "crates/ide-app/assets/licenses/MOONSHINE-ENGLISH-MODELS-MIT.txt",
   "crates/ide-app/assets/licenses/SMART-TURN-BSD-2-CLAUSE.txt",
+  "crates/ide-app/assets/licenses/CEF-BSD-3-CLAUSE.txt",
   "crates/ide-app/assets/fonts/inter/LICENSE.txt",
   "crates/ide-app/assets/fonts/schibsted/OFL.txt",
   "crates/ide-app/assets/fonts/devicon/LICENSE",

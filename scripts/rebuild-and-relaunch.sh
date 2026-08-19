@@ -6,6 +6,7 @@ SCRIPT_PATH="${0:A}"
 REPO_ROOT="${SCRIPT_PATH:h:h}"
 APP_NAME="Choro"
 BUNDLE_ID="com.ritmus.myide"
+DEFAULT_CODESIGN_IDENTITY="Developer ID Application: Liran Gabai (NQTUZ98HJZ)"
 BUILT_BUNDLE="$REPO_ROOT/target/release/bundle/$APP_NAME.app"
 INSTALL_BUNDLE="/Applications/$APP_NAME.app"
 INSTALLED_EXECUTABLE="$INSTALL_BUNDLE/Contents/MacOS/choro"
@@ -38,6 +39,8 @@ wait_for_choro_to_exit() {
 }
 
 run_rebuild() {
+  local codesign_identity="${CHORO_CODESIGN_IDENTITY:-$DEFAULT_CODESIGN_IDENTITY}"
+
   if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "Error: this script only supports macOS." >&2
     return 1
@@ -49,10 +52,19 @@ run_rebuild() {
     return 1
   fi
 
+  if ! security find-identity -v -p codesigning \
+    | grep -Fq -- "\"$codesign_identity\""; then
+    echo "Error: the required signing identity is not available in Keychain:" >&2
+    echo "  $codesign_identity" >&2
+    echo "The installed app was not changed." >&2
+    return 1
+  fi
+
   echo "Choro rebuild and reinstall"
   echo
   echo "Repository: $REPO_ROOT"
   echo "Installed app: $INSTALL_BUNDLE"
+  echo "Signing identity: $codesign_identity"
   echo
   echo "This will replace the generated Choro.app and the installed Choro.app."
   echo "The running app stays open while the build runs and quits only after a successful build."
@@ -67,7 +79,10 @@ run_rebuild() {
   echo "==> Building Choro.app"
   (
     cd "$REPO_ROOT"
-    CHORO_INSTALL_TO_APPLICATIONS=0 ./scripts/bundle.sh
+    CHORO_CODESIGN_IDENTITY="$codesign_identity" \
+      CHORO_INSTALL_TO_APPLICATIONS=0 \
+      CHORO_REPLACE_BUNDLE=1 \
+      ./scripts/bundle.sh
   )
 
   if [[ ! -x "$BUILT_BUNDLE/Contents/MacOS/choro" ]]; then

@@ -283,6 +283,20 @@ impl CenterArea {
             .size_full()
             .min_w(px(0.))
             .bg(crate::ui::design::base(cx))
+            // Treat the conversation and composer as one drop surface. Users
+            // naturally release files over the transcript, especially when the
+            // composer is compact, so limiting this listener to the frame made
+            // valid drops appear to do nothing.
+            .can_drop(|dragged, _, _| dragged.is::<ExternalPaths>())
+            .drag_over::<ExternalPaths>(|style, _, _, cx| {
+                style.bg(crate::ui::design::accent(cx).opacity(0.06))
+            })
+            .on_drop::<ExternalPaths>(cx.listener({
+                let agent_id = agent.id;
+                move |this, paths: &ExternalPaths, _, cx| {
+                    this.attach_agent_chat_paths(agent_id, paths.paths(), cx);
+                }
+            }))
             .when(top_down, |layout| layout.flex_col_reverse())
             .child(
                 div()
@@ -568,13 +582,6 @@ impl CenterArea {
                             .when(compact_assistant_controls, |frame| {
                                 frame.px_2().pt_2().pb_2()
                             })
-                            .can_drop(|dragged, _, _| dragged.is::<ExternalPaths>())
-                            .on_drop::<ExternalPaths>(cx.listener({
-                                let agent_id = agent.id;
-                                move |this, paths: &ExternalPaths, _, cx| {
-                                    this.attach_agent_chat_paths(agent_id, paths.paths(), cx);
-                                }
-                            }))
                             .when_some(session.pending_approval.as_ref(), |card, pending| {
                                 card.child(self.render_pending_approval_panel(
                                     agent.id,

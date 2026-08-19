@@ -1,5 +1,7 @@
 mod actions;
 mod app_assets;
+#[cfg(target_os = "macos")]
+mod chromium;
 mod companion_music;
 mod demo;
 mod keymap;
@@ -29,6 +31,14 @@ fn main() {
     if let Some(exit_code) = ide_core::git::handle_git_credential() {
         std::process::exit(exit_code);
     }
+    #[cfg(target_os = "macos")]
+    let _chromium_runtime = match chromium::Runtime::prepare() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Chromium Design engine unavailable; using WebKit: {error}");
+            None
+        }
+    };
     if let Err(error) = demo::prepare() {
         eprintln!("failed to prepare Choro Demo: {error:#}");
     }
