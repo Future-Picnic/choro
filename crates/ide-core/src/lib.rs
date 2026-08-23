@@ -48,8 +48,9 @@ pub use project::{
 };
 pub use redaction::{redact_sensitive_text, redact_sensitive_text_with};
 pub use services::{
-    detect_project_services, read_env_file, read_sub_app_env, set_env_value, DetectedService,
-    EnvEntry, EnvFile, ServiceCategory, ServiceFact, SubAppServices,
+    detect_project_environment_files, detect_project_services, read_env_file, read_sub_app_env,
+    set_env_value, DetectedService, EnvEntry, EnvFile, ServiceCategory, ServiceFact,
+    SubAppServices,
 };
 pub use task_tracker::{
     IssueTrackerProvider, JiraBoard, JiraClient, JiraUser, PersonalTaskComment,

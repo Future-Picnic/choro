@@ -45,6 +45,14 @@ fn render_saved_message_tag(
             .into_any_element(),
             "Preview",
         ),
+        AgentChatMessageTagKind::Orbit => (
+            crate::ui::design::accent(cx),
+            Icon::new(IconName::Network)
+                .size(crate::ui::design::icon_sm())
+                .text_color(crate::ui::design::accent(cx))
+                .into_any_element(),
+            "Orbit",
+        ),
         AgentChatMessageTagKind::Riff => (
             crate::ui::design::accent(cx),
             crate::ui::style::choro_riff_icon(
@@ -1090,6 +1098,9 @@ impl CenterArea {
             AgentChatTimelineItem::MemoryProposal(card) => {
                 self.render_memory_proposal_card(agent.id, card, cx)
             }
+            AgentChatTimelineItem::OrbitUpdate(card) => {
+                self.render_orbit_update_card(agent.id, card, cx)
+            }
             AgentChatTimelineItem::AgentSummary(card) => {
                 self.render_agent_summary_card(agent.id, card, window, cx)
             }
@@ -1097,6 +1108,102 @@ impl CenterArea {
                 self.render_agent_message_card(card, window, cx)
             }
         }
+    }
+
+    fn render_orbit_update_card(
+        &self,
+        agent_id: Uuid,
+        card: &OrbitUpdateCard,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let invocation_id = card.invocation_id;
+        let module_id = card.module_id;
+        let changes = [
+            (card.inserted, "added"),
+            (card.updated, "updated"),
+            (card.deleted, "removed"),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, label)| format!("{count} {label}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+        crate::ui::style::chat_card(cx)
+            .child(
+                crate::ui::style::chat_card_head(cx)
+                    .child(
+                        Icon::new(IconName::Network)
+                            .size(crate::ui::design::icon_sm())
+                            .text_color(crate::ui::design::accent(cx)),
+                    )
+                    .child(if card.undone {
+                        "Orbit update undone"
+                    } else {
+                        "Orbit updated"
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        crate::ui::style::ghost_button_compact(
+                            ("orbit-update-open", invocation_id.as_u128() as u64),
+                            "Open Orbit",
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let Some(project) = this
+                                .agents
+                                .read(cx)
+                                .agent(agent_id)
+                                .map(|agent| agent.project_id)
+                            else {
+                                return;
+                            };
+                            this.workspace
+                                .update(cx, |workspace, cx| workspace.set_active(project, cx));
+                            this.orbit.update(cx, |orbit, cx| {
+                                orbit.select(project, OrbitModuleId::Custom(module_id), cx)
+                            });
+                            this.show_services(cx);
+                        })),
+                    )
+                    .when(!card.undone, |head| {
+                        head.child(
+                            crate::ui::style::ghost_button_compact(
+                                ("orbit-update-undo", invocation_id.as_u128() as u64),
+                                "Undo",
+                            )
+                            .disabled(self.orbit_undos_pending.contains(&invocation_id))
+                            .tooltip("Restore the Orbit records from before this turn")
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.undo_orbit_update(agent_id, invocation_id, cx);
+                                },
+                            )),
+                        )
+                    }),
+            )
+            .child(
+                h_flex()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_ui())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child(card.module_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child(if changes.is_empty() {
+                                "No record changes".to_string()
+                            } else {
+                                changes
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 }
 

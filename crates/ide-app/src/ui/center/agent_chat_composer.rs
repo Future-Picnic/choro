@@ -267,7 +267,8 @@ impl CenterArea {
             return None;
         }
 
-        let commands = agent_chat_slash_capabilities(agent.provider);
+        let commands =
+            self.cached_agent_chat_slash_capabilities(agent.provider, agent.project_id, cx);
         let matches = agent_chat_slash_matches(&commands, &query.query);
         let selected = self
             .agent_chat_slash_selection
@@ -318,6 +319,7 @@ impl CenterArea {
                     let agent_id = agent.id;
                     let selected = index == selected;
                     let is_riff = command.is_choro_riff();
+                    let is_orbit = command.is_orbit();
                     let is_preview = command.is_choro_preview();
                     let detail = command
                         .description
@@ -325,7 +327,9 @@ impl CenterArea {
                         .filter(|description| !description.trim().is_empty())
                         .cloned()
                         .unwrap_or_else(|| {
-                            if is_riff {
+                            if is_orbit {
+                                "Added to this project".to_string()
+                            } else if is_riff {
                                 "Available in every project".to_string()
                             } else {
                                 command.invocation.trim().to_string()
@@ -338,6 +342,11 @@ impl CenterArea {
                             crate::ui::design::icon_md(),
                         )
                         .into_any_element()
+                    } else if is_orbit {
+                        Icon::new(IconName::Network)
+                            .size(crate::ui::design::icon_md())
+                            .text_color(crate::ui::design::accent(cx))
+                            .into_any_element()
                     } else if is_riff {
                         crate::ui::style::choro_riff_icon(
                             crate::ui::design::icon_md(),
@@ -447,12 +456,19 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         let command_for_remove = command.clone();
         let is_riff = command.is_choro_riff();
-        let foreground = if is_riff {
+        let is_orbit = command.is_orbit();
+        let is_product_capability = is_riff || is_orbit;
+        let foreground = if is_product_capability {
             crate::ui::design::accent(cx)
         } else {
             crate::ui::design::t2(cx)
         };
-        let icon = if is_riff {
+        let icon = if is_orbit {
+            Icon::new(IconName::Network)
+                .size(crate::ui::design::icon_md())
+                .text_color(foreground)
+                .into_any_element()
+        } else if is_riff {
             crate::ui::style::choro_riff_icon(crate::ui::design::icon_md(), foreground)
         } else {
             gpui_component::Icon::new(IconName::Asterisk)
@@ -473,19 +489,19 @@ impl CenterArea {
             .py_0p5()
             .rounded(crate::ui::design::r_sm())
             .border_1()
-            .border_color(if is_riff {
+            .border_color(if is_product_capability {
                 crate::ui::design::accent(cx).opacity(0.34)
             } else {
                 crate::ui::design::line_2(cx)
             })
-            .bg(if is_riff {
+            .bg(if is_product_capability {
                 crate::ui::design::accent_soft(cx)
             } else {
                 crate::ui::design::surface_2(cx)
             })
             .cursor_pointer()
             .hover(|chip| {
-                chip.bg(if is_riff {
+                chip.bg(if is_product_capability {
                     crate::ui::design::accent(cx).opacity(0.2)
                 } else {
                     crate::ui::design::hover(cx)

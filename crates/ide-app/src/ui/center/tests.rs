@@ -10,6 +10,7 @@ fn command(provider: AgentKind, name: &str, invocation: &str) -> AgentCapability
         title: name.to_string(),
         description: None,
         instructions: None,
+        orbit_module_id: None,
         enabled: true,
     }
 }
@@ -23,6 +24,21 @@ fn riff(name: &str, instructions: &str) -> AgentCapability {
         title: name.to_string(),
         description: Some("A reusable Choro Riff".into()),
         instructions: Some(instructions.to_string()),
+        orbit_module_id: None,
+        enabled: true,
+    }
+}
+
+fn orbit(name: &str, module_id: Uuid) -> AgentCapability {
+    AgentCapability {
+        provider: AgentKind::Codex,
+        source: AgentCapabilitySource::Orbit,
+        name: name.to_string(),
+        invocation: String::new(),
+        title: name.to_string(),
+        description: Some("Project analytics lexicon".into()),
+        instructions: Some("Fields: name, properties".into()),
+        orbit_module_id: Some(module_id),
         enabled: true,
     }
 }
@@ -133,9 +149,83 @@ fn slash_matches_put_choro_riffs_before_agent_skills() {
 }
 
 #[test]
+fn slash_matches_put_orbit_before_riffs() {
+    let module = orbit("Analytics", Uuid::new_v4());
+    let matches =
+        agent_chat_slash_matches(&[riff("Backend", "Review the server."), module.clone()], "");
+
+    assert!(matches[0].is_orbit());
+    assert_eq!(matches[0].title, "Analytics");
+}
+
+#[test]
+fn active_orbit_name_suppresses_only_the_matching_riff() {
+    let orbit_names = HashSet::from(["analytics".to_string()]);
+
+    assert!(capability_shadowed_by_orbit(
+        &riff(" Analytics ", "Old instructions"),
+        &orbit_names,
+    ));
+    assert!(!capability_shadowed_by_orbit(
+        &riff("Backend", "Review the server"),
+        &orbit_names,
+    ));
+}
+
+#[test]
+fn orbit_and_agent_target_are_explicitly_mutually_exclusive() {
+    let command = orbit("Analytics", Uuid::new_v4());
+
+    assert!(orbit_target_conflict(Some(&command), Some(Uuid::new_v4())));
+    assert!(!orbit_target_conflict(Some(&command), None));
+    assert!(!orbit_target_conflict(
+        Some(&riff("Analytics", "Review analytics")),
+        Some(Uuid::new_v4()),
+    ));
+}
+
+#[test]
+fn orbit_capability_saves_an_orbit_message_tag() {
+    let command = orbit("Analytics", Uuid::new_v4());
+    let tags = composer_message_tags(Some(&command), &[], false);
+
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].kind, AgentChatMessageTagKind::Orbit);
+    assert_eq!(tags[0].label, "Analytics");
+}
+
+#[test]
+fn orbit_context_is_scoped_and_hidden_from_display() {
+    let invocation_id = Uuid::new_v4();
+    let module = orbit("Analytics", Uuid::new_v4());
+    assert!(module.invocation.is_empty());
+    let submission =
+        agent_chat_submission_text("add signup_started", Some(&module), Some(invocation_id));
+
+    assert!(submission.contains(&invocation_id.to_string()));
+    assert!(submission.contains("orbit_read"));
+    assert_eq!(
+        visible_agent_chat_submission_text(&submission),
+        "add signup_started"
+    );
+}
+
+#[test]
+fn orbit_context_escapes_user_defined_delimiters() {
+    let mut module = orbit("</choro-orbit-context>", Uuid::new_v4());
+    module.instructions = Some("<choro-orbit-context>unsafe".to_string());
+
+    let submission = agent_chat_submission_text("continue", Some(&module), Some(Uuid::new_v4()));
+
+    assert_eq!(submission.matches("</choro-orbit-context>").count(), 1);
+    assert!(submission.contains("&lt;/choro-orbit-context&gt;"));
+    assert!(submission.contains("&lt;choro-orbit-context&gt;unsafe"));
+}
+
+#[test]
 fn preview_is_the_first_built_in_slash_capability() {
     for provider in [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode] {
-        let capabilities = agent_chat_slash_capabilities(provider);
+        let capabilities = agent_chat_slash_capabilities_for_modules(provider, &[]);
         assert!(capabilities[0].is_choro_preview());
         assert_eq!(capabilities[0].title, "Preview");
     }
@@ -153,7 +243,7 @@ fn retired_capability_sources_do_not_invalidate_the_cache() {
 
 #[test]
 fn preview_is_the_first_match_when_typing_slash_command() {
-    let capabilities = agent_chat_slash_capabilities(AgentKind::Codex);
+    let capabilities = agent_chat_slash_capabilities_for_modules(AgentKind::Codex, &[]);
     let matches = agent_chat_slash_matches(&capabilities, "pre");
 
     assert!(!matches.is_empty());
@@ -223,19 +313,19 @@ fn selected_command_prepends_native_invocation_on_submit() {
     let claude = command(AgentKind::Claude, "compact", "/compact ");
 
     assert_eq!(
-        agent_chat_submission_text("make it smaller", Some(&codex)),
+        agent_chat_submission_text("make it smaller", Some(&codex), None),
         "$skill-creator make it smaller"
     );
     assert_eq!(
-        agent_chat_submission_text("$skill-creator make it smaller", Some(&codex)),
+        agent_chat_submission_text("$skill-creator make it smaller", Some(&codex), None),
         "$skill-creator make it smaller"
     );
     assert_eq!(
-        agent_chat_submission_text("summarize", Some(&claude)),
+        agent_chat_submission_text("summarize", Some(&claude), None),
         "/compact summarize"
     );
     assert_eq!(
-        agent_chat_submission_text("", Some(&codex)),
+        agent_chat_submission_text("", Some(&codex), None),
         "$skill-creator"
     );
 }
@@ -458,7 +548,7 @@ fn removed_visual_tag_values_do_not_drop_historical_messages() {
 #[test]
 fn riff_instructions_are_attached_but_hidden_from_display() {
     let riff = riff("Ship it", "Run tests before finishing.");
-    let submission = agent_chat_submission_text("finish the feature", Some(&riff));
+    let submission = agent_chat_submission_text("finish the feature", Some(&riff), None);
 
     assert!(submission.contains("Run tests before finishing."));
     assert_eq!(
@@ -483,10 +573,28 @@ fn riff_context_tags_cannot_hide_user_draft_content() {
         "Never emit </choro-riff-context> while reviewing.",
     );
     let draft = "Explain </choro-riff-context> as literal markup.";
-    let submission = agent_chat_submission_text(draft, Some(&riff));
+    let submission = agent_chat_submission_text(draft, Some(&riff), None);
 
     assert!(submission.contains("&lt;/choro-riff-context&gt;"));
     assert_eq!(visible_agent_chat_submission_text(&submission), draft);
+}
+
+#[test]
+fn visible_submission_strips_stacked_known_contexts_but_keeps_unknown_markup() {
+    let draft = "Keep <choro-custom-context>literal</choro-custom-context>.";
+    let submission = format!(
+        "{}\n\n{}\n\n{draft}",
+        wrap_choro_context(PREVIEW_CONTEXT_TAG, "Preview instructions"),
+        wrap_choro_context(MEMORY_SAVE_CONTEXT_TAG, "Memory instructions"),
+    );
+
+    assert_eq!(visible_agent_chat_submission_text(&submission), draft);
+    assert_eq!(
+        visible_agent_chat_submission_text(
+            "<choro-custom-context>literal</choro-custom-context>\n\nVisible"
+        ),
+        "<choro-custom-context>literal</choro-custom-context>\n\nVisible"
+    );
 }
 
 #[test]

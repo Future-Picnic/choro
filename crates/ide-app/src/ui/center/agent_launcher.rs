@@ -164,6 +164,7 @@ impl CenterArea {
                     }
                     if composer.selected_command.as_ref().is_some_and(|command| {
                         !command.is_choro_riff()
+                            && !command.is_orbit()
                             && !value.trim_start().starts_with(command.invocation.trim())
                     }) {
                         composer.selected_command = None;
@@ -189,6 +190,7 @@ impl CenterArea {
         let repository_path =
             (repositories.len() == 1).then(|| repositories[0].read(cx).repo_path.clone());
         self.new_agent_composer = Some(NewAgentComposer {
+            id: Uuid::new_v4(),
             project,
             repository_path,
             prompt,
@@ -217,6 +219,7 @@ impl CenterArea {
             source_task: None,
             implementation_design: None,
             design_browser_open_confirmed: false,
+            starting: false,
             error: None,
             slash_selection: 0,
             slash_dismissed_query: None,
@@ -324,10 +327,24 @@ impl CenterArea {
         let Some(composer) = self.new_agent_composer.as_mut() else {
             return;
         };
+        if composer.starting {
+            return;
+        }
+        let composer_id = composer.id;
         let draft = composer.prompt.read(cx).value().trim().to_string();
         let selected_mentions = composer.selected_mentions.clone();
+        let orbit_invocation = composer
+            .selected_command
+            .as_ref()
+            .and_then(|command| command.orbit_module_id)
+            .map(|module_id| (Uuid::new_v4(), module_id));
+        let submission_command = composer.selected_command.clone();
         let raw_doc = composer_mentions_submission_text(&draft, &selected_mentions, &projects);
-        let raw_doc = agent_chat_submission_text(&raw_doc, composer.selected_command.as_ref());
+        let raw_doc = agent_chat_submission_text(
+            &raw_doc,
+            submission_command.as_ref(),
+            orbit_invocation.map(|(invocation_id, _)| invocation_id),
+        );
         if raw_doc.is_empty() {
             composer.error = Some("Describe what the agent should do first.".into());
             cx.notify();
@@ -447,6 +464,15 @@ impl CenterArea {
         };
         self.workspace
             .update(cx, |workspace, cx| workspace.set_active(project, cx));
+        if let Some(composer) = self
+            .new_agent_composer
+            .as_mut()
+            .filter(|composer| composer.id == composer_id)
+        {
+            composer.starting = true;
+            composer.error = None;
+        }
+        cx.notify();
         // The base is captured while `cwd` is still ours. The branch name is
         // assigned after agent creation so its id acts as a collision-free
         // reservation even before the asynchronous worktree exists.
@@ -503,23 +529,6 @@ impl CenterArea {
         let (save_revision, agent_store) = self
             .agents
             .update(cx, |agents, _| agents.durable_snapshot());
-        self.agent_chats.update(cx, |chats, cx| {
-            let session = chats.ensure_session(agent_id, title.clone(), cx);
-            session.interaction_mode = interaction_mode;
-            chats.append_message(
-                agent_id,
-                AgentChatMessage::User {
-                    text: doc,
-                    display_text: Some(message_display_text),
-                    tags: message_tags,
-                    created_at: unix_now_secs(),
-                },
-                cx,
-            );
-        });
-        self.new_agent_drafts.remove(&project);
-        self.new_agent_composer = None;
-        cx.notify();
         let window_handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let persisted = cx
@@ -532,12 +541,61 @@ impl CenterArea {
                 this.update(cx, |this, cx| {
                     let message = format!("Could not save agent before starting: {error:#}");
                     eprintln!("{message}");
-                    this.agent_start_errors.insert(agent_id, message);
-                    cx.notify();
+                    this.rollback_new_agent_launch(agent_id, project, composer_id, message, cx);
                 })
                 .ok();
                 return;
             }
+
+            if let Some((invocation_id, module_id)) = orbit_invocation {
+                let created = cx
+                    .background_executor()
+                    .spawn(async move {
+                        create_orbit_invocation(invocation_id, agent_id, project, module_id)
+                    })
+                    .await;
+                if let Err(error) = created {
+                    this.update(cx, |this, cx| {
+                        let message = format!("Could not start Orbit access: {error:#}");
+                        eprintln!("{message}");
+                        this.rollback_new_agent_launch(agent_id, project, composer_id, message, cx);
+                    })
+                    .ok();
+                    return;
+                }
+                this.update(cx, |this, _| {
+                    this.orbit_active_invocations
+                        .insert(agent_id, invocation_id);
+                })
+                .ok();
+            }
+
+            this.update(cx, |this, cx| {
+                this.agent_chats.update(cx, |chats, cx| {
+                    let session = chats.ensure_session(agent_id, title.clone(), cx);
+                    session.interaction_mode = interaction_mode;
+                    chats.append_message(
+                        agent_id,
+                        AgentChatMessage::User {
+                            text: doc,
+                            display_text: Some(message_display_text),
+                            tags: message_tags,
+                            created_at: unix_now_secs(),
+                        },
+                        cx,
+                    );
+                });
+                if this
+                    .new_agent_composer
+                    .as_ref()
+                    .is_some_and(|composer| composer.id == composer_id)
+                {
+                    this.new_agent_drafts.remove(&project);
+                    this.new_agent_composer = None;
+                }
+                cx.notify();
+            })
+            .ok();
 
             // A Solo's start is deferred behind lane setup and needs no
             // window; every other runtime starts after the durable write.
@@ -599,6 +657,28 @@ impl CenterArea {
             }
         })
         .detach();
+    }
+
+    fn rollback_new_agent_launch(
+        &mut self,
+        agent_id: Uuid,
+        project: ProjectId,
+        composer_id: Uuid,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.agents.update(cx, |agents, cx| {
+            agents.discard_before_start(agent_id, cx);
+        });
+        if let Some(composer) = self
+            .new_agent_composer
+            .as_mut()
+            .filter(|composer| composer.id == composer_id && composer.project == project)
+        {
+            composer.starting = false;
+            composer.error = Some(message);
+        }
+        cx.notify();
     }
 
     pub(super) fn paste_image_into_new_agent_composer(

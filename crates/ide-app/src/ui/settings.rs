@@ -21,7 +21,8 @@ use crate::keymap;
 use crate::remote::{DevicePermission, RelayControl, RelayIdentity, RelayState, RemoteAuth};
 use crate::state::{
     AgentCapability, AgentCapabilityCacheFile, ChoroRiff, ChoroRiffStore, DesignProvider,
-    PenpotConnectionStatus, PenpotState, Workspace, CHORO_RIFFS_SCHEMA_VERSION,
+    OrbitEvent, OrbitState, PenpotConnectionStatus, PenpotState, Workspace,
+    CHORO_RIFFS_SCHEMA_VERSION,
 };
 use ide_core::{
     config::{
@@ -29,7 +30,11 @@ use ide_core::{
         ReviewChecklistMode, ThemeMode as ConfigTheme, VerificationMode,
         DEFAULT_CODE_REVIEW_PROMPT,
     },
-    local_store::LocalStore,
+    local_store::{
+        analytics_orbit_template, blank_orbit_module, normalize_orbit_field_key,
+        validate_orbit_module, LocalStore, OrbitFieldDefinition, OrbitFieldKind,
+        OrbitModuleDefinition,
+    },
     AgentEffort, AgentKind, AgentModel, AgentRecord, ProjectId, VoiceAnnouncements,
 };
 use uuid::Uuid;
@@ -42,6 +47,7 @@ mod design;
 mod generation_page;
 mod memory;
 mod notifications;
+mod orbit_page;
 mod process_monitor;
 mod process_page;
 mod remote_page;
@@ -54,7 +60,7 @@ const PENPOT_CLOUD_URL: &str = "https://design.penpot.app";
 const PENPOT_CLOUD_MCP_URL: &str = "https://design.penpot.app/mcp/stream";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsSection {
+pub(crate) enum SettingsSection {
     Design,
     Generation,
     Voice,
@@ -62,6 +68,7 @@ enum SettingsSection {
     Notifications,
     Process,
     AgentSkills,
+    Orbit,
     Brain,
     Memory,
     Remote,
@@ -80,6 +87,7 @@ impl SettingsSection {
             Self::Notifications => "Notifications",
             Self::Process => "Process monitor",
             Self::AgentSkills => "Skills",
+            Self::Orbit => "Orbit",
             Self::Brain => "Knowledge",
             Self::Memory => "Memories",
             Self::Remote => "Remote access",
@@ -107,6 +115,9 @@ impl SettingsSection {
             Self::Process => "Understand how Choro and its connected tools use system resources.",
             Self::AgentSkills => {
                 "Create Choro Riffs for every project and review skills discovered from your coding agents."
+            }
+            Self::Orbit => {
+                "Create reusable project modules with structured views and an agent job."
             }
             Self::Brain => "Search living summaries from agents across your projects.",
             Self::Memory => {
@@ -150,6 +161,25 @@ struct RiffEditor {
     error: Option<String>,
 }
 
+struct OrbitModuleEditor {
+    request_id: Uuid,
+    module: OrbitModuleDefinition,
+    name: Entity<InputState>,
+    description: Entity<InputState>,
+    section: Entity<InputState>,
+    agent_job: Entity<InputState>,
+    fields: Vec<OrbitFieldEditor>,
+    error: Option<String>,
+}
+
+struct OrbitFieldEditor {
+    id: Uuid,
+    key: String,
+    label: Entity<InputState>,
+    kind: OrbitFieldKind,
+    primary: bool,
+}
+
 struct CompanionPlaylistInputs {
     url: Entity<InputState>,
 }
@@ -166,6 +196,7 @@ pub struct SettingsView {
     workspace: Entity<Workspace>,
     voice: Entity<crate::voice::VoiceState>,
     penpot: Entity<PenpotState>,
+    orbit: Entity<OrbitState>,
     design_provider: DesignProvider,
     design_instance_input: Entity<InputState>,
     design_mcp_input: Entity<InputState>,
@@ -190,6 +221,7 @@ pub struct SettingsView {
     skills: Vec<AgentCapability>,
     riffs: Vec<ChoroRiff>,
     riff_editor: Option<RiffEditor>,
+    orbit_editor: Option<OrbitModuleEditor>,
     riffs_status: Option<String>,
     memories: Vec<ide_core::local_store::StoredMemory>,
     brain_summaries: Vec<ide_core::local_store::StoredAgentSummary>,
@@ -312,6 +344,7 @@ impl SettingsView {
         workspace: Entity<Workspace>,
         penpot: Entity<PenpotState>,
         voice: Entity<crate::voice::VoiceState>,
+        orbit: Entity<OrbitState>,
         remote_auth: RemoteAuth,
         relay_identity: RelayIdentity,
         relay_control: RelayControl,
@@ -322,6 +355,7 @@ impl SettingsView {
             workspace,
             penpot,
             voice,
+            orbit,
             remote_auth,
             relay_identity,
             relay_control,
@@ -331,35 +365,11 @@ impl SettingsView {
         )
     }
 
-    /// Open Settings directly on Remote access when invoked from the header's
-    /// connection indicator.
-    pub fn new_remote(
+    pub(crate) fn new_in_section(
         workspace: Entity<Workspace>,
         penpot: Entity<PenpotState>,
         voice: Entity<crate::voice::VoiceState>,
-        remote_auth: RemoteAuth,
-        relay_identity: RelayIdentity,
-        relay_control: RelayControl,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self> {
-        Self::new_in_section(
-            workspace,
-            penpot,
-            voice,
-            remote_auth,
-            relay_identity,
-            relay_control,
-            SettingsSection::Remote,
-            window,
-            cx,
-        )
-    }
-
-    fn new_in_section(
-        workspace: Entity<Workspace>,
-        penpot: Entity<PenpotState>,
-        voice: Entity<crate::voice::VoiceState>,
+        orbit: Entity<OrbitState>,
         remote_auth: RemoteAuth,
         relay_identity: RelayIdentity,
         relay_control: RelayControl,
@@ -488,10 +498,28 @@ impl SettingsView {
                 .detach();
             cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            cx.observe(&orbit, |_: &mut Self, _, cx| cx.notify())
+                .detach();
+            cx.subscribe(&orbit, |this: &mut Self, _, event: &OrbitEvent, cx| {
+                if let OrbitEvent::ModuleSaved {
+                    module_id,
+                    request_id,
+                } = event
+                {
+                    if this.orbit_editor.as_ref().is_some_and(|editor| {
+                        editor.module.id == *module_id && editor.request_id == *request_id
+                    }) {
+                        this.orbit_editor = None;
+                        cx.notify();
+                    }
+                }
+            })
+            .detach();
             Self {
                 workspace: workspace.clone(),
                 voice: voice.clone(),
                 penpot: penpot.clone(),
+                orbit: orbit.clone(),
                 design_provider,
                 design_instance_input,
                 design_mcp_input,
@@ -519,6 +547,7 @@ impl SettingsView {
                 skills: cached_skills.capabilities,
                 riffs,
                 riff_editor: None,
+                orbit_editor: None,
                 riffs_status: None,
                 memories: Vec::new(),
                 brain_summaries: Vec::new(),

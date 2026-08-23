@@ -344,6 +344,31 @@ pub fn context_panel_action_button(
     ghost_button_compact(id, label).icon(icon)
 }
 
+/// Full-width interactive Orbit data row. Unlike the generic Button, this row
+/// preserves the exact flex geometry used by the table header so every value
+/// stays under its column while remaining directly clickable.
+pub fn orbit_table_data_row(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_h(px(46.))
+        .items_center()
+        .cursor_pointer()
+        .bg(design::surface(cx))
+        .hover(|row| row.bg(design::hover(cx).opacity(0.62)))
+}
+
+/// Keyboard-focusable section disclosure row for grouped Orbit data.
+pub fn orbit_section_toggle_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .ghost()
+        .w_full()
+        .justify_start()
+        .h_auto()
+        .p_0()
+        .rounded(gpui_component::button::ButtonRounded::None)
+}
+
 /// A positive / commit action (e.g. Ship). Solid `success` fill.
 pub fn success_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     base_button(id, label).success()

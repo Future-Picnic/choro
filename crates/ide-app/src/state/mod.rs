@@ -7,6 +7,7 @@ pub mod doc_assistant;
 pub mod docs;
 pub mod git_state;
 pub mod open_code;
+pub mod orbit;
 pub mod penpot;
 pub mod services;
 pub mod tasks;
@@ -25,13 +26,21 @@ pub use doc_assistant::DocAssistantState;
 pub use docs::{DocSaveStatus, DocsState};
 pub use git_state::{GitState, GitStates};
 pub use open_code::{OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel};
+pub use orbit::{OrbitEvent, OrbitState};
 pub use penpot::{
     DesignProvider, PenpotConnectionStatus, PenpotDesign, PenpotDesignSource, PenpotEvent,
     PenpotState,
 };
-pub use services::{ServicesMode, ServicesState};
+pub use services::{ServicesScanKind, ServicesState};
 pub use tasks::TasksState;
 pub use terminals::{SessionId, TerminalManager};
 pub use workspace::Workspace;
 #[allow(unused_imports)]
 pub use workspace::WorkspaceEvent;
+
+fn preferred_selection<T: Clone + PartialEq>(selected: Option<&T>, available: &[T]) -> Option<T> {
+    selected
+        .filter(|selected| available.contains(selected))
+        .cloned()
+        .or_else(|| available.first().cloned())
+}

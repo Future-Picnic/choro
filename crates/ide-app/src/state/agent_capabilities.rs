@@ -15,6 +15,7 @@ pub const CHORO_RIFFS_SCHEMA_VERSION: u32 = 2;
 #[serde(rename_all = "snake_case")]
 pub enum AgentCapabilitySource {
     Preview,
+    Orbit,
     ChoroRiff,
     Command,
     Skill,
@@ -26,6 +27,7 @@ impl AgentCapabilitySource {
     pub fn label(self) -> &'static str {
         match self {
             Self::Preview => "Preview",
+            Self::Orbit => "Orbit",
             Self::ChoroRiff => "Riff",
             Self::Command => "Command",
             Self::Skill => "Skill",
@@ -36,10 +38,11 @@ impl AgentCapabilitySource {
     pub fn priority(self) -> u8 {
         match self {
             Self::Preview => 0,
-            Self::ChoroRiff => 1,
-            Self::Skill => 2,
-            Self::Command => 3,
-            Self::Legacy => 4,
+            Self::Orbit => 1,
+            Self::ChoroRiff => 2,
+            Self::Skill => 3,
+            Self::Command => 4,
+            Self::Legacy => 5,
         }
     }
 }
@@ -56,6 +59,11 @@ pub struct AgentCapability {
     /// provider-specific invocation token in the composer.
     #[serde(default)]
     pub instructions: Option<String>,
+    /// Present only for a project-scoped Orbit module capability. The value is
+    /// kept structured so similarly named Riffs and provider commands cannot
+    /// accidentally receive Orbit write access.
+    #[serde(default)]
+    pub orbit_module_id: Option<Uuid>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -67,6 +75,10 @@ impl AgentCapability {
 
     pub fn is_choro_riff(&self) -> bool {
         self.source == AgentCapabilitySource::ChoroRiff
+    }
+
+    pub fn is_orbit(&self) -> bool {
+        self.source == AgentCapabilitySource::Orbit
     }
 
     pub fn is_legacy(&self) -> bool {
@@ -106,6 +118,7 @@ impl ChoroRiff {
             invocation: String::new(),
             description: self.description.clone(),
             instructions: Some(self.instructions.clone()),
+            orbit_module_id: None,
             enabled: self.enabled,
         }
     }
@@ -361,6 +374,25 @@ impl AgentCapabilityCacheFile {
         capabilities
     }
 
+    pub fn available_revision() -> u64 {
+        fn file_revision(path: PathBuf) -> u64 {
+            let Ok(metadata) = fs::metadata(path) else {
+                return 0;
+            };
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|value| value.as_nanos() as u64)
+                .unwrap_or_default();
+            modified ^ metadata.len().rotate_left(17)
+        }
+
+        file_revision(ChoroRiffStore::path())
+            .rotate_left(7)
+            .wrapping_add(file_revision(Self::cache_path()))
+    }
+
     pub fn refresh_from_runtime(cwd: &str) -> Result<Self, String> {
         let script = Self::runtime_skill_script_path()
             .ok_or_else(|| "Could not find scripts/list-agent-runtime-skills.mjs".to_string())?;
@@ -491,6 +523,7 @@ fn codex_skill_from_value(skill: &Value) -> Option<AgentCapability> {
         invocation: ensure_trailing_space(invocation),
         description,
         instructions: None,
+        orbit_module_id: None,
         enabled,
     })
 }
@@ -509,6 +542,7 @@ fn claude_command_from_value(command: &Value) -> Option<AgentCapability> {
         name,
         description: None,
         instructions: None,
+        orbit_module_id: None,
         enabled: true,
     })
 }
@@ -527,6 +561,7 @@ fn claude_skill_from_value(skill: &Value) -> Option<AgentCapability> {
         name,
         description: None,
         instructions: None,
+        orbit_module_id: None,
         enabled: true,
     })
 }

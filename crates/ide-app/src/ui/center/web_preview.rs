@@ -438,6 +438,7 @@ mod imp {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use base64::Engine as _;
@@ -498,6 +499,7 @@ mod imp {
     const MAX_PROJECT_PREVIEW_MESSAGE_BYTES: usize = 256 * 1024;
     const MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES: usize = 32 * 1024;
     const CHROMIUM_IPC_PREFIX: &str = "__CHORO_DESIGN_IPC__";
+    static WEBKIT_SURFACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
     struct ProjectPreviewMessageHandlerIvars {
         project_id: ProjectId,
@@ -742,7 +744,8 @@ mod imp {
 
     impl ProjectPreviewMessageHandler {
         fn install(
-            controller: Retained<WKUserContentController>,
+            controller: &WKUserContentController,
+            world: &WKContentWorld,
             project_id: ProjectId,
             messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
             app: AsyncApp,
@@ -758,19 +761,13 @@ mod imp {
                     });
             let handler: Retained<Self> = unsafe { msg_send![super(handler), init] };
             let protocol_handler = ProtocolObject::from_ref(&*handler);
-            let world = unsafe {
-                WKContentWorld::worldWithName(
-                    &NSString::from_str(PROJECT_PREVIEW_CONTENT_WORLD),
-                    main_thread,
-                )
-            };
             let user_script = unsafe {
                 WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
                     main_thread.alloc::<WKUserScript>(),
                     &NSString::from_str(PROJECT_PREVIEW_INSPECTOR_JS),
                     WKUserScriptInjectionTime::AtDocumentStart,
                     true,
-                    &world,
+                    world,
                 )
             };
             let agent_script = unsafe {
@@ -786,7 +783,7 @@ mod imp {
                 // WKUserContentController retains the handler for its lifetime.
                 controller.addScriptMessageHandler_contentWorld_name(
                     protocol_handler,
-                    &world,
+                    world,
                     &NSString::from_str(PROJECT_PREVIEW_MESSAGE_HANDLER),
                 );
                 controller.addUserScript(&user_script);
@@ -797,7 +794,8 @@ mod imp {
 
     impl ProjectPreviewConsoleMessageHandler {
         fn install(
-            controller: Retained<WKUserContentController>,
+            controller: &WKUserContentController,
+            page_world: &WKContentWorld,
             project_id: ProjectId,
             messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
             app: AsyncApp,
@@ -813,14 +811,13 @@ mod imp {
                     });
             let handler: Retained<Self> = unsafe { msg_send![super(handler), init] };
             let protocol_handler = ProtocolObject::from_ref(&*handler);
-            let page_world = unsafe { WKContentWorld::pageWorld(main_thread) };
             let user_script = unsafe {
                 WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
                     main_thread.alloc::<WKUserScript>(),
                     &NSString::from_str(PROJECT_PREVIEW_CONSOLE_JS),
                     WKUserScriptInjectionTime::AtDocumentStart,
                     true,
-                    &page_world,
+                    page_world,
                 )
             };
             unsafe {
@@ -829,7 +826,7 @@ mod imp {
                 // agent-control messages that live in Choro's isolated world.
                 controller.addScriptMessageHandler_contentWorld_name(
                     protocol_handler,
-                    &page_world,
+                    page_world,
                     &NSString::from_str(PROJECT_PREVIEW_CONSOLE_MESSAGE_HANDLER),
                 );
                 controller.addUserScript(&user_script);
@@ -1043,15 +1040,99 @@ mod imp {
         penpot_compare_open: bool,
     }
 
+    struct WebKitLease;
+
+    impl WebKitLease {
+        fn acquire() -> Result<Self, String> {
+            WEBKIT_SURFACE_ACTIVE
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .map(|_| Self)
+                .map_err(|_| {
+                    "Choro already has a live WebKit surface; close it before opening another."
+                        .to_string()
+                })
+        }
+    }
+
+    impl Drop for WebKitLease {
+        fn drop(&mut self) {
+            WEBKIT_SURFACE_ACTIVE.store(false, Ordering::Release);
+        }
+    }
+
+    struct ProjectPreviewHandlers {
+        controller: Retained<WKUserContentController>,
+        inspector_world: Retained<WKContentWorld>,
+        page_world: Retained<WKContentWorld>,
+    }
+
+    struct WebKitSurface {
+        webview: WebView,
+        project_preview_handlers: Option<ProjectPreviewHandlers>,
+        // Declared last so the exclusivity slot is released only after WebView drops.
+        _lease: WebKitLease,
+    }
+
+    impl WebKitSurface {
+        fn new(webview: WebView, lease: WebKitLease) -> Self {
+            Self {
+                webview,
+                project_preview_handlers: None,
+                _lease: lease,
+            }
+        }
+
+        fn project_preview(
+            webview: WebView,
+            lease: WebKitLease,
+            handlers: ProjectPreviewHandlers,
+        ) -> Self {
+            Self {
+                webview,
+                project_preview_handlers: Some(handlers),
+                _lease: lease,
+            }
+        }
+    }
+
+    impl Drop for WebKitSurface {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(handlers) = self.project_preview_handlers.as_ref() {
+                    handlers
+                        .controller
+                        .removeScriptMessageHandlerForName_contentWorld(
+                            &NSString::from_str(PROJECT_PREVIEW_MESSAGE_HANDLER),
+                            &handlers.inspector_world,
+                        );
+                    handlers
+                        .controller
+                        .removeScriptMessageHandlerForName_contentWorld(
+                            &NSString::from_str(PROJECT_PREVIEW_CONSOLE_MESSAGE_HANDLER),
+                            &handlers.page_world,
+                        );
+                }
+
+                let manager = self.webview.manager();
+                manager.removeAllUserScripts();
+                let native = self.webview.webview();
+                native.stopLoading();
+                native.setNavigationDelegate(None);
+                native.setUIDelegate(None);
+            }
+        }
+    }
+
     enum WebSurface {
-        WebKit(WebView),
+        WebKit(WebKitSurface),
         Chromium(ChromiumSurface),
     }
 
     impl WebSurface {
         fn set_visible(&self, visible: bool) -> Result<(), String> {
             match self {
-                Self::WebKit(webview) => webview
+                Self::WebKit(surface) => surface
+                    .webview
                     .set_visible(visible)
                     .map_err(|error| error.to_string()),
                 Self::Chromium(surface) => surface.set_visible(visible),
@@ -1060,7 +1141,8 @@ mod imp {
 
         fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
             match self {
-                Self::WebKit(webview) => webview
+                Self::WebKit(surface) => surface
+                    .webview
                     .set_bounds(to_rect(bounds))
                     .map_err(|error| error.to_string()),
                 Self::Chromium(surface) => surface.set_bounds(bounds),
@@ -1069,14 +1151,18 @@ mod imp {
 
         fn load_url(&self, url: &str) -> Result<(), String> {
             match self {
-                Self::WebKit(webview) => webview.load_url(url).map_err(|error| error.to_string()),
+                Self::WebKit(surface) => surface
+                    .webview
+                    .load_url(url)
+                    .map_err(|error| error.to_string()),
                 Self::Chromium(surface) => surface.load_url(url),
             }
         }
 
         fn evaluate_script(&self, script: &str) -> Result<(), String> {
             match self {
-                Self::WebKit(webview) => webview
+                Self::WebKit(surface) => surface
+                    .webview
                     .evaluate_script(script)
                     .map_err(|error| error.to_string()),
                 Self::Chromium(surface) => surface.evaluate_script(script),
@@ -1085,13 +1171,13 @@ mod imp {
 
         fn reload_from_origin(&self) -> Result<(), String> {
             match self {
-                Self::WebKit(webview) => {
+                Self::WebKit(surface) => {
                     // Reload the document WebKit is currently showing, not the
                     // configured Preview intent URL. `reloadFromOrigin` also
                     // revalidates resources so this acts like a real browser
                     // refresh while debugging local changes.
                     unsafe {
-                        webview.webview().reloadFromOrigin();
+                        surface.webview.webview().reloadFromOrigin();
                     }
                     Ok(())
                 }
@@ -1101,8 +1187,9 @@ mod imp {
 
         fn current_url(&self) -> Option<String> {
             match self {
-                Self::WebKit(webview) => unsafe {
-                    webview
+                Self::WebKit(surface) => unsafe {
+                    surface
+                        .webview
                         .webview()
                         .URL()
                         .and_then(|url| url.absoluteString())
@@ -1114,9 +1201,13 @@ mod imp {
 
         fn webkit(&self) -> Option<&WebView> {
             match self {
-                Self::WebKit(webview) => Some(webview),
+                Self::WebKit(surface) => Some(&surface.webview),
                 Self::Chromium(_) => None,
             }
+        }
+
+        fn is_chromium(&self) -> bool {
+            matches!(self, Self::Chromium(_))
         }
     }
 
@@ -1644,6 +1735,7 @@ mod imp {
             let should_park_active_penpot = self.penpot_keepalive
                 && self.active.as_ref().is_some_and(|active| {
                     matches!(active.intent, WebPreviewIntent::PenpotUrl { .. })
+                        && active.webview.is_chromium()
                         && intent.as_ref().is_none_or(|intent| {
                             !matches!(intent, WebPreviewIntent::PenpotUrl { .. })
                         })
@@ -1691,6 +1783,7 @@ mod imp {
                     if let Some(active) = self.active.as_mut() {
                         sync_active_doc_editor(active, &intent);
                         sync_active_penpot_theme(active, &intent);
+                        sync_active_project_preview(active, &intent);
                         active.intent = intent.clone();
                     }
                 }
@@ -2736,6 +2829,14 @@ mod imp {
                     && reference_protocol_assets(left_assets)
                         .eq(reference_protocol_assets(right_assets))
             }
+            (
+                WebPreviewIntent::ProjectPreview {
+                    project_id: left, ..
+                },
+                WebPreviewIntent::ProjectPreview {
+                    project_id: right, ..
+                },
+            ) => left == right,
             _ => false,
         }
     }
@@ -3333,6 +3434,52 @@ mod imp {
         }
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum ProjectPreviewSyncAction<'a> {
+        Navigate(&'a str),
+        ReloadFromOrigin,
+    }
+
+    fn project_preview_sync_action<'a>(
+        current: &WebPreviewIntent,
+        next: &'a WebPreviewIntent,
+    ) -> Option<ProjectPreviewSyncAction<'a>> {
+        let (
+            WebPreviewIntent::ProjectPreview {
+                project_id: current_project,
+                url: current_url,
+                revision: current_revision,
+            },
+            WebPreviewIntent::ProjectPreview {
+                project_id: next_project,
+                url: next_url,
+                revision: next_revision,
+            },
+        ) = (current, next)
+        else {
+            return None;
+        };
+        if current_project != next_project {
+            return None;
+        }
+        if current_url != next_url {
+            return Some(ProjectPreviewSyncAction::Navigate(next_url));
+        }
+        (current_revision != next_revision).then_some(ProjectPreviewSyncAction::ReloadFromOrigin)
+    }
+
+    fn sync_active_project_preview(active: &Active, next: &WebPreviewIntent) {
+        match project_preview_sync_action(&active.intent, next) {
+            Some(ProjectPreviewSyncAction::Navigate(url)) => {
+                let _ = active.webview.load_url(url);
+            }
+            Some(ProjectPreviewSyncAction::ReloadFromOrigin) => {
+                let _ = active.webview.reload_from_origin();
+            }
+            None => {}
+        }
+    }
+
     fn build(
         intent: &WebPreviewIntent,
         bounds: Bounds<Pixels>,
@@ -3348,14 +3495,17 @@ mod imp {
     ) -> Result<WebSurface, String> {
         let rect = to_rect(bounds);
         match intent {
-            WebPreviewIntent::Url(url) => WebViewBuilder::new()
-                .with_url(url)
-                .with_bounds(rect)
-                .with_transparent(false)
-                .with_accept_first_mouse(true)
-                .build_as_child(window)
-                .map(WebSurface::WebKit)
-                .map_err(|error| error.to_string()),
+            WebPreviewIntent::Url(url) => {
+                let lease = WebKitLease::acquire()?;
+                WebViewBuilder::new()
+                    .with_url(url)
+                    .with_bounds(rect)
+                    .with_transparent(false)
+                    .with_accept_first_mouse(true)
+                    .build_as_child(window)
+                    .map(|webview| WebSurface::WebKit(WebKitSurface::new(webview, lease)))
+                    .map_err(|error| error.to_string())
+            }
             WebPreviewIntent::PenpotUrl { url, theme } => {
                 let surface_id = penpot_surface_id
                     .ok_or_else(|| "Design surface identity is missing".to_string())?;
@@ -3398,6 +3548,7 @@ mod imp {
                 let completed_download_paths = download_paths;
                 let completed_messages = penpot_messages.clone();
                 let completed_app = app.clone();
+                let lease = WebKitLease::acquire()?;
                 WebViewBuilder::new()
                     .with_initialization_script(script)
                     .with_ipc_handler(move |request| {
@@ -3473,12 +3624,13 @@ mod imp {
                     .with_transparent(false)
                     .with_accept_first_mouse(true)
                     .build_as_child(window)
-                    .map(WebSurface::WebKit)
+                    .map(|webview| WebSurface::WebKit(WebKitSurface::new(webview, lease)))
                     .map_err(|error| error.to_string())
             }
             WebPreviewIntent::ProjectPreview {
                 project_id, url, ..
             } => {
+                let lease = WebKitLease::acquire()?;
                 let file_path = project_preview_file_path(url);
                 let page_load_project = *project_id;
                 let page_load_messages = preview_messages.clone();
@@ -3517,15 +3669,20 @@ mod imp {
                 let Some(main_thread) = MainThreadMarker::new() else {
                     return Err("Preview must be created on the main thread.".to_string());
                 };
+                let controller = webview.manager();
+                let inspector_world = project_preview_content_world(main_thread);
+                let page_world = unsafe { WKContentWorld::pageWorld(main_thread) };
                 ProjectPreviewMessageHandler::install(
-                    webview.manager(),
+                    &controller,
+                    &inspector_world,
                     *project_id,
                     preview_messages.clone(),
                     app.clone(),
                     main_thread,
                 );
                 ProjectPreviewConsoleMessageHandler::install(
-                    webview.manager(),
+                    &controller,
+                    &page_world,
                     *project_id,
                     preview_messages,
                     app,
@@ -3536,7 +3693,15 @@ mod imp {
                 } else {
                     webview.load_url(url).map_err(|error| error.to_string())?;
                 }
-                Ok(WebSurface::WebKit(webview))
+                Ok(WebSurface::WebKit(WebKitSurface::project_preview(
+                    webview,
+                    lease,
+                    ProjectPreviewHandlers {
+                        controller,
+                        inspector_world,
+                        page_world,
+                    },
+                )))
             }
             WebPreviewIntent::DocEditor {
                 path,
@@ -3568,6 +3733,7 @@ mod imp {
                 let protocol_reference_assets = reference_assets.clone();
                 let ipc_messages = messages.clone();
                 let ipc_app = app.clone();
+                let lease = WebKitLease::acquire()?;
                 WebViewBuilder::new()
                     .with_custom_protocol("choro-editor".into(), move |_, request| {
                         doc_editor_asset_response(request)
@@ -3606,12 +3772,13 @@ mod imp {
                             || url.starts_with("choro-reference://")
                     })
                     .build_as_child(window)
-                    .map(WebSurface::WebKit)
+                    .map(|webview| WebSurface::WebKit(WebKitSurface::new(webview, lease)))
                     .map_err(|error| error.to_string())
             }
             WebPreviewIntent::Visualization { path, theme, .. } => {
                 let html =
                     visualization_document(path, theme).map_err(|error| error.to_string())?;
+                let lease = WebKitLease::acquire()?;
                 WebViewBuilder::new()
                     .with_html(html)
                     .with_bounds(rect)
@@ -3620,7 +3787,7 @@ mod imp {
                         url == "about:blank" || url.starts_with("data:text/html")
                     })
                     .build_as_child(window)
-                    .map(WebSurface::WebKit)
+                    .map(|webview| WebSurface::WebKit(WebKitSurface::new(webview, lease)))
                     .map_err(|error| error.to_string())
             }
         }
@@ -3949,8 +4116,9 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             penpot_assistant_initialization_script, penpot_chrome_sync_script,
             penpot_chromium_initialization_script, penpot_left_sidebar_collapse_script,
             penpot_message_matches_surface, penpot_sidebar_tab_script, penpot_theme_sync_script,
-            preview_key_event_data, project_preview_message_live_url, same_surface,
-            surface_visible, unique_design_download_path, PenpotMessage, PenpotSidebarTab,
+            preview_key_event_data, project_preview_message_live_url, project_preview_sync_action,
+            same_surface, surface_visible, unique_design_download_path, PenpotMessage,
+            PenpotSidebarTab, ProjectPreviewSyncAction, WebKitLease,
             MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
 
@@ -4241,6 +4409,61 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             };
 
             assert!(!same_surface(&first, &second));
+        }
+
+        #[test]
+        fn project_preview_revision_reloads_the_existing_webview() {
+            let project_id = ProjectId(Uuid::from_u128(1));
+            let first = WebPreviewIntent::ProjectPreview {
+                project_id,
+                url: "http://127.0.0.1:4173/dashboard".into(),
+                revision: 1,
+            };
+            let refreshed = WebPreviewIntent::ProjectPreview {
+                project_id,
+                url: "http://127.0.0.1:4173/dashboard".into(),
+                revision: 2,
+            };
+
+            assert!(same_surface(&first, &refreshed));
+            assert_eq!(
+                project_preview_sync_action(&first, &refreshed),
+                Some(ProjectPreviewSyncAction::ReloadFromOrigin)
+            );
+        }
+
+        #[test]
+        fn project_preview_navigation_reuses_the_projects_webview() {
+            let project_id = ProjectId(Uuid::from_u128(1));
+            let first = WebPreviewIntent::ProjectPreview {
+                project_id,
+                url: "http://127.0.0.1:4173/dashboard".into(),
+                revision: 1,
+            };
+            let navigated = WebPreviewIntent::ProjectPreview {
+                project_id,
+                url: "http://127.0.0.1:4173/settings".into(),
+                revision: 1,
+            };
+
+            assert!(same_surface(&first, &navigated));
+            assert_eq!(
+                project_preview_sync_action(&first, &navigated),
+                Some(ProjectPreviewSyncAction::Navigate(
+                    "http://127.0.0.1:4173/settings"
+                ))
+            );
+        }
+
+        #[test]
+        fn webkit_lease_allows_only_one_native_surface() {
+            let first = WebKitLease::acquire().expect("first WebKit surface should acquire");
+            assert!(WebKitLease::acquire().is_err());
+
+            drop(first);
+            let replacement =
+                WebKitLease::acquire().expect("replacement should acquire after teardown");
+            drop(replacement);
         }
 
         #[test]

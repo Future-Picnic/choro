@@ -105,10 +105,19 @@ impl CenterArea {
         access_mode: AgentAccessMode,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let attachment_paste_pending = self
+        let (attachment_paste_pending, agent_starting) = self
             .new_agent_composer
             .as_ref()
-            .is_some_and(|composer| composer.attachment_pastes_pending > 0);
+            .map(|composer| (composer.attachment_pastes_pending > 0, composer.starting))
+            .unwrap_or_default();
+        let send_pending = attachment_paste_pending || agent_starting;
+        let send_tooltip = if agent_starting {
+            "Starting agent…"
+        } else if attachment_paste_pending {
+            "Wait for the image to finish attaching"
+        } else {
+            "Start agent"
+        };
         let interaction_mode_label = if interaction_mode == AgentInteractionMode::Plan {
             "Plan"
         } else {
@@ -385,13 +394,9 @@ impl CenterArea {
                             cx,
                         )
                         .icon(gpui_component::IconName::ArrowUp)
-                        .disabled(attachment_paste_pending)
-                        .tooltip(if attachment_paste_pending {
-                            "Wait for the image to finish attaching"
-                        } else {
-                            "Start agent"
-                        });
-                        if attachment_paste_pending {
+                        .disabled(send_pending)
+                        .tooltip(send_tooltip);
+                        if send_pending {
                             button.into_any_element()
                         } else {
                             button
@@ -420,14 +425,9 @@ impl CenterArea {
                         let button =
                             crate::ui::style::composer_send_in("start-inline-agent", send_fill, cx)
                                 .tooltip(move |window, cx| {
-                                    Tooltip::new(if attachment_paste_pending {
-                                        "Wait for the image to finish attaching"
-                                    } else {
-                                        "Start agent"
-                                    })
-                                    .build(window, cx)
+                                    Tooltip::new(send_tooltip).build(window, cx)
                                 });
-                        if attachment_paste_pending {
+                        if send_pending {
                             button.opacity(0.55).into_any_element()
                         } else {
                             button
@@ -1564,12 +1564,19 @@ impl CenterArea {
                                                 let command_for_remove = command.clone();
                                                 let prompt_for_remove = prompt.clone();
                                                 let is_riff = command.is_choro_riff();
-                                                let foreground = if is_riff {
+                                                let is_orbit = command.is_orbit();
+                                                let is_product_capability = is_riff || is_orbit;
+                                                let foreground = if is_product_capability {
                                                     crate::ui::design::accent(cx)
                                                 } else {
                                                     crate::ui::design::t2(cx)
                                                 };
-                                                let icon = if is_riff {
+                                                let icon = if is_orbit {
+                                                    Icon::new(IconName::Network)
+                                                    .size(crate::ui::design::icon_md())
+                                                    .text_color(foreground)
+                                                    .into_any_element()
+                                                } else if is_riff {
                                                     crate::ui::style::choro_riff_icon(
                                                         crate::ui::design::icon_md(),
                                                         foreground,
@@ -1596,20 +1603,20 @@ impl CenterArea {
                                                                 .px_1p5()
                                                                 .rounded(crate::ui::design::r_sm())
                                                                 .border_1()
-                                                                .border_color(if is_riff {
+                                                                .border_color(if is_product_capability {
                                                                     crate::ui::design::accent(cx)
                                                                         .opacity(0.34)
                                                                 } else {
                                                                     crate::ui::design::line_2(cx)
                                                                 })
-                                                                .bg(if is_riff {
+                                                                .bg(if is_product_capability {
                                                                     crate::ui::design::accent_soft(cx)
                                                                 } else {
                                                                     crate::ui::design::surface_2(cx)
                                                                 })
                                                                 .cursor_pointer()
                                                                 .hover(|chip| {
-                                                                    chip.bg(if is_riff {
+                                                                    chip.bg(if is_product_capability {
                                                                         crate::ui::design::accent(cx)
                                                                             .opacity(0.2)
                                                                     } else {

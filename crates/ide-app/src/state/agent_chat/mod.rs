@@ -194,6 +194,7 @@ pub enum AgentChatMessage {
 #[serde(rename_all = "snake_case")]
 pub enum AgentChatMessageTagKind {
     Preview,
+    Orbit,
     Riff,
     Skill,
     Command,
@@ -230,6 +231,7 @@ pub enum AgentChatTimelineItem {
     RejoinConflict(RejoinConflictCard),
     Memorized(MemorizedCard),
     MemoryProposal(MemoryProposalCard),
+    OrbitUpdate(OrbitUpdateCard),
     AgentSummary(AgentSummaryCard),
     AgentMessage(AgentMessageCard),
 }
@@ -254,6 +256,40 @@ pub struct AgentMessageCard {
     pub text: String,
     pub kind: String,
     pub created_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrbitUpdateCard {
+    pub invocation_id: Uuid,
+    pub module_id: Uuid,
+    pub module_name: String,
+    pub inserted: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub undone: bool,
+    pub created_at: u64,
+}
+
+impl From<ide_core::local_store::OrbitInvocationUpdate> for OrbitUpdateCard {
+    fn from(update: ide_core::local_store::OrbitInvocationUpdate) -> Self {
+        Self {
+            invocation_id: update.invocation_id,
+            module_id: update.module_id,
+            module_name: update.module_name,
+            inserted: update.inserted,
+            updated: update.updated,
+            deleted: update.deleted,
+            undone: update.undone,
+            created_at: update.created_at,
+        }
+    }
+}
+
+pub(crate) fn upsert_orbit_update_card(
+    timeline: &mut Vec<AgentChatTimelineItem>,
+    card: OrbitUpdateCard,
+) {
+    timeline::upsert_timeline_orbit_update(timeline, card);
 }
 
 /// A memory the agent just saved via `memory_save` — surfaced in the chat so
@@ -471,6 +507,16 @@ enum StoredTimelinePayload {
         accepted_global: Option<bool>,
         #[serde(default)]
         source: String,
+        created_at: u64,
+    },
+    OrbitUpdate {
+        invocation_id: Uuid,
+        module_id: Uuid,
+        module_name: String,
+        inserted: usize,
+        updated: usize,
+        deleted: usize,
+        undone: bool,
         created_at: u64,
     },
     AgentSummary {

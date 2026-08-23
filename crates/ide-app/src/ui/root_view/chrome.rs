@@ -785,7 +785,7 @@ impl RootView {
             .child(item(
                 "rail-services",
                 RailIcon::Component(IconName::Network),
-                "Services",
+                "Orbit",
                 ProjectActivity::Services,
                 cx,
             ))

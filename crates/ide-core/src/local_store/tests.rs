@@ -2761,6 +2761,40 @@ fn export_import_round_trip() {
             vec![sample_diff("src/lib.rs")],
         )
         .unwrap();
+    let orbit_module = source_store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    source_store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(orbit_module.id), true)
+        .unwrap();
+    let orbit_invocation = source_store
+        .create_orbit_invocation(agent.id, project.id, orbit_module.id)
+        .unwrap();
+    source_store
+        .apply_orbit_invocation_changes(
+            orbit_invocation.id,
+            agent.id,
+            project.id,
+            0,
+            vec![OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values: BTreeMap::from([
+                    ("name".into(), serde_json::json!("signup_started")),
+                    (
+                        "what_it_does".into(),
+                        serde_json::json!("Fires when signup starts"),
+                    ),
+                    ("properties".into(), serde_json::json!(["source"])),
+                    ("notes".into(), serde_json::json!("")),
+                ]),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+    source_store
+        .complete_orbit_invocation(orbit_invocation.id, agent.id)
+        .unwrap();
     let archive = source.path().join("export.zip");
     source_store.export_workspace(&archive).unwrap();
 
@@ -2810,6 +2844,40 @@ fn export_import_round_trip() {
             .as_deref(),
         Some("abc123")
     );
+    assert_eq!(
+        target_store
+            .load_orbit_module(orbit_module.id)
+            .unwrap()
+            .unwrap()
+            .name,
+        "Analytics"
+    );
+    assert!(target_store
+        .load_project_orbit_bindings(project.id)
+        .unwrap()
+        .iter()
+        .any(|binding| {
+            binding.module == OrbitModuleId::Custom(orbit_module.id) && binding.enabled
+        }));
+    assert_eq!(
+        target_store
+            .load_orbit_records(project.id, orbit_module.id)
+            .unwrap()
+            .len(),
+        1
+    );
+    let imported_update = target_store
+        .load_orbit_invocation_update(orbit_invocation.id, agent.id)
+        .unwrap()
+        .expect("Orbit update should remain actionable after import");
+    assert_eq!(imported_update.inserted, 1);
+    target_store
+        .undo_orbit_invocation(orbit_invocation.id, agent.id)
+        .unwrap();
+    assert!(target_store
+        .load_orbit_records(project.id, orbit_module.id)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -3268,4 +3336,668 @@ fn current_schema_repairs_missing_penpot_tables() {
         store.active_penpot_connection().unwrap().unwrap().id,
         connection.id
     );
+}
+
+#[test]
+fn orbit_modules_are_global_but_records_are_project_scoped() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project_a = Project::from_path(PathBuf::from("/tmp/choro-orbit-a"));
+    let project_b = Project::from_path(PathBuf::from("/tmp/choro-orbit-b"));
+    let mut config = AppConfig::default();
+    config.projects = vec![project_a.clone(), project_b.clone()];
+    store.save_workspace_config(&config).unwrap();
+
+    for project in [&project_a, &project_b] {
+        let bindings = store.load_project_orbit_bindings(project.id).unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings.iter().all(|binding| binding.enabled));
+    }
+
+    let module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    store
+        .set_project_orbit_module_enabled(project_a.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+    let values = BTreeMap::from([
+        ("name".into(), serde_json::json!("onboarding_started")),
+        (
+            "what_it_does".into(),
+            serde_json::json!("Fires when onboarding begins."),
+        ),
+        (
+            "properties".into(),
+            serde_json::json!(["source — entry point"]),
+        ),
+        ("notes".into(), serde_json::json!("")),
+    ]);
+    store
+        .save_orbit_record(
+            project_a.id,
+            module.id,
+            OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .load_orbit_records(project_a.id, module.id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .load_orbit_records(project_b.id, module.id)
+        .unwrap()
+        .is_empty());
+    let snapshot = store
+        .load_orbit_snapshot(&[project_a.id, project_b.id])
+        .unwrap();
+    assert!(snapshot.modules.iter().any(|loaded| loaded.id == module.id));
+    assert_eq!(snapshot.bindings.len(), 2);
+    assert_eq!(
+        snapshot
+            .records
+            .get(&(project_a.id, module.id))
+            .map(Vec::len),
+        Some(1),
+    );
+    assert!(!snapshot.records.contains_key(&(project_b.id, module.id)));
+    store
+        .set_project_orbit_module_enabled(project_a.id, OrbitModuleId::Custom(module.id), false)
+        .unwrap();
+    assert_eq!(
+        store
+            .load_orbit_records(project_a.id, module.id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn orbit_agent_updates_are_scoped_revisioned_and_undoable() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-agent"));
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+
+    let invocation = store
+        .create_orbit_invocation(agent.id, project.id, module.id)
+        .unwrap();
+    let snapshot = store
+        .read_orbit_invocation(invocation.id, agent.id, project.id)
+        .unwrap();
+    let values = BTreeMap::from([
+        ("name".into(), serde_json::json!("signup_completed")),
+        (
+            "what_it_does".into(),
+            serde_json::json!("Fires after account creation succeeds."),
+        ),
+        (
+            "properties".into(),
+            serde_json::json!(["plan — selected plan"]),
+        ),
+        ("notes".into(), serde_json::json!("")),
+    ]);
+    let result = store
+        .apply_orbit_invocation_changes(
+            invocation.id,
+            agent.id,
+            project.id,
+            snapshot.data_revision,
+            vec![OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values,
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(result.inserted, 1);
+    let update = store
+        .load_orbit_invocation_update(invocation.id, agent.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(update.module_name, "Analytics");
+    assert_eq!((update.inserted, update.updated, update.deleted), (1, 0, 0));
+    assert!(!update.undone);
+    assert_eq!(
+        store
+            .load_orbit_records(project.id, module.id)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let stale = store.apply_orbit_invocation_changes(
+        invocation.id,
+        agent.id,
+        project.id,
+        snapshot.data_revision,
+        vec![OrbitRecordInput {
+            id: None,
+            section: Some("Onboarding".into()),
+            values: BTreeMap::from([
+                ("name".into(), serde_json::json!("stale")),
+                ("what_it_does".into(), serde_json::json!("Stale write")),
+                ("properties".into(), serde_json::json!([])),
+                ("notes".into(), serde_json::json!("")),
+            ]),
+        }],
+        Vec::new(),
+    );
+    assert!(stale
+        .unwrap_err()
+        .to_string()
+        .contains("call orbit_read again"));
+
+    store
+        .undo_orbit_invocation(invocation.id, agent.id)
+        .unwrap();
+    assert!(
+        store
+            .load_orbit_invocation_update(invocation.id, agent.id)
+            .unwrap()
+            .unwrap()
+            .undone
+    );
+    assert!(store
+        .load_orbit_records(project.id, module.id)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn orbit_field_archiving_preserves_existing_record_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-schema"));
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    let mut module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+    store
+        .save_orbit_record(
+            project.id,
+            module.id,
+            OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values: BTreeMap::from([
+                    ("name".into(), serde_json::json!("signup_started")),
+                    ("what_it_does".into(), serde_json::json!("Starts signup")),
+                    ("properties".into(), serde_json::json!([])),
+                    ("notes".into(), serde_json::json!("Legacy note")),
+                ]),
+            },
+        )
+        .unwrap();
+
+    module.fields.retain(|field| field.key != "notes");
+    store.save_orbit_module(&module).unwrap();
+
+    let record = store
+        .load_orbit_records(project.id, module.id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(record.values["notes"], serde_json::json!("Legacy note"));
+    store
+        .save_orbit_record(
+            project.id,
+            module.id,
+            OrbitRecordInput {
+                id: Some(record.id),
+                section: record.section,
+                values: BTreeMap::from([
+                    ("name".into(), serde_json::json!("signup_started")),
+                    ("what_it_does".into(), serde_json::json!("Begins signup")),
+                    ("properties".into(), serde_json::json!([])),
+                ]),
+            },
+        )
+        .unwrap();
+    let edited = store
+        .load_orbit_records(project.id, module.id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(edited.values["notes"], serde_json::json!("Legacy note"));
+}
+
+#[test]
+fn orbit_archived_field_key_is_reactivated_instead_of_duplicated() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-field-restore"));
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    let mut module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    let original_notes_id = module
+        .fields
+        .iter()
+        .find(|field| field.key == "notes")
+        .unwrap()
+        .id;
+
+    module.fields.retain(|field| field.key != "notes");
+    module = store.save_orbit_module(&module).unwrap();
+    module.fields.retain(|field| !field.archived);
+    module.fields.push(OrbitFieldDefinition {
+        id: Uuid::new_v4(),
+        key: "notes".into(),
+        label: "Notes".into(),
+        kind: OrbitFieldKind::LongText,
+        primary: false,
+        sort_order: 3,
+        archived: false,
+    });
+
+    let restored = store.save_orbit_module(&module).unwrap();
+    let notes = restored
+        .fields
+        .iter()
+        .find(|field| field.key == "notes" && !field.archived)
+        .unwrap();
+    assert_eq!(notes.id, original_notes_id);
+}
+
+#[test]
+fn orbit_module_archive_and_revisions_preserve_bindings_and_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-archive"));
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    let mut module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    assert_eq!(module.revision, 1);
+    module.description.push_str(" Updated.");
+    module = store.save_orbit_module(&module).unwrap();
+    assert_eq!(module.revision, 2);
+    store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+    store
+        .save_orbit_record(
+            project.id,
+            module.id,
+            OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values: analytics_values("signup_started", "Starts signup"),
+            },
+        )
+        .unwrap();
+    let data_revision = store
+        .load_project_orbit_bindings(project.id)
+        .unwrap()
+        .into_iter()
+        .find(|binding| binding.module == OrbitModuleId::Custom(module.id))
+        .unwrap()
+        .data_revision;
+    assert_eq!(data_revision, 1);
+
+    store.set_orbit_module_archived(module.id, true).unwrap();
+    let archived = store.load_orbit_module(module.id).unwrap().unwrap();
+    assert!(archived.archived);
+    assert_eq!(archived.revision, 3);
+    assert_eq!(
+        store
+            .load_orbit_records(project.id, module.id)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .load_project_orbit_bindings(project.id)
+        .unwrap()
+        .into_iter()
+        .any(|binding| binding.module == OrbitModuleId::Custom(module.id) && binding.enabled));
+
+    store.set_orbit_module_archived(module.id, false).unwrap();
+    let restored = store.load_orbit_module(module.id).unwrap().unwrap();
+    assert!(!restored.archived);
+    assert_eq!(restored.revision, 4);
+    assert_eq!(
+        store
+            .load_orbit_records(project.id, module.id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn orbit_schema_changes_reject_invalid_types_and_identity_collisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-schema-validation"));
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    let module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+    for name in ["signup_started", "signup_completed"] {
+        store
+            .save_orbit_record(
+                project.id,
+                module.id,
+                OrbitRecordInput {
+                    id: None,
+                    section: Some("Onboarding".into()),
+                    values: analytics_values(name, "Same description"),
+                },
+            )
+            .unwrap();
+    }
+
+    let mut invalid_type = module.clone();
+    invalid_type
+        .fields
+        .iter_mut()
+        .find(|field| field.key == "properties")
+        .unwrap()
+        .kind = OrbitFieldKind::ShortText;
+    assert!(store
+        .save_orbit_module(&invalid_type)
+        .unwrap_err()
+        .to_string()
+        .contains("properties must be text"));
+
+    let mut collision = module.clone();
+    for field in &mut collision.fields {
+        field.primary = field.key == "what_it_does";
+        if field.primary {
+            field.kind = OrbitFieldKind::ShortText;
+        }
+    }
+    assert!(store
+        .save_orbit_module(&collision)
+        .unwrap_err()
+        .to_string()
+        .contains("same identity"));
+    assert_eq!(
+        store
+            .load_orbit_module(module.id)
+            .unwrap()
+            .unwrap()
+            .revision,
+        1
+    );
+}
+
+#[test]
+fn orbit_multi_batch_undo_reverses_touched_records_and_preserves_interleaved_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-reverse-undo"));
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+    let invocation = store
+        .create_orbit_invocation(agent.id, project.id, module.id)
+        .unwrap();
+    let first = store
+        .apply_orbit_invocation_changes(
+            invocation.id,
+            agent.id,
+            project.id,
+            0,
+            vec![OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values: analytics_values("agent_event", "First agent version"),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+    let agent_record = store
+        .load_orbit_records(project.id, module.id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    store
+        .save_orbit_record(
+            project.id,
+            module.id,
+            OrbitRecordInput {
+                id: None,
+                section: Some("Checkout".into()),
+                values: analytics_values("manual_event", "Manual record"),
+            },
+        )
+        .unwrap();
+    let snapshot = store
+        .read_orbit_invocation(invocation.id, agent.id, project.id)
+        .unwrap();
+    assert_eq!(snapshot.data_revision, first.data_revision + 1);
+    store
+        .apply_orbit_invocation_changes(
+            invocation.id,
+            agent.id,
+            project.id,
+            snapshot.data_revision,
+            vec![OrbitRecordInput {
+                id: Some(agent_record.id),
+                section: Some("Onboarding".into()),
+                values: analytics_values("agent_event", "Second agent version"),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+
+    store
+        .undo_orbit_invocation(invocation.id, agent.id)
+        .unwrap();
+    let records = store.load_orbit_records(project.id, module.id).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].values["name"], serde_json::json!("manual_event"));
+}
+
+#[test]
+fn orbit_multi_batch_undo_aborts_atomically_when_a_touched_record_was_interleaved() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-conflict-undo"));
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project.clone()];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let module = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    store
+        .set_project_orbit_module_enabled(project.id, OrbitModuleId::Custom(module.id), true)
+        .unwrap();
+    let invocation = store
+        .create_orbit_invocation(agent.id, project.id, module.id)
+        .unwrap();
+    store
+        .apply_orbit_invocation_changes(
+            invocation.id,
+            agent.id,
+            project.id,
+            0,
+            vec![OrbitRecordInput {
+                id: None,
+                section: Some("Onboarding".into()),
+                values: analytics_values("agent_event", "Agent version"),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+    let touched = store
+        .load_orbit_records(project.id, module.id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    store
+        .save_orbit_record(
+            project.id,
+            module.id,
+            OrbitRecordInput {
+                id: Some(touched.id),
+                section: touched.section.clone(),
+                values: analytics_values("agent_event", "Manual correction"),
+            },
+        )
+        .unwrap();
+    let snapshot = store
+        .read_orbit_invocation(invocation.id, agent.id, project.id)
+        .unwrap();
+    store
+        .apply_orbit_invocation_changes(
+            invocation.id,
+            agent.id,
+            project.id,
+            snapshot.data_revision,
+            vec![OrbitRecordInput {
+                id: None,
+                section: Some("Checkout".into()),
+                values: analytics_values("second_agent_event", "Second batch"),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+
+    assert!(store
+        .undo_orbit_invocation(invocation.id, agent.id)
+        .unwrap_err()
+        .to_string()
+        .contains("cannot be undone safely"));
+    let records = store.load_orbit_records(project.id, module.id).unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records
+        .iter()
+        .any(|record| { record.values["what_it_does"] == serde_json::json!("Manual correction") }));
+    assert!(records
+        .iter()
+        .any(|record| { record.values["name"] == serde_json::json!("second_agent_event") }));
+}
+
+fn analytics_values(name: &str, description: &str) -> BTreeMap<String, serde_json::Value> {
+    BTreeMap::from([
+        ("name".into(), serde_json::json!(name)),
+        ("what_it_does".into(), serde_json::json!(description)),
+        ("properties".into(), serde_json::json!([])),
+        ("notes".into(), serde_json::json!("")),
+    ])
+}
+
+#[test]
+fn migrates_populated_v32_store_to_orbit_v33_without_touching_existing_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-v32"));
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let mut config = AppConfig::default();
+        config.projects = vec![project.clone()];
+        store.save_workspace_config(&config).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                for table in [
+                    "orbit_mutation_batches",
+                    "orbit_invocations",
+                    "orbit_records",
+                    "orbit_project_modules",
+                    "orbit_module_fields",
+                    "orbit_modules",
+                ] {
+                    conn.execute(format!("DROP TABLE {table}"), ()).await?;
+                }
+                conn.execute("DELETE FROM schema_migrations WHERE version = 33", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 32);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(
+        store
+            .load_workspace_config(AppConfig::default())
+            .unwrap()
+            .projects,
+        vec![project]
+    );
+    assert_eq!(store.load_orbit_modules(false).unwrap().len(), 0);
+    store
+        .rt
+        .block_on(async {
+            let conn = store.connect().await?;
+            assert_eq!(schema_version(&conn).await?, 33);
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn current_schema_repairs_missing_orbit_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DROP TABLE orbit_mutation_batches", ())
+                    .await?;
+                conn.execute("DROP TABLE orbit_invocations", ()).await?;
+                conn.execute("DROP TABLE orbit_records", ()).await?;
+                conn.execute("DROP TABLE orbit_project_modules", ()).await?;
+                conn.execute("DROP TABLE orbit_module_fields", ()).await?;
+                conn.execute("DROP TABLE orbit_modules", ()).await?;
+                assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let saved = store
+        .save_orbit_module(&analytics_orbit_template())
+        .unwrap();
+    assert_eq!(saved.name, "Analytics");
 }
