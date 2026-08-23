@@ -202,7 +202,7 @@ impl Render for SettingsView {
                             .when(
                                 section != SettingsSection::AgentSkills
                                     && section != SettingsSection::Process,
-                                |page| page.max_w(px(860.)).gap_5().px_8().py_7(),
+                                |page| page.max_w(px(1200.)).gap_5().px_8().py_7(),
                             )
                             .child(Self::page_header(section, cx))
                             .child(match section {
