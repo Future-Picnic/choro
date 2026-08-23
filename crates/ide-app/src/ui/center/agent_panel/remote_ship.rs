@@ -200,6 +200,9 @@ impl CenterArea {
         let project_id = agent.project_id;
         let generation_agent = self.workspace.read(cx).generation_agent.clone();
 
+        self.agent_summary_requests_pending.remove(&agent_id);
+        self.request_agent_summary_maintenance(agent_id, cx);
+
         self.remote_ship_status.insert(
             agent_id,
             RemoteShipStatus::Shipping {

@@ -6,6 +6,8 @@ use gpui::{ease_out_quint, Animation, AnimationExt};
 use ide_core::local_store::{StoredAgentMessage, StoredAgentSummary};
 
 pub(super) const SUMMARY_REQUEST_MARKER: &str = "[Choro Brain summary checkpoint]";
+pub(super) const BACKGROUND_SUMMARY_REQUEST_MARKER: &str =
+    "<!-- choro:background-summary-maintenance -->";
 const SUMMARY_REQUEST_COOLDOWN_SECS: u64 = 10 * 60;
 const SUMMARY_PREVIEW_LINES: usize = 8;
 
@@ -24,6 +26,10 @@ fn summary_preview(markdown: &str) -> String {
 pub(super) fn summary_request_action_label(text: &str) -> Option<&'static str> {
     text.starts_with(SUMMARY_REQUEST_MARKER)
         .then_some("Brain summary requested")
+}
+
+pub(super) fn is_background_summary_request(text: &str) -> bool {
+    text.starts_with(SUMMARY_REQUEST_MARKER) && text.contains(BACKGROUND_SUMMARY_REQUEST_MARKER)
 }
 
 fn is_silent_summary_completion(
@@ -46,22 +52,40 @@ fn latest_user_turn_is_summary_request(timeline: &[AgentChatTimelineItem]) -> bo
     }) == Some(true)
 }
 
-fn summary_request_prompt(has_summary: bool) -> String {
+fn latest_user_turn_is_background_summary_request(timeline: &[AgentChatTimelineItem]) -> bool {
+    timeline.iter().rev().find_map(|item| match item {
+        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
+            Some(is_background_summary_request(text))
+        }
+        _ => None,
+    }) == Some(true)
+}
+
+fn summary_request_prompt(has_summary: bool, background: bool) -> String {
     let update = if has_summary {
         "Call `summary_read` first. Preserve useful existing facts, then update the living summary using only what happened after its last covered chat sequence. Do not re-tell the whole transcript from scratch."
     } else {
         "Call `summary_read` first to confirm there is no current summary, then create the first living summary."
     };
+    let visibility = if background {
+        format!("{BACKGROUND_SUMMARY_REQUEST_MARKER}\nThis is automatic background maintenance.")
+    } else {
+        "This is a visible Choro maintenance request.".to_string()
+    };
     format!(
-        "{SUMMARY_REQUEST_MARKER}\nThis is a visible Choro maintenance request. {update}\n\nWrite a concise Markdown summary of a few hundred words covering: the task, what was done, key decisions, gotchas, files touched, verification, and the outcome. Also write a separate outcome of at most 220 characters: one or two plain-text sentences saying what changed and the result, without a heading, bullets, or file inventory. Save both as `summary` and `outcome` with the Choro MCP tool `summary_save`. Do not merely reply with the summary; the tool call is what updates Choro Brain."
+        "{SUMMARY_REQUEST_MARKER}\n{visibility} {update}\n\nWrite a concise Markdown summary of a few hundred words covering: the task, what was done, key decisions, gotchas, files touched, verification, and the outcome. Also write a separate outcome of at most 220 characters: one or two plain-text sentences saying what changed and the result, without a heading, bullets, or file inventory. Save both as `summary` and `outcome` with the Choro MCP tool `summary_save`. Do not merely reply with the summary; the tool call is what updates Choro Brain."
     )
 }
 
-fn summary_request_tag() -> AgentChatMessageTag {
+fn summary_request_tag(background: bool) -> AgentChatMessageTag {
     AgentChatMessageTag {
         kind: AgentChatMessageTagKind::Brain,
         label: "Brain summary".to_string(),
-        detail: Some("Visible Choro maintenance request".to_string()),
+        detail: Some(if background {
+            "Automatic background maintenance".to_string()
+        } else {
+            "Visible Choro maintenance request".to_string()
+        }),
     }
 }
 
@@ -216,6 +240,15 @@ impl CenterArea {
     }
 
     pub(super) fn request_agent_summary(&mut self, agent_id: Uuid, cx: &mut Context<Self>) -> bool {
+        self.request_agent_summary_with_visibility(agent_id, false, cx)
+    }
+
+    fn request_agent_summary_with_visibility(
+        &mut self,
+        agent_id: Uuid,
+        background: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let now = unix_now_secs();
         if self
             .agent_summary_requests_pending
@@ -241,9 +274,9 @@ impl CenterArea {
         };
         let sent = self.dispatch_agent_chat_submission_with_agent(
             &agent,
-            summary_request_prompt(has_summary),
+            summary_request_prompt(has_summary, background),
             Some(display_text.to_string()),
-            vec![summary_request_tag()],
+            vec![summary_request_tag(background)],
             mode,
             cx,
         );
@@ -260,7 +293,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> bool {
         self.agent_summary_silent_requests.insert(agent_id);
-        let sent = self.request_agent_summary(agent_id, cx);
+        let sent = self.request_agent_summary_with_visibility(agent_id, true, cx);
         if !sent {
             self.agent_summary_silent_requests.remove(&agent_id);
         }
@@ -330,6 +363,13 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         for summary in summaries {
+            let background_maintenance = self
+                .agent_chats
+                .read(cx)
+                .session(summary.agent_id)
+                .is_some_and(|session| {
+                    latest_user_turn_is_background_summary_request(&session.timeline)
+                });
             let summary_unchanged = self
                 .agent_summaries
                 .get(&summary.agent_id)
@@ -424,7 +464,7 @@ impl CenterArea {
                     cx.notify();
                 }
             });
-            if summary.updated_at > previous_updated_at {
+            if summary.updated_at > previous_updated_at && !background_maintenance {
                 self.maybe_propose_memory_from_summary(
                     summary.agent_id,
                     summary.summary_text.clone(),
@@ -811,7 +851,7 @@ mod tests {
 
     #[test]
     fn summary_request_uses_a_distinct_brain_chip() {
-        let tag = summary_request_tag();
+        let tag = summary_request_tag(false);
 
         assert_eq!(tag.kind, AgentChatMessageTagKind::Brain);
         assert_eq!(tag.label, "Brain summary");
@@ -820,10 +860,30 @@ mod tests {
             Some("Visible Choro maintenance request")
         );
         assert_eq!(
-            summary_request_action_label(&summary_request_prompt(false)),
+            summary_request_action_label(&summary_request_prompt(false, false)),
             Some("Brain summary requested")
         );
         assert_eq!(summary_request_action_label("Remember this"), None);
+    }
+
+    #[test]
+    fn automatic_summary_request_is_durably_marked_as_background() {
+        let automatic = summary_request_prompt(true, true);
+        let manual = summary_request_prompt(true, false);
+
+        assert!(is_background_summary_request(&automatic));
+        assert!(!is_background_summary_request(&manual));
+        assert_eq!(
+            summary_request_tag(true).detail.as_deref(),
+            Some("Automatic background maintenance")
+        );
+        let timeline = vec![AgentChatTimelineItem::Message(AgentChatMessage::User {
+            text: automatic,
+            display_text: None,
+            tags: Vec::new(),
+            created_at: 1,
+        })];
+        assert!(latest_user_turn_is_background_summary_request(&timeline));
     }
 
     #[test]
@@ -859,7 +919,7 @@ mod tests {
         let earlier_turn = vec![user_turn("Finish the feature")];
         let summary_turn = vec![
             user_turn("Finish the feature"),
-            user_turn(&summary_request_prompt(false)),
+            user_turn(&summary_request_prompt(false, true)),
         ];
 
         assert!(!latest_user_turn_is_summary_request(&earlier_turn));

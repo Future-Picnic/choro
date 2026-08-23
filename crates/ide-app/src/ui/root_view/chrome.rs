@@ -803,7 +803,7 @@ impl RootView {
                     rail.child(item(
                         "rail-pocketcomet",
                         RailIcon::Lucide(lucide_icons::Icon::Orbit),
-                        "PocketComet",
+                        "PComet",
                         ProjectActivity::PocketComet,
                         cx,
                     ))

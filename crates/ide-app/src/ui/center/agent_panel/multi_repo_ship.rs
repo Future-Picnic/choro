@@ -69,6 +69,14 @@ impl MultiRepoShipRepository {
 }
 
 impl MultiRepoShipDialog {
+    fn start_summary_maintenance(&mut self, cx: &mut App) {
+        if self.summary_maintenance_started {
+            return;
+        }
+        self.summary_maintenance_started =
+            start_ship_summary_maintenance(&self.center, self.agent_id, cx);
+    }
+
     fn current_action(&self) -> AgentShipAction {
         if self.open_pr {
             AgentShipAction::CommitPushPr
@@ -336,6 +344,7 @@ impl MultiRepoShipDialog {
             cx.notify();
             return;
         }
+        self.start_summary_maintenance(cx);
         let requests = self.run_requests(cx);
         let total = requests.len();
         let agent_id = self.agent_id;

@@ -216,15 +216,25 @@ pub(super) fn agent_chat_rows(
 
         let mut index = 0;
         let mut hidden_review_checklist_turn = false;
+        let mut hidden_background_summary_turn = false;
         while index < session.timeline.len() {
             match &session.timeline[index] {
                 AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. })
+                    if super::agent_chat_brain::is_background_summary_request(text) =>
+                {
+                    hidden_review_checklist_turn = false;
+                    hidden_background_summary_turn = true;
+                    index += 1;
+                }
+                AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. })
                     if text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER) =>
                 {
+                    hidden_background_summary_turn = false;
                     hidden_review_checklist_turn = true;
                     index += 1;
                 }
                 AgentChatTimelineItem::Message(AgentChatMessage::User { .. }) => {
+                    hidden_background_summary_turn = false;
                     hidden_review_checklist_turn = false;
                     rows.push(AgentChatRow::TimelineItem(index));
                     index += 1;
@@ -234,6 +244,15 @@ pub(super) fn agent_chat_rows(
                     index += 1;
                 }
                 _ if hidden_review_checklist_turn => {
+                    index += 1;
+                }
+                AgentChatTimelineItem::Message(AgentChatMessage::Assistant { .. })
+                | AgentChatTimelineItem::Message(AgentChatMessage::Thought { .. })
+                | AgentChatTimelineItem::WorkLog(_)
+                | AgentChatTimelineItem::FileChangeActivity(_)
+                | AgentChatTimelineItem::AgentSummary(_)
+                    if hidden_background_summary_turn =>
+                {
                     index += 1;
                 }
                 AgentChatTimelineItem::PendingUserInput(pending)
@@ -710,6 +729,55 @@ mod tests {
         assert!(matches!(
             agent_chat_rows(&session, false, false, &filter).as_slice(),
             [AgentChatRow::TimelineItem(0), AgentChatRow::TimelineItem(3)]
+        ));
+    }
+
+    #[test]
+    fn background_brain_transcript_is_hidden_while_ship_stays_last() {
+        let session = session_with_timeline(vec![
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: format!(
+                    "{}\n{}\nUpdate the summary.",
+                    super::super::agent_chat_brain::SUMMARY_REQUEST_MARKER,
+                    super::super::agent_chat_brain::BACKGROUND_SUMMARY_REQUEST_MARKER,
+                ),
+                display_text: Some("Update Choro Brain summary".to_string()),
+                tags: Vec::new(),
+                created_at: 1,
+            }),
+            AgentChatTimelineItem::ShipResult(crate::state::agent_chat::ShipResult {
+                id: "feature:abc123".to_string(),
+                action: "Commit + push + PR".to_string(),
+                repository: None,
+                branch: "feature".to_string(),
+                pr_base_branch: Some("dev".to_string()),
+                commit_sha: "abc123".to_string(),
+                pr_url: Some("https://github.com/acme/app/pull/1".to_string()),
+                pr_title: Some("Ship the fix".to_string()),
+                pr_body: None,
+                created_at: 2,
+                task: None,
+                suggested_status: None,
+                applied: None,
+            }),
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                "summary-save",
+                "summary-save",
+                WorkLogEntryKind::Tool,
+                "Saved Brain summary",
+                WorkLogStatus::Completed,
+            )),
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                message_id: Some("summary-response".to_string()),
+                text: "Saved the Brain summary.".to_string(),
+                created_at: 3,
+            }),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        assert!(matches!(
+            agent_chat_rows(&session, false, false, &filter).as_slice(),
+            [AgentChatRow::TimelineItem(1)]
         ));
     }
 }
