@@ -566,6 +566,76 @@ fn truncate_chars(text: &str, limit: usize) -> String {
     out
 }
 
+const PULL_REQUEST_DIFF_CHAR_LIMIT: usize = 120_000;
+
+/// Keep a representative slice of every changed file when a large diff must
+/// be shortened. A simple prefix disproportionately describes whichever files
+/// Git happens to print first and can hide entire subsystems from PR copy.
+fn truncate_diff_across_files(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+
+    let mut starts = vec![0];
+    starts.extend(text.match_indices("\ndiff --").map(|(index, _)| index + 1));
+    starts.sort_unstable();
+    starts.dedup();
+
+    if starts.len() <= 1 {
+        return truncate_chars(text, limit);
+    }
+
+    let sections = starts
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(position, start)| {
+            let end = starts.get(position + 1).copied().unwrap_or(text.len());
+            &text[start..end]
+        })
+        .collect::<Vec<_>>();
+    let lengths = sections
+        .iter()
+        .map(|section| section.chars().count())
+        .collect::<Vec<_>>();
+    let mut allocations = vec![0; sections.len()];
+    let mut pending = (0..sections.len()).collect::<Vec<_>>();
+    let mut remaining = limit;
+
+    while !pending.is_empty() && remaining > 0 {
+        let share = remaining / pending.len();
+        if share == 0 {
+            break;
+        }
+        let completed = pending
+            .iter()
+            .copied()
+            .filter(|index| lengths[*index] <= share)
+            .collect::<Vec<_>>();
+        if completed.is_empty() {
+            for (position, index) in pending.iter().copied().enumerate() {
+                allocations[index] = share + usize::from(position < remaining % pending.len());
+            }
+            break;
+        }
+        for index in &completed {
+            allocations[*index] = lengths[*index];
+            remaining = remaining.saturating_sub(lengths[*index]);
+        }
+        pending.retain(|index| !completed.contains(index));
+    }
+
+    let mut output = String::with_capacity(limit + starts.len() * 32);
+    for (section, allocation) in sections.into_iter().zip(allocations) {
+        output.push_str(&truncate_chars(section, allocation));
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    output.push_str("\n[large diff sampled across every changed file]");
+    output
+}
+
 fn build_commit_prompt(repo: &Path, use_staged: bool) -> anyhow::Result<String> {
     let scope = if use_staged {
         "staged changes only"
@@ -644,6 +714,39 @@ fn format_file_diffs_for_generation(diffs: &[FileDiff]) -> String {
     out
 }
 
+fn format_selected_diff_stat(diffs: &[FileDiff]) -> String {
+    let mut total_additions = 0;
+    let mut total_removals = 0;
+    let file_stats = diffs
+        .iter()
+        .map(|diff| {
+            let additions = diff
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .filter(|line| line.origin == ide_core::git::LineOrigin::Add)
+                .count();
+            let removals = diff
+                .hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .filter(|line| line.origin == ide_core::git::LineOrigin::Remove)
+                .count();
+            total_additions += additions;
+            total_removals += removals;
+            format!("{} | +{} -{}", diff.path.display(), additions, removals)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{} files changed, +{} -{}\n{}",
+        diffs.len(),
+        total_additions,
+        total_removals,
+        file_stats
+    )
+}
+
 fn selected_file_diffs(repo: &Path, files: &[PathBuf]) -> anyhow::Result<Vec<FileDiff>> {
     let selected = files
         .iter()
@@ -680,25 +783,7 @@ fn build_commit_prompt_for_files(repo: &Path, files: &[PathBuf]) -> anyhow::Resu
     }
     let history = git_output(repo, &["log", "-8", "--pretty=format:%s"]).unwrap_or_default();
     let branch = git_output(repo, &["branch", "--show-current"]).unwrap_or_default();
-    let stat = diffs
-        .iter()
-        .map(|diff| {
-            let additions = diff
-                .hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .filter(|line| line.origin == ide_core::git::LineOrigin::Add)
-                .count();
-            let removals = diff
-                .hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .filter(|line| line.origin == ide_core::git::LineOrigin::Remove)
-                .count();
-            format!("{} | +{} -{}", diff.path.display(), additions, removals)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let stat = format_selected_diff_stat(&diffs);
     let diff = truncate_chars(&format_file_diffs_for_generation(&diffs), 40_000);
 
     Ok(format!(
@@ -1095,7 +1180,7 @@ fn build_pull_request_prompt(
     let recent = git_output(repo, &["log", "-8", "--pretty=format:%s"]).unwrap_or_default();
     let template = read_pull_request_template(repo)
         .unwrap_or_else(|| "## Summary\n- \n\n## Testing\n- ".to_string());
-    let diff = truncate_chars(&diff, 50_000);
+    let diff = truncate_diff_across_files(&diff, PULL_REQUEST_DIFF_CHAR_LIMIT);
 
     if commits.trim().is_empty() && diff.trim().is_empty() {
         anyhow::bail!("No branch changes found for pull request text");
@@ -1108,9 +1193,13 @@ Rules:
 - Return only JSON with keys "title" and "body".
 - No markdown fence and no explanation outside the JSON.
 - Title should be concise, 72 characters or less.
-- Body must follow the provided pull request structure.
-- Mention user-visible behavior and important implementation changes.
-- Keep the body useful but not long.
+- Body must follow the provided pull request structure, but may add useful subsections within it.
+- Match the body's depth to the size and complexity of the change. A tiny focused change can be brief. A large or multi-area change needs an executive summary plus concrete details grouped by meaningful subsystem, feature, or workflow.
+- Use the commit list, diff stat, and diff to cover every material theme. Do not reduce a large change to a few generic bullets.
+- Explain what behavior changed, why it matters to users or maintainers, and how the important pieces work together. Prefer a reviewer-oriented narrative over a file-by-file inventory.
+- Call out migrations, persistence or data-model changes, configuration, compatibility concerns, operational impact, and notable risks when the supplied evidence supports them.
+- Do not invent motivation, behavior, risks, tests, issue IDs, or implementation details that are not supported by the supplied material.
+- Keep each section focused and omit filler; detail should earn its place rather than satisfy a fixed length.
 - If testing is unknown, say "Not run".
 
 Branch:
@@ -1156,26 +1245,11 @@ fn build_pull_request_prompt_for_files(
     let recent = git_output(repo, &["log", "-8", "--pretty=format:%s"]).unwrap_or_default();
     let template = read_pull_request_template(repo)
         .unwrap_or_else(|| "## Summary\n- \n\n## Testing\n- ".to_string());
-    let stat = diffs
-        .iter()
-        .map(|diff| {
-            let additions = diff
-                .hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .filter(|line| line.origin == ide_core::git::LineOrigin::Add)
-                .count();
-            let removals = diff
-                .hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .filter(|line| line.origin == ide_core::git::LineOrigin::Remove)
-                .count();
-            format!("{} | +{} -{}", diff.path.display(), additions, removals)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let diff = truncate_chars(&format_file_diffs_for_generation(&diffs), 50_000);
+    let stat = format_selected_diff_stat(&diffs);
+    let diff = truncate_diff_across_files(
+        &format_file_diffs_for_generation(&diffs),
+        PULL_REQUEST_DIFF_CHAR_LIMIT,
+    );
 
     Ok(format!(
         r#"Write a GitHub pull request title and body for these selected working-tree changes.
@@ -1184,9 +1258,13 @@ Rules:
 - Return only JSON with keys "title" and "body".
 - No markdown fence and no explanation outside the JSON.
 - Title should be concise, 72 characters or less.
-- Body must follow the provided pull request structure.
-- Mention user-visible behavior and important implementation changes.
-- Keep the body useful but not long.
+- Body must follow the provided pull request structure, but may add useful subsections within it.
+- Match the body's depth to the size and complexity of the change. A tiny focused change can be brief. A large or multi-area change needs an executive summary plus concrete details grouped by meaningful subsystem, feature, or workflow.
+- Use the proposed commit message, diff stat, and diff to cover every material theme. Do not reduce a large change to a few generic bullets.
+- Explain what behavior changed, why it matters to users or maintainers, and how the important pieces work together. Prefer a reviewer-oriented narrative over a file-by-file inventory.
+- Call out migrations, persistence or data-model changes, configuration, compatibility concerns, operational impact, and notable risks when the supplied evidence supports them.
+- Do not invent motivation, behavior, risks, tests, issue IDs, or implementation details that are not supported by the supplied material.
+- Keep each section focused and omit filler; detail should earn its place rather than satisfy a fixed length.
 - If testing is unknown, say "Not run".
 
 Branch:
@@ -1267,6 +1345,27 @@ pub(crate) fn generate_pull_request_for_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_pr_diffs_keep_a_sample_from_every_changed_file() {
+        let diff = (1..=4)
+            .map(|index| {
+                format!(
+                    "diff --git a/file-{index}.rs b/file-{index}.rs\n{}",
+                    format!("+change-{index}\n").repeat(50)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let sampled = truncate_diff_across_files(&diff, 400);
+
+        for index in 1..=4 {
+            assert!(sampled.contains(&format!("diff --git a/file-{index}.rs")));
+        }
+        assert!(sampled.contains("[large diff sampled across every changed file]"));
+        assert!(sampled.len() < diff.len());
+    }
 
     #[test]
     fn memory_proposal_parser_accepts_none_and_valid_shapes() {
