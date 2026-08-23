@@ -16,6 +16,22 @@ fn conversation_files_for_repository(
         .collect()
 }
 
+fn append_unique_ship_result(
+    timeline: &mut Vec<AgentChatTimelineItem>,
+    result: crate::state::agent_chat::ShipResult,
+) -> bool {
+    if timeline.iter().any(|item| {
+        matches!(
+            item,
+            AgentChatTimelineItem::ShipResult(existing) if existing.id == result.id
+        )
+    }) {
+        return false;
+    }
+    timeline.push(AgentChatTimelineItem::ShipResult(result));
+    true
+}
+
 pub(super) fn exact_agent_ship_paths(
     root: &Path,
     summary: &crate::state::agent_chat::ChangedFilesSummary,
@@ -138,47 +154,36 @@ impl CenterArea {
             .as_ref()
             .map(|repository| format!("{}:{}:{}", repository, outcome.branch, outcome.commit_sha))
             .unwrap_or_else(|| format!("{}:{}", outcome.branch, outcome.commit_sha));
+        let ship_result = crate::state::agent_chat::ShipResult {
+            id: ship_id.clone(),
+            action: outcome.action.clone(),
+            repository: repository.clone(),
+            branch: outcome.branch.clone(),
+            pr_base_branch: outcome.pr_base_branch.clone(),
+            commit_sha: outcome.commit_sha.clone(),
+            pr_url: outcome.pr_url.clone(),
+            pr_title: outcome.pr_title.clone(),
+            pr_body: outcome.pr_body.clone(),
+            created_at: unix_now_secs(),
+            task: task.clone(),
+            suggested_status: suggested_status.clone(),
+            applied: None,
+        };
         let mut timeline_to_persist = None;
         self.agent_chats.update(cx, |chats, cx| {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
                 return;
             };
-            let id = ship_id.clone();
-            if session.timeline.iter().any(|item| {
-                matches!(
-                    item,
-                    AgentChatTimelineItem::ShipResult(result) if result.id == id
-                )
-            }) {
-                return;
+            if append_unique_ship_result(&mut session.timeline, ship_result) {
+                timeline_to_persist = Some(session.timeline.clone());
+                cx.notify();
             }
-            session.timeline.push(AgentChatTimelineItem::ShipResult(
-                crate::state::agent_chat::ShipResult {
-                    id,
-                    action: outcome.action.clone(),
-                    repository: repository.clone(),
-                    branch: outcome.branch.clone(),
-                    pr_base_branch: outcome.pr_base_branch.clone(),
-                    commit_sha: outcome.commit_sha.clone(),
-                    pr_url: outcome.pr_url.clone(),
-                    pr_title: outcome.pr_title.clone(),
-                    pr_body: outcome.pr_body.clone(),
-                    created_at: unix_now_secs(),
-                    task: task.clone(),
-                    suggested_status: suggested_status.clone(),
-                    applied: None,
-                },
-            ));
-            timeline_to_persist = Some(session.timeline.clone());
-            cx.notify();
         });
 
         if let Some(timeline) = timeline_to_persist {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
                 eprintln!("failed to persist agent ship result: {error:#}");
             }
-            self.agent_summary_requests_pending.remove(&agent_id);
-            self.request_agent_summary_maintenance(agent_id, cx);
         }
 
         // Pre-seed the post-ship "update the task" card and warm up its status
@@ -575,6 +580,7 @@ impl CenterArea {
                 error: None,
                 status: None,
                 pending_commit: None,
+                summary_maintenance_started: false,
                 solo_lane: solo_dialog_lane,
             }
         });
@@ -737,6 +743,7 @@ impl CenterArea {
             auto_ship: false,
             busy: false,
             prepared: false,
+            summary_maintenance_started: false,
             error: None,
         });
         window.open_dialog(cx, move |dialog_view, _, _| {
@@ -828,5 +835,32 @@ mod tests {
 
         assert_eq!(selected, "main");
         assert_eq!(options, vec!["main", "dev"]);
+    }
+
+    #[test]
+    fn ship_result_is_appended_once() {
+        let mut timeline = Vec::new();
+        let result = crate::state::agent_chat::ShipResult {
+            id: "feature:abc123".to_string(),
+            action: "Commit + push + PR".to_string(),
+            repository: None,
+            branch: "feature".to_string(),
+            pr_base_branch: Some("dev".to_string()),
+            commit_sha: "abc123".to_string(),
+            pr_url: Some("https://github.com/acme/app/pull/1".to_string()),
+            pr_title: Some("Ship the fix".to_string()),
+            pr_body: None,
+            created_at: 2,
+            task: None,
+            suggested_status: None,
+            applied: None,
+        };
+
+        assert!(append_unique_ship_result(&mut timeline, result.clone()));
+        assert!(matches!(
+            timeline.last(),
+            Some(AgentChatTimelineItem::ShipResult(appended)) if appended.id == result.id
+        ));
+        assert!(!append_unique_ship_result(&mut timeline, result));
     }
 }

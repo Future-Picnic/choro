@@ -163,6 +163,45 @@ pub fn detect_project_services(root: &Path) -> Vec<SubAppServices> {
     result
 }
 
+/// Discover only the project folders that contain environment files.
+///
+/// Unlike [`detect_project_services`], this never reads dependency manifests or
+/// integration marker files. It exists so opening Environment cannot trigger
+/// the Integrations detector as a side effect.
+pub fn detect_project_environment_files(root: &Path) -> Vec<SubAppServices> {
+    let mut sub_dirs = find_sub_app_dirs(root);
+    if !sub_dirs.iter().any(|dir| dir == root) {
+        sub_dirs.insert(0, root.to_path_buf());
+    }
+    sub_dirs.sort();
+    sub_dirs.dedup();
+
+    let mut result = sub_dirs
+        .into_iter()
+        .filter_map(|dir| {
+            let rel_path = dir
+                .strip_prefix(root)
+                .ok()
+                .map(|path| path.to_string_lossy().to_string())
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| ".".to_string());
+            let env_files = list_env_file_names(&dir);
+            (!env_files.is_empty()).then(|| SubAppServices {
+                name: sub_app_name(&dir, &rel_path),
+                rel_path,
+                services: Vec::new(),
+                env_files,
+            })
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| match (a.rel_path == ".", b.rel_path == ".") {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.rel_path.cmp(&b.rel_path),
+    });
+    result
+}
+
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -1094,6 +1133,29 @@ mod tests {
         assert!(app_ids.contains(&"amplitude".to_string()));
         assert!(app_ids.contains(&"appstore".to_string()));
         assert!(app_ids.contains(&"googleplay".to_string()));
+    }
+
+    #[test]
+    fn environment_inventory_does_not_run_integration_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "package.json",
+            r#"{"dependencies":{"stripe":"^14","@amplitude/analytics-browser":"^2"}}"#,
+        );
+        write(root, ".env.local", "API_URL=https://example.test\n");
+
+        let environment = detect_project_environment_files(root);
+
+        assert_eq!(environment.len(), 1);
+        assert_eq!(environment[0].rel_path, ".");
+        assert_eq!(environment[0].env_files, vec![".env.local"]);
+        assert!(environment[0].services.is_empty());
+        assert!(detect_project_services(root)[0]
+            .services
+            .iter()
+            .any(|service| service.id == "stripe"));
     }
 
     fn ids_for(subs: &[SubAppServices], rel: &str) -> Vec<String> {

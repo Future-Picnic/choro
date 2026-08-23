@@ -1721,8 +1721,15 @@ impl CenterArea {
             .map(|file| format!("- {file}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let context = format!(
+            "This Solo's branch couldn't rejoin into `{target}`: the merge hit conflicts and was aborted, so `{target}` is untouched. Resolve it from your side, entirely inside your own working directory: run `git merge {target}`, open each conflicted file, combine both sides' work so nothing either side did is lost, remove every conflict marker, then stage everything and commit the merge. Do not push, and do not switch branches.\nConflicted files:\n{list}"
+        );
         let prompt = format!(
-            "<choro-rejoin-conflict-context>\nThis Solo's branch couldn't rejoin into `{target}`: the merge hit conflicts and was aborted, so `{target}` is untouched. Resolve it from your side, entirely inside your own working directory: run `git merge {target}`, open each conflicted file, combine both sides' work so nothing either side did is lost, remove every conflict marker, then stage everything and commit the merge. Do not push, and do not switch branches.\nConflicted files:\n{list}\n</choro-rejoin-conflict-context>\n\nResolve the rejoin conflicts with {target}."
+            "{}\n\nResolve the rejoin conflicts with {target}.",
+            wrap_choro_context(
+                REJOIN_CONFLICT_CONTEXT_TAG,
+                &escape_choro_context(&context, REJOIN_CONFLICT_CONTEXT_TAG),
+            )
         );
         let mode = self
             .agent_chats

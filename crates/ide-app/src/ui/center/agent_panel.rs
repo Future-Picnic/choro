@@ -27,6 +27,20 @@ enum AgentShipAction {
     CommitPushPr,
 }
 
+fn start_ship_summary_maintenance(
+    center: &gpui::WeakEntity<CenterArea>,
+    agent_id: Uuid,
+    cx: &mut App,
+) -> bool {
+    let Some(center) = center.upgrade() else {
+        return false;
+    };
+    center.update(cx, |center, cx| {
+        center.agent_summary_requests_pending.remove(&agent_id);
+        center.request_agent_summary_maintenance(agent_id, cx)
+    })
+}
+
 struct MultiRepoShipRepository {
     label: String,
     git: Entity<GitState>,
@@ -65,6 +79,7 @@ struct MultiRepoShipDialog {
     auto_ship: bool,
     busy: bool,
     prepared: bool,
+    summary_maintenance_started: bool,
     error: Option<String>,
 }
 
@@ -104,6 +119,7 @@ struct AgentShipDialog {
     error: Option<String>,
     status: Option<String>,
     pending_commit: Option<AgentShipPendingCommit>,
+    summary_maintenance_started: bool,
     /// `(project_root, lane_path)` when shipping a Solo from its lane. PR
     /// tracking then keys on the project root (the lane folder is disposable),
     /// and a successful PR packs the lane up.
@@ -111,6 +127,14 @@ struct AgentShipDialog {
 }
 
 impl AgentShipDialog {
+    fn start_summary_maintenance(&mut self, cx: &mut App) {
+        if self.summary_maintenance_started {
+            return;
+        }
+        self.summary_maintenance_started =
+            start_ship_summary_maintenance(&self.center, self.agent_id, cx);
+    }
+
     fn scope_files(&self) -> &[PathBuf] {
         match self.scope {
             AgentShipScope::Conversation => &self.conversation_files,
@@ -402,6 +426,8 @@ impl AgentShipDialog {
             return;
         }
 
+        self.start_summary_maintenance(cx);
+
         if self.onboarding_demo {
             self.run_onboarding_demo_ship(files, window, cx);
             return;
@@ -685,6 +711,8 @@ impl AgentShipDialog {
             cx.notify();
             return;
         }
+
+        self.start_summary_maintenance(cx);
 
         let repo = self.repo_path.clone();
         // PR status polling must outlive the lane: a Solo's disposable folder

@@ -138,6 +138,41 @@ impl LocalStore {
             &snapshot.penpot_conversations,
             &mut checksums,
         )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "orbit_modules.jsonl",
+            &snapshot.orbit_modules,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "orbit_bindings.jsonl",
+            &snapshot.orbit_bindings,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "orbit_records.jsonl",
+            &snapshot.orbit_records,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "orbit_invocations.jsonl",
+            &snapshot.orbit_invocations,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "orbit_mutation_batches.jsonl",
+            &snapshot.orbit_mutation_batches,
+            &mut checksums,
+        )?;
 
         for attachment in &snapshot.attachments {
             let absolute = self.root.join(&attachment.relative_path);
@@ -204,6 +239,11 @@ impl LocalStore {
                 penpot_bindings: snapshot.penpot_bindings.len(),
                 penpot_designs: snapshot.penpot_designs.len(),
                 penpot_conversations: snapshot.penpot_conversations.len(),
+                orbit_modules: snapshot.orbit_modules.len(),
+                orbit_bindings: snapshot.orbit_bindings.len(),
+                orbit_records: snapshot.orbit_records.len(),
+                orbit_invocations: snapshot.orbit_invocations.len(),
+                orbit_mutation_batches: snapshot.orbit_mutation_batches.len(),
             },
             checksums,
         };
@@ -253,6 +293,16 @@ impl LocalStore {
             read_zip_jsonl_optional(&mut zip, "penpot_designs.jsonl")?;
         let penpot_conversations: Vec<StoredPenpotDesignConversation> =
             read_zip_jsonl_optional(&mut zip, "penpot_conversations.jsonl")?;
+        let orbit_modules: Vec<OrbitModuleDefinition> =
+            read_zip_jsonl_optional(&mut zip, "orbit_modules.jsonl")?;
+        let orbit_bindings: Vec<OrbitProjectBinding> =
+            read_zip_jsonl_optional(&mut zip, "orbit_bindings.jsonl")?;
+        let orbit_records: Vec<OrbitRecord> =
+            read_zip_jsonl_optional(&mut zip, "orbit_records.jsonl")?;
+        let orbit_invocations: Vec<OrbitInvocation> =
+            read_zip_jsonl_optional(&mut zip, "orbit_invocations.jsonl")?;
+        let orbit_mutation_batches: Vec<OrbitMutationBatch> =
+            read_zip_jsonl_optional(&mut zip, "orbit_mutation_batches.jsonl")?;
 
         let data_root = self.app_data_dir();
         if data_root.exists() {
@@ -282,6 +332,40 @@ impl LocalStore {
                     clear_imported_tables(conn).await?;
                     save_project_sections_async(conn, &workspace_for_db.project_sections).await?;
                     save_projects_async(conn, &workspace_for_db.projects).await?;
+                    for module in &orbit_modules {
+                        orbit::save_orbit_module_async(conn, module).await?;
+                        conn.execute(
+                            "UPDATE orbit_modules
+                             SET revision = ?2, archived = ?3, created_at = ?4, updated_at = ?5
+                             WHERE id = ?1",
+                            params![
+                                module.id.to_string(),
+                                u64_to_i64(module.revision.max(1))?,
+                                bool_to_i64(module.archived),
+                                u64_to_i64(module.created_at)?,
+                                u64_to_i64(module.updated_at)?,
+                            ],
+                        )
+                        .await?;
+                    }
+                    for binding in &orbit_bindings {
+                        conn.execute(
+                            "INSERT INTO orbit_project_modules
+                             (project_id, module_key, enabled, sort_order, data_revision,
+                              created_at, updated_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                            params![
+                                binding.project_id.0.to_string(),
+                                binding.module.storage_key(),
+                                bool_to_i64(binding.enabled),
+                                binding.sort_order,
+                                u64_to_i64(binding.data_revision)?,
+                                u64_to_i64(binding.created_at)?,
+                                u64_to_i64(binding.updated_at)?,
+                            ],
+                        )
+                        .await?;
+                    }
                     for connection in &penpot_connections {
                         insert_penpot_connection_async(conn, connection, false).await?;
                     }
@@ -301,6 +385,73 @@ impl LocalStore {
                         insert_personal_task_async(conn, task).await?;
                     }
                     save_agents_async(conn, &agents).await?;
+                    for record in &orbit_records {
+                        conn.execute(
+                            "INSERT INTO orbit_records
+                             (id, project_id, module_id, section_value, values_json, record_key,
+                              source_agent_id, source_batch_id, created_at, updated_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                            params![
+                                record.id.to_string(),
+                                record.project_id.0.to_string(),
+                                record.module_id.to_string(),
+                                record.section.as_deref(),
+                                serde_json::to_string(&record.values)?,
+                                record.record_key.as_str(),
+                                record.source_agent_id.map(|id| id.to_string()),
+                                record.source_batch_id.map(|id| id.to_string()),
+                                u64_to_i64(record.created_at)?,
+                                u64_to_i64(record.updated_at)?,
+                            ],
+                        )
+                        .await?;
+                    }
+                    for invocation in &orbit_invocations {
+                        conn.execute(
+                            "INSERT INTO orbit_invocations
+                             (id, agent_id, project_id, module_id, module_revision, data_revision,
+                              expires_at, completed_at, created_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                            params![
+                                invocation.id.to_string(),
+                                invocation.agent_id.to_string(),
+                                invocation.project_id.0.to_string(),
+                                invocation.module_id.to_string(),
+                                u64_to_i64(invocation.module_revision)?,
+                                u64_to_i64(invocation.data_revision)?,
+                                u64_to_i64(invocation.expires_at)?,
+                                invocation.completed_at.map(u64_to_i64).transpose()?,
+                                u64_to_i64(invocation.created_at)?,
+                            ],
+                        )
+                        .await?;
+                    }
+                    for batch in &orbit_mutation_batches {
+                        conn.execute(
+                            "INSERT INTO orbit_mutation_batches
+                             (id, invocation_id, agent_id, project_id, module_id,
+                              revision_before, revision_after, before_json, after_json,
+                              inserted_count, updated_count, deleted_count, created_at, undone_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                            params![
+                                batch.id.to_string(),
+                                batch.invocation_id.to_string(),
+                                batch.agent_id.to_string(),
+                                batch.project_id.0.to_string(),
+                                batch.module_id.to_string(),
+                                u64_to_i64(batch.revision_before)?,
+                                u64_to_i64(batch.revision_after)?,
+                                serde_json::to_string(&batch.before)?,
+                                serde_json::to_string(&batch.after)?,
+                                i64::try_from(batch.inserted)?,
+                                i64::try_from(batch.updated)?,
+                                i64::try_from(batch.deleted)?,
+                                u64_to_i64(batch.created_at)?,
+                                batch.undone_at.map(u64_to_i64).transpose()?,
+                            ],
+                        )
+                        .await?;
+                    }
                     for message in &messages {
                         insert_chat_message_async(conn, message).await?;
                     }
@@ -460,6 +611,19 @@ impl LocalStore {
                     .expanded_projects
                     .retain(|id| workspace.projects.iter().any(|project| project.id == *id));
             }
+            let orbit_modules = orbit::load_orbit_modules_async(&conn, true).await?;
+            let project_ids = workspace
+                .projects
+                .iter()
+                .map(|project| project.id)
+                .collect::<Vec<_>>();
+            let mut bindings_by_project =
+                orbit::load_orbit_bindings_for_projects_async(&conn, &project_ids).await?;
+            let orbit_bindings = project_ids
+                .into_iter()
+                .flat_map(|project_id| bindings_by_project.remove(&project_id).unwrap_or_default())
+                .collect();
+            let orbit_records = orbit::load_all_orbit_records_async(&conn).await?;
             Ok(ExportSnapshot {
                 workspace,
                 agents: load_agents_async(&conn).await?,
@@ -477,6 +641,11 @@ impl LocalStore {
                 penpot_bindings: load_all_project_penpot_bindings_async(&conn).await?,
                 penpot_designs: load_penpot_designs_async(&conn, None).await?,
                 penpot_conversations: load_all_penpot_conversations_async(&conn).await?,
+                orbit_modules,
+                orbit_bindings,
+                orbit_records,
+                orbit_invocations: orbit::load_all_orbit_invocations_async(&conn).await?,
+                orbit_mutation_batches: orbit::load_all_orbit_mutation_batches_async(&conn).await?,
             })
         })
     }
@@ -527,4 +696,9 @@ pub(super) struct ExportSnapshot {
     penpot_bindings: Vec<StoredProjectPenpotBinding>,
     penpot_designs: Vec<StoredPenpotDesign>,
     penpot_conversations: Vec<StoredPenpotDesignConversation>,
+    orbit_modules: Vec<OrbitModuleDefinition>,
+    orbit_bindings: Vec<OrbitProjectBinding>,
+    orbit_records: Vec<OrbitRecord>,
+    orbit_invocations: Vec<OrbitInvocation>,
+    orbit_mutation_batches: Vec<OrbitMutationBatch>,
 }

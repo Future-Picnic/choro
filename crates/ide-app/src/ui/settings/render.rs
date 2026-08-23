@@ -104,6 +104,14 @@ impl Render for SettingsView {
                             ))
                         },
                     )
+                    .when(SettingsSection::Orbit.matches(&settings_query), |nav| {
+                        nav.child(Self::section_button(
+                            "settings-orbit-section",
+                            SettingsSection::Orbit,
+                            section,
+                            cx,
+                        ))
+                    })
                     .when(brain_matches, |nav| {
                         nav.child(
                             v_flex()
@@ -194,7 +202,7 @@ impl Render for SettingsView {
                             .when(
                                 section != SettingsSection::AgentSkills
                                     && section != SettingsSection::Process,
-                                |page| page.max_w(px(860.)).gap_5().px_8().py_7(),
+                                |page| page.max_w(px(1200.)).gap_5().px_8().py_7(),
                             )
                             .child(Self::page_header(section, cx))
                             .child(match section {
@@ -211,6 +219,7 @@ impl Render for SettingsView {
                                 SettingsSection::Remote => self.render_remote_page(cx),
                                 SettingsSection::Data => self.render_data_page(cx),
                                 SettingsSection::AgentSkills => self.render_skills_page(cx),
+                                SettingsSection::Orbit => self.render_orbit_page(window, cx),
                                 SettingsSection::Process => self.render_process_page(cx),
                                 SettingsSection::Shortcuts => self.render_shortcuts(cx),
                             }),

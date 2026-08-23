@@ -88,6 +88,7 @@ impl RootView {
                 self.workspace.clone(),
                 self.penpot.clone(),
                 self.voice.clone(),
+                self.orbit.clone(),
                 self.remote_auth.clone(),
                 self.remote_relay_identity.clone(),
                 self.remote_relay_control.clone(),
@@ -101,13 +102,28 @@ impl RootView {
     /// Open Settings directly on the Remote access section from the status chip
     /// beside the Run control.
     pub(super) fn open_remote_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let view = SettingsView::new_remote(
+        self.open_settings_section(SettingsSection::Remote, window, cx);
+    }
+
+    pub(super) fn open_orbit_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings_section(SettingsSection::Orbit, window, cx);
+    }
+
+    fn open_settings_section(
+        &mut self,
+        section: SettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = SettingsView::new_in_section(
             self.workspace.clone(),
             self.penpot.clone(),
             self.voice.clone(),
+            self.orbit.clone(),
             self.remote_auth.clone(),
             self.remote_relay_identity.clone(),
             self.remote_relay_control.clone(),
+            section,
             window,
             cx,
         );

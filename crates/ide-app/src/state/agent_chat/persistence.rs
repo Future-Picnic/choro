@@ -385,6 +385,16 @@ impl StoredTimelinePayload {
                     created_at: card.created_at,
                 })
             }
+            AgentChatTimelineItem::OrbitUpdate(card) => Some(Self::OrbitUpdate {
+                invocation_id: card.invocation_id,
+                module_id: card.module_id,
+                module_name: card.module_name.clone(),
+                inserted: card.inserted,
+                updated: card.updated,
+                deleted: card.deleted,
+                undone: card.undone,
+                created_at: card.created_at,
+            }),
             AgentChatTimelineItem::AgentSummary(card) => Some(Self::AgentSummary {
                 summary_text: card.summary_text.clone(),
                 last_summarized_sequence: card.last_summarized_sequence,
@@ -688,6 +698,25 @@ impl StoredTimelinePayload {
                     created_at,
                 }))
             }
+            Self::OrbitUpdate {
+                invocation_id,
+                module_id,
+                module_name,
+                inserted,
+                updated,
+                deleted,
+                undone,
+                created_at,
+            } => Some(AgentChatTimelineItem::OrbitUpdate(OrbitUpdateCard {
+                invocation_id,
+                module_id,
+                module_name,
+                inserted,
+                updated,
+                deleted,
+                undone,
+                created_at,
+            })),
             Self::AgentSummary {
                 summary_text,
                 last_summarized_sequence,
@@ -739,6 +768,7 @@ impl StoredTimelinePayload {
             Self::RejoinConflict { .. } => "rejoin_conflict",
             Self::Memorized { .. } => "memorized",
             Self::MemoryProposal { .. } => "memory_proposal",
+            Self::OrbitUpdate { .. } => "orbit_update",
             Self::AgentSummary { .. } => "agent_summary",
             Self::AgentMessage { .. } => "agent_message",
         }
@@ -793,6 +823,9 @@ impl StoredTimelinePayload {
             Self::RejoinConflict { id, .. } => Some(format!("rejoin_conflict:{id}")),
             Self::Memorized { memory_id, .. } => Some(format!("memorized:{memory_id}")),
             Self::MemoryProposal { id, .. } => Some(format!("memory_proposal:{id}")),
+            Self::OrbitUpdate { invocation_id, .. } => {
+                Some(format!("orbit_update:{invocation_id}"))
+            }
             Self::AgentSummary { .. } => Some("agent_summary:living".to_string()),
             Self::AgentMessage { id, .. } => Some(format!("agent_message:{id}")),
         }
@@ -810,6 +843,7 @@ impl StoredTimelinePayload {
             Self::RejoinConflict { created_at, .. } => *created_at,
             Self::Memorized { created_at, .. } => *created_at,
             Self::MemoryProposal { created_at, .. } => *created_at,
+            Self::OrbitUpdate { created_at, .. } => *created_at,
             Self::AgentSummary { updated_at, .. } => *updated_at,
             Self::AgentMessage { created_at, .. } => *created_at,
             _ => unix_now(),
@@ -997,6 +1031,38 @@ mod tests {
             Some(format!("memorized:{memory_id}").as_str())
         );
         assert_eq!(created_at, 42);
+    }
+
+    #[test]
+    fn orbit_update_round_trips_with_invocation_identity() {
+        let invocation_id = Uuid::new_v4();
+        let item = AgentChatTimelineItem::OrbitUpdate(OrbitUpdateCard {
+            invocation_id,
+            module_id: Uuid::new_v4(),
+            module_name: "Analytics".to_string(),
+            inserted: 2,
+            updated: 1,
+            deleted: 0,
+            undone: false,
+            created_at: 42,
+        });
+        let (kind, event_key, payload, created_at) =
+            stored_timeline_event_parts(&item).expect("Orbit update event");
+        assert_eq!(kind, "orbit_update");
+        assert_eq!(
+            event_key.as_deref(),
+            Some(format!("orbit_update:{invocation_id}").as_str())
+        );
+        assert_eq!(created_at, 42);
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::OrbitUpdate(restored) = restored else {
+            panic!("expected Orbit update");
+        };
+        assert_eq!(restored.inserted, 2);
+        assert_eq!(restored.module_name, "Analytics");
     }
 
     #[test]

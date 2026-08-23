@@ -814,6 +814,7 @@ impl CenterArea {
                 AgentChatTimelineItem::RejoinConflict(_) => {}
                 AgentChatTimelineItem::Memorized(_) => {}
                 AgentChatTimelineItem::MemoryProposal(_) => {}
+                AgentChatTimelineItem::OrbitUpdate(_) => {}
                 AgentChatTimelineItem::AgentSummary(_) => {}
                 AgentChatTimelineItem::AgentMessage(_) => {}
             }

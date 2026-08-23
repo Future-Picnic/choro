@@ -217,6 +217,24 @@ pub(super) fn upsert_timeline_review_checklist(
     }
 }
 
+pub(super) fn upsert_timeline_orbit_update(
+    timeline: &mut Vec<AgentChatTimelineItem>,
+    card: OrbitUpdateCard,
+) {
+    if let Some(AgentChatTimelineItem::OrbitUpdate(existing)) =
+        timeline.iter_mut().rev().find(|item| match item {
+            AgentChatTimelineItem::OrbitUpdate(existing) => {
+                existing.invocation_id == card.invocation_id
+            }
+            _ => false,
+        })
+    {
+        *existing = card;
+    } else {
+        timeline.push(AgentChatTimelineItem::OrbitUpdate(card));
+    }
+}
+
 pub(super) fn append_timeline_changed_files(
     timeline: &mut Vec<AgentChatTimelineItem>,
     summary: ChangedFilesSummary,
@@ -287,6 +305,43 @@ mod file_activity_tests {
         };
         assert_eq!(activity.file.additions, 23);
         assert_eq!(activity.file.deletions, 34);
+    }
+
+    #[test]
+    fn orbit_completion_is_idempotent_per_invocation() {
+        let invocation_id = Uuid::new_v4();
+        let module_id = Uuid::new_v4();
+        let mut timeline = Vec::new();
+        let card = OrbitUpdateCard {
+            invocation_id,
+            module_id,
+            module_name: "Analytics".into(),
+            inserted: 1,
+            updated: 0,
+            deleted: 0,
+            undone: false,
+            created_at: 10,
+        };
+        upsert_timeline_orbit_update(&mut timeline, card);
+        upsert_timeline_orbit_update(
+            &mut timeline,
+            OrbitUpdateCard {
+                invocation_id,
+                module_id,
+                module_name: "Analytics".into(),
+                inserted: 1,
+                updated: 2,
+                deleted: 0,
+                undone: false,
+                created_at: 10,
+            },
+        );
+
+        assert_eq!(timeline.len(), 1);
+        let AgentChatTimelineItem::OrbitUpdate(card) = &timeline[0] else {
+            panic!("Orbit completion should remain one timeline card");
+        };
+        assert_eq!(card.updated, 2);
     }
 }
 

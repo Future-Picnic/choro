@@ -947,7 +947,8 @@ impl CenterArea {
         if composer.slash_dismissed_query.as_deref() == Some(query.query.as_str()) {
             return None;
         }
-        let commands = agent_chat_slash_capabilities(composer.provider);
+        let commands =
+            self.cached_agent_chat_slash_capabilities(composer.provider, composer.project, cx);
         let matches = agent_chat_slash_matches(&commands, &query.query);
         let selected = composer
             .slash_selection
@@ -994,6 +995,7 @@ impl CenterArea {
                 let query = view.query.clone();
                 let is_active = index == selected;
                 let is_riff = command.is_choro_riff();
+                let is_orbit = command.is_orbit();
                 let is_preview = command.is_choro_preview();
                 let detail = command
                     .description
@@ -1001,7 +1003,9 @@ impl CenterArea {
                     .filter(|description| !description.trim().is_empty())
                     .cloned()
                     .unwrap_or_else(|| {
-                        if is_riff {
+                        if is_orbit {
+                            "Added to this project".to_string()
+                        } else if is_riff {
                             "Available in every project".to_string()
                         } else {
                             command.invocation.trim().to_string()
@@ -1016,6 +1020,11 @@ impl CenterArea {
                         crate::ui::design::icon_md(),
                     )
                     .into_any_element()
+                } else if is_orbit {
+                    Icon::new(IconName::Network)
+                        .size(crate::ui::design::icon_md())
+                        .text_color(crate::ui::design::accent(cx))
+                        .into_any_element()
                 } else if is_riff {
                     crate::ui::style::choro_riff_icon(
                         crate::ui::design::icon_md(),

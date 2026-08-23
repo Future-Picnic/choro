@@ -23,16 +23,17 @@ use ide_core::git::BranchInfo;
 
 use crate::actions::{
     CloseTab, NavigateBack, NavigateForward, NewAgentChat, NewTerminal, NextOpenItem, OpenCommands,
-    OpenContentSearch, OpenFolder, OpenProjectSearch, OpenSettings, PreviousOpenItem, QuickAddTask,
-    QuitApplication, SaveFile, StopCurrentAgent, ToggleAgentPlanMode, ToggleFocusMode,
-    ToggleHandsFreeDictation, ToggleLeftPanel, TogglePreview, ToggleRightPanel, ToggleTerminalArea,
-    ToggleVoiceDictation, ToggleVoiceDirector, ViewAgents, ViewCode, ViewDb, ViewDesign,
-    ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit, ViewTasks, ViewTerminal,
+    OpenContentSearch, OpenFolder, OpenOrbitSettings, OpenProjectSearch, OpenSettings,
+    PreviousOpenItem, QuickAddTask, QuitApplication, SaveFile, StopCurrentAgent,
+    ToggleAgentPlanMode, ToggleFocusMode, ToggleHandsFreeDictation, ToggleLeftPanel, TogglePreview,
+    ToggleRightPanel, ToggleTerminalArea, ToggleVoiceDictation, ToggleVoiceDirector, ViewAgents,
+    ViewCode, ViewDb, ViewDesign, ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit,
+    ViewTasks, ViewTerminal,
 };
 use crate::remote::dto::RemoteEvent;
 use crate::state::{
     AgentActivityCache, AgentCapabilityCacheFile, AgentChatState, AgentRecords, DesignsState,
-    DocAssistantState, DocsState, GitStates, PenpotState, ServicesState, TasksState,
+    DocAssistantState, DocsState, GitStates, OrbitState, PenpotState, ServicesState, TasksState,
     TerminalManager, Workspace,
 };
 use crate::ui::agents_panel::AgentsPanel;
@@ -52,7 +53,7 @@ use crate::ui::project_list::ProjectList;
 use crate::ui::project_search::ProjectSearch;
 use crate::ui::project_visuals::project_icon_element;
 use crate::ui::right_panel::RightPanel;
-use crate::ui::settings::SettingsView;
+use crate::ui::settings::{SettingsSection, SettingsView};
 use crate::ui::style;
 use crate::voice::{VoiceEvent, VoicePhase, VoiceState};
 
@@ -179,6 +180,7 @@ pub struct RootView {
     terminals: Entity<TerminalManager>,
     tasks: Entity<TasksState>,
     docs: Entity<DocsState>,
+    orbit: Entity<OrbitState>,
     penpot: Entity<PenpotState>,
     git_states: Entity<GitStates>,
     agents: Entity<AgentRecords>,
@@ -276,6 +278,7 @@ impl RootView {
         let designs = DesignsState::view(workspace.clone(), cx);
         let tasks = TasksState::view(workspace.clone(), cx);
         let services = ServicesState::view(workspace.clone(), cx);
+        let orbit = OrbitState::view(workspace.clone(), cx);
         let penpot = PenpotState::view(cx);
         penpot.update(cx, |penpot, cx| penpot.ensure_auto_provisioned(cx));
         let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
@@ -289,6 +292,7 @@ impl RootView {
             designs.clone(),
             tasks.clone(),
             services.clone(),
+            orbit.clone(),
             doc_assistants,
             penpot.clone(),
             voice.clone(),
@@ -375,12 +379,8 @@ impl RootView {
             center.downgrade(),
             cx,
         );
-        let services_panel = crate::ui::services_panel::ServicesPanel::view(
-            workspace.clone(),
-            services,
-            center.downgrade(),
-            cx,
-        );
+        let services_panel =
+            crate::ui::services_panel::ServicesPanel::view(workspace.clone(), orbit.clone(), cx);
         let penpot_panel = crate::ui::penpot_panel::PenpotPanel::view(
             workspace.clone(),
             penpot.clone(),
@@ -512,6 +512,7 @@ impl RootView {
                 terminals,
                 tasks,
                 docs,
+                orbit,
                 penpot,
                 git_states,
                 agents,
@@ -1351,6 +1352,9 @@ impl Render for RootView {
                     }))
                     .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                         this.toggle_settings(window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenOrbitSettings, window, cx| {
+                        this.open_orbit_settings(window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &ViewCode, _, cx| {
                         this.center.update(cx, |center, cx| center.show_code(cx));

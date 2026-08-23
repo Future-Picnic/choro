@@ -11,6 +11,7 @@ impl CenterArea {
         designs: Entity<DesignsState>,
         tasks: Entity<TasksState>,
         services: Entity<ServicesState>,
+        orbit: Entity<OrbitState>,
         doc_assistants: Entity<DocAssistantState>,
         penpot: Entity<PenpotState>,
         voice: Entity<VoiceState>,
@@ -21,6 +22,7 @@ impl CenterArea {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search branches"));
         let composer_model_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search models or providers"));
+        let orbit_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search records"));
         let penpot_config = penpot.read(cx).config().clone();
         let penpot_instance_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -131,6 +133,7 @@ impl CenterArea {
                         agent_id,
                         source_turn_id,
                     } => {
+                        this.complete_orbit_invocation_for_agent(*agent_id, cx);
                         let review_started = this.maybe_request_review_checklist(
                             *agent_id,
                             source_turn_id.clone(),
@@ -139,6 +142,10 @@ impl CenterArea {
                         this.schedule_pocketcomet_handoff(*agent_id, review_started, cx);
                     }
                     AgentChatEvent::WorkFinished { agent_id } => {
+                        // Some remote runtimes settle work without emitting a
+                        // local TurnFinished event. Completion is idempotent:
+                        // the first terminal event removes the active grant.
+                        this.complete_orbit_invocation_for_agent(*agent_id, cx);
                         if let Err(error) = this.workspace.update(cx, |workspace, cx| {
                             workspace.refresh_project_presets_from_store(cx)
                         }) {
@@ -167,6 +174,35 @@ impl CenterArea {
             cx.observe(&designs, |_, _, cx| cx.notify()).detach();
             cx.observe(&tasks, |_, _, cx| cx.notify()).detach();
             cx.observe(&services, |_, _, cx| cx.notify()).detach();
+            cx.observe(&orbit, |_, _, cx| cx.notify()).detach();
+            cx.subscribe(&orbit, |this: &mut Self, _, event: &OrbitEvent, cx| {
+                if let OrbitEvent::RecordSaved {
+                    project,
+                    module_id,
+                    request_id,
+                    ..
+                } = event
+                {
+                    if this.orbit_record_editor.as_ref().is_some_and(|editor| {
+                        editor.project == *project
+                            && editor.module_id == *module_id
+                            && editor.request_id == *request_id
+                    }) {
+                        let window_handle = this
+                            .orbit_record_editor
+                            .as_ref()
+                            .map(|editor| editor.window_handle);
+                        this.orbit_record_editor = None;
+                        if let Some(window_handle) = window_handle {
+                            window_handle
+                                .update(cx, |_, window, cx| window.close_dialog(cx))
+                                .ok();
+                        }
+                        cx.notify();
+                    }
+                }
+            })
+            .detach();
             cx.observe(&doc_assistants, |_, _, cx| cx.notify()).detach();
             cx.subscribe(&composer_branch_query, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -175,6 +211,12 @@ impl CenterArea {
             })
             .detach();
             cx.subscribe(&composer_model_query, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            cx.subscribe(&orbit_search, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
                 }
@@ -614,6 +656,13 @@ impl CenterArea {
                 designs,
                 tasks,
                 services,
+                orbit,
+                orbit_search,
+                orbit_table_scroll: ScrollHandle::new(),
+                orbit_record_editor: None,
+                orbit_collapsed_sections: HashSet::new(),
+                orbit_active_invocations: HashMap::new(),
+                orbit_pending_invocations: HashMap::new(),
                 doc_assistants,
                 penpot,
                 voice,
@@ -644,6 +693,7 @@ impl CenterArea {
                 agent_chat_attachment_pastes_pending: HashMap::new(),
                 agent_chat_pasted_text_blocks: HashMap::new(),
                 agent_chat_selected_commands: HashMap::new(),
+                agent_chat_capability_cache: RefCell::new(None),
                 agent_chat_preview_armed: HashSet::new(),
                 agent_chat_preview_suggestion_dismissed: HashMap::new(),
                 project_preview_review_ids_seen: HashSet::new(),
@@ -741,6 +791,7 @@ impl CenterArea {
                 memory_card_ids_seen: HashSet::new(),
                 brain_poll_bootstrapped: false,
                 memory_undos_pending: HashSet::new(),
+                orbit_undos_pending: HashSet::new(),
                 agent_summaries: HashMap::new(),
                 agent_summary_requests_pending: HashMap::new(),
                 agent_summary_silent_requests: HashSet::new(),

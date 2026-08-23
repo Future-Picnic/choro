@@ -1349,6 +1349,136 @@ impl CenterArea {
         {
             return;
         }
+        let selected_command = self.agent_chat_selected_commands.get(&agent.id);
+        let selected_target = self
+            .agent_chat_selected_agent_targets
+            .get(&agent.id)
+            .copied();
+        if orbit_target_conflict(selected_command, selected_target) {
+            self.agent_start_errors.insert(
+                agent.id,
+                "Orbit and #agent cannot be used in the same message. Remove one chip and try again."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        let orbit_module_id = self
+            .agent_chat_selected_commands
+            .get(&agent.id)
+            .and_then(|command| command.orbit_module_id);
+        if let Some(module_id) = orbit_module_id {
+            if self.orbit_pending_invocations.contains_key(&agent.id) {
+                return;
+            }
+            self.agent_start_errors.remove(&agent.id);
+            let invocation_id = Uuid::new_v4();
+            self.orbit_pending_invocations
+                .insert(agent.id, invocation_id);
+            let agent = agent.clone();
+            let input = input.clone();
+            let surface = surface.clone();
+            let window_handle = window.window_handle();
+            cx.notify();
+            cx.spawn(async move |this, cx| {
+                let created = cx
+                    .background_executor()
+                    .spawn(async move {
+                        create_orbit_invocation(
+                            invocation_id,
+                            agent.id,
+                            agent.project_id,
+                            module_id,
+                        )
+                    })
+                    .await;
+                window_handle
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| {
+                            let still_pending = this
+                                .orbit_pending_invocations
+                                .remove(&agent.id)
+                                .is_some_and(|pending| pending == invocation_id);
+                            match created {
+                                Ok(()) if still_pending => {
+                                    let module_still_selected = this
+                                        .agent_chat_selected_commands
+                                        .get(&agent.id)
+                                        .is_some_and(|command| {
+                                            command.orbit_module_id == Some(module_id)
+                                        });
+                                    let target_now = this
+                                        .agent_chat_selected_agent_targets
+                                        .get(&agent.id)
+                                        .copied();
+                                    if module_still_selected && target_now.is_none() {
+                                        this.finish_agent_chat_message_submission(
+                                            &agent,
+                                            input,
+                                            steer_running,
+                                            &surface,
+                                            Some(invocation_id),
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        complete_orbit_invocation_in_background(
+                                            invocation_id,
+                                            agent.id,
+                                            cx,
+                                        );
+                                        if module_still_selected {
+                                            this.agent_start_errors.insert(
+                                                agent.id,
+                                                "Orbit and #agent cannot be used in the same message. Remove one chip and try again."
+                                                    .to_string(),
+                                            );
+                                            cx.notify();
+                                        }
+                                    }
+                                }
+                                Ok(()) => complete_orbit_invocation_in_background(
+                                    invocation_id,
+                                    agent.id,
+                                    cx,
+                                ),
+                                Err(error) => {
+                                    let message =
+                                        format!("Could not start Orbit access: {error:#}");
+                                    eprintln!("{message}");
+                                    this.agent_start_errors.insert(agent.id, message);
+                                    cx.notify();
+                                }
+                            }
+                        })
+                        .ok();
+                    })
+                    .ok();
+            })
+            .detach();
+            return;
+        }
+        self.finish_agent_chat_message_submission(
+            agent,
+            input,
+            steer_running,
+            surface,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    fn finish_agent_chat_message_submission(
+        &mut self,
+        agent: &AgentRecord,
+        input: Entity<InputState>,
+        steer_running: bool,
+        surface: &AgentChatSurface,
+        orbit_invocation_id: Option<Uuid>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let draft = input.read(cx).value().trim().to_string();
         let selected_command = self.agent_chat_selected_commands.get(&agent.id).cloned();
         let preview_armed = self.agent_chat_preview_armed.contains(&agent.id);
@@ -1374,11 +1504,20 @@ impl CenterArea {
         let message_tags =
             composer_message_tags(selected_command.as_ref(), &selected_mentions, preview_armed);
         let projects = self.workspace.read(cx).projects.clone();
-        if let Some(target_agent_id) = self
+        let selected_target = self
             .agent_chat_selected_agent_targets
             .get(&agent.id)
-            .copied()
-        {
+            .copied();
+        if orbit_target_conflict(selected_command.as_ref(), selected_target) {
+            self.agent_start_errors.insert(
+                agent.id,
+                "Orbit and #agent cannot be used in the same message. Remove one chip and try again."
+                    .to_string(),
+            );
+            cx.notify();
+            return;
+        }
+        if let Some(target_agent_id) = selected_target {
             let message = message_display_text.trim().to_string();
             if message.is_empty() {
                 return;
@@ -1408,6 +1547,7 @@ impl CenterArea {
             .and_then(|session| session.proposed_plan.as_ref())
             .filter(|plan| plan.implemented_at.is_none())
             .map(|plan| plan.markdown.clone());
+        let submission_command = selected_command.clone();
         let Some((submission_text, mode)) = self.agent_chats.update(cx, |chats, cx| {
             let draft_with_pastes = append_pasted_text_blocks(&draft, &pasted_text_blocks);
             let has_actionable_plan = {
@@ -1430,7 +1570,11 @@ impl CenterArea {
                 let session = chats.ensure_session(agent.id, agent.title.clone(), cx);
                 let draft =
                     composer_mentions_submission_text(&draft, &selected_mentions, &projects);
-                let draft = agent_chat_submission_text(&draft, selected_command.as_ref());
+                let draft = agent_chat_submission_text(
+                    &draft,
+                    submission_command.as_ref(),
+                    orbit_invocation_id,
+                );
                 let draft = preview_submission_text(&draft, preview_armed);
                 let draft = memory_save_submission_text(&draft);
                 let draft = append_pasted_text_blocks(&draft, &pasted_text_blocks);
@@ -1440,8 +1584,21 @@ impl CenterArea {
                 ))
             }
         }) else {
+            if let Some(invocation_id) = orbit_invocation_id {
+                complete_orbit_invocation_in_background(invocation_id, agent.id, cx);
+            }
             return;
         };
+        if let Some(invocation_id) = orbit_invocation_id {
+            if let Some(previous) = self
+                .orbit_active_invocations
+                .insert(agent.id, invocation_id)
+            {
+                if previous != invocation_id {
+                    complete_orbit_invocation_in_background(previous, agent.id, cx);
+                }
+            }
+        }
         let auto_name_context =
             self.auto_name_context_for_second_message(agent, &message_display_text, surface, cx);
         // A plan existed, so this submission went through plan resolution;
@@ -1505,8 +1662,119 @@ impl CenterArea {
         } else {
             // A failed dispatch did not consume the second-message trigger.
             self.agent_auto_names_requested.remove(&agent.id);
+            self.complete_orbit_invocation_for_agent(agent.id, cx);
         }
         self.acknowledge_agent_chat_seen(agent.id, cx);
+    }
+
+    pub(super) fn complete_orbit_invocation_for_agent(
+        &mut self,
+        agent_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(invocation_id) = self.orbit_active_invocations.remove(&agent_id) else {
+            return;
+        };
+        let orbit = self.orbit.clone();
+        let agent_chats = self.agent_chats.clone();
+        cx.spawn(async move |_, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = ide_core::local_store::LocalStore::open_default()?;
+                    store.complete_orbit_invocation(invocation_id, agent_id)?;
+                    store.load_orbit_invocation_update(invocation_id, agent_id)
+                })
+                .await;
+            match result {
+                Ok(Some(update)) => {
+                    let project_id = update.project_id;
+                    let module_id = update.module_id;
+                    let card = OrbitUpdateCard::from(update);
+                    agent_chats
+                        .update(cx, |chats, cx| {
+                            let Some(session) = chats.sessions.get_mut(&agent_id) else {
+                                return;
+                            };
+                            upsert_orbit_update_card(&mut session.timeline, card.clone());
+                            persist_timeline_item(
+                                agent_id,
+                                AgentChatTimelineItem::OrbitUpdate(card),
+                                cx,
+                            );
+                            cx.notify();
+                        })
+                        .ok();
+                    orbit
+                        .update(cx, |orbit, cx| {
+                            orbit.refresh_module(project_id, module_id, cx)
+                        })
+                        .ok();
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("could not close Orbit invocation: {error:#}"),
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn undo_orbit_update(
+        &mut self,
+        agent_id: Uuid,
+        invocation_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.orbit_undos_pending.insert(invocation_id) {
+            return;
+        }
+        let orbit = self.orbit.clone();
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = ide_core::local_store::LocalStore::open_default()?;
+                    store.undo_orbit_invocation(invocation_id, agent_id)?;
+                    store
+                        .load_orbit_invocation_update(invocation_id, agent_id)?
+                        .ok_or_else(|| anyhow::anyhow!("Orbit update disappeared after undo"))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.orbit_undos_pending.remove(&invocation_id);
+                match result {
+                    Ok(update) => {
+                        let project_id = update.project_id;
+                        let module_id = update.module_id;
+                        let card = OrbitUpdateCard::from(update);
+                        this.agent_chats.update(cx, |chats, cx| {
+                            let Some(session) = chats.sessions.get_mut(&agent_id) else {
+                                return;
+                            };
+                            upsert_orbit_update_card(&mut session.timeline, card.clone());
+                            persist_timeline_item(
+                                agent_id,
+                                AgentChatTimelineItem::OrbitUpdate(card),
+                                cx,
+                            );
+                            cx.notify();
+                        });
+                        orbit.update(cx, |orbit, cx| {
+                            orbit.refresh_module(project_id, module_id, cx)
+                        });
+                    }
+                    Err(error) => {
+                        this.agent_start_errors.insert(
+                            agent_id,
+                            format!("Couldn't undo that Orbit update: {error:#}"),
+                        );
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn continue_pending_user_input(
@@ -2067,7 +2335,8 @@ impl CenterArea {
         {
             return None;
         }
-        let commands = agent_chat_slash_capabilities(agent.provider);
+        let commands =
+            self.cached_agent_chat_slash_capabilities(agent.provider, agent.project_id, cx);
         let matches = agent_chat_slash_matches(&commands, &query.query);
         let selected = self
             .agent_chat_slash_selection

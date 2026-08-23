@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{AppContext, Context, Entity};
-use ide_core::{detect_project_services, read_sub_app_env, EnvFile, ProjectId, SubAppServices};
+use ide_core::{
+    detect_project_environment_files, detect_project_services, local_store::OrbitBuiltin,
+    read_sub_app_env, EnvFile, ProjectId, SubAppServices,
+};
 
 use super::{Workspace, WorkspaceEvent};
 
@@ -11,27 +14,69 @@ use super::{Workspace, WorkspaceEvent};
 /// changes, so this is generous — a project edit invalidates it immediately).
 const SCAN_TTL: Duration = Duration::from_secs(60);
 
-/// Which face of the Services panel is showing.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub enum ServicesMode {
-    #[default]
-    Services,
-    Env,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ServicesScanKind {
+    Environment,
+    Integrations,
 }
 
-/// Per-project state for the Services panel: the detected inventory, plus the
-/// sidebar's navigation (mode + selected source) and an on-demand env cache.
-/// Detection is a read-only file scan (no secrets) run on a background thread;
-/// env values are read lazily and only kept in memory, never sent anywhere.
+impl ServicesScanKind {
+    pub const fn from_builtin(builtin: OrbitBuiltin) -> Self {
+        match builtin {
+            OrbitBuiltin::Environment => Self::Environment,
+            OrbitBuiltin::Integrations => Self::Integrations,
+        }
+    }
+
+    pub const fn builtin(self) -> OrbitBuiltin {
+        match self {
+            Self::Environment => OrbitBuiltin::Environment,
+            Self::Integrations => OrbitBuiltin::Integrations,
+        }
+    }
+
+    pub const fn scanning_message(self) -> &'static str {
+        match self {
+            Self::Environment => "Finding environment files…",
+            Self::Integrations => "Detecting integrations…",
+        }
+    }
+
+    pub const fn empty_title(self) -> &'static str {
+        match self {
+            Self::Environment => "No environment files found",
+            Self::Integrations => "No integrations detected",
+        }
+    }
+
+    pub const fn empty_body(self) -> &'static str {
+        match self {
+            Self::Environment => "Orbit could not find a supported .env file in this project.",
+            Self::Integrations => {
+                "Nothing recognizable in this project's dependencies or platform configuration yet."
+            }
+        }
+    }
+
+    pub const fn item_label(self, count: usize) -> &'static str {
+        match (self, count) {
+            (Self::Environment, 1) => "env file",
+            (Self::Environment, _) => "env files",
+            (Self::Integrations, 1) => "integration",
+            (Self::Integrations, _) => "integrations",
+        }
+    }
+}
+
+/// Internal state for Orbit's two code-owned views. Environment and
+/// Integrations have separate inventories and freshness keys so opening or
+/// hiding one cannot accidentally run the other's detector.
 pub struct ServicesState {
-    services: HashMap<ProjectId, Vec<SubAppServices>>,
-    scanning: HashSet<ProjectId>,
-    scanned_at: HashMap<ProjectId, Instant>,
-    mode: HashMap<ProjectId, ServicesMode>,
-    selected_source: HashMap<ProjectId, String>,
-    /// Chosen env file within a source, keyed by `"project:rel"`.
-    selected_env_file: HashMap<String, String>,
+    services: HashMap<(ProjectId, ServicesScanKind), Vec<SubAppServices>>,
+    scanning: HashSet<(ProjectId, ServicesScanKind)>,
+    scanned_at: HashMap<(ProjectId, ServicesScanKind), Instant>,
     env_cache: HashMap<String, Vec<EnvFile>>,
+    selected_tabs: HashMap<(ProjectId, ServicesScanKind), String>,
 }
 
 impl ServicesState {
@@ -52,60 +97,43 @@ impl ServicesState {
                 services: HashMap::new(),
                 scanning: HashSet::new(),
                 scanned_at: HashMap::new(),
-                mode: HashMap::new(),
-                selected_source: HashMap::new(),
-                selected_env_file: HashMap::new(),
                 env_cache: HashMap::new(),
+                selected_tabs: HashMap::new(),
             }
         })
     }
 
-    pub fn services_for(&self, project: ProjectId) -> Option<&Vec<SubAppServices>> {
-        self.services.get(&project)
+    pub fn services_for(
+        &self,
+        project: ProjectId,
+        kind: ServicesScanKind,
+    ) -> Option<&Vec<SubAppServices>> {
+        self.services.get(&(project, kind))
     }
 
-    pub fn is_scanning(&self, project: ProjectId) -> bool {
-        self.scanning.contains(&project)
+    pub fn is_scanning(&self, project: ProjectId, kind: ServicesScanKind) -> bool {
+        self.scanning.contains(&(project, kind))
     }
 
-    pub fn mode(&self, project: ProjectId) -> ServicesMode {
-        self.mode.get(&project).copied().unwrap_or_default()
+    /// Resolve the selected middle-pane tab, falling back to the first tab when
+    /// a rescan removes the previous source or file.
+    pub fn selected_tab(
+        &self,
+        project: ProjectId,
+        kind: ServicesScanKind,
+        available: &[String],
+    ) -> Option<String> {
+        super::preferred_selection(self.selected_tabs.get(&(project, kind)), available)
     }
 
-    pub fn set_mode(&mut self, project: ProjectId, mode: ServicesMode, cx: &mut Context<Self>) {
-        self.mode.insert(project, mode);
-        cx.notify();
-    }
-
-    /// The chosen source's `rel_path`, if the user has picked one.
-    pub fn selected_source(&self, project: ProjectId) -> Option<&String> {
-        self.selected_source.get(&project)
-    }
-
-    pub fn set_selected_source(
+    pub fn select_tab(
         &mut self,
         project: ProjectId,
-        rel_path: String,
+        kind: ServicesScanKind,
+        key: String,
         cx: &mut Context<Self>,
     ) {
-        self.selected_source.insert(project, rel_path);
-        cx.notify();
-    }
-
-    pub fn selected_env_file(&self, project: ProjectId, rel_path: &str) -> Option<&String> {
-        self.selected_env_file
-            .get(&format!("{}:{rel_path}", project.0))
-    }
-
-    pub fn set_selected_env_file(
-        &mut self,
-        project: ProjectId,
-        rel_path: &str,
-        name: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.selected_env_file
-            .insert(format!("{}:{rel_path}", project.0), name);
+        self.selected_tabs.insert((project, kind), key);
         cx.notify();
     }
 
@@ -133,26 +161,37 @@ impl ServicesState {
         files
     }
 
-    /// Kick a background scan when results are missing or stale. Safe to call
-    /// from render — it throttles itself and never blocks the UI thread.
-    pub fn ensure_scanned(&mut self, project: ProjectId, root: PathBuf, cx: &mut Context<Self>) {
+    /// Kick off the explicitly selected built-in's background scan when its
+    /// results are missing or stale.
+    pub fn ensure_scanned(
+        &mut self,
+        project: ProjectId,
+        root: PathBuf,
+        kind: ServicesScanKind,
+        cx: &mut Context<Self>,
+    ) {
         let fresh = self
             .scanned_at
-            .get(&project)
+            .get(&(project, kind))
             .is_some_and(|at| at.elapsed() < SCAN_TTL);
-        if fresh || self.scanning.contains(&project) {
+        if fresh || self.scanning.contains(&(project, kind)) {
             return;
         }
-        self.scanning.insert(project);
-        self.scanned_at.insert(project, Instant::now());
+        self.scanning.insert((project, kind));
+        self.scanned_at.insert((project, kind), Instant::now());
         cx.spawn(async move |this, cx| {
             let detected = cx
                 .background_executor()
-                .spawn(async move { detect_project_services(&root) })
+                .spawn(async move {
+                    match kind {
+                        ServicesScanKind::Environment => detect_project_environment_files(&root),
+                        ServicesScanKind::Integrations => detect_project_services(&root),
+                    }
+                })
                 .await;
             this.update(cx, |this, cx| {
-                this.scanning.remove(&project);
-                this.services.insert(project, detected);
+                this.scanning.remove(&(project, kind));
+                this.services.insert((project, kind), detected);
                 cx.notify();
             })
             .ok();
@@ -161,9 +200,33 @@ impl ServicesState {
     }
 
     /// Force a re-scan and drop cached env values on the next access.
-    pub fn invalidate(&mut self, project: ProjectId, cx: &mut Context<Self>) {
-        self.scanned_at.remove(&project);
-        self.env_cache.clear();
+    pub fn invalidate(
+        &mut self,
+        project: ProjectId,
+        kind: ServicesScanKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.scanned_at.remove(&(project, kind));
+        if kind == ServicesScanKind::Environment {
+            self.env_cache.clear();
+        }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn source_tabs_keep_a_valid_selection_and_fall_back_after_rescan() {
+        let available = vec!["project".to_string(), "web".to_string()];
+        assert_eq!(
+            super::super::preferred_selection(Some(&"web".to_string()), &available),
+            Some("web".to_string())
+        );
+        assert_eq!(
+            super::super::preferred_selection(Some(&"removed".to_string()), &available),
+            Some("project".to_string())
+        );
+        assert_eq!(super::super::preferred_selection::<String>(None, &[]), None);
     }
 }

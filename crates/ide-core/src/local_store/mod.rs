@@ -3,7 +3,7 @@
 //! This module intentionally uses `turso::Builder::new_local` only. The sync
 //! feature is disabled in Cargo.toml, so the store never talks to Turso Cloud.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -31,8 +31,8 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 32;
-const EXPORT_FORMAT_VERSION: u32 = 6;
+const STORE_SCHEMA_VERSION: u32 = 33;
+const EXPORT_FORMAT_VERSION: u32 = 8;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
 
@@ -158,6 +158,303 @@ pub struct StoredMemory {
     pub created_at: u64,
     pub updated_at: u64,
     pub last_used_at: Option<u64>,
+}
+
+pub const ORBIT_ENVIRONMENT_KEY: &str = "builtin:environment";
+pub const ORBIT_INTEGRATIONS_KEY: &str = "builtin:integrations";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrbitBuiltin {
+    Environment,
+    Integrations,
+}
+
+impl OrbitBuiltin {
+    pub const ALL: [Self; 2] = [Self::Environment, Self::Integrations];
+
+    pub const fn storage_key(self) -> &'static str {
+        match self {
+            Self::Environment => ORBIT_ENVIRONMENT_KEY,
+            Self::Integrations => ORBIT_INTEGRATIONS_KEY,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Environment => "Environment",
+            Self::Integrations => "Integrations",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Environment => "Project environment files and values.",
+            Self::Integrations => {
+                "Third-party services detected from project dependencies and configuration."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum OrbitModuleId {
+    Builtin(OrbitBuiltin),
+    Custom(Uuid),
+}
+
+impl OrbitModuleId {
+    pub fn storage_key(self) -> String {
+        match self {
+            Self::Builtin(builtin) => builtin.storage_key().to_string(),
+            Self::Custom(id) => format!("custom:{id}"),
+        }
+    }
+
+    pub fn from_storage_key(value: &str) -> Result<Self> {
+        match value {
+            ORBIT_ENVIRONMENT_KEY => Ok(Self::Builtin(OrbitBuiltin::Environment)),
+            ORBIT_INTEGRATIONS_KEY => Ok(Self::Builtin(OrbitBuiltin::Integrations)),
+            _ => value
+                .strip_prefix("custom:")
+                .ok_or_else(|| anyhow!("unknown Orbit module key"))
+                .and_then(parse_uuid)
+                .map(Self::Custom),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrbitViewType {
+    GroupedTable,
+}
+
+impl OrbitViewType {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::GroupedTable => "Grouped table",
+        }
+    }
+
+    fn storage_label(self) -> &'static str {
+        match self {
+            Self::GroupedTable => "grouped_table",
+        }
+    }
+
+    fn from_storage_label(value: &str) -> Result<Self> {
+        match value {
+            "grouped_table" => Ok(Self::GroupedTable),
+            _ => Err(anyhow!("unsupported Orbit view type: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrbitFieldKind {
+    ShortText,
+    LongText,
+    List,
+}
+
+impl OrbitFieldKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ShortText => "Short text",
+            Self::LongText => "Long text",
+            Self::List => "List",
+        }
+    }
+
+    fn storage_label(self) -> &'static str {
+        match self {
+            Self::ShortText => "short_text",
+            Self::LongText => "long_text",
+            Self::List => "list",
+        }
+    }
+
+    fn from_storage_label(value: &str) -> Result<Self> {
+        match value {
+            "short_text" => Ok(Self::ShortText),
+            "long_text" => Ok(Self::LongText),
+            "list" => Ok(Self::List),
+            _ => Err(anyhow!("unsupported Orbit field type: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitFieldDefinition {
+    pub id: Uuid,
+    pub key: String,
+    pub label: String,
+    pub kind: OrbitFieldKind,
+    pub primary: bool,
+    pub sort_order: i64,
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitModuleDefinition {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub view_type: OrbitViewType,
+    pub section_key: Option<String>,
+    pub section_label: Option<String>,
+    pub agent_job: String,
+    pub revision: u64,
+    pub archived: bool,
+    pub fields: Vec<OrbitFieldDefinition>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+impl OrbitModuleDefinition {
+    pub fn agent_context(&self) -> String {
+        let section = self
+            .section_label
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or("None");
+        let fields = self
+            .fields
+            .iter()
+            .filter(|field| !field.archived)
+            .map(|field| {
+                let primary = if field.primary { ", primary" } else { "" };
+                format!(
+                    "- {} (`{}`): {}{primary}",
+                    field.label,
+                    field.key,
+                    field.kind.label().to_ascii_lowercase()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "Description: {}\nView: {}\nSection field: {section}\nFields:\n{fields}\n\nModule agent job:\n{}",
+            self.description.trim(),
+            self.view_type.label().to_ascii_lowercase(),
+            self.agent_job.trim(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitProjectBinding {
+    pub project_id: ProjectId,
+    pub module: OrbitModuleId,
+    pub enabled: bool,
+    pub sort_order: i64,
+    pub data_revision: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitRecord {
+    pub id: Uuid,
+    pub project_id: ProjectId,
+    pub module_id: Uuid,
+    pub section: Option<String>,
+    pub values: BTreeMap<String, serde_json::Value>,
+    pub record_key: String,
+    pub source_agent_id: Option<Uuid>,
+    pub source_batch_id: Option<Uuid>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrbitSnapshot {
+    pub modules: Vec<OrbitModuleDefinition>,
+    pub bindings: HashMap<ProjectId, Vec<OrbitProjectBinding>>,
+    pub records: HashMap<(ProjectId, Uuid), Vec<OrbitRecord>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrbitProjectModuleSnapshot {
+    pub binding: OrbitProjectBinding,
+    pub records: Vec<OrbitRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrbitRecordInput {
+    #[serde(default)]
+    pub id: Option<Uuid>,
+    #[serde(default)]
+    pub section: Option<String>,
+    #[serde(default)]
+    pub values: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitInvocation {
+    pub id: Uuid,
+    pub agent_id: Uuid,
+    pub project_id: ProjectId,
+    pub module_id: Uuid,
+    pub module_revision: u64,
+    pub data_revision: u64,
+    pub expires_at: u64,
+    pub completed_at: Option<u64>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitInvocationSnapshot {
+    pub invocation: OrbitInvocation,
+    pub module: OrbitModuleDefinition,
+    pub records: Vec<OrbitRecord>,
+    pub data_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitMutationResult {
+    pub invocation_id: Uuid,
+    pub batch_id: Uuid,
+    pub inserted: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub data_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitMutationBatch {
+    pub id: Uuid,
+    pub invocation_id: Uuid,
+    pub agent_id: Uuid,
+    pub project_id: ProjectId,
+    pub module_id: Uuid,
+    pub revision_before: u64,
+    pub revision_after: u64,
+    pub before: Vec<OrbitRecord>,
+    pub after: Vec<OrbitRecord>,
+    pub inserted: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub created_at: u64,
+    pub undone_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrbitInvocationUpdate {
+    pub invocation_id: Uuid,
+    pub agent_id: Uuid,
+    pub project_id: ProjectId,
+    pub module_id: Uuid,
+    pub module_name: String,
+    pub inserted: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub undone: bool,
+    pub created_at: u64,
 }
 
 /// The living Brain summary for one real project agent. Summaries are replaced
@@ -437,6 +734,16 @@ struct ExportCounts {
     penpot_designs: usize,
     #[serde(default)]
     penpot_conversations: usize,
+    #[serde(default)]
+    orbit_modules: usize,
+    #[serde(default)]
+    orbit_bindings: usize,
+    #[serde(default)]
+    orbit_records: usize,
+    #[serde(default)]
+    orbit_invocations: usize,
+    #[serde(default)]
+    orbit_mutation_batches: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -453,6 +760,7 @@ mod chat;
 mod diffs;
 mod maintenance;
 mod memories;
+mod orbit;
 mod penpot;
 mod project_preview;
 mod references;
@@ -469,6 +777,9 @@ use chat::*;
 use diffs::*;
 pub use memories::MAX_MEMORY_TEXT_CHARS;
 use memories::*;
+pub use orbit::{
+    analytics_orbit_template, blank_orbit_module, normalize_orbit_field_key, validate_orbit_module,
+};
 use penpot::*;
 pub use penpot::{
     StoredPenpotConnection, StoredPenpotDesign, StoredPenpotDesignConversation,

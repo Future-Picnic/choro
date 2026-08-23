@@ -41,6 +41,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_chat_file_ledger_schema(conn).await?;
         ensure_agent_origin_column(conn).await?;
         ensure_pending_project_script_presets_schema(conn).await?;
+        ensure_orbit_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -544,6 +545,30 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })
         .await?;
     }
+    if current < 33 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_orbit_schema_inner(conn).await?;
+                record_schema_version(conn, 33).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_orbit_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_orbit_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_orbit_schema_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V33 {
+        conn.execute(statement, ()).await?;
+    }
     Ok(())
 }
 
@@ -1045,6 +1070,107 @@ const SCHEMA_V32: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_pending_project_script_presets_project_created
         ON pending_project_script_presets(project_id, created_at ASC)",
+];
+
+const SCHEMA_V33: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS orbit_modules (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE,
+        description TEXT NOT NULL,
+        view_type TEXT NOT NULL,
+        section_key TEXT,
+        section_label TEXT,
+        agent_job TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_orbit_modules_active_name
+        ON orbit_modules(name COLLATE NOCASE) WHERE archived = 0",
+    "CREATE TABLE IF NOT EXISTS orbit_module_fields (
+        id TEXT PRIMARY KEY,
+        module_id TEXT NOT NULL,
+        field_key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        sort_order INTEGER NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(module_id, field_key),
+        FOREIGN KEY(module_id) REFERENCES orbit_modules(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_orbit_module_fields_order
+        ON orbit_module_fields(module_id, archived, sort_order)",
+    "CREATE TABLE IF NOT EXISTS orbit_project_modules (
+        project_id TEXT NOT NULL,
+        module_key TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL,
+        data_revision INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(project_id, module_key),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_orbit_project_modules_order
+        ON orbit_project_modules(project_id, enabled, sort_order)",
+    "CREATE TABLE IF NOT EXISTS orbit_records (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        section_value TEXT,
+        values_json TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        source_agent_id TEXT,
+        source_batch_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(project_id, module_id, record_key),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(module_id) REFERENCES orbit_modules(id) ON DELETE CASCADE,
+        FOREIGN KEY(source_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_orbit_records_project_module
+        ON orbit_records(project_id, module_id, section_value, updated_at)",
+    "CREATE TABLE IF NOT EXISTS orbit_invocations (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        module_revision INTEGER NOT NULL,
+        data_revision INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(module_id) REFERENCES orbit_modules(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_orbit_invocations_agent_created
+        ON orbit_invocations(agent_id, created_at DESC)",
+    "CREATE TABLE IF NOT EXISTS orbit_mutation_batches (
+        id TEXT PRIMARY KEY,
+        invocation_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        revision_before INTEGER NOT NULL,
+        revision_after INTEGER NOT NULL,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        inserted_count INTEGER NOT NULL,
+        updated_count INTEGER NOT NULL,
+        deleted_count INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        undone_at INTEGER,
+        FOREIGN KEY(invocation_id) REFERENCES orbit_invocations(id) ON DELETE CASCADE,
+        FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(module_id) REFERENCES orbit_modules(id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_orbit_batches_invocation_created
+        ON orbit_mutation_batches(invocation_id, created_at ASC)",
 ];
 
 pub(super) async fn schema_version(conn: &Connection) -> Result<u32> {

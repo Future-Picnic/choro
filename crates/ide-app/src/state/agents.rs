@@ -258,6 +258,27 @@ impl AgentRecords {
         id
     }
 
+    pub fn discard_before_start(&mut self, id: Uuid, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.records.iter().position(|agent| {
+            agent.id == id
+                && agent.started_at.is_none()
+                && agent.cli_session_id.is_none()
+                && agent.chat_session_id.is_none()
+        }) else {
+            return false;
+        };
+        let project = self.records[index].project_id;
+        self.records.remove(index);
+        if self.selected.get(&project) == Some(&id) {
+            self.selected.remove(&project);
+        }
+        self.schedule_save(cx);
+        cx.emit(AgentRecordsEvent::Changed);
+        cx.emit(AgentRecordsEvent::SelectionChanged);
+        cx.notify();
+        true
+    }
+
     pub fn update_doc(&mut self, id: Uuid, doc: String, cx: &mut Context<Self>) {
         let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id) else {
             return;
