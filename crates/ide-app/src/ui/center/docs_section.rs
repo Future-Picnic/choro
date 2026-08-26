@@ -81,11 +81,11 @@ impl CenterArea {
         };
         let path = doc.path.clone();
         let is_template = doc.is_template;
-        match self
+        let opened_document = match self
             .docs
             .update(cx, |docs, _| docs.web_document_for_path(&path))
         {
-            Ok(_) => {}
+            Ok(document) => document,
             Err(error) => {
                 return v_flex()
                     .size_full()
@@ -105,7 +105,7 @@ impl CenterArea {
                     )
                     .into_any_element();
             }
-        }
+        };
         let status_error = match self.docs.read(cx).save_status(&path, cx) {
             DocSaveStatus::Error(error) => Some(error),
             _ => self.doc_action_error.clone(),
@@ -359,6 +359,25 @@ impl CenterArea {
                 .into_any_element()
             }
         });
+        let pocketcomet_indicator = opened_document
+            .origin
+            .as_ref()
+            .and_then(pocketcomet_document_url)
+            .map(|url| {
+                let tooltip = SharedString::from(format!("Open “{}” in PocketComet", doc.title));
+                crate::ui::design::indicator::subline_link_with_icon(
+                    "doc-pocketcomet-origin",
+                    crate::ui::design::indicator::pocketcomet_icon(
+                        crate::ui::design::accent(cx),
+                        crate::ui::design::icon_ind(),
+                    ),
+                    SharedString::from("PocketComet"),
+                    cx,
+                )
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .on_click(move |_, _, _| crate::ui::git::git_panel::open_url(&url))
+                .into_any_element()
+            });
         let design_indicators = linked_designs
             .iter()
             .cloned()
@@ -647,10 +666,12 @@ impl CenterArea {
                                 })
                                 .when(
                                     !design_indicators.is_empty()
-                                        || implementor_indicator.is_some(),
+                                        || implementor_indicator.is_some()
+                                        || pocketcomet_indicator.is_some(),
                                     |column| {
                                         column.child(
                                             crate::ui::design::header::subline()
+                                                .children(pocketcomet_indicator)
                                                 .children(design_indicators)
                                                 .children(implementor_indicator),
                                         )
@@ -858,4 +879,50 @@ fn implementation_agent_history_row(
             )
         })
         .into_any_element()
+}
+
+fn pocketcomet_document_url(origin: &crate::state::docs::ChoroDocumentOrigin) -> Option<String> {
+    let crate::state::docs::ChoroDocumentOrigin::PocketComet {
+        workspace_id,
+        project_id,
+        document_id,
+    } = origin;
+    let mut url = url::Url::parse("pocketcomet://document").ok()?;
+    url.path_segments_mut().ok()?.push(document_id);
+    url.query_pairs_mut()
+        .append_pair("workspace_id", workspace_id)
+        .append_pair("project_id", project_id);
+    Some(url.into())
+}
+
+#[cfg(test)]
+mod pocketcomet_document_link_tests {
+    use super::*;
+
+    #[test]
+    fn document_link_encodes_the_pocketcomet_page_identity() {
+        let origin = crate::state::docs::ChoroDocumentOrigin::PocketComet {
+            workspace_id: "workspace one".into(),
+            project_id: "project/one".into(),
+            document_id: "document/one".into(),
+        };
+
+        let url = url::Url::parse(&pocketcomet_document_url(&origin).unwrap()).unwrap();
+        assert_eq!(url.host_str(), Some("document"));
+        assert_eq!(url.path(), "/document%2Fone");
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "workspace_id")
+                .unwrap()
+                .1,
+            "workspace one"
+        );
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key == "project_id")
+                .unwrap()
+                .1,
+            "project/one"
+        );
+    }
 }

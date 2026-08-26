@@ -246,6 +246,10 @@ impl VoiceState {
         self.push_to_talk_held
     }
 
+    pub fn dictation_transcribing_for(&self, target: VoiceDictationTarget) -> bool {
+        is_dictation_transcribing(&self.phase, self.dictation_target, target)
+    }
+
     pub fn continuous_dictation_active(&self) -> bool {
         self.continuous_dictation && self.dictation_active()
     }
@@ -1830,6 +1834,14 @@ fn project_plan_prompt(
     )
 }
 
+fn is_dictation_transcribing(
+    phase: &VoicePhase,
+    active_target: Option<VoiceDictationTarget>,
+    composer_target: VoiceDictationTarget,
+) -> bool {
+    matches!(phase, VoicePhase::Transcribing) && active_target == Some(composer_target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1869,5 +1881,27 @@ mod tests {
             resolve_project_name("unknown", &projects),
             ProjectNameResolution::NotFound
         );
+    }
+
+    #[test]
+    fn transcribing_state_is_scoped_to_the_target_composer() {
+        let target = VoiceDictationTarget::Agent(uuid::Uuid::new_v4());
+        let other_target = VoiceDictationTarget::Agent(uuid::Uuid::new_v4());
+
+        assert!(is_dictation_transcribing(
+            &VoicePhase::Transcribing,
+            Some(target),
+            target,
+        ));
+        assert!(!is_dictation_transcribing(
+            &VoicePhase::Listening,
+            Some(target),
+            target,
+        ));
+        assert!(!is_dictation_transcribing(
+            &VoicePhase::Transcribing,
+            Some(target),
+            other_target,
+        ));
     }
 }

@@ -180,12 +180,9 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let selected_ref = selected.map(|summary| summary.reference.clone());
-        let top = h_flex()
-            .w_full()
+        let top = crate::ui::design::header::bar(cx)
             .items_center()
             .gap_2p5()
-            .px_5()
-            .py_2p5()
             .child(crate::ui::tasks_panel::provider_badge(
                 board.provider,
                 20.,
@@ -294,7 +291,13 @@ impl CenterArea {
             .min_h(px(0.))
             .w_full()
             .overflow_y_scrollbar();
-        let inner = v_flex().w_full().max_w(px(760.)).px_5().py_4().gap_0();
+        let inner = v_flex()
+            .w_full()
+            .max_w(crate::ui::design::center_content_frame_max_w())
+            .mx_auto()
+            .px(crate::ui::design::agent_chat_gutter_x())
+            .py_4()
+            .gap_0();
         let mut inner = inner;
         for column in &board.columns {
             let issues = board

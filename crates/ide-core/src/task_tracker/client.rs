@@ -40,6 +40,13 @@ impl TaskTrackerClient {
                 };
                 Ok(vec![TaskTrackerSource::new(source_id, name, source_type)])
             }
+            IssueTrackerProvider::PocketComet => Ok(vec![TaskTrackerSource::new(
+                self.connection.selected_source_id().unwrap_or_default(),
+                self.connection
+                    .selected_source_name()
+                    .unwrap_or_else(|| "PocketComet".to_string()),
+                "project",
+            )]),
             IssueTrackerProvider::Personal => unreachable!(),
         }
     }
@@ -82,6 +89,9 @@ impl TaskTrackerClient {
                 users.sort_by(|a, b| a.display_name.cmp(&b.display_name));
                 Ok(users)
             }
+            IssueTrackerProvider::PocketComet => {
+                Ok(PocketCometTaskSourceSnapshot::from_connection(&self.connection)?.users())
+            }
             IssueTrackerProvider::Personal => Ok(Vec::new()),
         }
     }
@@ -92,11 +102,19 @@ impl TaskTrackerClient {
             IssueTrackerProvider::Linear => self.load_linear_board()?,
             IssueTrackerProvider::ClickUp => self.load_clickup_board()?,
             IssueTrackerProvider::Asana => self.load_asana_board()?,
+            IssueTrackerProvider::PocketComet => {
+                PocketCometTaskSourceSnapshot::from_connection(&self.connection)?
+                    .board(&self.connection)
+            }
             IssueTrackerProvider::Personal => unreachable!(),
         };
-        // Jira narrows by assignee server-side via JQL; the others fetch the whole
-        // board, so filter to the chosen assignee's display name here.
-        if self.connection.provider != IssueTrackerProvider::Jira {
+        // Jira narrows server-side via JQL and PocketComet narrows its local
+        // snapshot by stable assignee id. The remaining providers fetch a whole
+        // board, so filter those by the chosen display name here.
+        if !matches!(
+            self.connection.provider,
+            IssueTrackerProvider::Jira | IssueTrackerProvider::PocketComet
+        ) {
             if let Some(name) = self
                 .connection
                 .assignee_display_name
@@ -123,6 +141,9 @@ impl TaskTrackerClient {
             IssueTrackerProvider::Linear => self.load_linear_detail(reference, columns),
             IssueTrackerProvider::ClickUp => self.load_clickup_detail(reference, columns),
             IssueTrackerProvider::Asana => self.load_asana_detail(reference, columns),
+            IssueTrackerProvider::PocketComet => {
+                PocketCometTaskSourceSnapshot::from_connection(&self.connection)?.detail(reference)
+            }
             IssueTrackerProvider::Personal => unreachable!(),
         }
     }
@@ -531,6 +552,17 @@ impl TaskTrackerClient {
                 .available_transitions(&reference.issue_key),
             IssueTrackerProvider::Linear => self.linear_workflow_states(),
             IssueTrackerProvider::ClickUp => self.clickup_statuses(),
+            IssueTrackerProvider::PocketComet => Ok(
+                PocketCometTaskSourceSnapshot::from_connection(&self.connection)?
+                    .statuses
+                    .into_iter()
+                    .map(|status| TaskStatusOption {
+                        apply_id: status.id,
+                        name: status.name,
+                        category: Some(status.category),
+                    })
+                    .collect(),
+            ),
             IssueTrackerProvider::Asana | IssueTrackerProvider::Personal => Ok(Vec::new()),
         }
     }
@@ -543,6 +575,20 @@ impl TaskTrackerClient {
             IssueTrackerProvider::Linear => self.linear_add_comment(&reference.issue_id, body),
             IssueTrackerProvider::ClickUp => self.clickup_add_comment(&reference.issue_id, body),
             IssueTrackerProvider::Asana => self.asana_add_comment(&reference.issue_id, body),
+            IssueTrackerProvider::PocketComet => {
+                let body = body.trim();
+                if body.is_empty() || body.len() > 20_000 {
+                    return Err(anyhow!(
+                        "PocketComet comments must be between 1 and 20,000 characters"
+                    ));
+                }
+                let source = PocketCometTaskSourceSnapshot::from_connection(&self.connection)?;
+                enqueue_pocketcomet_task_action(
+                    &source,
+                    &reference.issue_id,
+                    PocketCometTaskActionCommand::AddComment { body: body.into() },
+                )
+            }
             IssueTrackerProvider::Personal => {
                 Err(anyhow!("personal board comments are stored locally"))
             }
@@ -558,6 +604,19 @@ impl TaskTrackerClient {
             IssueTrackerProvider::Asana => Err(anyhow!(
                 "changing Asana status from here isn't supported yet"
             )),
+            IssueTrackerProvider::PocketComet => {
+                let source = PocketCometTaskSourceSnapshot::from_connection(&self.connection)?;
+                if !source.statuses.iter().any(|status| status.id == apply_id) {
+                    return Err(anyhow!("PocketComet status is no longer available"));
+                }
+                enqueue_pocketcomet_task_action(
+                    &source,
+                    &reference.issue_id,
+                    PocketCometTaskActionCommand::SetStatus {
+                        status_id: apply_id.to_string(),
+                    },
+                )
+            }
             IssueTrackerProvider::Personal => {
                 Err(anyhow!("personal board status is stored locally"))
             }
@@ -575,6 +634,9 @@ impl TaskTrackerClient {
             IssueTrackerProvider::Personal => {
                 Err(anyhow!("personal tasks have no remote attachments"))
             }
+            IssueTrackerProvider::PocketComet => Err(anyhow!(
+                "PocketComet task attachments are already mirrored into Choro local storage"
+            )),
             _ => {
                 let response = self
                     .client

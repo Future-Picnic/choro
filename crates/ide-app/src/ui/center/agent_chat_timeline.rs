@@ -30,6 +30,10 @@ impl CenterArea {
         let compact_assistant_controls = surface.is_document();
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
         let input = self.agent_chat_input(agent, surface.input_placeholder(), window, cx);
+        let voice_transcribing = self
+            .voice
+            .read(cx)
+            .dictation_transcribing_for(crate::voice::VoiceDictationTarget::Agent(agent.id));
         let session = if let Some(session) = self.agent_chat_render_sessions.get(&agent.id) {
             session.clone()
         } else {
@@ -62,14 +66,18 @@ impl CenterArea {
             session
                 .changed_files
                 .remove_visualization_artifacts(agent.id, agent.runtime_path());
+            session.changed_files.remove_provider_private_artifacts();
             session.timeline.retain_mut(|item| match item {
                 AgentChatTimelineItem::ChangedFiles(summary) => {
                     summary.remove_visualization_artifacts(agent.id, agent.runtime_path());
+                    summary.remove_provider_private_artifacts();
                     !summary.is_empty()
                 }
-                AgentChatTimelineItem::FileChangeActivity(activity) => {
-                    !artifact_filter.is_artifact(&activity.file.path)
-                }
+                AgentChatTimelineItem::FileChangeActivity(activity) => !artifact_filter
+                    .is_artifact(&activity.file.path)
+                    && !crate::state::agent_chat::ChangedFilesSummary::is_provider_private_artifact(
+                        &activity.file.path,
+                    ),
                 _ => true,
             });
             if !surface.shows_changed_files() {
@@ -107,8 +115,7 @@ impl CenterArea {
             &input_value,
             preview_armed,
             self.agent_chat_preview_suggestion_dismissed
-                .get(&agent.id)
-                .map(String::as_str),
+                .contains(&agent.id),
         );
         let selected_mentions = self
             .agent_chat_selected_mentions
@@ -341,6 +348,11 @@ impl CenterArea {
                     .relative()
                     .when(top_down, |composer| composer.flex_col_reverse())
                     .w_full()
+                    // The transcript gives up space, never the composer. Without
+                    // this a tall decision panel (long question, wrapped option
+                    // descriptions) gets flex-shrunk and its footer buttons paint
+                    // outside the frame's border.
+                    .flex_shrink_0()
                     .px(crate::ui::design::agent_chat_gutter_x())
                     .when(compact_assistant_controls, |composer| composer.px_2())
                     // Tight bottom padding drops the composer to sit just above
@@ -386,7 +398,7 @@ impl CenterArea {
                         )
                     })
                     .child(
-                        v_flex()
+                        crate::ui::style::composer_frame(cx)
                             .relative()
                             .w_full()
                             .min_w(px(0.))
@@ -568,21 +580,11 @@ impl CenterArea {
                                     }
                                 }
                             }))
-                            .relative()
-                            .min_h(crate::ui::design::composer_frame_h())
-                            .rounded(crate::ui::design::r_lg())
                             // Under the Solo band (active or settled) the frame
                             // squares its top corners so they read as one piece.
                             .when(agent.is_solo(), |frame| {
                                 frame.rounded_tl(px(0.)).rounded_tr(px(0.))
                             })
-                            .border_1()
-                            .border_color(crate::ui::design::line_2(cx))
-                            .bg(crate::ui::design::focus(cx))
-                            .shadow(crate::ui::design::shadow())
-                            .px_3p5()
-                            .pt_3p5()
-                            .pb_3()
                             .when(compact_assistant_controls, |frame| {
                                 frame.px_2().pt_2().pb_2()
                             })
@@ -722,14 +724,14 @@ impl CenterArea {
                                                 ))
                                             },
                                         )
+                                        .when(voice_transcribing, |col| {
+                                            col.child(
+                                                crate::ui::style::composer_voice_transcribing(cx),
+                                            )
+                                        })
                                         .child(
                                             div().flex_1().min_h(px(0.)).child(
-                                                Input::new(&input)
-                                                    .appearance(false)
-                                                    .bordered(false)
-                                                    .focus_bordered(false)
-                                                    .w_full()
-                                                    .min_w(px(0.))
+                                                crate::ui::style::composer_text_input(&input)
                                                     .h_full(),
                                             ),
                                         ),

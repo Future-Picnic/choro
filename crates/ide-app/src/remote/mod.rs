@@ -6,11 +6,14 @@ mod server;
 use tokio::sync::oneshot;
 
 use dto::{
-    AgentListItemDto, AgentSnapshotDto, AgentSyncStateDto, AnswerQuestionRequest,
+    AcknowledgePocketCometTaskActionsRequest, AgentListItemDto, AgentSnapshotDto,
+    AgentSyncStateDto, AnswerQuestionRequest, ChoroDocumentAssetDto, ChoroDocumentDto,
     CommandAcceptedResponse, CompletedTurnsDto, ConfigurationCatalogDto, CreateAgentRequest,
-    DismissPlanRequest, FileDiffDto, ProjectDto, ResolveApprovalRequest, ResolvePlanRequest,
-    SendMessageRequest, ShipPreviewDto, ShipRequest, UpdateAgentConfigurationRequest,
-    UpdateAgentStatusRequest, VerificationFixRequest,
+    DismissPlanRequest, FileDiffDto, PocketCometTaskAssetDto, ProjectDto, ResolveApprovalRequest,
+    ResolvePlanRequest, SendMessageRequest, ShipPreviewDto, ShipRequest,
+    SyncPocketCometTaskSourcesRequest, SyncPocketCometTaskSourcesResponse,
+    UpdateAgentConfigurationRequest, UpdateAgentStatusRequest, UpsertChoroDocumentRequest,
+    VerificationFixRequest,
 };
 
 pub use auth::{DevicePermission, PairedDevice, PairingError, RemoteAuth};
@@ -61,6 +64,46 @@ pub enum RemoteCommand {
     },
     ListProjects {
         response: oneshot::Sender<RemoteResult<Vec<ProjectDto>>>,
+    },
+    GetDocument {
+        project_id: String,
+        document_id: String,
+        response: oneshot::Sender<RemoteResult<ChoroDocumentDto>>,
+    },
+    UpsertDocument {
+        project_id: String,
+        document_id: String,
+        request: UpsertChoroDocumentRequest,
+        response: oneshot::Sender<RemoteResult<ChoroDocumentDto>>,
+    },
+    StoreDocumentAsset {
+        project_id: String,
+        document_id: String,
+        mime: String,
+        bytes: Vec<u8>,
+        response: oneshot::Sender<RemoteResult<ChoroDocumentAssetDto>>,
+    },
+    StorePocketCometTaskAsset {
+        project_id: String,
+        task_id: String,
+        attachment_id: String,
+        mime: String,
+        bytes: Vec<u8>,
+        response: oneshot::Sender<RemoteResult<PocketCometTaskAssetDto>>,
+    },
+    SyncPocketCometTaskSources {
+        device_id: String,
+        request: SyncPocketCometTaskSourcesRequest,
+        response: oneshot::Sender<RemoteResult<SyncPocketCometTaskSourcesResponse>>,
+    },
+    AcknowledgePocketCometTaskActions {
+        device_id: String,
+        request: AcknowledgePocketCometTaskActionsRequest,
+        response: oneshot::Sender<RemoteResult<CommandAcceptedResponse>>,
+    },
+    RemovePocketCometTaskSources {
+        device_id: String,
+        response: oneshot::Sender<RemoteResult<CommandAcceptedResponse>>,
     },
     ListAgents {
         project_id: String,

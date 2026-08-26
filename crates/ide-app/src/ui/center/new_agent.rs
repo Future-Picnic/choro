@@ -951,7 +951,7 @@ impl CenterArea {
         let preview_suggested = should_suggest_choro_preview(
             &prompt_value,
             preview_armed,
-            composer.preview_suggestion_dismissed.as_deref(),
+            composer.preview_suggestion_dismissed,
         );
         let linked_docs = composer.linked_docs.clone();
         let visible_linked_docs = linked_docs
@@ -967,6 +967,10 @@ impl CenterArea {
         let attached_files = composer.attached_files.clone();
         let attachment_pastes_pending = composer.attachment_pastes_pending;
         let error = composer.error.clone();
+        let voice_transcribing = self
+            .voice
+            .read(cx)
+            .dictation_transcribing_for(crate::voice::VoiceDictationTarget::NewAgent(project));
         let selected_project = composer.project;
         let selected_repository = composer.repository_path.clone();
         let slash_view = self.active_composer_slash_view(cx);
@@ -1072,7 +1076,7 @@ impl CenterArea {
                 v_flex()
                     .w_full()
                     .min_w(px(0.))
-                    .max_w(px(760.))
+                    .max_w(crate::ui::design::center_content_max_w())
                     .flex_none()
                     .gap_2()
                     .child(
@@ -1467,7 +1471,6 @@ impl CenterArea {
                                             .min_w(px(0.))
                                             .gap_2()
                                             .when(preview_armed, |col| {
-                                                let prompt_for_remove = prompt.clone();
                                                 col.child(
                                                     h_flex()
                                                         .w_full()
@@ -1484,12 +1487,7 @@ impl CenterArea {
                                                                         this.new_agent_composer.as_mut()
                                                                     {
                                                                         composer.preview_armed = false;
-                                                                        composer.preview_suggestion_dismissed = Some(
-                                                                            prompt_for_remove
-                                                                                .read(cx)
-                                                                                .value()
-                                                                                .to_string(),
-                                                                        );
+                                                                        composer.preview_suggestion_dismissed = true;
                                                                         composer.error = None;
                                                                     }
                                                                     cx.notify();
@@ -1499,7 +1497,6 @@ impl CenterArea {
                                                 )
                                             })
                                             .when(preview_suggested, |col| {
-                                                let prompt_for_dismiss = prompt.clone();
                                                 col.child(
                                                     h_flex()
                                                         .w_full()
@@ -1527,7 +1524,7 @@ impl CenterArea {
                                                                         this.new_agent_composer.as_mut()
                                                                     {
                                                                         composer.preview_armed = true;
-                                                                        composer.preview_suggestion_dismissed = None;
+                                                                        composer.preview_suggestion_dismissed = false;
                                                                         composer.error = None;
                                                                     }
                                                                     cx.notify();
@@ -1547,12 +1544,7 @@ impl CenterArea {
                                                                     if let Some(composer) =
                                                                         this.new_agent_composer.as_mut()
                                                                     {
-                                                                        composer.preview_suggestion_dismissed = Some(
-                                                                            prompt_for_dismiss
-                                                                                .read(cx)
-                                                                                .value()
-                                                                                .to_string(),
-                                                                        );
+                                                                        composer.preview_suggestion_dismissed = true;
                                                                     }
                                                                     cx.notify();
                                                                 },
@@ -1693,6 +1685,13 @@ impl CenterArea {
                                                     cx,
                                                 ))
                                             })
+                                            .when(voice_transcribing, |col| {
+                                                col.child(
+                                                    crate::ui::style::composer_voice_transcribing(
+                                                        cx,
+                                                    ),
+                                                )
+                                            })
                                             .child({
                                                 // On the tour's send steps the
                                                 // prompt is the tour's script.
@@ -1709,13 +1708,10 @@ impl CenterArea {
                                                     .relative()
                                                     .w_full()
                                                     .child(
-                                                        Input::new(&prompt)
-                                                            .appearance(false)
-                                                            .bordered(false)
-                                                            .focus_bordered(false)
-                                                            .disabled(locked)
-                                                            .w_full()
-                                                            .min_w(px(0.)),
+                                                        crate::ui::style::composer_text_input(
+                                                            &prompt,
+                                                        )
+                                                        .disabled(locked),
                                                     )
                                                     .when(locked, |wrap| {
                                                         wrap.child(

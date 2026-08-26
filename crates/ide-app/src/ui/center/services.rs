@@ -175,7 +175,7 @@ impl CenterArea {
                             .w_full()
                             // Match the chat column: use the available center-pane
                             // width, then stay centered once the readable cap is hit.
-                            .max_w(crate::ui::design::agent_chat_content_max_w())
+                            .max_w(crate::ui::design::center_content_frame_max_w())
                             .mx_auto()
                             .px(crate::ui::design::agent_chat_gutter_x())
                             .py(crate::ui::design::center_column_pad_y())
@@ -233,7 +233,7 @@ impl CenterArea {
             format!("/{module_name} Inspect the project and build this Orbit.")
         };
 
-        let header = crate::ui::design::header::bar(cx)
+        let header = crate::ui::design::header::workspace_bar(cx)
             .child(
                 crate::ui::design::header::title_col(cx)
                     .child(crate::ui::design::header::title(
@@ -961,36 +961,43 @@ impl CenterArea {
             .h(px(38.))
             .flex_none()
             .items_center()
-            .px_5()
             .border_b_1()
             .border_color(crate::ui::design::line(cx))
             .bg(crate::ui::design::base(cx))
             .child(
-                div()
-                    .id("services-source-tabs-scroll")
-                    .flex_1()
-                    .min_w(px(0.))
+                h_flex()
+                    .w_full()
+                    .max_w(crate::ui::design::center_content_frame_max_w())
+                    .mx_auto()
                     .h_full()
-                    .overflow_x_scroll()
-                    .child(h_flex().h_full().items_center().gap_1().children(
-                        tabs.iter().enumerate().map(|(index, tab)| {
-                            let key = tab.key.clone();
-                            style::nav_tab(
-                                ("services-source-tab", index),
-                                SharedString::from(tab.label.clone()),
-                                tab.key == selected_key,
-                                cx,
-                            )
-                            .flex_none()
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.services.update(cx, |services, cx| {
-                                        services.select_tab(project, kind, key.clone(), cx)
-                                    });
-                                },
-                            ))
-                        }),
-                    )),
+                    .px(crate::ui::design::agent_chat_gutter_x())
+                    .child(
+                        div()
+                            .id("services-source-tabs-scroll")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h_full()
+                            .overflow_x_scroll()
+                            .child(h_flex().h_full().items_center().gap_1().children(
+                                tabs.iter().enumerate().map(|(index, tab)| {
+                                    let key = tab.key.clone();
+                                    style::nav_tab(
+                                        ("services-source-tab", index),
+                                        SharedString::from(tab.label.clone()),
+                                        tab.key == selected_key,
+                                        cx,
+                                    )
+                                    .flex_none()
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.services.update(cx, |services, cx| {
+                                                services.select_tab(project, kind, key.clone(), cx)
+                                            });
+                                        },
+                                    ))
+                                }),
+                            )),
+                    ),
             )
             .into_any_element()
     }
@@ -1082,13 +1089,66 @@ impl CenterArea {
         let path = dir.join(&file.name);
         let file_name = file.name.clone();
         let (badge, badge_color) = env_badge(&file_name, cx);
-        let rows = file
+        let query = self
+            .services_env_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let filter = self.services_env_filter;
+        let visible_entries = file
             .entries
+            .iter()
+            .filter(|entry| env_entry_matches(entry, &query, filter))
+            .collect::<Vec<_>>();
+        let rows = visible_entries
             .iter()
             .enumerate()
             .map(|(ix, entry)| self.render_env_row(&path, entry, reveal, ix, cx))
             .collect::<Vec<_>>();
-        style::chat_card(cx)
+        let visible_count = visible_entries.len();
+        let total_count = file.entries.len();
+        let result_label = if visible_count == total_count {
+            format!("{total_count} variables")
+        } else {
+            format!("{visible_count} of {total_count}")
+        };
+        let no_matches_message = if !query.is_empty() {
+            "No variables match your search."
+        } else {
+            match filter {
+                ServicesEnvFilter::All => "No variables in this file.",
+                ServicesEnvFilter::Set => "No variables with values in this file.",
+                ServicesEnvFilter::Empty => "No empty variables in this file.",
+            }
+        };
+
+        let center = cx.entity().clone();
+        let filter_button = if filter == ServicesEnvFilter::All {
+            style::ghost_button_compact("services-env-filter", filter.button_label())
+        } else {
+            style::secondary_button_compact("services-env-filter", filter.button_label())
+        }
+        .icon(IconName::Settings2)
+        .tooltip("Filter environment variables")
+        .dropdown_menu(move |mut menu, _, _| {
+            for candidate in ServicesEnvFilter::ALL {
+                let center = center.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(candidate.menu_label())
+                        .checked(candidate == filter)
+                        .on_click(move |_, _, cx| {
+                            center.update(cx, |center, cx| {
+                                center.services_env_filter = candidate;
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            menu
+        });
+
+        let card = style::chat_card(cx)
             .child(
                 style::chat_card_head(cx)
                     .child(
@@ -1128,7 +1188,44 @@ impl CenterArea {
                         .child("No variables in this file."),
                 )
             })
-            .children(rows)
+            .when(
+                !file.entries.is_empty() && visible_entries.is_empty(),
+                |card| {
+                    card.child(
+                        style::chat_card_row(cx)
+                            .text_color(crate::ui::design::t3(cx))
+                            .child(no_matches_message),
+                    )
+                },
+            )
+            .children(rows);
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .when(!file.entries.is_empty(), |content| {
+                content.child(
+                    h_flex()
+                        .w_full()
+                        .min_w(px(0.))
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div().flex_1().min_w(px(160.)).max_w(px(360.)).child(
+                                Input::new(&self.services_env_search).prefix(IconName::Search),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(crate::ui::design::text_label())
+                                .text_color(crate::ui::design::t4(cx))
+                                .child(result_label),
+                        )
+                        .child(filter_button),
+                )
+            })
+            .child(card)
             .into_any_element()
     }
 
@@ -1251,6 +1348,42 @@ pub(super) struct ServicesEnvEdit {
     pub path: std::path::PathBuf,
     pub key: String,
     pub input: gpui::Entity<InputState>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ServicesEnvFilter {
+    #[default]
+    All,
+    Set,
+    Empty,
+}
+
+impl ServicesEnvFilter {
+    const ALL: [Self; 3] = [Self::All, Self::Set, Self::Empty];
+
+    fn button_label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Set => "Set",
+            Self::Empty => "Empty",
+        }
+    }
+
+    fn menu_label(self) -> &'static str {
+        match self {
+            Self::All => "All variables",
+            Self::Set => "Variables with values",
+            Self::Empty => "Empty variables",
+        }
+    }
+
+    fn matches(self, entry: &ide_core::EnvEntry) -> bool {
+        match self {
+            Self::All => true,
+            Self::Set => !entry.value.trim().is_empty(),
+            Self::Empty => entry.value.trim().is_empty(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1579,6 +1712,11 @@ fn orbit_editor_field(
         .into_any_element()
 }
 
+fn env_entry_matches(entry: &ide_core::EnvEntry, query: &str, filter: ServicesEnvFilter) -> bool {
+    filter.matches(entry)
+        && (query.is_empty() || entry.key.to_lowercase().contains(&query.to_lowercase()))
+}
+
 fn env_badge(name: &str, cx: &App) -> (Option<String>, gpui::Hsla) {
     if name.ends_with(".production") {
         (Some("prod".into()), crate::ui::design::rose(cx))
@@ -1795,5 +1933,31 @@ mod tests {
         assert_eq!(tabs[0].label, "Project · .env");
         assert_eq!(tabs[2].label, "Web · .env");
         assert!(tabs.iter().all(|tab| tab.env_file.is_some()));
+    }
+
+    #[test]
+    fn environment_search_and_value_filters_compose() {
+        let set = ide_core::EnvEntry {
+            key: "DATABASE_URL".into(),
+            value: "postgres://localhost".into(),
+        };
+        let empty = ide_core::EnvEntry {
+            key: "DATABASE_PASSWORD".into(),
+            value: "".into(),
+        };
+
+        assert!(env_entry_matches(&set, "database", ServicesEnvFilter::All));
+        assert!(env_entry_matches(&set, "url", ServicesEnvFilter::Set));
+        assert!(!env_entry_matches(&set, "url", ServicesEnvFilter::Empty));
+        assert!(env_entry_matches(
+            &empty,
+            "password",
+            ServicesEnvFilter::Empty,
+        ));
+        assert!(!env_entry_matches(
+            &empty,
+            "password",
+            ServicesEnvFilter::Set,
+        ));
     }
 }

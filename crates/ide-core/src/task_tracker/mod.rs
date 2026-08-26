@@ -1,12 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::local_store::LocalStore;
 use crate::project::ProjectId;
 
 const PROVIDER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -28,6 +31,7 @@ pub enum IssueTrackerProvider {
     Linear,
     ClickUp,
     Asana,
+    PocketComet,
     Personal,
 }
 
@@ -40,6 +44,7 @@ impl IssueTrackerProvider {
             Self::Linear => "Linear",
             Self::ClickUp => "ClickUp",
             Self::Asana => "Asana",
+            Self::PocketComet => "PocketComet",
             Self::Personal => "Personal Board",
         }
     }
@@ -371,6 +376,425 @@ pub struct TaskSummary {
     pub labels: Vec<String>,
     pub updated: Option<String>,
     pub created: Option<String>,
+}
+
+/// A read-only PocketComet project snapshot pushed over Choro's authenticated
+/// loopback integration. Choro stores it inside the managed task connection so
+/// the source remains available between refreshes without PocketComet secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTaskSourceSnapshot {
+    pub device_id: String,
+    pub workspace_id: String,
+    pub pocketcomet_project_id: String,
+    pub project_name: String,
+    #[serde(default)]
+    pub statuses: Vec<PocketCometTaskStatus>,
+    pub assignees: Vec<PocketCometTaskAssignee>,
+    pub tasks: Vec<PocketCometTask>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTaskStatus {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTaskAssignee {
+    pub id: String,
+    pub name: String,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTask {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status_id: String,
+    pub status: String,
+    pub status_category: String,
+    pub list_id: String,
+    pub list_name: String,
+    pub assignee_id: Option<String>,
+    pub assignee_name: Option<String>,
+    pub priority: String,
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub comments: Vec<PocketCometTaskComment>,
+    #[serde(default)]
+    pub attachments: Vec<PocketCometTaskAttachment>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTaskComment {
+    pub id: String,
+    pub author_name: String,
+    pub body: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTaskAttachment {
+    pub id: String,
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: u64,
+    pub asset_file: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PocketCometTaskAction {
+    pub action_id: String,
+    pub device_id: String,
+    pub workspace_id: String,
+    pub pocketcomet_project_id: String,
+    pub task_id: String,
+    pub created_at: u64,
+    #[serde(flatten)]
+    pub command: PocketCometTaskActionCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PocketCometTaskActionCommand {
+    SetStatus { status_id: String },
+    AddComment { body: String },
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct PocketCometTaskActionQueue {
+    actions: Vec<PocketCometTaskAction>,
+}
+
+fn pocketcomet_task_action_queue_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn pocketcomet_task_action_queue_path() -> Result<PathBuf> {
+    Ok(LocalStore::open_default()?
+        .app_data_dir()
+        .join("task-actions")
+        .join("pocketcomet.json"))
+}
+
+fn read_pocketcomet_task_action_queue(path: &Path) -> Result<PocketCometTaskActionQueue> {
+    if !path.is_file() {
+        return Ok(PocketCometTaskActionQueue::default());
+    }
+    let bytes = fs::read(path).context("failed to read PocketComet task actions")?;
+    serde_json::from_slice(&bytes).context("PocketComet task actions are unreadable")
+}
+
+fn write_pocketcomet_task_action_queue(
+    path: &Path,
+    queue: &PocketCometTaskActionQueue,
+) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("PocketComet task action path has no parent")?;
+    fs::create_dir_all(parent).context("failed to create PocketComet task action directory")?;
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, serde_json::to_vec_pretty(queue)?)
+        .context("failed to stage PocketComet task actions")?;
+    fs::rename(temporary, path).context("failed to save PocketComet task actions")
+}
+
+fn enqueue_pocketcomet_task_action(
+    source: &PocketCometTaskSourceSnapshot,
+    task_id: &str,
+    command: PocketCometTaskActionCommand,
+) -> Result<()> {
+    if !source.tasks.iter().any(|task| task.id == task_id) {
+        return Err(anyhow!("PocketComet task is no longer available"));
+    }
+    let _guard = pocketcomet_task_action_queue_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = pocketcomet_task_action_queue_path()?;
+    let mut queue = read_pocketcomet_task_action_queue(&path)?;
+    if matches!(command, PocketCometTaskActionCommand::SetStatus { .. }) {
+        queue.actions.retain(|action| {
+            action.device_id != source.device_id
+                || action.workspace_id != source.workspace_id
+                || action.pocketcomet_project_id != source.pocketcomet_project_id
+                || action.task_id != task_id
+                || !matches!(
+                    action.command,
+                    PocketCometTaskActionCommand::SetStatus { .. }
+                )
+        });
+    }
+    if queue.actions.len() >= 1_000 {
+        return Err(anyhow!(
+            "PocketComet has too many pending task changes; open PocketComet to sync them"
+        ));
+    }
+    queue.actions.push(PocketCometTaskAction {
+        action_id: Uuid::new_v4().to_string(),
+        device_id: source.device_id.clone(),
+        workspace_id: source.workspace_id.clone(),
+        pocketcomet_project_id: source.pocketcomet_project_id.clone(),
+        task_id: task_id.to_string(),
+        created_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        command,
+    });
+    write_pocketcomet_task_action_queue(&path, &queue)
+}
+
+pub fn pending_pocketcomet_task_actions(
+    device_id: &str,
+    workspace_id: &str,
+) -> Result<Vec<PocketCometTaskAction>> {
+    let _guard = pocketcomet_task_action_queue_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = pocketcomet_task_action_queue_path()?;
+    Ok(read_pocketcomet_task_action_queue(&path)?
+        .actions
+        .into_iter()
+        .filter(|action| action.device_id == device_id && action.workspace_id == workspace_id)
+        .take(100)
+        .collect())
+}
+
+pub fn acknowledge_pocketcomet_task_actions(
+    device_id: &str,
+    workspace_id: &str,
+    action_ids: &[String],
+) -> Result<()> {
+    let acknowledged = action_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let _guard = pocketcomet_task_action_queue_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let path = pocketcomet_task_action_queue_path()?;
+    let mut queue = read_pocketcomet_task_action_queue(&path)?;
+    queue.actions.retain(|action| {
+        action.device_id != device_id
+            || action.workspace_id != workspace_id
+            || !acknowledged.contains(action.action_id.as_str())
+    });
+    write_pocketcomet_task_action_queue(&path, &queue)
+}
+
+pub fn is_valid_pocketcomet_task_asset_file(asset_file: &str) -> bool {
+    let Some((digest, extension)) = asset_file
+        .strip_prefix("pocketcomet-")
+        .and_then(|value| value.rsplit_once('.'))
+    else {
+        return false;
+    };
+    digest.len() == 64
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && matches!(
+            extension,
+            "apng" | "avif" | "gif" | "jpg" | "png" | "svg" | "webp"
+        )
+}
+
+pub fn pocketcomet_task_asset_path(asset_file: &str) -> Option<PathBuf> {
+    if !is_valid_pocketcomet_task_asset_file(asset_file) {
+        return None;
+    }
+    let path = LocalStore::open_default()
+        .ok()?
+        .app_data_dir()
+        .join("task-assets")
+        .join("pocketcomet")
+        .join(asset_file);
+    path.is_file().then_some(path)
+}
+
+pub fn store_pocketcomet_task_asset(mime: &str, bytes: &[u8]) -> Result<String> {
+    if bytes.is_empty() {
+        return Err(anyhow!("PocketComet sent an empty task image"));
+    }
+    let extension = match mime.trim().to_ascii_lowercase().as_str() {
+        "image/apng" => "apng",
+        "image/avif" => "avif",
+        "image/gif" => "gif",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/png" => "png",
+        "image/svg+xml" => "svg",
+        "image/webp" => "webp",
+        _ => return Err(anyhow!("PocketComet task attachments must be images")),
+    };
+    let file_name = format!("pocketcomet-{:x}.{extension}", Sha256::digest(bytes));
+    let asset_dir = LocalStore::open_default()?
+        .app_data_dir()
+        .join("task-assets")
+        .join("pocketcomet");
+    fs::create_dir_all(&asset_dir).context("failed to create PocketComet task asset directory")?;
+    let path = asset_dir.join(&file_name);
+    if !path.is_file() {
+        fs::write(&path, bytes).context("failed to store PocketComet task image")?;
+    }
+    Ok(file_name)
+}
+
+impl PocketCometTaskSourceSnapshot {
+    pub fn from_connection(connection: &TaskTrackerConnection) -> Result<Self> {
+        if connection.provider != IssueTrackerProvider::PocketComet {
+            return Err(anyhow!("task source is not managed by PocketComet"));
+        }
+        serde_json::from_str(&connection.provider_config_json)
+            .context("PocketComet task snapshot is unreadable")
+    }
+
+    pub fn users(&self) -> Vec<TaskTrackerUser> {
+        self.assignees
+            .iter()
+            .map(|assignee| TaskTrackerUser {
+                account_id: assignee.id.clone(),
+                display_name: assignee.name.clone(),
+                email: assignee.email.clone(),
+                avatar_url: None,
+                active: true,
+            })
+            .collect()
+    }
+
+    pub fn board(&self, connection: &TaskTrackerConnection) -> TaskBoard {
+        let mut columns = self
+            .statuses
+            .iter()
+            .map(|status| TaskBoardColumn {
+                name: status.name.clone(),
+                status_ids: vec![status.id.clone()],
+            })
+            .collect::<Vec<_>>();
+        for task in &self.tasks {
+            if let Some(column) = columns.iter_mut().find(|column| column.name == task.status) {
+                if !column.status_ids.contains(&task.status_id) {
+                    column.status_ids.push(task.status_id.clone());
+                }
+            } else {
+                columns.push(TaskBoardColumn {
+                    name: task.status.clone(),
+                    status_ids: vec![task.status_id.clone()],
+                });
+            }
+        }
+
+        let issues = self
+            .tasks
+            .iter()
+            .filter(|task| {
+                connection
+                    .assignee_account_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|assignee| task.assignee_id.as_deref() == Some(assignee))
+                    .or_else(|| {
+                        connection
+                            .assignee_display_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(|assignee| task.assignee_name.as_deref() == Some(assignee))
+                    })
+                    .unwrap_or(true)
+            })
+            .map(|task| task.summary(self))
+            .collect();
+
+        TaskBoard {
+            connection_id: connection.id,
+            provider: IssueTrackerProvider::PocketComet,
+            connection_name: connection.name.clone(),
+            source_id: self.pocketcomet_project_id.clone(),
+            source_name: self.project_name.clone(),
+            board_id: 0,
+            board_name: self.project_name.clone(),
+            assignee_filter: connection.assignee_filter.clone(),
+            assignee_display_name: connection.assignee_display_name.clone(),
+            columns,
+            issues,
+        }
+    }
+
+    pub fn detail(&self, reference: &TaskRef) -> Result<TaskDetail> {
+        let task = self
+            .tasks
+            .iter()
+            .find(|task| task.id == reference.issue_id)
+            .ok_or_else(|| anyhow!("PocketComet task is no longer available"))?;
+        Ok(TaskDetail {
+            summary: task.summary(self),
+            description: TaskRichText::plain(task.description.clone()),
+            comments: task
+                .comments
+                .iter()
+                .map(|comment| TaskComment {
+                    author: comment.author_name.clone(),
+                    body: TaskRichText::plain(comment.body.clone()),
+                    created: Some(comment.created_at.to_string()),
+                })
+                .collect(),
+            attachments: task
+                .attachments
+                .iter()
+                .map(|attachment| TaskAttachment {
+                    id: attachment.id.clone(),
+                    filename: attachment.file_name.clone(),
+                    mime_type: attachment.mime_type.clone(),
+                    content_url: None,
+                    thumbnail_url: None,
+                    local_path: pocketcomet_task_asset_path(&attachment.asset_file),
+                    size: Some(attachment.size_bytes),
+                })
+                .collect(),
+        })
+    }
+}
+
+impl PocketCometTask {
+    fn summary(&self, source: &PocketCometTaskSourceSnapshot) -> TaskSummary {
+        let suffix = self
+            .id
+            .chars()
+            .rev()
+            .take(8)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>()
+            .to_ascii_uppercase();
+        TaskSummary {
+            reference: TaskRef {
+                provider: IssueTrackerProvider::PocketComet,
+                site_url: format!(
+                    "pocketcomet://workspace/{}/project/{}",
+                    source.workspace_id, source.pocketcomet_project_id
+                ),
+                issue_id: self.id.clone(),
+                issue_key: format!("PC-{suffix}"),
+                issue_url: format!("pocketcomet://task/{}", self.id),
+                title: self.title.clone(),
+            },
+            status_id: self.status_id.clone(),
+            status: self.status.clone(),
+            status_category: Some(self.status_category.clone()),
+            column: self.status.clone(),
+            assignee: self.assignee_name.clone(),
+            priority: (self.priority != "none").then(|| self.priority.clone()),
+            issue_type: Some(format!("{} task", self.list_name)),
+            labels: self.labels.clone(),
+            updated: Some(self.updated_at.to_string()),
+            created: Some(self.created_at.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

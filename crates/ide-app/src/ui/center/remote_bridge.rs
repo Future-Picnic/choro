@@ -1,13 +1,16 @@
 use super::*;
 
 use crate::remote::dto::{
-    AccessModeConfigurationDto, AgentDefaultsDto, AgentListItemDto, AgentOriginDto,
-    AgentSnapshotDto, AgentSyncStateDto, ApprovalDecisionDto, ChangedFileDto,
-    CommandAcceptedResponse, CompletedTurnDto, CompletedTurnsDto, ConfigurationCatalogDto,
-    DiffHunkDto, DiffLineDto, EffortConfigurationDto, FileDiffDto, InteractionModeDto,
-    MessageImageDto, ModelConfigurationDto, PendingApprovalDto, PendingOptionDto,
-    PendingQuestionDto, PendingUserInputDto, ProjectDto, ProviderConfigurationDto, RepositoryDto,
-    ShipStateDto, TimelineItemDto, VerificationItemDto,
+    AccessModeConfigurationDto, AcknowledgePocketCometTaskActionsRequest, AgentDefaultsDto,
+    AgentListItemDto, AgentOriginDto, AgentSnapshotDto, AgentSyncStateDto, ApprovalDecisionDto,
+    ChangedFileDto, ChoroDocumentAssetDto, ChoroDocumentDto, CommandAcceptedResponse,
+    CompletedTurnDto, CompletedTurnsDto, ConfigurationCatalogDto, DiffHunkDto, DiffLineDto,
+    EffortConfigurationDto, FileDiffDto, InteractionModeDto, MessageImageDto,
+    ModelConfigurationDto, PendingApprovalDto, PendingOptionDto, PendingQuestionDto,
+    PendingUserInputDto, PocketCometTaskAssetDto, ProjectDto, ProviderConfigurationDto,
+    RepositoryDto, ShipStateDto, SyncPocketCometTaskSourcesRequest,
+    SyncPocketCometTaskSourcesResponse, TimelineItemDto, UpsertChoroDocumentRequest,
+    VerificationItemDto,
 };
 use crate::remote::{RemoteCommand, RemoteError, RemoteResult};
 use crate::state::agent_chat::VerificationStatus;
@@ -26,6 +29,88 @@ impl CenterArea {
             }
             RemoteCommand::ListProjects { response } => {
                 let _ = response.send(Ok(self.remote_projects(cx)));
+            }
+            RemoteCommand::GetDocument {
+                project_id,
+                document_id,
+                response,
+            } => {
+                let result = parse_project_id(&project_id).and_then(|project_id| {
+                    self.remote_choro_document(project_id, &document_id, cx)
+                });
+                let _ = response.send(result);
+            }
+            RemoteCommand::UpsertDocument {
+                project_id,
+                document_id,
+                request,
+                response,
+            } => {
+                let result = parse_project_id(&project_id).and_then(|project_id| {
+                    self.remote_upsert_choro_document(project_id, &document_id, request, cx)
+                });
+                let _ = response.send(result);
+            }
+            RemoteCommand::StoreDocumentAsset {
+                project_id,
+                document_id,
+                mime,
+                bytes,
+                response,
+            } => {
+                let result = parse_project_id(&project_id).and_then(|project_id| {
+                    self.remote_store_choro_document_asset(
+                        project_id,
+                        &document_id,
+                        &mime,
+                        &bytes,
+                        cx,
+                    )
+                });
+                let _ = response.send(result);
+            }
+            RemoteCommand::StorePocketCometTaskAsset {
+                project_id,
+                task_id,
+                attachment_id,
+                mime,
+                bytes,
+                response,
+            } => {
+                let result = parse_project_id(&project_id).and_then(|project_id| {
+                    self.remote_store_pocketcomet_task_asset(
+                        project_id,
+                        &task_id,
+                        &attachment_id,
+                        &mime,
+                        &bytes,
+                        cx,
+                    )
+                });
+                let _ = response.send(result);
+            }
+            RemoteCommand::SyncPocketCometTaskSources {
+                device_id,
+                request,
+                response,
+            } => {
+                let result = self.remote_sync_pocketcomet_task_sources(&device_id, request, cx);
+                let _ = response.send(result);
+            }
+            RemoteCommand::AcknowledgePocketCometTaskActions {
+                device_id,
+                request,
+                response,
+            } => {
+                let result = self.remote_acknowledge_pocketcomet_task_actions(&device_id, request);
+                let _ = response.send(result);
+            }
+            RemoteCommand::RemovePocketCometTaskSources {
+                device_id,
+                response,
+            } => {
+                let result = self.remote_remove_pocketcomet_task_sources(&device_id, cx);
+                let _ = response.send(result);
             }
             RemoteCommand::ListAgents {
                 project_id,
@@ -558,6 +643,435 @@ impl CenterArea {
                     .detach();
             }
         }
+    }
+
+    fn remote_choro_document(
+        &mut self,
+        project_id: ProjectId,
+        document_id: &str,
+        cx: &mut Context<Self>,
+    ) -> RemoteResult<ChoroDocumentDto> {
+        let document_id = document_id.trim();
+        if document_id.is_empty() || document_id.len() > 500 {
+            return Err(RemoteError::bad_request(
+                "PocketComet document identity is invalid",
+            ));
+        }
+        let synced = self
+            .docs
+            .update(cx, |docs, cx| {
+                docs.pocketcomet_document(project_id, document_id, cx)
+            })
+            .map_err(|error| {
+                RemoteError::internal(format!("Could not read Choro document: {error:#}"))
+            })?
+            .ok_or_else(|| RemoteError::not_found("synced document not found"))?;
+        synced_choro_document_dto(project_id, synced)
+    }
+
+    fn remote_upsert_choro_document(
+        &mut self,
+        project_id: ProjectId,
+        document_id: &str,
+        request: UpsertChoroDocumentRequest,
+        cx: &mut Context<Self>,
+    ) -> RemoteResult<ChoroDocumentDto> {
+        let document_id = document_id.trim();
+        if document_id.is_empty() || document_id.len() > 500 {
+            return Err(RemoteError::bad_request(
+                "PocketComet document identity is invalid",
+            ));
+        }
+        if request.workspace_id.trim().is_empty()
+            || request.workspace_id.len() > 500
+            || request.pocketcomet_project_id.trim().is_empty()
+            || request.pocketcomet_project_id.len() > 500
+        {
+            return Err(RemoteError::bad_request(
+                "PocketComet document origin is invalid",
+            ));
+        }
+
+        let current = self
+            .docs
+            .update(cx, |docs, cx| {
+                docs.pocketcomet_document(project_id, document_id, cx)
+            })
+            .map_err(|error| {
+                RemoteError::internal(format!("Could not read Choro document: {error:#}"))
+            })?;
+        match (current.as_ref(), request.expected_revision.as_deref()) {
+            (Some(current), Some(expected)) if current.revision != expected => {
+                return Err(RemoteError::conflict(
+                    "The Choro document changed since PocketComet last synced",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(RemoteError::conflict(
+                    "The linked Choro document is no longer available",
+                ));
+            }
+            (Some(current), None)
+                if current.document.title != request.title.trim()
+                    || current.document.blocks != request.blocks =>
+            {
+                return Err(RemoteError::conflict(
+                    "A Choro document is already linked to this PocketComet page",
+                ));
+            }
+            (Some(current), None) => {
+                return synced_choro_document_dto(project_id, current.clone());
+            }
+            _ => {}
+        }
+
+        let origin = crate::state::docs::ChoroDocumentOrigin::PocketComet {
+            workspace_id: request.workspace_id,
+            project_id: request.pocketcomet_project_id,
+            document_id: document_id.to_string(),
+        };
+        let synced = self
+            .docs
+            .update(cx, |docs, cx| {
+                docs.upsert_pocketcomet_document(
+                    project_id,
+                    origin,
+                    &request.title,
+                    request.blocks,
+                    cx,
+                )
+            })
+            .map_err(|error| {
+                RemoteError::internal(format!("Could not save Choro document: {error:#}"))
+            })?;
+        synced_choro_document_dto(project_id, synced)
+    }
+
+    fn remote_store_choro_document_asset(
+        &mut self,
+        project_id: ProjectId,
+        document_id: &str,
+        mime: &str,
+        bytes: &[u8],
+        cx: &mut Context<Self>,
+    ) -> RemoteResult<ChoroDocumentAssetDto> {
+        let document_id = document_id.trim();
+        if document_id.is_empty() || document_id.len() > 500 {
+            return Err(RemoteError::bad_request(
+                "PocketComet document identity is invalid",
+            ));
+        }
+        let url = self
+            .docs
+            .update(cx, |docs, cx| {
+                docs.store_pocketcomet_asset(project_id, document_id, mime, bytes, cx)
+            })
+            .map_err(|error| {
+                RemoteError::internal(format!(
+                    "Could not store PocketComet document asset: {error:#}"
+                ))
+            })?;
+        Ok(ChoroDocumentAssetDto { url })
+    }
+
+    fn remote_sync_pocketcomet_task_sources(
+        &mut self,
+        device_id: &str,
+        request: SyncPocketCometTaskSourcesRequest,
+        cx: &mut Context<Self>,
+    ) -> RemoteResult<SyncPocketCometTaskSourcesResponse> {
+        const MAX_SOURCES: usize = 100;
+        const MAX_TASKS_PER_SOURCE: usize = 2_000;
+        const MAX_ASSIGNEES_PER_SOURCE: usize = 500;
+
+        if device_id.trim().is_empty() || device_id.len() > 500 {
+            return Err(RemoteError::bad_request(
+                "PocketComet device identity is invalid",
+            ));
+        }
+        if request.sources.len() > MAX_SOURCES {
+            return Err(RemoteError::bad_request(
+                "PocketComet can sync at most 100 mapped projects at once",
+            ));
+        }
+        if request.workspace_id.trim().is_empty() || request.workspace_id.len() > 500 {
+            return Err(RemoteError::bad_request(
+                "PocketComet workspace identity is invalid",
+            ));
+        }
+
+        let projects = self.workspace.read(cx).projects.clone();
+        let project_ids = projects
+            .iter()
+            .map(|project| project.id)
+            .collect::<HashSet<_>>();
+        let mut incoming = Vec::with_capacity(request.sources.len());
+        let mut identities = HashSet::new();
+        for source in request.sources {
+            let choro_project_id = parse_project_id(&source.choro_project_id)?;
+            if !project_ids.contains(&choro_project_id) {
+                return Err(RemoteError::not_found("mapped Choro project not found"));
+            }
+            if source.workspace_id != request.workspace_id
+                || source.pocketcomet_project_id.trim().is_empty()
+                || source.pocketcomet_project_id.len() > 500
+                || source.project_name.len() > 500
+            {
+                return Err(RemoteError::bad_request(
+                    "PocketComet task source identity is invalid",
+                ));
+            }
+            if source.tasks.len() > MAX_TASKS_PER_SOURCE {
+                return Err(RemoteError::bad_request(
+                    "A PocketComet task source can contain at most 2,000 tasks",
+                ));
+            }
+            if source.assignees.len() > MAX_ASSIGNEES_PER_SOURCE {
+                return Err(RemoteError::bad_request(
+                    "A PocketComet task source can contain at most 500 assignees",
+                ));
+            }
+            if source.statuses.len() > 100
+                || source.statuses.iter().any(|status| {
+                    !valid_pocketcomet_identity(&status.id)
+                        || status.name.trim().is_empty()
+                        || status.name.len() > 500
+                })
+            {
+                return Err(RemoteError::bad_request(
+                    "PocketComet task statuses are invalid",
+                ));
+            }
+            for task in &source.tasks {
+                if !valid_pocketcomet_identity(&task.id)
+                    || !valid_pocketcomet_identity(&task.list_id)
+                    || task.title.trim().is_empty()
+                    || task.title.len() > 500
+                    || task.description.len() > 12_000
+                    || task.comments.len() > 200
+                    || task.attachments.len() > 200
+                {
+                    return Err(RemoteError::bad_request(
+                        "A PocketComet task snapshot is invalid",
+                    ));
+                }
+                if task.comments.iter().any(|comment| {
+                    !valid_pocketcomet_identity(&comment.id)
+                        || comment.author_name.trim().is_empty()
+                        || comment.author_name.len() > 500
+                        || comment.body.len() > 20_000
+                }) {
+                    return Err(RemoteError::bad_request(
+                        "A PocketComet task comment is invalid",
+                    ));
+                }
+                for attachment in &task.attachments {
+                    if !valid_pocketcomet_identity(&attachment.id)
+                        || attachment.file_name.trim().is_empty()
+                        || attachment.file_name.len() > 500
+                        || ide_core::pocketcomet_task_asset_path(&attachment.asset_file).is_none()
+                    {
+                        return Err(RemoteError::bad_request(
+                            "A PocketComet task image is invalid or unavailable",
+                        ));
+                    }
+                }
+            }
+            let identity = (
+                source.workspace_id.clone(),
+                source.pocketcomet_project_id.clone(),
+            );
+            if !identities.insert(identity) {
+                return Err(RemoteError::bad_request(
+                    "PocketComet sent the same mapped project more than once",
+                ));
+            }
+            incoming.push((choro_project_id, source));
+        }
+
+        let snapshot_device_id = device_id.to_string();
+        let mut next_connections = projects
+            .iter()
+            .map(|project| {
+                let retained = project
+                    .task_tracker_connections
+                    .iter()
+                    .filter(|connection| {
+                        if connection.provider != ide_core::IssueTrackerProvider::PocketComet {
+                            return true;
+                        }
+                        ide_core::PocketCometTaskSourceSnapshot::from_connection(connection)
+                            .map(|snapshot| {
+                                snapshot.device_id != snapshot_device_id
+                                    || snapshot.workspace_id != request.workspace_id
+                            })
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (project.id, retained)
+            })
+            .collect::<HashMap<_, _>>();
+
+        for (choro_project_id, source) in incoming {
+            let existing = projects.iter().find_map(|project| {
+                project.task_tracker_connections.iter().find(|connection| {
+                    if connection.provider != ide_core::IssueTrackerProvider::PocketComet {
+                        return false;
+                    }
+                    ide_core::PocketCometTaskSourceSnapshot::from_connection(connection).is_ok_and(
+                        |snapshot| {
+                            snapshot.device_id == snapshot_device_id
+                                && snapshot.workspace_id == source.workspace_id
+                                && snapshot.pocketcomet_project_id == source.pocketcomet_project_id
+                        },
+                    )
+                })
+            });
+            let snapshot = ide_core::PocketCometTaskSourceSnapshot {
+                device_id: snapshot_device_id.clone(),
+                workspace_id: source.workspace_id.clone(),
+                pocketcomet_project_id: source.pocketcomet_project_id.clone(),
+                project_name: source.project_name.trim().to_string(),
+                statuses: source.statuses,
+                assignees: source.assignees,
+                tasks: source.tasks,
+            };
+            let provider_config_json = serde_json::to_string(&snapshot).map_err(|error| {
+                RemoteError::internal(format!(
+                    "Could not store the PocketComet task source: {error}"
+                ))
+            })?;
+            let connection = ide_core::TaskTrackerConnection {
+                id: existing
+                    .map(|connection| connection.id)
+                    .unwrap_or_else(Uuid::new_v4),
+                provider: ide_core::IssueTrackerProvider::PocketComet,
+                name: "PocketComet".to_string(),
+                site_url: format!(
+                    "pocketcomet://workspace/{}/project/{}",
+                    source.workspace_id, source.pocketcomet_project_id
+                ),
+                email: String::new(),
+                api_token: String::new(),
+                source_id: Some(source.pocketcomet_project_id.clone()),
+                source_name: Some(snapshot.project_name.clone()),
+                source_kind: Some("project".to_string()),
+                provider_config_json,
+                filters_json: existing
+                    .map(|connection| connection.filters_json.clone())
+                    .unwrap_or_else(|| "{}".to_string()),
+                board_id: None,
+                board_name: Some(snapshot.project_name.clone()),
+                assignee_filter: existing.and_then(|connection| connection.assignee_filter.clone()),
+                assignee_account_id: existing
+                    .and_then(|connection| connection.assignee_account_id.clone()),
+                assignee_display_name: existing
+                    .and_then(|connection| connection.assignee_display_name.clone()),
+            };
+            next_connections
+                .entry(choro_project_id)
+                .or_default()
+                .push(connection);
+        }
+
+        self.workspace.update(cx, |workspace, cx| {
+            for (project_id, connections) in next_connections {
+                let changed = workspace
+                    .projects
+                    .iter()
+                    .find(|project| project.id == project_id)
+                    .is_some_and(|project| project.task_tracker_connections != connections);
+                if changed {
+                    workspace.update_task_tracker_connections(project_id, connections, cx);
+                }
+            }
+        });
+        let actions = ide_core::pending_pocketcomet_task_actions(device_id, &request.workspace_id)
+            .map_err(|error| {
+                RemoteError::internal(format!(
+                    "Could not read pending PocketComet task actions: {error:#}"
+                ))
+            })?;
+        Ok(SyncPocketCometTaskSourcesResponse {
+            accepted: true,
+            actions,
+        })
+    }
+
+    fn remote_acknowledge_pocketcomet_task_actions(
+        &mut self,
+        device_id: &str,
+        request: AcknowledgePocketCometTaskActionsRequest,
+    ) -> RemoteResult<CommandAcceptedResponse> {
+        if !valid_pocketcomet_identity(device_id)
+            || !valid_pocketcomet_identity(&request.workspace_id)
+            || request.action_ids.len() > 100
+            || request
+                .action_ids
+                .iter()
+                .any(|action_id| Uuid::parse_str(action_id).is_err())
+        {
+            return Err(RemoteError::bad_request(
+                "PocketComet task action acknowledgement is invalid",
+            ));
+        }
+        ide_core::acknowledge_pocketcomet_task_actions(
+            device_id,
+            &request.workspace_id,
+            &request.action_ids,
+        )
+        .map_err(|error| {
+            RemoteError::internal(format!(
+                "Could not acknowledge PocketComet task actions: {error:#}"
+            ))
+        })?;
+        Ok(CommandAcceptedResponse { accepted: true })
+    }
+
+    fn remote_store_pocketcomet_task_asset(
+        &mut self,
+        project_id: ProjectId,
+        task_id: &str,
+        attachment_id: &str,
+        mime: &str,
+        bytes: &[u8],
+        cx: &mut Context<Self>,
+    ) -> RemoteResult<PocketCometTaskAssetDto> {
+        if !self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .any(|project| project.id == project_id)
+        {
+            return Err(RemoteError::not_found("mapped Choro project not found"));
+        }
+        if !valid_pocketcomet_identity(task_id) || !valid_pocketcomet_identity(attachment_id) {
+            return Err(RemoteError::bad_request(
+                "PocketComet task image identity is invalid",
+            ));
+        }
+        let asset_file = ide_core::store_pocketcomet_task_asset(mime, bytes).map_err(|error| {
+            RemoteError::internal(format!("Could not store PocketComet task image: {error:#}"))
+        })?;
+        Ok(PocketCometTaskAssetDto { asset_file })
+    }
+
+    fn remote_remove_pocketcomet_task_sources(
+        &mut self,
+        device_id: &str,
+        cx: &mut Context<Self>,
+    ) -> RemoteResult<CommandAcceptedResponse> {
+        if device_id.trim().is_empty() || device_id.len() > 500 {
+            return Err(RemoteError::bad_request(
+                "PocketComet device identity is invalid",
+            ));
+        }
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.remove_pocketcomet_task_sources_for_device(device_id, cx);
+        });
+        Ok(CommandAcceptedResponse { accepted: true })
     }
 
     fn remote_projects(&self, cx: &App) -> Vec<ProjectDto> {
@@ -1462,10 +1976,42 @@ fn parse_wire_value<T: serde::de::DeserializeOwned>(value: &str, field: &str) ->
         .map_err(|_| RemoteError::bad_request(format!("invalid {field}")))
 }
 
+fn synced_choro_document_dto(
+    project_id: ProjectId,
+    synced: crate::state::docs::SyncedChoroDocument,
+) -> RemoteResult<ChoroDocumentDto> {
+    let crate::state::docs::ChoroDocumentOrigin::PocketComet {
+        workspace_id,
+        project_id: pocketcomet_project_id,
+        document_id,
+    } = synced
+        .document
+        .origin
+        .ok_or_else(|| RemoteError::internal("synced Choro document has no origin"))?;
+    Ok(ChoroDocumentDto {
+        project_id: project_id.0.to_string(),
+        document_id,
+        workspace_id,
+        pocketcomet_project_id,
+        title: synced.entry.title,
+        blocks: synced.document.blocks,
+        relative_path: synced.entry.relative_path.to_string_lossy().to_string(),
+        revision: synced.revision,
+    })
+}
+
 fn parse_project_id(value: &str) -> RemoteResult<ProjectId> {
     Uuid::parse_str(value)
         .map(ProjectId)
         .map_err(|_| RemoteError::bad_request("invalid project id"))
+}
+
+fn valid_pocketcomet_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 500
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 fn parse_agent_id(value: &str) -> RemoteResult<Uuid> {

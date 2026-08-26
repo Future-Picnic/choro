@@ -147,7 +147,10 @@ impl ChangedFilesSummary {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.files.is_empty() && self.observed_files.is_empty()
+        self.files
+            .iter()
+            .chain(&self.observed_files)
+            .all(|file| Self::is_provider_private_artifact(&file.path))
     }
 
     pub fn from_activities<'a>(
@@ -184,6 +187,21 @@ impl ChangedFilesSummary {
             .retain(|file| !filter.is_artifact(&file.path));
     }
 
+    pub(crate) fn is_provider_private_artifact(path: &Path) -> bool {
+        let components = path.components().collect::<Vec<_>>();
+        components.windows(2).any(|pair| {
+            matches!(pair[0], Component::Normal(component) if component == ".claude")
+                && matches!(pair[1], Component::Normal(component) if component == "plans")
+        })
+    }
+
+    pub fn remove_provider_private_artifacts(&mut self) {
+        self.files
+            .retain(|file| !Self::is_provider_private_artifact(&file.path));
+        self.observed_files
+            .retain(|file| !Self::is_provider_private_artifact(&file.path));
+    }
+
     /// Collapse absolute and repository-relative spellings of the same path
     /// into one final receipt row. A command diff is a projection of the
     /// resulting worktree, so for a file the agent is known to have edited its
@@ -216,6 +234,7 @@ impl ChangedFilesSummary {
     pub fn reconciled_final_files(&self, repo_path: &Path) -> Self {
         let mut reconciled = self.clone();
         reconciled.reconcile_final_files(repo_path);
+        reconciled.remove_provider_private_artifacts();
         reconciled
     }
 
@@ -505,6 +524,32 @@ mod tests {
             Some(external),
             Path::new("src/chart.html")
         ));
+    }
+
+    #[test]
+    fn ignores_claude_private_plan_files_as_project_work() {
+        let private_plan = FileChangeStat::new(
+            "/Users/developer/.claude/plans/choro-memory-cosmic-pine.md",
+            127,
+            0,
+        );
+        let mut summary =
+            ChangedFilesSummary::attributed("plan-turn", vec![private_plan.clone()], Vec::new());
+
+        assert!(ChangedFilesSummary::is_provider_private_artifact(
+            &private_plan.path
+        ));
+        assert!(summary.is_empty());
+
+        summary
+            .files
+            .push(FileChangeStat::new("src/feature.rs", 4, 1));
+        assert!(!summary.is_empty());
+        summary.remove_provider_private_artifacts();
+        assert_eq!(
+            summary.files,
+            vec![FileChangeStat::new("src/feature.rs", 4, 1)]
+        );
     }
 
     #[test]

@@ -3,6 +3,18 @@ use super::*;
 impl Render for CenterArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_pending_voice_composer_actions(window, cx);
+        // Ask History is a global destination: it remains useful before a
+        // project is open and never leaves a native preview layered above it.
+        if self.view_mode == CenterMode::QuickAskHistory {
+            let web_preview_torn_down = self.web_host.update(cx, |host, _| host.set_intent(None));
+            let compare_preview_torn_down = self
+                .compare_web_host
+                .update(cx, |host, _| host.set_intent(None));
+            if web_preview_torn_down || compare_preview_torn_down {
+                web_preview::restore_focus(window);
+            }
+            return self.render_quick_ask_history(window, cx);
+        }
         let Some((project, _)) = self.active_project(cx) else {
             return v_flex()
                 .size_full()
@@ -290,6 +302,7 @@ impl Render for CenterArea {
             CenterMode::Tasks | CenterMode::MyTasks => {
                 self.render_tasks_section(project, window, cx)
             }
+            CenterMode::QuickAskHistory => self.render_quick_ask_history(window, cx),
             CenterMode::Db => self.render_db_section(project, cx),
             CenterMode::Services => self.render_services_section(project, cx),
             CenterMode::Docs => self.render_context_section(project, window, cx),

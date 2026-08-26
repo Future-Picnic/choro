@@ -156,6 +156,31 @@ impl CenterArea {
         self.view_mode == CenterMode::MyTasks
     }
 
+    /// Open the global Quick Ask archive in the center workspace. Keep the
+    /// current selection when it is still present; otherwise land on the
+    /// newest conversation so the detail pane is immediately useful.
+    pub fn show_quick_ask_history(&mut self, cx: &mut Context<Self>) {
+        let history = self.quick_ask.read(cx).history();
+        let selected_is_present = self.quick_ask_selected_session.is_some_and(|session_id| {
+            history
+                .iter()
+                .any(|exchange| exchange.session_id == session_id)
+        });
+        if !selected_is_present {
+            self.quick_ask_selected_session = history.first().map(|exchange| exchange.session_id);
+        }
+
+        let already_open = self.view_mode == CenterMode::QuickAskHistory;
+        self.set_view_mode(CenterMode::QuickAskHistory, cx);
+        if already_open {
+            cx.notify();
+        }
+    }
+
+    pub fn is_quick_ask_history_view(&self) -> bool {
+        self.view_mode == CenterMode::QuickAskHistory
+    }
+
     /// Tapping a task in the right nav opens its detail (leaving board view).
     pub fn show_task_detail(&mut self, cx: &mut Context<Self>) {
         self.tasks_detail_collapsed = false;

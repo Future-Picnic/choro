@@ -97,6 +97,10 @@ impl ClaudeBridgeRuntime {
         } else {
             super::CHORO_NATIVE_TOOL_INSTRUCTIONS.to_string()
         };
+        let system_prompt = super::append_choro_visualization_instructions(
+            system_prompt,
+            self.visualization_dir.as_deref(),
+        );
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.events
@@ -116,6 +120,7 @@ impl ClaudeBridgeRuntime {
             "effort": self.effort,
             "accessMode": self.access_mode.claude_permission_mode(),
             "systemPrompt": system_prompt,
+            "visualizationDir": self.visualization_dir,
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
             "designAssistant": is_design_assistant(&self.agent),

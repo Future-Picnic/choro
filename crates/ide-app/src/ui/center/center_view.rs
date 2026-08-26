@@ -15,6 +15,7 @@ impl CenterArea {
         doc_assistants: Entity<DocAssistantState>,
         penpot: Entity<PenpotState>,
         voice: Entity<VoiceState>,
+        quick_ask: Entity<QuickAskState>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -23,6 +24,11 @@ impl CenterArea {
         let composer_model_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search models or providers"));
         let orbit_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search records"));
+        let services_env_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search variables"));
+        let quick_ask_history_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search questions, answers, or projects")
+        });
         let penpot_config = penpot.read(cx).config().clone();
         let penpot_instance_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -75,6 +81,9 @@ impl CenterArea {
             .detach();
             cx.observe(&terminals, |_, _, cx| cx.notify()).detach();
             cx.observe(&agents, |_, _, cx| cx.notify()).detach();
+            cx.observe(&quick_ask, |_, _, cx| cx.notify()).detach();
+            cx.observe(&quick_ask_history_search, |_, _, cx| cx.notify())
+                .detach();
             cx.observe(&penpot, |_, _, cx| cx.notify()).detach();
             cx.subscribe(&penpot, |this: &mut Self, _, event: &PenpotEvent, cx| {
                 if let PenpotEvent::DesignCreated {
@@ -217,6 +226,12 @@ impl CenterArea {
             })
             .detach();
             cx.subscribe(&orbit_search, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            cx.subscribe(&services_env_search, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
                 }
@@ -648,6 +663,9 @@ impl CenterArea {
             .detach();
             Self {
                 workspace,
+                quick_ask,
+                quick_ask_selected_session: None,
+                quick_ask_history_search,
                 terminals,
                 agents,
                 agent_chats,
@@ -658,6 +676,8 @@ impl CenterArea {
                 services,
                 orbit,
                 orbit_search,
+                services_env_search,
+                services_env_filter: ServicesEnvFilter::All,
                 orbit_table_scroll: ScrollHandle::new(),
                 orbit_record_editor: None,
                 orbit_collapsed_sections: HashSet::new(),
@@ -695,7 +715,7 @@ impl CenterArea {
                 agent_chat_selected_commands: HashMap::new(),
                 agent_chat_capability_cache: RefCell::new(None),
                 agent_chat_preview_armed: HashSet::new(),
-                agent_chat_preview_suggestion_dismissed: HashMap::new(),
+                agent_chat_preview_suggestion_dismissed: HashSet::new(),
                 project_preview_review_ids_seen: HashSet::new(),
                 project_preview_ui: HashMap::new(),
                 project_preview_panel_ratio: PROJECT_PREVIEW_PANEL_DEFAULT_RATIO,

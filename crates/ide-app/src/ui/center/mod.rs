@@ -27,7 +27,7 @@ mod agent_lane;
 mod agent_launcher;
 mod agent_naming;
 mod agent_panel;
-mod attachment_helpers;
+pub(crate) mod attachment_helpers;
 mod center_docs_workspace;
 mod center_navigation;
 mod center_render;
@@ -50,6 +50,7 @@ mod pocketcomet;
 pub mod preset_bar;
 mod preview_control_ipc;
 mod preview_panel;
+mod quick_ask_history;
 mod remote_bridge;
 mod services;
 mod shutdown;
@@ -71,7 +72,7 @@ use self::agent_helpers::*;
 use self::attachment_helpers::*;
 use self::doc_helpers::*;
 use self::markdown::*;
-use self::services::OrbitRecordEditor;
+use self::services::{OrbitRecordEditor, ServicesEnvFilter};
 use self::time::*;
 
 use std::cell::RefCell;
@@ -107,14 +108,14 @@ use gpui_component::{
 use ide_core::git::BranchInfo;
 use ide_core::local_store::{
     classify_agent_request, AgentRequestKind, OrbitModuleDefinition, OrbitModuleId,
-    StoredAgentSummary, StoredProjectPreview,
+    StoredAgentSummary, StoredProjectPreview, StoredQuickAskExchange,
 };
 use ide_core::{
     doc_assistant, penpot_assistant, AgentAccessMode, AgentConnectedContextExtras,
     AgentConnectedDesign, AgentConnectedPullRequest, AgentEffort, AgentKind, AgentModel,
     AgentOrigin, AgentRecord, AgentRuntimeKind, AgentStatus, AppConfig, DocAssistantMessage,
     DocAssistantRecord, DocAssistantRole, DocAssistantTranscriptMessage, LaneProfile, Project,
-    ProjectId, ProjectReference, TaskDetail, TaskRef, TaskSummary,
+    ProjectActivityId, ProjectId, ProjectReference, TaskDetail, TaskRef, TaskSummary,
 };
 use uuid::Uuid;
 
@@ -134,8 +135,8 @@ use crate::state::{
     AgentCapability, AgentCapabilityCacheFile, AgentCapabilitySource, AgentChatState, AgentRecords,
     DesignsState, DocAssistantState, DocSaveStatus, DocsState, GitState, GitStates,
     OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel, OrbitEvent, OrbitState,
-    PenpotConnectionStatus, PenpotDesignSource, PenpotEvent, PenpotState, ServicesScanKind,
-    ServicesState, SessionId, TasksState, TerminalManager, Workspace,
+    PenpotConnectionStatus, PenpotDesignSource, PenpotEvent, PenpotState, QuickAskState,
+    ServicesScanKind, ServicesState, SessionId, TasksState, TerminalManager, Workspace,
 };
 use crate::ui::agent_status_style::{status_accent, status_dot, status_icon, status_menu_row};
 use crate::ui::branch_icon::{branch_icon, pr_icon};
@@ -327,8 +328,8 @@ struct NewAgentComposer {
     solo_base: Option<String>,
     /// Routes this draft to Choro's native project Preview via `preview_open`.
     preview_armed: bool,
-    /// Exact prompt text for which the optional Preview suggestion was hidden.
-    preview_suggestion_dismissed: Option<String>,
+    /// Whether automatic Preview activation was dismissed for this draft.
+    preview_suggestion_dismissed: bool,
     selected_mentions: Vec<ComposerMentionToken>,
     attached_files: Vec<PathBuf>,
     /// Clipboard images currently being written off the GPUI thread.
@@ -929,8 +930,12 @@ fn choro_preview_intent(text: &str) -> ChoroPreviewIntent {
     }
 }
 
-fn should_suggest_choro_preview(text: &str, armed: bool, dismissed: Option<&str>) -> bool {
-    !armed && choro_preview_intent(text) == ChoroPreviewIntent::Suggest && dismissed != Some(text)
+fn should_auto_arm_choro_preview(text: &str, dismissed: bool) -> bool {
+    !dismissed && choro_preview_intent(text) == ChoroPreviewIntent::Automatic
+}
+
+fn should_suggest_choro_preview(text: &str, armed: bool, dismissed: bool) -> bool {
+    !armed && !dismissed && choro_preview_intent(text) == ChoroPreviewIntent::Suggest
 }
 
 fn agent_chat_slash_query(text: &str) -> Option<AgentChatSlashQuery> {
@@ -1696,6 +1701,8 @@ pub enum CenterMode {
     Tasks,
     /// Cross-project "My Tasks" list (to-do + in-progress), full height.
     MyTasks,
+    /// Global Quick Ask conversations, grouped by their disposable panel session.
+    QuickAskHistory,
     /// Database collection viewers, full height.
     Db,
     /// Project context editor/reference viewer, full height.
@@ -1719,6 +1726,36 @@ pub enum ProjectActivity {
     Services,
 }
 
+impl ProjectActivity {
+    pub fn persisted_id(self) -> Option<ProjectActivityId> {
+        match self {
+            Self::Agents => Some(ProjectActivityId::Agents),
+            Self::Code => Some(ProjectActivityId::Code),
+            Self::Tasks => Some(ProjectActivityId::Tasks),
+            Self::Docs => Some(ProjectActivityId::Docs),
+            Self::Design => Some(ProjectActivityId::Design),
+            Self::Db => Some(ProjectActivityId::Db),
+            Self::Designs => Some(ProjectActivityId::Assets),
+            Self::Services => Some(ProjectActivityId::Orbit),
+            Self::PocketComet => None,
+        }
+    }
+
+    pub fn from_persisted_id(activity: ProjectActivityId) -> Option<Self> {
+        match activity {
+            ProjectActivityId::Agents => Some(Self::Agents),
+            ProjectActivityId::Code => Some(Self::Code),
+            ProjectActivityId::Tasks => Some(Self::Tasks),
+            ProjectActivityId::Docs => Some(Self::Docs),
+            ProjectActivityId::Design => Some(Self::Design),
+            ProjectActivityId::Db => Some(Self::Db),
+            ProjectActivityId::Assets => Some(Self::Designs),
+            ProjectActivityId::Orbit => Some(Self::Services),
+            ProjectActivityId::Unknown => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ContextMode {
     #[default]
@@ -1730,7 +1767,7 @@ impl CenterMode {
     pub fn activity(self) -> ProjectActivity {
         match self {
             CenterMode::Split | CenterMode::Files | CenterMode::Terminal => ProjectActivity::Code,
-            CenterMode::Agents => ProjectActivity::Agents,
+            CenterMode::Agents | CenterMode::QuickAskHistory => ProjectActivity::Agents,
             CenterMode::PocketComet => ProjectActivity::PocketComet,
             CenterMode::Tasks | CenterMode::MyTasks => ProjectActivity::Tasks,
             CenterMode::Db => ProjectActivity::Db,
@@ -1854,6 +1891,9 @@ struct ProjectPreviewNavigationBarrier {
 /// files) and a separate terminals section below it.
 pub struct CenterArea {
     workspace: Entity<Workspace>,
+    quick_ask: Entity<QuickAskState>,
+    quick_ask_selected_session: Option<Uuid>,
+    quick_ask_history_search: Entity<InputState>,
     terminals: Entity<TerminalManager>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
@@ -1864,6 +1904,8 @@ pub struct CenterArea {
     services: Entity<ServicesState>,
     orbit: Entity<OrbitState>,
     orbit_search: Entity<InputState>,
+    services_env_search: Entity<InputState>,
+    services_env_filter: ServicesEnvFilter,
     orbit_table_scroll: ScrollHandle,
     orbit_record_editor: Option<OrbitRecordEditor>,
     orbit_collapsed_sections: HashSet<(ProjectId, Uuid, String)>,
@@ -1934,8 +1976,8 @@ pub struct CenterArea {
     agent_auto_names_requested: HashSet<Uuid>,
     /// Draft-scoped native Project Preview attachments.
     agent_chat_preview_armed: HashSet<Uuid>,
-    /// Exact draft for which the optional Preview suggestion was dismissed.
-    agent_chat_preview_suggestion_dismissed: HashMap<Uuid, String>,
+    /// Agent chats where automatic Preview activation was dismissed for the current draft.
+    agent_chat_preview_suggestion_dismissed: HashSet<Uuid>,
     /// Preview review ids already accepted by this Choro process.
     project_preview_review_ids_seen: HashSet<Uuid>,
     /// Preview UI is scoped to its project and shared only by that project's

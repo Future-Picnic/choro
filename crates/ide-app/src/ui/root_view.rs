@@ -23,8 +23,8 @@ use ide_core::git::BranchInfo;
 
 use crate::actions::{
     CloseTab, NavigateBack, NavigateForward, NewAgentChat, NewTerminal, NextOpenItem, OpenCommands,
-    OpenContentSearch, OpenFolder, OpenOrbitSettings, OpenProjectSearch, OpenSettings,
-    PreviousOpenItem, QuickAddTask, QuitApplication, SaveFile, StopCurrentAgent,
+    OpenContentSearch, OpenFolder, OpenOrbitSettings, OpenProjectSearch, OpenQuickAsk,
+    OpenSettings, PreviousOpenItem, QuickAddTask, QuitApplication, SaveFile, StopCurrentAgent,
     ToggleAgentPlanMode, ToggleFocusMode, ToggleHandsFreeDictation, ToggleLeftPanel, TogglePreview,
     ToggleRightPanel, ToggleTerminalArea, ToggleVoiceDictation, ToggleVoiceDirector, ViewAgents,
     ViewCode, ViewDb, ViewDesign, ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit,
@@ -33,8 +33,8 @@ use crate::actions::{
 use crate::remote::dto::RemoteEvent;
 use crate::state::{
     AgentActivityCache, AgentCapabilityCacheFile, AgentChatState, AgentRecords, DesignsState,
-    DocAssistantState, DocsState, GitStates, OrbitState, PenpotState, ServicesState, TasksState,
-    TerminalManager, Workspace,
+    DocAssistantState, DocsState, GitStates, OrbitState, PenpotState, QuickAskState, ServicesState,
+    TasksState, TerminalManager, Workspace,
 };
 use crate::ui::agents_panel::AgentsPanel;
 use crate::ui::branch_icon::branch_icon;
@@ -52,6 +52,7 @@ use crate::ui::onboarding::OnboardingTour;
 use crate::ui::project_list::ProjectList;
 use crate::ui::project_search::ProjectSearch;
 use crate::ui::project_visuals::project_icon_element;
+use crate::ui::quick_ask::QuickAskModal;
 use crate::ui::right_panel::RightPanel;
 use crate::ui::settings::{SettingsSection, SettingsView};
 use crate::ui::style;
@@ -186,6 +187,7 @@ pub struct RootView {
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
     voice: Entity<VoiceState>,
+    quick_ask: Entity<QuickAskState>,
     project_list: Entity<ProjectList>,
     center: Entity<CenterArea>,
     title_preset_bar: Entity<PresetBar>,
@@ -282,6 +284,7 @@ impl RootView {
         let penpot = PenpotState::view(cx);
         penpot.update(cx, |penpot, cx| penpot.ensure_auto_provisioned(cx));
         let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
+        let quick_ask = cx.new(|cx| QuickAskState::load(workspace.clone(), cx));
         let center = CenterArea::view(
             workspace.clone(),
             terminals.clone(),
@@ -296,6 +299,7 @@ impl RootView {
             doc_assistants,
             penpot.clone(),
             voice.clone(),
+            quick_ask.clone(),
             window,
             cx,
         );
@@ -518,6 +522,7 @@ impl RootView {
                 agents,
                 agent_chats,
                 voice,
+                quick_ask,
                 project_list,
                 center,
                 title_preset_bar,
@@ -679,6 +684,11 @@ impl RootView {
         self.voice_push_to_talk_binding = None;
         self.voice
             .update(cx, |voice, cx| voice.finish_push_to_talk(cx));
+        // CenterArea intentionally does not observe every microphone-level
+        // update. Refresh it once at release so the target composer can show
+        // the comparatively slow transcription phase without repainting the
+        // full conversation for every live meter sample.
+        self.center.update(cx, |_, cx| cx.notify());
     }
 
     fn push_to_talk_key_released(&self, event: &KeyUpEvent, cx: &App) -> bool {
@@ -910,7 +920,11 @@ impl Render for RootView {
             "Hold {voice_shortcut} to dictate · {hands_off_shortcut} hands off · {assistant_shortcut} Assistant"
         );
         let voice_capsule_assistant = voice_active && !voice_dictation_active;
-        let voice_capsule_mode_chip = if voice_capsule_assistant {
+        let voice_transcribing =
+            voice_dictation_active && matches!(&voice_phase, VoicePhase::Transcribing);
+        let voice_capsule_mode_chip = if voice_transcribing {
+            Some("Transcribing")
+        } else if voice_capsule_assistant {
             Some("Assistant")
         } else if continuous_dictation_active {
             Some("Hands off")
@@ -934,7 +948,9 @@ impl Render for RootView {
             .clone()
             .map(|view| self.render_settings_screen(view, cx));
         let activity = self.center.read(cx).activity();
+        let quick_ask_history_open = self.center.read(cx).is_quick_ask_history_view();
         let show_context_panel = self.show_right
+            && !quick_ask_history_open
             && activity != crate::ui::center::ProjectActivity::Design
             && activity != crate::ui::center::ProjectActivity::PocketComet;
 
@@ -1098,7 +1114,9 @@ impl Render for RootView {
                                                                     crate::ui::design::t3(cx)
                                                                 }),
                                                         )
-                                                        .when(voice_active, |content| {
+                                                        .when(
+                                                            voice_active && !voice_transcribing,
+                                                            |content| {
                                                             const BAR_WEIGHTS: [f32; 7] = [
                                                                 0.48, 0.78, 1.0, 0.66, 0.9, 0.72,
                                                                 0.44,
@@ -1130,6 +1148,13 @@ impl Render for RootView {
                                                                                 )
                                                                         },
                                                                     )),
+                                                            )
+                                                            },
+                                                        )
+                                                        .when(voice_transcribing, |content| {
+                                                            content.child(
+                                                                gpui_component::spinner::Spinner::new()
+                                                                    .xsmall(),
                                                             )
                                                         })
                                                         .when_some(
@@ -1289,6 +1314,15 @@ impl Render for RootView {
                         crate::ui::quick_task::QuickTaskModal::open(
                             this.workspace.clone(),
                             this.tasks.clone(),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenQuickAsk, window, cx| {
+                        QuickAskModal::open(
+                            this.workspace.clone(),
+                            this.quick_ask.clone(),
+                            this.center.clone(),
                             window,
                             cx,
                         );
@@ -1455,6 +1489,7 @@ impl Render for RootView {
                                                             self.workspace.clone();
                                                         let center_for_my_tasks =
                                                             self.center.clone();
+                                                        let ask_history_center = self.center.clone();
                                                         v_flex()
                                                             .w_full()
                                                             .px_2()
@@ -1671,6 +1706,25 @@ impl Render for RootView {
                                                                     }
                                                                     project_workspace.update(cx, |workspace, cx| {
                                                                         workspace.open_folder_dialog(cx)
+                                                                    });
+                                                                }),
+                                                            )
+                                                            .child(
+                                                                crate::ui::style::sidebar_navigation_row(
+                                                                    "left-sidebar-ask-history",
+                                                                    IconName::BookOpen,
+                                                                    "Ask History",
+                                                                    cx,
+                                                                )
+                                                                .tooltip(|window, cx| {
+                                                                    gpui_component::tooltip::Tooltip::new(
+                                                                        "Quick questions across all projects",
+                                                                    )
+                                                                    .build(window, cx)
+                                                                })
+                                                                .on_click(move |_, _, cx| {
+                                                                    ask_history_center.update(cx, |center, cx| {
+                                                                        center.show_quick_ask_history(cx)
                                                                     });
                                                                 }),
                                                             )

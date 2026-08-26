@@ -71,6 +71,7 @@ fn codex_exec_command(
     working_directory: &Path,
     output_path: &Path,
     model: &str,
+    images: &[PathBuf],
 ) -> anyhow::Result<Command> {
     let mut command = Command::new(codex_cli_path()?);
     command
@@ -92,7 +93,11 @@ fn codex_exec_command(
         .arg("--color")
         .arg("never")
         .arg("--output-last-message")
-        .arg(output_path)
+        .arg(output_path);
+    for image in images {
+        command.arg("--image").arg(image);
+    }
+    command
         .arg("-")
         .current_dir(working_directory)
         .stdin(Stdio::piped())
@@ -105,10 +110,11 @@ fn run_codex_generation(
     repo: &Path,
     model: &str,
     prompt: String,
+    images: &[PathBuf],
     timeout: Duration,
 ) -> anyhow::Result<String> {
     let output_path = codex_output_path();
-    let mut child = codex_exec_command(repo, &output_path, model)?
+    let mut child = codex_exec_command(repo, &output_path, model, images)?
         .spawn()
         .map_err(|error| anyhow::anyhow!("Failed to start Codex CLI: {error}"))?;
 
@@ -205,10 +211,95 @@ fn validate_generation_cli_path(
     Ok(path)
 }
 
+const MAX_GENERATION_IMAGES: usize = 5;
+const MAX_GENERATION_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_GENERATION_IMAGE_BYTES_TOTAL: u64 = 25 * 1024 * 1024;
+
+fn generation_image_media_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn validate_generation_images(images: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    anyhow::ensure!(
+        images.len() <= MAX_GENERATION_IMAGES,
+        "Attach at most {MAX_GENERATION_IMAGES} images"
+    );
+    let mut total_bytes = 0_u64;
+    let mut validated = Vec::with_capacity(images.len());
+    for path in images {
+        anyhow::ensure!(
+            generation_image_media_type(path).is_some(),
+            "Quick Ask supports PNG, JPEG, GIF, and WebP images"
+        );
+        let path = std::fs::canonicalize(path)
+            .map_err(|error| anyhow::anyhow!("Could not open {}: {error}", path.display()))?;
+        let metadata = std::fs::metadata(&path)?;
+        anyhow::ensure!(metadata.is_file(), "{} is not a file", path.display());
+        anyhow::ensure!(
+            metadata.len() <= MAX_GENERATION_IMAGE_BYTES,
+            "{} is larger than 10 MB",
+            path.display()
+        );
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        anyhow::ensure!(
+            total_bytes <= MAX_GENERATION_IMAGE_BYTES_TOTAL,
+            "Attached images exceed the 25 MB total limit"
+        );
+        validated.push(path);
+    }
+    Ok(validated)
+}
+
+fn claude_stream_json_input(prompt: &str, images: &[PathBuf]) -> anyhow::Result<String> {
+    use base64::Engine as _;
+
+    let mut content = vec![serde_json::json!({ "type": "text", "text": prompt })];
+    for path in images {
+        let media_type = generation_image_media_type(path)
+            .ok_or_else(|| anyhow::anyhow!("Unsupported image: {}", path.display()))?;
+        let bytes = std::fs::read(path)?;
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        content.push(serde_json::json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": data,
+            }
+        }));
+    }
+    let message = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": content }
+    });
+    Ok(format!("{}\n", serde_json::to_string(&message)?))
+}
+
 fn run_streamed_generation(
+    generation_agent: &GenerationAgent,
+    repo: &Path,
+    prompt: String,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    run_streamed_generation_with_images(generation_agent, repo, prompt, &[], timeout)
+}
+
+fn run_streamed_generation_with_images(
     generation_agent: &GenerationAgent,
     _repo: &Path,
     prompt: String,
+    images: &[PathBuf],
     timeout: Duration,
 ) -> anyhow::Result<String> {
     // Generation prompts already contain every diff and metadata field the
@@ -228,13 +319,18 @@ fn run_streamed_generation(
             generation_agent.provider.label()
         )
     })?;
+    let images = validate_generation_images(images)?;
     if generation_agent.provider == AgentKind::Codex {
-        return run_codex_generation(working_directory, model, prompt, timeout);
+        return run_codex_generation(working_directory, model, prompt, &images, timeout);
     }
 
     match generation_agent.provider {
-        AgentKind::Claude => run_claude_generation(working_directory, model, prompt, timeout),
-        AgentKind::OpenCode => run_open_code_generation(working_directory, model, prompt, timeout),
+        AgentKind::Claude => {
+            run_claude_generation(working_directory, model, prompt, &images, timeout)
+        }
+        AgentKind::OpenCode => {
+            run_open_code_generation(working_directory, model, prompt, &images, timeout)
+        }
         AgentKind::Codex => unreachable!(),
     }
 }
@@ -248,6 +344,18 @@ pub(crate) fn run_safe_text_generation(
     timeout: Duration,
 ) -> anyhow::Result<String> {
     run_streamed_generation(generation_agent, Path::new("."), prompt, timeout)
+}
+
+/// Multimodal variant of [`run_safe_text_generation`]. Images use each
+/// provider's native request format while generation remains tool-free in the
+/// same empty disposable directory.
+pub(crate) fn run_safe_text_generation_with_images(
+    generation_agent: &GenerationAgent,
+    prompt: String,
+    images: &[PathBuf],
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    run_streamed_generation_with_images(generation_agent, Path::new("."), prompt, images, timeout)
 }
 
 /// Run the configured small-writing model in the same isolated, no-tools path
@@ -265,25 +373,34 @@ fn run_claude_generation(
     working_directory: &Path,
     model: &str,
     prompt: String,
+    images: &[PathBuf],
     timeout: Duration,
 ) -> anyhow::Result<String> {
+    let input_body = if images.is_empty() {
+        prompt
+    } else {
+        claude_stream_json_input(&prompt, images)?
+    };
     let mut command = Command::new(generation_cli_path(AgentKind::Claude)?);
+    command.args([
+        "--print",
+        "--safe-mode",
+        "--no-session-persistence",
+        "--disable-slash-commands",
+        "--strict-mcp-config",
+        "--permission-mode",
+        "dontAsk",
+        "--tools",
+        "",
+        "--output-format",
+        "text",
+        "--model",
+        model,
+    ]);
+    if !images.is_empty() {
+        command.args(["--input-format", "stream-json"]);
+    }
     command
-        .args([
-            "--print",
-            "--safe-mode",
-            "--no-session-persistence",
-            "--disable-slash-commands",
-            "--strict-mcp-config",
-            "--permission-mode",
-            "dontAsk",
-            "--tools",
-            "",
-            "--output-format",
-            "text",
-            "--model",
-            model,
-        ])
         .env(
             "PATH",
             crate::state::agent_chat::protocol::agent_command_path_env(),
@@ -296,7 +413,7 @@ fn run_claude_generation(
         .spawn()
         .map_err(|error| anyhow::anyhow!("Failed to start Claude CLI: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes())?;
+        stdin.write_all(input_body.as_bytes())?;
     }
     finish_captured_generation(child, timeout, "Claude")
 }
@@ -332,24 +449,28 @@ fn run_open_code_generation(
     working_directory: &Path,
     model: &str,
     prompt: String,
+    images: &[PathBuf],
     timeout: Duration,
 ) -> anyhow::Result<String> {
     let executable = generation_cli_path(AgentKind::OpenCode)?;
     let temporary_title = format!("choro-generation-{}", uuid::Uuid::new_v4().simple());
     let mut command = Command::new(&executable);
+    command.args([
+        "--pure",
+        "run",
+        "--format",
+        "json",
+        "--model",
+        model,
+        "--agent",
+        "choro-text-generation",
+        "--title",
+        &temporary_title,
+    ]);
+    for image in images {
+        command.arg("--file").arg(image);
+    }
     command
-        .args([
-            "--pure",
-            "run",
-            "--format",
-            "json",
-            "--model",
-            model,
-            "--agent",
-            "choro-text-generation",
-            "--title",
-            &temporary_title,
-        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1427,5 +1548,31 @@ mod tests {
             parse_open_code_generation_output(output),
             (Some("ses_123".to_string()), "Generated title".to_string())
         );
+    }
+
+    #[test]
+    fn claude_multimodal_input_contains_the_prompt_and_image_payload() {
+        let image = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/app-icon/app-icon-demo-1024.png");
+        let images = validate_generation_images(&[image]).expect("valid bundled image");
+        let input = claude_stream_json_input("Describe this image", &images).unwrap();
+        let event: serde_json::Value = serde_json::from_str(input.trim()).unwrap();
+        let content = event
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_array)
+            .unwrap();
+
+        assert_eq!(
+            content[0].get("text").and_then(|value| value.as_str()),
+            Some("Describe this image")
+        );
+        assert_eq!(
+            content[1].pointer("/source/media_type"),
+            Some(&serde_json::json!("image/png"))
+        );
+        assert!(content[1]
+            .pointer("/source/data")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|data| !data.is_empty()));
     }
 }

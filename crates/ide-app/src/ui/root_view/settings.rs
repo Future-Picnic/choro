@@ -86,6 +86,7 @@ impl RootView {
         } else {
             let view = SettingsView::new(
                 self.workspace.clone(),
+                self.quick_ask.clone(),
                 self.penpot.clone(),
                 self.voice.clone(),
                 self.orbit.clone(),
@@ -117,6 +118,7 @@ impl RootView {
     ) {
         let view = SettingsView::new_in_section(
             self.workspace.clone(),
+            self.quick_ask.clone(),
             self.penpot.clone(),
             self.voice.clone(),
             self.orbit.clone(),

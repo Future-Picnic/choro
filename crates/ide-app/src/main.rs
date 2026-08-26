@@ -60,6 +60,7 @@ fn main() {
         cx.bind_keys(ui::project_search::bindings());
         cx.bind_keys(ui::command_palette::bindings());
         cx.bind_keys(ui::content_search::bindings());
+        cx.bind_keys(ui::quick_ask::bindings());
         cx.bind_keys(ui::quick_task::bindings());
         cx.bind_keys(vec![
             KeyBinding::new("shift-enter", Enter { secondary: false }, Some("Input")),

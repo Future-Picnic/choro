@@ -11,6 +11,8 @@ pub(super) struct TaskConnectionRow {
     board_id: Entity<InputState>,
     board_name: Entity<InputState>,
     pr_done_status: Entity<InputState>,
+    provider_config_json: String,
+    filters_json: String,
     pub(super) assignee_filter: Option<String>,
     pub(super) assignee_account_id: Option<String>,
     pub(super) assignee_display_name: Option<String>,
@@ -232,6 +234,8 @@ impl TaskTrackerConnectionsEditor {
                     .placeholder("e.g. In Review")
                     .default_value(conn.pr_done_status().unwrap_or_default())
             }),
+            provider_config_json: conn.provider_config_json.clone(),
+            filters_json: conn.filters_json.clone(),
             assignee_filter: conn.assignee_filter.clone(),
             assignee_account_id: conn.assignee_account_id.clone(),
             assignee_display_name: conn.assignee_display_name.clone(),
@@ -307,7 +311,7 @@ impl TaskTrackerConnectionsEditor {
                 let site_url = row.site_url.read(cx).value().trim().to_string();
                 let email = row.email.read(cx).value().trim().to_string();
                 let api_token = row.api_token.read(cx).value().trim().to_string();
-                if api_token.is_empty() {
+                if api_token.is_empty() && row.provider != IssueTrackerProvider::PocketComet {
                     return None;
                 }
                 if row.provider == IssueTrackerProvider::Jira
@@ -355,8 +359,8 @@ impl TaskTrackerConnectionsEditor {
                     source_id,
                     source_name,
                     source_kind: Some(provider_source_kind(row.provider).to_string()),
-                    provider_config_json: "{}".to_string(),
-                    filters_json: "{}".to_string(),
+                    provider_config_json: row.provider_config_json.clone(),
+                    filters_json: row.filters_json.clone(),
                     board_id,
                     board_name: (row.provider == IssueTrackerProvider::Jira)
                         .then_some(board_name)
@@ -368,7 +372,11 @@ impl TaskTrackerConnectionsEditor {
                     assignee_account_id,
                     assignee_display_name,
                 };
-                Some(connection.with_pr_done_status(pr_done_status))
+                if row.provider == IssueTrackerProvider::PocketComet {
+                    Some(connection)
+                } else {
+                    Some(connection.with_pr_done_status(pr_done_status))
+                }
             })
             .collect()
     }
@@ -387,6 +395,8 @@ impl TaskTrackerConnectionsEditor {
                 board_id: row.board_id.clone(),
                 board_name: row.board_name.clone(),
                 pr_done_status: row.pr_done_status.clone(),
+                provider_config_json: row.provider_config_json.clone(),
+                filters_json: row.filters_json.clone(),
                 assignee_filter: row.assignee_filter.clone(),
                 assignee_account_id: row.assignee_account_id.clone(),
                 assignee_display_name: row.assignee_display_name.clone(),
@@ -636,31 +646,33 @@ impl TaskTrackerConnectionsEditor {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        crate::ui::style::destructive_icon_button(
-                            ("remove-task-connection", ix),
-                            cx,
-                        )
-                        .flex_none()
-                        .tooltip("Remove connection")
-                        .on_click(cx.listener(move |_, _, window, cx| {
-                            let editor = cx.entity();
-                            let removal_detail = removal_detail.clone();
-                            crate::ui::confirm::ConfirmDialog::new(
-                                "Remove task connection?",
-                                "This removes the connection from this list. The change is applied only when you save the task connections.",
+                    .when(row.provider != IssueTrackerProvider::PocketComet, |summary| {
+                        summary.child(
+                            crate::ui::style::destructive_icon_button(
+                                ("remove-task-connection", ix),
+                                cx,
                             )
-                            .detail(removal_detail)
-                            .confirm_label("Remove")
-                            .confirm_id("confirm-remove-task-connection")
-                            .on_confirm(move |_, cx| {
-                                editor.update(cx, |editor, cx| {
-                                    editor.remove_connection(connection_id, cx);
-                                });
-                            })
-                            .open(window, cx);
-                        })),
-                    )
+                            .flex_none()
+                            .tooltip("Remove connection")
+                            .on_click(cx.listener(move |_, _, window, cx| {
+                                let editor = cx.entity();
+                                let removal_detail = removal_detail.clone();
+                                crate::ui::confirm::ConfirmDialog::new(
+                                    "Remove task connection?",
+                                    "This removes the connection from this list. The change is applied only when you save the task connections.",
+                                )
+                                .detail(removal_detail)
+                                .confirm_label("Remove")
+                                .confirm_id("confirm-remove-task-connection")
+                                .on_confirm(move |_, cx| {
+                                    editor.update(cx, |editor, cx| {
+                                        editor.remove_connection(connection_id, cx);
+                                    });
+                                })
+                                .open(window, cx);
+                            })),
+                        )
+                    })
             }))
             .when(self.choosing_provider, |list| {
                 list.child(self.render_provider_picker(cx))
@@ -821,113 +833,131 @@ impl Render for TaskTrackerConnectionsEditor {
                                         div()
                                             .text_size(crate::ui::design::text_ui())
                                             .text_color(crate::ui::design::t3(cx))
-                                            .child(
-                                            "Issues become read-only cards you can run agents on",
-                                        ),
+                                            .child(if row.provider == IssueTrackerProvider::PocketComet {
+                                                "Synced automatically from the mapped PocketComet project"
+                                            } else {
+                                                "Issues become read-only cards you can run agents on"
+                                            }),
                                     ),
                             ),
                     )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(form_field_label("Connection name", cx))
-                            .child(Input::new(&row.name)),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(form_field_label("Site URL", cx))
-                            .child(Input::new(&row.site_url)),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_3()
-                            .items_start()
-                            .when(row.provider == IssueTrackerProvider::Jira, |fields| {
-                                fields.child(
-                                    v_flex()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .gap_1()
-                                        .child(form_field_label("Email", cx))
-                                        .child(Input::new(&row.email)),
+                    .when(row.provider == IssueTrackerProvider::PocketComet, |form| {
+                        let source = row.board_name.read(cx).value().trim().to_string();
+                        form.child(
+                            v_flex()
+                                .w_full()
+                                .gap_1()
+                                .child(form_field_label("Mapped PocketComet project", cx))
+                                .child(
+                                    div()
+                                        .text_size(crate::ui::design::text_body())
+                                        .text_color(crate::ui::design::t1(cx))
+                                        .child(SharedString::from(source)),
                                 )
-                            })
+                                .child(
+                                    div()
+                                        .text_size(crate::ui::design::text_ui())
+                                        .text_color(crate::ui::design::t3(cx))
+                                        .child("Change or remove this mapping from PocketComet project settings."),
+                                ),
+                        )
+                    })
+                    .when(row.provider != IssueTrackerProvider::PocketComet, |form| {
+                        form
                             .child(
                                 v_flex()
-                                    .flex_1()
-                                    .min_w(px(0.))
+                                    .w_full()
                                     .gap_1()
-                                    .child(form_field_label("API token", cx))
-                                    .child(Input::new(&row.api_token).mask_toggle()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_ui())
-                            .line_height(gpui::relative(1.45))
-                            .text_color(crate::ui::design::t3(cx))
-                            .child(SharedString::from(format!(
-                                "Paste a token, or reference an env var like ${{{}_API_TOKEN}}.",
-                                row.provider.label().to_uppercase()
-                            ))),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(form_field_label(provider_source_label(row.provider), cx))
+                                    .child(form_field_label("Connection name", cx))
+                                    .child(Input::new(&row.name)),
+                            )
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .child(form_field_label("Site URL", cx))
+                                    .child(Input::new(&row.site_url)),
+                            )
                             .child(
                                 h_flex()
                                     .w_full()
-                                    .gap_2()
-                                    .items_center()
+                                    .gap_3()
+                                    .items_start()
+                                    .when(row.provider == IssueTrackerProvider::Jira, |fields| {
+                                        fields.child(
+                                            v_flex()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .gap_1()
+                                                .child(form_field_label("Email", cx))
+                                                .child(Input::new(&row.email)),
+                                        )
+                                    })
                                     .child(
-                                        div()
+                                        v_flex()
                                             .flex_1()
                                             .min_w(px(0.))
-                                            .child(Input::new(&row.board_name)),
-                                    )
-                                    .child(div().w(px(96.)).child(Input::new(&row.board_id)))
-                                    .child(
-                                        crate::ui::style::secondary_button_compact(
-                                            ("load-jira-boards", ix),
-                                            if row.loading_boards {
-                                                "Fetching"
-                                            } else {
-                                                "Fetch"
-                                            },
-                                        )
-                                        .custom(crate::ui::style::dialog_neutral_variant(cx))
-                                        .icon(IconName::LoaderCircle)
-                                        .flex_none()
-                                        .disabled(row.loading_boards)
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.load_boards(ix, cx);
-                                            }),
-                                        ),
+                                            .gap_1()
+                                            .child(form_field_label("API token", cx))
+                                            .child(Input::new(&row.api_token).mask_toggle()),
                                     ),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(form_field_label("Suggested status when a PR is done", cx))
-                            .child(Input::new(&row.pr_done_status))
+                            )
                             .child(
                                 div()
                                     .text_size(crate::ui::design::text_ui())
+                                    .line_height(gpui::relative(1.45))
                                     .text_color(crate::ui::design::t3(cx))
+                                    .child(SharedString::from(format!(
+                                        "Paste a token, or reference an env var like ${{{}_API_TOKEN}}.",
+                                        row.provider.label().to_uppercase()
+                                    ))),
+                            )
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .child(form_field_label(provider_source_label(row.provider), cx))
                                     .child(
-                                        "Pre-selected on the ship card after a PR — never applied automatically.",
+                                        h_flex()
+                                            .w_full()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .child(Input::new(&row.board_name)),
+                                            )
+                                            .child(div().w(px(96.)).child(Input::new(&row.board_id)))
+                                            .child(
+                                                crate::ui::style::secondary_button_compact(
+                                                    ("load-jira-boards", ix),
+                                                    if row.loading_boards { "Fetching" } else { "Fetch" },
+                                                )
+                                                .custom(crate::ui::style::dialog_neutral_variant(cx))
+                                                .icon(IconName::LoaderCircle)
+                                                .flex_none()
+                                                .disabled(row.loading_boards)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.load_boards(ix, cx);
+                                                })),
+                                            ),
                                     ),
-                            ),
-                    )
+                            )
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .child(form_field_label("Suggested status when a PR is done", cx))
+                                    .child(Input::new(&row.pr_done_status))
+                                    .child(
+                                        div()
+                                            .text_size(crate::ui::design::text_ui())
+                                            .text_color(crate::ui::design::t3(cx))
+                                            .child("Pre-selected on the ship card after a PR — never applied automatically."),
+                                    ),
+                            )
+                    })
                     .when(row.provider != IssueTrackerProvider::Personal, |card| {
                         card.child(
                             h_flex()
@@ -1130,8 +1160,8 @@ impl Render for TaskTrackerConnectionsEditor {
                             ),
                         ))
                     })
-                    .child(
-                        v_flex()
+                    .when(row.provider != IssueTrackerProvider::PocketComet, |form| {
+                        form.child(v_flex()
                             .w_full()
                             .rounded(crate::ui::design::r_sm())
                             .border_1()
@@ -1179,8 +1209,8 @@ impl Render for TaskTrackerConnectionsEditor {
                                         },
                                     ),
                                 )
-                            }),
-                    )
+                            }))
+                    })
             }))
             .into_any_element()
     }

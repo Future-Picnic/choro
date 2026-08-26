@@ -29,7 +29,8 @@ pub use agents::{
 pub use blocking_guard::mark_ui_thread;
 pub use branding::{APP_ID, APP_NAME, DOCS_DIR_NAME};
 pub use config::{
-    AppConfig, CompletionNotifications, NotificationSettings, VoiceAnnouncements, VoiceSettings,
+    AppConfig, CompletionNotifications, NotificationSettings, ProjectActivityId,
+    VoiceAnnouncements, VoiceSettings,
 };
 pub use db::{
     DatabaseHandle, DbObject, DbObjectKind, DocEntry, DocPage, MongoHandle, TableColumn,
@@ -53,10 +54,14 @@ pub use services::{
     SubAppServices,
 };
 pub use task_tracker::{
+    acknowledge_pocketcomet_task_actions, is_valid_pocketcomet_task_asset_file,
+    pending_pocketcomet_task_actions, pocketcomet_task_asset_path, store_pocketcomet_task_asset,
     IssueTrackerProvider, JiraBoard, JiraClient, JiraUser, PersonalTaskComment,
-    PersonalTaskPriority, PersonalTaskRecord, PersonalTaskStatus, TaskAttachment, TaskBoard,
-    TaskBoardColumn, TaskComment, TaskContentBlock, TaskDetail, TaskInlineImage, TaskRef,
-    TaskRichText, TaskStatusOption, TaskSummary, TaskTrackerClient, TaskTrackerConnection,
-    TaskTrackerSource, TaskTrackerUser,
+    PersonalTaskPriority, PersonalTaskRecord, PersonalTaskStatus, PocketCometTask,
+    PocketCometTaskAction, PocketCometTaskActionCommand, PocketCometTaskAssignee,
+    PocketCometTaskAttachment, PocketCometTaskComment, PocketCometTaskSourceSnapshot,
+    PocketCometTaskStatus, TaskAttachment, TaskBoard, TaskBoardColumn, TaskComment,
+    TaskContentBlock, TaskDetail, TaskInlineImage, TaskRef, TaskRichText, TaskStatusOption,
+    TaskSummary, TaskTrackerClient, TaskTrackerConnection, TaskTrackerSource, TaskTrackerUser,
 };
 pub use watcher::{GitWatcher, WorktreeWatcher};

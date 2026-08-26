@@ -8,12 +8,14 @@
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, App, Div, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement,
-    ParentElement, SharedString, Stateful, Styled,
+    div, px, AnyElement, App, ClipboardItem, Div, ElementId, Entity, FontWeight, Hsla,
+    InteractiveElement, IntoElement, ParentElement, SharedString, Stateful, Styled,
 };
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
-    h_flex, v_flex, Icon, IconName, Selectable, Sizable,
+    h_flex,
+    input::{Input, InputState},
+    v_flex, Icon, IconName, Selectable, Sizable,
 };
 
 use crate::ui::design;
@@ -901,7 +903,86 @@ pub fn sidebar_footer_button(
     ghost_button_compact(id, label).icon(icon)
 }
 
+/// A destination row that exactly matches the established expanded-sidebar
+/// geometry without changing the incumbent rows around it.
+pub fn sidebar_navigation_row(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .w_full()
+        .h(px(32.))
+        .px_3()
+        .gap_2()
+        .items_center()
+        .rounded(design::r_sm())
+        .cursor_pointer()
+        .hover(|row| row.bg(design::surface(cx)))
+        .child(
+            Icon::new(icon)
+                .size(design::icon())
+                .text_color(design::t3(cx)),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .text_size(design::text_body())
+                .font_weight(FontWeight::NORMAL)
+                .text_color(design::t2(cx))
+                .child(label.into()),
+        )
+}
+
+/// A compact selectable row in the master column of a center workspace. Rich
+/// content stays flush with the column instead of inheriting Button internals.
+pub fn master_list_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_h(px(56.))
+        .rounded(design::r_sm())
+        .cursor_pointer()
+        .when(selected, |row| row.bg(design::surface_2(cx)))
+        .hover(|row| row.bg(design::surface(cx)))
+}
+
 // ---- composer controls -------------------------------------------------
+
+/// The canonical text editor embedded by both agent composers and lightweight
+/// assistant composers. Keeping the appearance here means focus, native text
+/// input, multiline layout, and theme colors cannot drift between surfaces.
+pub fn composer_text_input(input: &Entity<InputState>) -> Input {
+    Input::new(input)
+        .appearance(false)
+        .bordered(false)
+        .focus_bordered(false)
+        .w_full()
+        .min_w(px(0.))
+}
+
+/// The canonical active-composer frame shared by agent chat and Quick Ask.
+/// Surface, border, elevation, padding, and minimum height live here so a
+/// lightweight assistant can omit agent-only controls without drifting into a
+/// different composer.
+pub fn composer_frame(cx: &App) -> Div {
+    v_flex()
+        .relative()
+        .w_full()
+        .min_w(px(0.))
+        .min_h(design::composer_frame_h())
+        .rounded(design::r_lg())
+        .border_1()
+        .border_color(design::line_2(cx))
+        .bg(design::focus(cx))
+        .shadow(design::shadow())
+        .px_3p5()
+        .pt_3p5()
+        .pb_3()
+}
 
 /// A "loose" composer control: an optional leading glyph, the value label, and
 /// an inline caret — no fill or border box. Controls read as a quiet strip
@@ -1660,6 +1741,22 @@ pub fn voice_mode_chip(label: impl Into<SharedString>, cx: &App) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(design::t2(cx))
         .child(label.into())
+}
+
+/// Inline feedback inside the composer that owns an in-flight dictation.
+/// Keeping this beside the future transcript makes the post-release pause
+/// read as active work instead of a stuck microphone.
+pub fn composer_voice_transcribing(cx: &App) -> Div {
+    h_flex()
+        .w_full()
+        .min_h(px(20.))
+        .gap_1p5()
+        .items_center()
+        .text_size(design::text_ui())
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(design::accent(cx))
+        .child(gpui_component::spinner::Spinner::new().xsmall())
+        .child("Transcribing voice…")
 }
 
 /// A full-width option inside a compact configuration popover. Selection is
@@ -2503,6 +2600,62 @@ pub fn chat_notice(cx: &App) -> Div {
         .border_color(crate::ui::design::rose(cx))
         .text_size(design::text_ui())
         .text_color(crate::ui::design::rose(cx))
+}
+
+/// The canonical agent failure strip. Full agent chats and lightweight
+/// assistant surfaces share it so failed turns always use the same recoverable
+/// "Needs attention" treatment.
+pub fn agent_attention_strip(
+    copy_button_id: impl Into<ElementId>,
+    error: impl Into<String>,
+    cx: &App,
+) -> Div {
+    let error = error.into();
+    let copy_error = error.clone();
+    let readable_error = error.replace('/', "/\u{200b}");
+
+    h_flex()
+        .w_full()
+        .px_3()
+        .py_2()
+        .gap_2()
+        .items_start()
+        .border_b_1()
+        .border_color(design::rose(cx).opacity(0.2))
+        .bg(design::rose(cx).opacity(0.08))
+        .child(
+            Icon::new(IconName::TriangleAlert)
+                .size(design::icon())
+                .text_color(design::rose(cx)),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_size(design::text_ui())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(design::rose(cx))
+                        .child("Needs attention"),
+                )
+                .child(
+                    div()
+                        .whitespace_normal()
+                        .text_size(design::text_ui())
+                        .line_height(gpui::relative(1.45))
+                        .text_color(design::rose(cx))
+                        .child(readable_error),
+                ),
+        )
+        .child(
+            ghost_button_compact(copy_button_id, "Copy error")
+                .icon(IconName::Copy)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_error.clone()));
+                }),
+        )
 }
 
 /// The small numbered badge in a multiple-choice option. Selected = solid

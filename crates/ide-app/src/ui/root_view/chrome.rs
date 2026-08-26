@@ -1,9 +1,24 @@
 use super::*;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+use ide_core::ProjectActivityId;
 
 enum RailIcon {
     Component(IconName),
     Lucide(lucide_icons::Icon),
+}
+
+fn project_activity_label(activity: ProjectActivityId) -> &'static str {
+    match activity {
+        ProjectActivityId::Agents => "Agents",
+        ProjectActivityId::Code => "Code",
+        ProjectActivityId::Tasks => "Tasks",
+        ProjectActivityId::Docs => "Docs",
+        ProjectActivityId::Design => "Design",
+        ProjectActivityId::Db => "DB",
+        ProjectActivityId::Assets => "Assets",
+        ProjectActivityId::Orbit => "Orbit",
+        ProjectActivityId::Unknown => "Unknown",
+    }
 }
 
 impl RootView {
@@ -320,6 +335,89 @@ impl RootView {
             )
     }
 
+    fn activity_customizer(
+        &self,
+        project_id: ide_core::ProjectId,
+        pinned: Vec<ProjectActivityId>,
+        current: ProjectActivity,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let workspace = self.workspace.clone();
+        let center = self.center.clone();
+        let has_override = workspace.read(cx).has_project_activity_override(project_id);
+        let defaults = workspace.read(cx).default_project_activities.clone();
+        let current_id = current.persisted_id();
+
+        style::rail_footer_button(
+            "rail-customize-activities",
+            IconName::Settings2,
+            "Customize",
+            cx,
+        )
+        .tooltip("Customize project activities")
+        .dropdown_menu_with_anchor(gpui::Corner::TopRight, move |menu, _, _| {
+            let menu = ProjectActivityId::ALL.iter().copied().fold(
+                menu.min_w(px(220.))
+                    .item(PopupMenuItem::label("PROJECT ACTIVITIES")),
+                |menu, activity| {
+                    let checked = pinned.contains(&activity);
+                    let only_pinned = checked && pinned.len() == 1;
+                    let fallback = pinned
+                        .iter()
+                        .copied()
+                        .find(|candidate| *candidate != activity)
+                        .and_then(ProjectActivity::from_persisted_id);
+                    let workspace = workspace.clone();
+                    let center = center.clone();
+                    menu.item(
+                        PopupMenuItem::new(project_activity_label(activity))
+                            .checked(checked)
+                            .disabled(only_pinned)
+                            .on_click(move |_, _, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.set_project_activity_pinned(
+                                        project_id, activity, !checked, cx,
+                                    );
+                                });
+                                if checked && current_id == Some(activity) {
+                                    if let Some(fallback) = fallback {
+                                        center.update(cx, |center, cx| {
+                                            center.show_activity(fallback, cx)
+                                        });
+                                    }
+                                }
+                            }),
+                    )
+                },
+            );
+
+            let workspace = workspace.clone();
+            let center = center.clone();
+            let fallback = defaults
+                .first()
+                .copied()
+                .and_then(ProjectActivity::from_persisted_id);
+            let defaults_for_reset = defaults.clone();
+            menu.item(PopupMenuItem::separator()).item(
+                PopupMenuItem::new("Reset to default")
+                    .icon(IconName::Undo2)
+                    .disabled(!has_override)
+                    .on_click(move |_, _, cx| {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.reset_project_activities(project_id, cx)
+                        });
+                        if current_id
+                            .is_some_and(|activity| !defaults_for_reset.contains(&activity))
+                        {
+                            if let Some(fallback) = fallback {
+                                center.update(cx, |center, cx| center.show_activity(fallback, cx));
+                            }
+                        }
+                    }),
+            )
+        })
+    }
+
     /// The center's back/forward history controls. Rendered in the header when
     /// the sidebar is collapsed, and in the sidebar's top zone when it's open.
     pub(super) fn nav_history_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -570,7 +668,27 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let activity = self.center.read(cx).activity();
+        let quick_ask_history_open = self.center.read(cx).is_quick_ask_history_view();
         let active_project = self.workspace.read(cx).active;
+        let onboarding_project = active_project
+            .is_some_and(|project_id| crate::ui::onboarding::is_project(project_id, cx));
+        let mut visible_activities = active_project
+            .map(|project_id| self.workspace.read(cx).project_activities(project_id))
+            .unwrap_or_else(ide_core::config::default_pinned_project_activities);
+        if onboarding_project {
+            for required in ide_core::config::default_pinned_project_activities() {
+                if !visible_activities.contains(&required) {
+                    visible_activities.push(required);
+                }
+            }
+        }
+        // An activity opened from a keyboard shortcut or the command palette
+        // remains locatable while active, even if it is normally unpinned.
+        if let Some(active_id) = activity.persisted_id() {
+            if !visible_activities.contains(&active_id) {
+                visible_activities.push(active_id);
+            }
+        }
         let design_connection_pending = self.penpot.read(cx).connection_pending();
         let design_connection_needs_attention = self.penpot.read(cx).connection_needs_attention();
         let pocketcomet_paired = self
@@ -588,7 +706,7 @@ impl RootView {
                     target: ProjectActivity,
                     cx: &mut Context<Self>| {
             let center = self.center.clone();
-            let selected = activity == target;
+            let selected = !quick_ask_history_open && activity == target;
             let is_docs = target == ProjectActivity::Docs;
             let is_tasks = target == ProjectActivity::Tasks;
             let design_connection_color = (target == ProjectActivity::Design)
@@ -705,6 +823,83 @@ impl RootView {
                 })
         };
 
+        let activity_items = [
+            (
+                "rail-agents",
+                RailIcon::Component(IconName::Bot),
+                "Agents",
+                ProjectActivity::Agents,
+                ProjectActivityId::Agents,
+            ),
+            (
+                "rail-code",
+                RailIcon::Component(IconName::PanelBottomOpen),
+                "Code",
+                ProjectActivity::Code,
+                ProjectActivityId::Code,
+            ),
+            (
+                "rail-tasks",
+                RailIcon::Component(crate::ui::design::tasks_icon()),
+                "Tasks",
+                ProjectActivity::Tasks,
+                ProjectActivityId::Tasks,
+            ),
+            (
+                "rail-docs",
+                RailIcon::Component(crate::ui::design::docs_icon()),
+                "Docs",
+                ProjectActivity::Docs,
+                ProjectActivityId::Docs,
+            ),
+            (
+                "rail-design",
+                RailIcon::Component(crate::ui::design::design_icon()),
+                "Design",
+                ProjectActivity::Design,
+                ProjectActivityId::Design,
+            ),
+            (
+                "rail-db",
+                RailIcon::Component(IconName::Database),
+                "DB",
+                ProjectActivity::Db,
+                ProjectActivityId::Db,
+            ),
+            (
+                "rail-designs",
+                RailIcon::Lucide(lucide_icons::Icon::Bookmark),
+                "Assets",
+                ProjectActivity::Designs,
+                ProjectActivityId::Assets,
+            ),
+            (
+                "rail-services",
+                RailIcon::Component(IconName::Network),
+                "Orbit",
+                ProjectActivity::Services,
+                ProjectActivityId::Orbit,
+            ),
+        ]
+        .into_iter()
+        .filter(|(_, _, _, _, persisted)| visible_activities.contains(persisted))
+        .map(|(id, icon, label, target, _)| item(id, icon, label, target, cx))
+        .collect::<Vec<_>>();
+
+        let customizer = (on_right && !onboarding_project)
+            .then(|| {
+                active_project.map(|project_id| {
+                    self.activity_customizer(
+                        project_id,
+                        self.workspace.read(cx).project_activities(project_id),
+                        activity,
+                        cx,
+                    )
+                    .into_any_element()
+                })
+            })
+            .flatten();
+
         v_flex()
             .flex_none()
             .w(px(if on_right { 66. } else { 60. }))
@@ -733,62 +928,8 @@ impl RootView {
                         .border_color(style::hairline(cx)),
                 )
             })
-            .child(item(
-                "rail-agents",
-                RailIcon::Component(IconName::Bot),
-                "Agents",
-                ProjectActivity::Agents,
-                cx,
-            ))
-            .child(item(
-                "rail-code",
-                RailIcon::Component(IconName::PanelBottomOpen),
-                "Code",
-                ProjectActivity::Code,
-                cx,
-            ))
-            .child(item(
-                "rail-tasks",
-                RailIcon::Component(crate::ui::design::tasks_icon()),
-                "Tasks",
-                ProjectActivity::Tasks,
-                cx,
-            ))
-            .child(item(
-                "rail-design",
-                RailIcon::Component(crate::ui::design::design_icon()),
-                "Design",
-                ProjectActivity::Design,
-                cx,
-            ))
-            .child(item(
-                "rail-docs",
-                RailIcon::Component(crate::ui::design::docs_icon()),
-                "Docs",
-                ProjectActivity::Docs,
-                cx,
-            ))
-            .child(item(
-                "rail-db",
-                RailIcon::Component(IconName::Database),
-                "DB",
-                ProjectActivity::Db,
-                cx,
-            ))
-            .child(item(
-                "rail-designs",
-                RailIcon::Lucide(lucide_icons::Icon::Bookmark),
-                "Assets",
-                ProjectActivity::Designs,
-                cx,
-            ))
-            .child(item(
-                "rail-services",
-                RailIcon::Component(IconName::Network),
-                "Orbit",
-                ProjectActivity::Services,
-                cx,
-            ))
+            .children(activity_items)
+            .when_some(customizer, |rail, customizer| rail.child(customizer))
             // Right rail: a flexible spacer (carrying the divider) pushes the
             // Settings cell to the bottom, VS Code-style.
             .when(on_right, |rail| {

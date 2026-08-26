@@ -167,7 +167,7 @@ impl CenterArea {
 
         let content = v_flex()
             .w_full()
-            .max_w(crate::ui::design::agent_chat_content_max_w())
+            .max_w(crate::ui::design::center_content_frame_max_w())
             .mx_auto()
             .px(crate::ui::design::agent_chat_gutter_x())
             .py(crate::ui::design::center_column_pad_y())
@@ -705,7 +705,7 @@ impl CenterArea {
                 .child(
                     v_flex()
                         .w_full()
-                        .max_w(crate::ui::design::agent_chat_content_max_w())
+                        .max_w(crate::ui::design::center_content_frame_max_w())
                         .mx_auto()
                         .px(crate::ui::design::agent_chat_gutter_x())
                         .py(crate::ui::design::center_column_pad_y())

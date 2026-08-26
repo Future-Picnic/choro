@@ -10,6 +10,7 @@ use gpui::{App, AppContext, Context, Entity, EventEmitter};
 use ide_core::branding::{migrate_legacy_doc_path, LEGACY_DOCS_DIR_NAME};
 use ide_core::{AgentStatus, Project, ProjectId};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use velotype::Editor as VelotypeEditor;
 
@@ -78,6 +79,33 @@ pub struct ChoroDocument {
     pub format: String,
     pub title: String,
     pub blocks: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ChoroDocumentOrigin>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChoroDocumentOrigin {
+    PocketComet {
+        workspace_id: String,
+        project_id: String,
+        document_id: String,
+    },
+}
+
+impl ChoroDocumentOrigin {
+    pub fn pocketcomet_document_id(&self) -> &str {
+        match self {
+            Self::PocketComet { document_id, .. } => document_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncedChoroDocument {
+    pub entry: DocEntry,
+    pub document: ChoroDocument,
+    pub revision: String,
 }
 
 impl ChoroDocument {
@@ -99,6 +127,22 @@ impl ChoroDocument {
                 .filter(|block_type| !block_type.trim().is_empty());
             if block_type.is_none() {
                 anyhow::bail!("Choro document block {index} has no valid type");
+            }
+        }
+        if let Some(ChoroDocumentOrigin::PocketComet {
+            workspace_id,
+            project_id,
+            document_id,
+        }) = self.origin.as_ref()
+        {
+            for (label, value) in [
+                ("workspace", workspace_id),
+                ("project", project_id),
+                ("document", document_id),
+            ] {
+                if value.trim().is_empty() || value.len() > 500 {
+                    anyhow::bail!("PocketComet {label} identity is invalid");
+                }
             }
         }
         Ok(())
@@ -805,6 +849,163 @@ impl DocsState {
         Ok(document)
     }
 
+    /// Return the Choro document linked to one PocketComet wiki page. The
+    /// source identity lives in the human-readable document envelope, so a
+    /// title/file rename never breaks the link.
+    pub fn pocketcomet_document(
+        &mut self,
+        project: ProjectId,
+        document_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<SyncedChoroDocument>> {
+        let project_info = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .find(|item| item.id == project)
+            .cloned()
+            .context("project not found")?;
+        let mut matches = scan_project_docs(&project_info)
+            .into_iter()
+            .filter_map(|entry| {
+                let document = read_choro_document(&entry.path).ok()?;
+                document
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.pocketcomet_document_id() == document_id)
+                    .then_some(entry)
+            });
+        let Some(mut entry) = matches.next() else {
+            return Ok(None);
+        };
+        if matches.next().is_some() {
+            anyhow::bail!("more than one Choro document is linked to this PocketComet page");
+        }
+        if self.web_dirty.contains(&entry.path) {
+            self.persist_web_document_now(&entry.path)
+                .context("failed to save Choro edits before syncing")?;
+        }
+        let mut document = read_choro_document(&entry.path)?;
+        document.validate()?;
+        // Choro's visible title is owned by the file name. Keep the API and
+        // PocketComet indicator aligned even for legacy documents whose
+        // envelope title predates a local rename.
+        entry.title = doc_title_from_path(&entry.path);
+        document.title = entry.title.clone();
+        let revision = choro_document_revision(&entry.title, &document.blocks)?;
+        Ok(Some(SyncedChoroDocument {
+            entry,
+            document,
+            revision,
+        }))
+    }
+
+    /// Create or replace the local side of a PocketComet document link. This
+    /// writes atomically, preserves Choro's backup behavior, refreshes an open
+    /// editor, and never removes an existing document.
+    pub fn upsert_pocketcomet_document(
+        &mut self,
+        project: ProjectId,
+        origin: ChoroDocumentOrigin,
+        title: &str,
+        blocks: Vec<serde_json::Value>,
+        cx: &mut Context<Self>,
+    ) -> Result<SyncedChoroDocument> {
+        let project_info = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .find(|item| item.id == project)
+            .cloned()
+            .context("project not found")?;
+        let document_id = origin.pocketcomet_document_id().to_string();
+        let clean_title = title.trim();
+        let clean_title = if clean_title.is_empty() {
+            "Untitled"
+        } else {
+            clean_title
+        };
+        let mut document = ChoroDocument {
+            version: 1,
+            format: "blocknote".to_string(),
+            title: clean_title.to_string(),
+            blocks,
+            origin: Some(origin),
+        };
+        sanitize_choro_document(&mut document);
+        document.validate()?;
+
+        let existing = self.pocketcomet_document(project, &document_id, cx)?;
+        let path = if let Some(existing) = existing {
+            let path = existing.entry.path;
+            write_choro_document(&path, &document)
+                .context("failed to update synced Choro document")?;
+            self.web_documents.insert(path.clone(), document.clone());
+            self.web_saved_documents
+                .insert(path.clone(), document.clone());
+            self.web_dirty.remove(&path);
+            self.editor_modified
+                .insert(path.clone(), file_modified(&path));
+            self.save_status.insert(path.clone(), DocSaveStatus::Saved);
+            self.rename_doc_to_title(project, &path, clean_title, cx)?
+        } else {
+            let root = docs_dir(&project_info.path);
+            fs::create_dir_all(&root).context("failed to create docs directory")?;
+            let path = unique_doc_path(&root, clean_title);
+            write_choro_document(&path, &document)
+                .context("failed to create synced Choro document")?;
+            self.web_documents.insert(path.clone(), document.clone());
+            self.web_saved_documents
+                .insert(path.clone(), document.clone());
+            self.editor_modified
+                .insert(path.clone(), file_modified(&path));
+            self.save_status.insert(path.clone(), DocSaveStatus::Saved);
+            self.refresh(cx);
+            path
+        };
+        let entry = synced_doc_entry(&project_info, path);
+        let revision = choro_document_revision(&entry.title, &document.blocks)?;
+        cx.emit(DocsEvent::Changed);
+        cx.notify();
+        Ok(SyncedChoroDocument {
+            entry,
+            document,
+            revision,
+        })
+    }
+
+    /// Store PocketComet media beside its linked Choro document. Content-
+    /// addressed names make retries idempotent and keep authenticated Convex
+    /// storage URLs out of the portable document JSON.
+    pub fn store_pocketcomet_asset(
+        &mut self,
+        project: ProjectId,
+        document_id: &str,
+        mime: &str,
+        bytes: &[u8],
+        cx: &mut Context<Self>,
+    ) -> Result<String> {
+        if bytes.is_empty() {
+            anyhow::bail!("PocketComet sent an empty document asset");
+        }
+        let synced = self
+            .pocketcomet_document(project, document_id, cx)?
+            .context("the linked Choro document is not available")?;
+        let extension = pocketcomet_asset_extension(mime);
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let file_name = format!("pocketcomet-{:x}.{extension}", hasher.finalize());
+        let asset_dir = synced.entry.path.with_extension("assets");
+        fs::create_dir_all(&asset_dir).context("failed to create Choro document assets")?;
+        let path = asset_dir.join(&file_name);
+        if !path.is_file() {
+            write_atomic(&path, bytes).context("failed to store PocketComet document asset")?;
+        }
+        Ok(format!("choro-asset://localhost/{file_name}"))
+    }
+
     /// Accept a validated document snapshot from the embedded editor and
     /// debounce the disk write. The WebView host updates its own snapshot before
     /// this runs, so the following repaint does not feed the same content back
@@ -1289,6 +1490,7 @@ fn choro_document(title: &str, blocks: serde_json::Value) -> ChoroDocument {
         format: "blocknote".to_string(),
         title: title.to_string(),
         blocks: serde_json::from_value(blocks).expect("built-in BlockNote blocks are valid JSON"),
+        origin: None,
     }
 }
 
@@ -1430,6 +1632,47 @@ pub fn scan_project_docs(project: &Project) -> Vec<DocEntry> {
             .cmp(&right.relative_path.to_string_lossy().to_lowercase())
     });
     docs
+}
+
+fn synced_doc_entry(project: &Project, path: PathBuf) -> DocEntry {
+    let relative_path =
+        project_relative_doc_path(&project.path, &path).unwrap_or_else(|| path.clone());
+    DocEntry {
+        project: project.id,
+        project_name: project.name.clone(),
+        project_path: project.path.clone(),
+        title: doc_title_from_path(&path),
+        modified: file_modified(&path),
+        is_template: false,
+        path,
+        relative_path,
+    }
+}
+
+fn choro_document_revision(title: &str, blocks: &[serde_json::Value]) -> Result<String> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "title": title,
+        "blocks": blocks,
+    }))
+    .context("failed to hash Choro document")?;
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn pocketcomet_asset_extension(mime: &str) -> &'static str {
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "video/mp4" => "mp4",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "application/pdf" => "pdf",
+        _ => "bin",
+    }
 }
 
 fn collect_choro_docs(project: &Project, docs_root: &Path, dir: &Path, docs: &mut Vec<DocEntry>) {
@@ -1717,11 +1960,14 @@ fn merge_choro_documents(
     let title = choose_three_way(&base.title, &local.title, &external.title)
         .context("the document title changed on both sides")?;
     let blocks = merge_block_arrays(&base.blocks, &local.blocks, &external.blocks)?;
+    let origin = choose_three_way(&base.origin, &local.origin, &external.origin)
+        .context("the document origin changed on both sides")?;
     Ok(ChoroDocument {
         version: 1,
         format: "blocknote".to_string(),
         title,
         blocks,
+        origin,
     })
 }
 
@@ -1821,7 +2067,16 @@ mod tests {
             format: "blocknote".to_string(),
             title: "Spec".to_string(),
             blocks,
+            origin: None,
         }
+    }
+
+    #[test]
+    fn pocketcomet_asset_extensions_are_derived_only_from_supported_mime_types() {
+        assert_eq!(pocketcomet_asset_extension("image/png"), "png");
+        assert_eq!(pocketcomet_asset_extension(" IMAGE/JPEG "), "jpg");
+        assert_eq!(pocketcomet_asset_extension("image/svg+xml"), "svg");
+        assert_eq!(pocketcomet_asset_extension("text/html"), "bin");
     }
 
     #[test]

@@ -88,9 +88,13 @@ impl CenterArea {
             .and_then(|id| self.tasks.read(cx).load_personal_task(project, id));
 
         let is_personal = summary.reference.provider == ide_core::IssueTrackerProvider::Personal;
+        let is_pocketcomet =
+            summary.reference.provider == ide_core::IssueTrackerProvider::PocketComet;
         let status_color = crate::ui::tasks_panel::task_status_color(&summary, cx);
         let crumb_label = if is_personal {
             "Personal".to_string()
+        } else if is_pocketcomet {
+            "PocketComet".to_string()
         } else {
             summary.reference.issue_key.clone()
         };
@@ -262,7 +266,11 @@ impl CenterArea {
                                 IconName::ExternalLink,
                                 cx,
                             )
-                            .tooltip("Open in browser")
+                            .tooltip(if is_pocketcomet {
+                                "Open in PocketComet"
+                            } else {
+                                "Open in browser"
+                            })
                             .on_click(move |_, _, _| {
                                 crate::ui::git::git_panel::open_url(&issue_url);
                             }),
@@ -415,9 +423,9 @@ impl CenterArea {
                 h_flex().w_full().justify_center().child(
                     v_flex()
                         .w_full()
-                        .max_w(px(860.))
+                        .max_w(crate::ui::design::center_content_frame_max_w())
                         .gap_4()
-                        .px_5()
+                        .px(crate::ui::design::agent_chat_gutter_x())
                         .py_5()
                         .when_some(detail_error, |body, error| {
                             body.child(

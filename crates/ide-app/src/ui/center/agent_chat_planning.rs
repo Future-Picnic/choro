@@ -199,57 +199,68 @@ impl CenterArea {
                             .child("No, tell the agent what to do differently"),
                     )
                     .child(
-                        div()
+                        v_flex()
                             .w_full()
-                            .min_h(px(34.))
+                            .min_h(px(78.))
                             .rounded(px(crate::ui::style::RADIUS))
                             .border_1()
                             .border_color(crate::ui::style::border(cx))
                             .bg(crate::ui::style::surface(cx))
                             .px_2()
-                            .py_1()
+                            .pt_2()
+                            .pb_1p5()
+                            .gap_1()
                             .child(
-                                Input::new(&input)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .focus_bordered(false)
+                                div()
+                                    .flex_1()
+                                    .min_h(px(34.))
+                                    .child(crate::ui::style::composer_text_input(&input)),
+                            )
+                            .child(
+                                h_flex()
                                     .w_full()
-                                    .min_w(px(0.)),
+                                    .items_center()
+                                    .gap_2()
+                                    .child(div().flex_1())
+                                    .child(
+                                        crate::ui::style::dialog_neutral_button(
+                                            ("proposed-plan-dismiss", agent_id.as_u128() as u64),
+                                            "Dismiss",
+                                            cx,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                dismiss_input.update(cx, |input, cx| {
+                                                    input.set_value("", window, cx)
+                                                });
+                                                this.agent_chats.update(cx, |chats, cx| {
+                                                    chats.dismiss_proposed_plan(agent_id, cx);
+                                                });
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        crate::ui::style::primary_button_compact(
+                                            (
+                                                "proposed-plan-submit-feedback",
+                                                agent_id.as_u128() as u64,
+                                            ),
+                                            if has_feedback { "Submit" } else { "Implement" },
+                                            cx,
+                                        )
+                                        .min_w(px(92.))
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.continue_proposed_plan(
+                                                    agent_id,
+                                                    input.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    ),
                             ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .pt_1()
-                    .items_center()
-                    .child(
-                        Button::new(("proposed-plan-dismiss", agent_id.as_u128() as u64))
-                            .ghost()
-                            .small()
-                            .compact()
-                            .label("Dismiss")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                dismiss_input
-                                    .update(cx, |input, cx| input.set_value("", window, cx));
-                                this.agent_chats.update(cx, |chats, cx| {
-                                    chats.dismiss_proposed_plan(agent_id, cx);
-                                });
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        crate::ui::style::primary_button_compact(
-                            ("proposed-plan-submit-feedback", agent_id.as_u128() as u64),
-                            if has_feedback { "Submit" } else { "Implement" },
-                            cx,
-                        )
-                        .min_w(px(92.))
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.continue_proposed_plan(agent_id, input.clone(), window, cx);
-                            },
-                        )),
                     ),
             )
             .into_any_element()
@@ -478,7 +489,14 @@ impl CenterArea {
                     .child(question.header.to_ascii_uppercase()),
             )
             .child(
+                // Options keep their full wrapped descriptions, but the list is
+                // capped so a question with many long options can never push the
+                // composer past the window edge — it scrolls instead.
                 v_flex()
+                    .id(("pending-input-options", agent_id.as_u128() as u64))
+                    .w_full()
+                    .max_h(px(260.))
+                    .overflow_y_scroll()
                     .gap_0p5()
                     .children(question.options.iter().enumerate().map(|(index, option)| {
                         let label = option.label.clone();
@@ -489,6 +507,7 @@ impl CenterArea {
                         h_flex()
                             .id(("pending-input-option", agent_id.as_u128() as usize ^ index))
                             .w_full()
+                            .flex_shrink_0()
                             .min_h(px(32.))
                             .px_2()
                             .py_1()
@@ -559,66 +578,67 @@ impl CenterArea {
                             .child("No, tell the agent what to do differently"),
                     )
                     .child(
-                        div()
+                        v_flex()
                             .w_full()
-                            .min_h(px(34.))
+                            .min_h(px(78.))
                             .rounded(px(crate::ui::style::RADIUS))
                             .border_1()
                             .border_color(crate::ui::style::border(cx))
                             .bg(crate::ui::style::surface(cx))
                             .px_2()
-                            .py_1()
+                            .pt_2()
+                            .pb_1p5()
+                            .gap_1()
                             .child(
-                                Input::new(&input)
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .focus_bordered(false)
+                                div()
+                                    .flex_1()
+                                    .min_h(px(34.))
+                                    .child(crate::ui::style::composer_text_input(&input)),
+                            )
+                            .child(
+                                h_flex()
                                     .w_full()
-                                    .min_w(px(0.)),
+                                    .items_center()
+                                    .gap_2()
+                                    .child(div().flex_1())
+                                    .child(
+                                        crate::ui::style::dialog_neutral_button(
+                                            ("pending-input-dismiss", agent_id.as_u128() as u64),
+                                            "Dismiss",
+                                            cx,
+                                        )
+                                        .tooltip("Dismiss this question and stop the current turn")
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                dismiss_input.update(cx, |input, cx| {
+                                                    input.set_value("", window, cx)
+                                                });
+                                                this.agent_chats.update(cx, |chats, cx| {
+                                                    chats.dismiss_pending_user_input(agent_id, cx);
+                                                });
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        crate::ui::style::primary_button_compact(
+                                            ("pending-input-continue", agent_id.as_u128() as u64),
+                                            if is_last { "Submit" } else { "Continue" },
+                                            cx,
+                                        )
+                                        .min_w(px(92.))
+                                        .disabled(!primary_enabled)
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.continue_pending_user_input(
+                                                    agent_id,
+                                                    input.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    ),
                             ),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .pt_1p5()
-                    .items_center()
-                    .gap_2()
-                    .child(div().flex_1())
-                    .child(
-                        Button::new(("pending-input-dismiss", agent_id.as_u128() as u64))
-                            .ghost()
-                            .xsmall()
-                            .compact()
-                            .h(crate::ui::design::control_h_xs())
-                            .label("Dismiss")
-                            .tooltip("Dismiss this question and stop the current turn")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                dismiss_input
-                                    .update(cx, |input, cx| input.set_value("", window, cx));
-                                this.agent_chats.update(cx, |chats, cx| {
-                                    chats.dismiss_pending_user_input(agent_id, cx);
-                                });
-                            })),
-                    )
-                    .child(
-                        crate::ui::style::primary_button_compact(
-                            ("pending-input-continue", agent_id.as_u128() as u64),
-                            if is_last { "Submit" } else { "Continue" },
-                            cx,
-                        )
-                        .min_w(px(92.))
-                        .disabled(!primary_enabled)
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.continue_pending_user_input(
-                                    agent_id,
-                                    input.clone(),
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
                     ),
             )
             .child(crate::ui::onboarding::target_marker(

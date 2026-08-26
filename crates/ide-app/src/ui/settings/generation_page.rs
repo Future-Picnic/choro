@@ -5,6 +5,8 @@ impl SettingsView {
         let verification_mode = self.workspace.read(cx).verification_mode;
         let review_checklist_mode = self.workspace.read(cx).review_checklist_mode;
         let generation_agent = self.workspace.read(cx).generation_agent.clone();
+        let quick_ask_agent = self.workspace.read(cx).quick_ask_agent.clone();
+        let quick_ask_history_count = self.quick_ask.read(cx).history().len();
         let agent_defaults = self.workspace.read(cx).new_agent_defaults();
         let code_review_prompt = self.code_review_prompt.clone();
         let code_review_prompt_dirty = self.code_review_prompt_dirty;
@@ -135,6 +137,60 @@ impl SettingsView {
                 }))
             })
             .collect::<Vec<_>>();
+            let quick_ask_provider_buttons =
+                [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, provider)| {
+                        let button = if quick_ask_agent.provider == provider {
+                            crate::ui::style::primary_button_compact(
+                                ("settings-quick-ask-provider", index),
+                                provider.label(),
+                                cx,
+                            )
+                        } else {
+                            crate::ui::style::dialog_neutral_button(
+                                ("settings-quick-ask-provider", index),
+                                provider.label(),
+                                cx,
+                            )
+                        };
+                        button
+                            .icon(crate::ui::center::provider_brand_icon(provider))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_quick_ask_provider(provider, cx);
+                            }))
+                    })
+                    .collect::<Vec<_>>();
+            let quick_ask_model_buttons = if quick_ask_agent.provider == AgentKind::OpenCode {
+                vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
+            } else {
+                AgentModel::models_for(quick_ask_agent.provider)
+                    .iter()
+                    .map(|model| (*model, model.menu_label().to_string()))
+                    .collect::<Vec<_>>()
+            }
+            .into_iter()
+            .enumerate()
+            .map(|(index, (model, label))| {
+                let button = if quick_ask_agent.model == model {
+                    crate::ui::style::primary_button_compact(
+                        ("settings-quick-ask-model", index),
+                        label,
+                        cx,
+                    )
+                } else {
+                    crate::ui::style::dialog_neutral_button(
+                        ("settings-quick-ask-model", index),
+                        label,
+                        cx,
+                    )
+                };
+                button.on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_quick_ask_model(model, cx);
+                }))
+            })
+            .collect::<Vec<_>>();
             let default_provider_buttons =
                 [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
                     .into_iter()
@@ -250,6 +306,86 @@ impl SettingsView {
                                         .child(h_flex().w_full().gap_2().flex_wrap().children(default_model_buttons))
                                         .child(row_label("Effort"))
                                         .child(h_flex().w_full().gap_2().flex_wrap().children(default_effort_buttons)),
+                                )
+                                .child(
+                                    v_flex()
+                                        .w_full()
+                                        .gap_3()
+                                        .p_4()
+                                        .rounded(crate::ui::design::r_lg())
+                                        .border_1()
+                                        .border_color(crate::ui::design::line_2(cx))
+                                        .bg(crate::ui::design::surface(cx).opacity(0.55))
+                                        .child(
+                                            div()
+                                                .text_size(crate::ui::design::text_body())
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child("Quick Ask"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(crate::ui::design::text_body())
+                                                .text_color(crate::ui::design::t3(cx))
+                                                .child("Default model for Quick Ask answers. A model override applies only to the open panel and resets when you close it."),
+                                        )
+                                        .child(row_label("Provider"))
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .flex_wrap()
+                                                .children(quick_ask_provider_buttons),
+                                        )
+                                        .child(row_label("Model"))
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .flex_wrap()
+                                                .children(quick_ask_model_buttons),
+                                        )
+                                        .child({
+                                            let quick_ask = self.quick_ask.clone();
+                                            h_flex()
+                                                .w_full()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .text_size(crate::ui::design::text_ui())
+                                                        .text_color(crate::ui::design::t4(cx))
+                                                        .child(format!(
+                                                            "{} saved question{}",
+                                                            quick_ask_history_count,
+                                                            if quick_ask_history_count == 1 { "" } else { "s" }
+                                                        )),
+                                                )
+                                                .child(div().flex_1())
+                                                .child(
+                                                    crate::ui::style::danger_button_compact(
+                                                        "settings-clear-quick-ask-history",
+                                                        "Clear history",
+                                                    )
+                                                    .disabled(quick_ask_history_count == 0)
+                                                    .on_click(move |_, window, cx| {
+                                                        let quick_ask = quick_ask.clone();
+                                                        crate::ui::confirm::ConfirmDialog::new(
+                                                            "Clear Quick Ask history?",
+                                                            "This permanently clears Quick Ask history across every project.",
+                                                        )
+                                                        .confirm_label("Clear history")
+                                                        .confirm_id("settings-confirm-clear-quick-ask-history")
+                                                        .on_confirm(move |_, cx| {
+                                                            if let Err(error) = quick_ask.update(cx, |state, cx| {
+                                                                state.clear_history(cx)
+                                                            }) {
+                                                                eprintln!("could not clear Quick Ask history: {error:#}");
+                                                            }
+                                                        })
+                                                        .open(window, cx);
+                                                    }),
+                                                )
+                                        }),
                                 )
                                 .child(
                                     v_flex()

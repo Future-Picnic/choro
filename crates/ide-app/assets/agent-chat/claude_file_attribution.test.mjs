@@ -8,11 +8,34 @@ import {
   fileAttributionHooks,
   finishCancelledTurn,
   finishTurnAfterFileReceipt,
+  isClaudePlanArtifactPath,
   mergeTurnChange,
   mutationStateForContents,
   mutationStateUnchanged,
+  resumeSessionIdForCommand,
   setTurnProjection,
 } from "./claude_bridge.mjs";
+
+test("plan-to-build boundary resumes the live Claude session", () => {
+  assert.equal(
+    resumeSessionIdForCommand(null, "session-from-plan-turn"),
+    "session-from-plan-turn",
+  );
+  assert.equal(
+    resumeSessionIdForCommand("persisted-session", "live-session"),
+    "persisted-session",
+  );
+});
+
+test("Claude private plan artifacts are not reported as project changes", () => {
+  assert.equal(
+    isClaudePlanArtifactPath(
+      "/Users/developer/.claude/plans/choro-memory-cosmic-pine.md",
+    ),
+    true,
+  );
+  assert.equal(isClaudePlanArtifactPath("src/plans/feature.md"), false);
+});
 
 test("structured edit counts come from the edit action, not global git state", () => {
   assert.deepEqual(

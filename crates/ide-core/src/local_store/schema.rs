@@ -42,6 +42,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_agent_origin_column(conn).await?;
         ensure_pending_project_script_presets_schema(conn).await?;
         ensure_orbit_schema(conn).await?;
+        ensure_quick_ask_schema(conn).await?;
         return Ok(());
     }
     if current < 1 {
@@ -554,6 +555,30 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             })
         })
         .await?;
+    }
+    if current < 34 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                ensure_quick_ask_schema_inner(conn).await?;
+                record_schema_version(conn, 34).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+async fn ensure_quick_ask_schema(conn: &Connection) -> Result<()> {
+    execute_transaction(conn, |conn| {
+        Box::pin(async move { ensure_quick_ask_schema_inner(conn).await })
+    })
+    .await
+}
+
+async fn ensure_quick_ask_schema_inner(conn: &Connection) -> Result<()> {
+    for statement in SCHEMA_V34 {
+        conn.execute(statement, ()).await?;
     }
     Ok(())
 }
@@ -1171,6 +1196,24 @@ const SCHEMA_V33: &[&str] = &[
     )",
     "CREATE INDEX IF NOT EXISTS idx_orbit_batches_invocation_created
         ON orbit_mutation_batches(invocation_id, created_at ASC)",
+];
+
+const SCHEMA_V34: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS quick_ask_exchanges (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project_id TEXT,
+        project_name TEXT,
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model_label TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_quick_ask_exchanges_created
+        ON quick_ask_exchanges(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_quick_ask_exchanges_session
+        ON quick_ask_exchanges(session_id, created_at)",
 ];
 
 pub(super) async fn schema_version(conn: &Connection) -> Result<u32> {

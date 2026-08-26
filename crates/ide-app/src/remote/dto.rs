@@ -31,6 +31,67 @@ pub struct RepositoryDto {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChoroDocumentDto {
+    pub project_id: String,
+    pub document_id: String,
+    pub workspace_id: String,
+    pub pocketcomet_project_id: String,
+    pub title: String,
+    pub blocks: Vec<serde_json::Value>,
+    pub relative_path: String,
+    pub revision: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChoroDocumentAssetDto {
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PocketCometTaskAssetDto {
+    pub asset_file: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct UpsertChoroDocumentRequest {
+    pub workspace_id: String,
+    pub pocketcomet_project_id: String,
+    pub title: String,
+    pub blocks: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct SyncPocketCometTaskSourcesRequest {
+    pub workspace_id: String,
+    pub sources: Vec<PocketCometTaskSourceDto>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncPocketCometTaskSourcesResponse {
+    pub accepted: bool,
+    pub actions: Vec<ide_core::PocketCometTaskAction>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct AcknowledgePocketCometTaskActionsRequest {
+    pub workspace_id: String,
+    pub action_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct PocketCometTaskSourceDto {
+    pub choro_project_id: String,
+    pub workspace_id: String,
+    pub pocketcomet_project_id: String,
+    pub project_name: String,
+    pub statuses: Vec<ide_core::PocketCometTaskStatus>,
+    pub assignees: Vec<ide_core::PocketCometTaskAssignee>,
+    pub tasks: Vec<ide_core::PocketCometTask>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentListItemDto {
     pub id: String,
     pub project_id: String,
@@ -551,6 +612,15 @@ mod tests {
                 thread_title: "Should we ship this?".into(),
             })
         );
+    }
+
+    #[test]
+    fn pocketcomet_task_manifest_keeps_workspace_scope_when_empty() {
+        let request: SyncPocketCometTaskSourcesRequest =
+            serde_json::from_str(r#"{"workspace_id":"workspace-1","sources":[]}"#).unwrap();
+
+        assert_eq!(request.workspace_id, "workspace-1");
+        assert!(request.sources.is_empty());
     }
 
     #[test]

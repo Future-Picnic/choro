@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -55,6 +56,61 @@ pub enum NavStyle {
     /// of the window (outboard of the right panel it drives).
     #[default]
     RailRight,
+}
+
+/// Stable product-level identity for an activity that can appear in a
+/// project's navigation rail. This lives in `ide-core` because the app default
+/// and per-project visibility overrides are persisted in [`AppConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectActivityId {
+    Agents,
+    Code,
+    Tasks,
+    Docs,
+    Design,
+    Db,
+    Assets,
+    Orbit,
+    /// Forward-compatible fallback for activity ids introduced by a newer
+    /// Choro build. Unknown entries are dropped during config migration.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ProjectActivityId {
+    pub const ALL: [Self; 8] = [
+        Self::Agents,
+        Self::Code,
+        Self::Tasks,
+        Self::Docs,
+        Self::Design,
+        Self::Db,
+        Self::Assets,
+        Self::Orbit,
+    ];
+}
+
+pub fn default_pinned_project_activities() -> Vec<ProjectActivityId> {
+    vec![
+        ProjectActivityId::Agents,
+        ProjectActivityId::Code,
+        ProjectActivityId::Tasks,
+        ProjectActivityId::Docs,
+    ]
+}
+
+/// Drop unknowns and duplicates while restoring the product's canonical rail
+/// order. Keeping this deterministic makes persisted overrides stable today
+/// and leaves room for user-controlled ordering later.
+pub fn normalized_project_activities(
+    activities: impl IntoIterator<Item = ProjectActivityId>,
+) -> Vec<ProjectActivityId> {
+    let activities: Vec<ProjectActivityId> = activities.into_iter().collect();
+    ProjectActivityId::ALL
+        .into_iter()
+        .filter(|activity| activities.contains(activity))
+        .collect()
 }
 
 /// Presentation of changed files in the Git panel.
@@ -484,6 +540,13 @@ pub struct AppConfig {
     /// this field remains so older config files continue to deserialize.
     #[serde(default)]
     pub nav_style: NavStyle,
+    /// Activities inherited by projects that do not have a local override.
+    #[serde(default = "default_pinned_project_activities")]
+    pub default_project_activities: Vec<ProjectActivityId>,
+    /// Project-specific activity visibility. Missing entries inherit
+    /// `default_project_activities`.
+    #[serde(default)]
+    pub project_activity_overrides: HashMap<ProjectId, Vec<ProjectActivityId>>,
     /// Flat filename list or expandable directory tree in the Git panel.
     #[serde(default)]
     pub git_status_view: GitStatusViewMode,
@@ -509,6 +572,9 @@ pub struct AppConfig {
     /// Provider and model used by one-shot AI generation features.
     #[serde(default)]
     pub generation_agent: GenerationAgent,
+    /// Provider and model used when a new Quick Ask session opens.
+    #[serde(default)]
+    pub quick_ask_agent: GenerationAgent,
     /// Defaults a fresh agent composer opens with. `None` in configs from
     /// before the split — those fall back to the generation agent, which used
     /// to double as the composer default.
@@ -557,6 +623,8 @@ impl Default for AppConfig {
             projects_collapsed: false,
             attention_collapsed: false,
             nav_style: NavStyle::default(),
+            default_project_activities: default_pinned_project_activities(),
+            project_activity_overrides: HashMap::new(),
             git_status_view: GitStatusViewMode::default(),
             git_status_group: GitStatusGroupMode::default(),
             conversation_layout: ConversationLayout::default(),
@@ -565,6 +633,7 @@ impl Default for AppConfig {
             companion_music: CompanionMusicSettings::default(),
             voice: VoiceSettings::default(),
             generation_agent: GenerationAgent::default(),
+            quick_ask_agent: GenerationAgent::default(),
             new_agent_defaults: None,
             code_review_prompt: default_code_review_prompt(),
             code_review_output_instructions: default_code_review_output_instructions(),
@@ -641,6 +710,15 @@ impl AppConfig {
             self.code_review_output_instructions = default_code_review_output_instructions();
         }
         self.companion_music = self.companion_music.migrated();
+        self.default_project_activities =
+            normalized_project_activities(self.default_project_activities);
+        if self.default_project_activities.is_empty() {
+            self.default_project_activities = default_pinned_project_activities();
+        }
+        self.project_activity_overrides.retain(|_, activities| {
+            *activities = normalized_project_activities(activities.iter().copied());
+            !activities.is_empty()
+        });
         self
     }
 
@@ -698,6 +776,7 @@ mod tests {
         project
             .presets
             .push(ScriptPreset::new("run server", "npm run dev"));
+        let project_id = project.id;
         AppConfig {
             active_project: Some(project.id),
             expanded_projects: vec![project.id],
@@ -716,6 +795,17 @@ mod tests {
                 .into_iter()
                 .collect(),
             nav_style: NavStyle::Rail,
+            default_project_activities: vec![
+                ProjectActivityId::Agents,
+                ProjectActivityId::Code,
+                ProjectActivityId::Db,
+            ],
+            project_activity_overrides: [(
+                project_id,
+                vec![ProjectActivityId::Agents, ProjectActivityId::Db],
+            )]
+            .into_iter()
+            .collect(),
             git_status_view: GitStatusViewMode::Tree,
             git_status_group: GitStatusGroupMode::None,
             conversation_layout: ConversationLayout::TopDown,
@@ -727,6 +817,7 @@ mod tests {
             companion_enabled: false,
             companion_music: CompanionMusicSettings::default(),
             generation_agent: GenerationAgent::default(),
+            quick_ask_agent: GenerationAgent::default(),
             voice: VoiceSettings::default(),
             new_agent_defaults: Some(NewAgentDefaults::for_provider(AgentKind::Claude)),
             code_review_prompt: default_code_review_prompt(),
@@ -840,6 +931,70 @@ mod tests {
         config.save_to(&path).unwrap();
         let loaded = AppConfig::load_from(&path);
         assert_eq!(config, loaded);
+    }
+
+    #[test]
+    fn older_configs_get_the_product_activity_defaults() {
+        let mut json = serde_json::to_value(sample_config()).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.remove("default_project_activities");
+        object.remove("project_activity_overrides");
+
+        let config = serde_json::from_value::<AppConfig>(json)
+            .unwrap()
+            .migrated();
+
+        assert_eq!(
+            config.default_project_activities,
+            vec![
+                ProjectActivityId::Agents,
+                ProjectActivityId::Code,
+                ProjectActivityId::Tasks,
+                ProjectActivityId::Docs,
+            ]
+        );
+        assert!(config.project_activity_overrides.is_empty());
+    }
+
+    #[test]
+    fn older_configs_get_the_quick_ask_default_model() {
+        let mut json = serde_json::to_value(sample_config()).unwrap();
+        json.as_object_mut().unwrap().remove("quick_ask_agent");
+
+        let config = serde_json::from_value::<AppConfig>(json).unwrap();
+
+        assert_eq!(config.quick_ask_agent, GenerationAgent::default());
+    }
+
+    #[test]
+    fn activity_preferences_are_normalized_during_migration() {
+        let mut config = sample_config();
+        let project_id = config.projects[0].id;
+        config.default_project_activities = vec![
+            ProjectActivityId::Db,
+            ProjectActivityId::Agents,
+            ProjectActivityId::Db,
+            ProjectActivityId::Unknown,
+        ];
+        config.project_activity_overrides.insert(
+            project_id,
+            vec![
+                ProjectActivityId::Assets,
+                ProjectActivityId::Code,
+                ProjectActivityId::Assets,
+            ],
+        );
+
+        let migrated = config.migrated();
+
+        assert_eq!(
+            migrated.default_project_activities,
+            vec![ProjectActivityId::Agents, ProjectActivityId::Db]
+        );
+        assert_eq!(
+            migrated.project_activity_overrides.get(&project_id),
+            Some(&vec![ProjectActivityId::Code, ProjectActivityId::Assets,])
+        );
     }
 
     #[test]

@@ -1034,6 +1034,13 @@ impl CenterArea {
             AgentChatRow::Activity => self.render_agent_activity_indicator(session, cx),
         };
 
+        self.wrap_agent_chat_row(content)
+    }
+
+    /// Apply the canonical agent-timeline geometry around rendered message
+    /// content. Lightweight conversations reuse this instead of approximating
+    /// the agent chat's gutters, measure, and row rhythm.
+    pub(crate) fn wrap_agent_chat_row(&self, content: gpui::AnyElement) -> gpui::AnyElement {
         div()
             .w_full()
             .min_w(px(0.))
@@ -1048,6 +1055,21 @@ impl CenterArea {
                     .child(content),
             )
             .into_any_element()
+    }
+
+    /// Render through the real agent message path and wrap it as a normal
+    /// timeline row. This keeps Markdown, lists, code, tables, metadata, and
+    /// hover behavior identical on every conversation surface.
+    pub(crate) fn render_agent_chat_message_row(
+        &self,
+        agent: &AgentRecord,
+        index: usize,
+        message: &AgentChatMessage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let content = self.render_agent_chat_message(agent, index, message, window, cx);
+        self.wrap_agent_chat_row(content)
     }
 
     pub(super) fn render_agent_chat_timeline_item(
