@@ -21,7 +21,7 @@ use crate::keymap;
 use crate::remote::{DevicePermission, RelayControl, RelayIdentity, RelayState, RemoteAuth};
 use crate::state::{
     AgentCapability, AgentCapabilityCacheFile, ChoroRiff, ChoroRiffStore, DesignProvider,
-    OrbitEvent, OrbitState, PenpotConnectionStatus, PenpotState, Workspace,
+    OrbitEvent, OrbitState, PenpotConnectionStatus, PenpotState, QuickAskState, Workspace,
     CHORO_RIFFS_SCHEMA_VERSION,
 };
 use ide_core::{
@@ -103,7 +103,7 @@ impl SettingsSection {
                 "Use Choro’s managed Design workspace or connect an existing Penpot Cloud account."
             }
             Self::Generation => {
-                "Choose how Choro writes generated Git content and configure the agent-chat code review prompt."
+                "Choose defaults for agents, Quick Ask, and generated content, plus review behavior."
             }
             Self::Voice => "Manage local speech models, spoken feedback, and patient turn-taking.",
             Self::Companion => {
@@ -194,6 +194,7 @@ pub(crate) struct ProjectSource {
 /// Settings dialog: editable keyboard shortcuts (persisted to config).
 pub struct SettingsView {
     workspace: Entity<Workspace>,
+    quick_ask: Entity<QuickAskState>,
     voice: Entity<crate::voice::VoiceState>,
     penpot: Entity<PenpotState>,
     orbit: Entity<OrbitState>,
@@ -342,6 +343,7 @@ impl SettingsView {
     /// caller to mount.
     pub fn new(
         workspace: Entity<Workspace>,
+        quick_ask: Entity<QuickAskState>,
         penpot: Entity<PenpotState>,
         voice: Entity<crate::voice::VoiceState>,
         orbit: Entity<OrbitState>,
@@ -353,6 +355,7 @@ impl SettingsView {
     ) -> Entity<Self> {
         Self::new_in_section(
             workspace,
+            quick_ask,
             penpot,
             voice,
             orbit,
@@ -367,6 +370,7 @@ impl SettingsView {
 
     pub(crate) fn new_in_section(
         workspace: Entity<Workspace>,
+        quick_ask: Entity<QuickAskState>,
         penpot: Entity<PenpotState>,
         voice: Entity<crate::voice::VoiceState>,
         orbit: Entity<OrbitState>,
@@ -498,6 +502,8 @@ impl SettingsView {
                 .detach();
             cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            cx.observe(&quick_ask, |_: &mut Self, _, cx| cx.notify())
+                .detach();
             cx.observe(&orbit, |_: &mut Self, _, cx| cx.notify())
                 .detach();
             cx.subscribe(&orbit, |this: &mut Self, _, event: &OrbitEvent, cx| {
@@ -517,6 +523,7 @@ impl SettingsView {
             .detach();
             Self {
                 workspace: workspace.clone(),
+                quick_ask: quick_ask.clone(),
                 voice: voice.clone(),
                 penpot: penpot.clone(),
                 orbit: orbit.clone(),
@@ -717,6 +724,26 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn select_quick_ask_provider(&mut self, provider: AgentKind, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.set_quick_ask_agent(GenerationAgent::for_provider(provider), cx);
+            workspace.save_now();
+        });
+        cx.notify();
+    }
+
+    fn select_quick_ask_model(&mut self, model: AgentModel, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, cx| {
+            let mut quick_ask_agent = workspace.quick_ask_agent.clone();
+            if model.belongs_to(quick_ask_agent.provider) {
+                quick_ask_agent.model = model;
+                workspace.set_quick_ask_agent(quick_ask_agent, cx);
+                workspace.save_now();
+            }
+        });
+        cx.notify();
+    }
+
     fn save_code_review_prompt(&mut self, cx: &mut Context<Self>) {
         let prompt = self.code_review_prompt.read(cx).value().trim().to_string();
         if prompt.is_empty() {
@@ -843,6 +870,7 @@ impl SettingsView {
                 | "cmd-tab"
                 | "cmd-a"
                 | "cmd-c"
+                | "cmd-f"
                 | "cmd-v"
                 | "cmd-x"
                 | "cmd-z"

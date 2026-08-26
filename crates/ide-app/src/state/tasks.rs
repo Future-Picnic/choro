@@ -272,11 +272,17 @@ impl TasksState {
         }
         connections
             .iter()
-            .find(|connection| {
-                connection.provider == IssueTrackerProvider::Personal
-                    || connection.has_selected_source()
-            })
+            .find(|connection| connection.provider == IssueTrackerProvider::PocketComet)
             .cloned()
+            .or_else(|| {
+                connections
+                    .iter()
+                    .find(|connection| {
+                        connection.provider == IssueTrackerProvider::Personal
+                            || connection.has_selected_source()
+                    })
+                    .cloned()
+            })
     }
 
     /// Find the connection in `project` that owns `reference` (matched by

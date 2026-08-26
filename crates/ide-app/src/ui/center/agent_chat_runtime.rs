@@ -47,6 +47,50 @@ pub(super) const AGENT_VERIFY_FIX_PREFIX: &str =
 /// tracker descriptions are the one unbounded input.
 const VERIFY_TASK_DESCRIPTION_MAX_CHARS: usize = 4000;
 const REVIEW_CHECKLIST_FILE_LIMIT: usize = 40;
+const CODE_REVIEW_SCOPE_FILE_LIMIT: usize = 40;
+
+fn code_review_feature_scope_prompt(
+    attributed_files: &[String],
+    observed_files: &[String],
+    omitted_count: usize,
+) -> String {
+    let mut prompt = String::from(
+        "Feature scope for this review:\n\
+- Before inspecting the diff, reconstruct the feature intent from this agent conversation: the user's request, decisions, plan, implementation, and tests. Review the implementation against that intent.\n\
+- Report findings only for the feature implemented in this conversation. Other agents or the user may have unrelated uncommitted changes in the same working tree; do not review or report those. You may read unrelated files only when needed as surrounding context.\n\
+- The file attribution below narrows the review scope; it is not a substitute for understanding the conversation.",
+    );
+
+    if !attributed_files.is_empty() {
+        prompt.push_str("\n\nFiles directly changed by this agent conversation:\n");
+        for path in attributed_files {
+            prompt.push_str("- ");
+            prompt.push_str(path);
+            prompt.push('\n');
+        }
+    }
+    if !observed_files.is_empty() {
+        prompt.push_str(
+            "\nFiles observed changing around this agent's commands (include only when the conversation confirms they belong to the feature):\n",
+        );
+        for path in observed_files {
+            prompt.push_str("- ");
+            prompt.push_str(path);
+            prompt.push('\n');
+        }
+    }
+    if attributed_files.is_empty() && observed_files.is_empty() {
+        prompt.push_str(
+            "\n\nNo reliable per-chat file attribution is available. Infer the feature files from the conversation and tool history, and exclude unrelated working-tree changes.",
+        );
+    } else if omitted_count > 0 {
+        prompt.push_str(&format!(
+            "\n{omitted_count} additional tracked file(s) were omitted from this bounded list. Use the conversation and tool history to include them only when they belong to this feature."
+        ));
+    }
+
+    prompt.trim_end().to_string()
+}
 
 fn pocketcomet_handoff_prompt() -> String {
     format!(
@@ -821,15 +865,14 @@ impl CenterArea {
                 if this.agent_chat_file_dismissed_query.get(&agent_id) != file_query.as_ref() {
                     this.agent_chat_file_dismissed_query.remove(&agent_id);
                 }
-                if this.agent_chat_preview_suggestion_dismissed.get(&agent_id) != Some(&value) {
+                if value.trim().is_empty() {
                     this.agent_chat_preview_suggestion_dismissed
                         .remove(&agent_id);
                 }
-                let preview_was_dismissed =
-                    this.agent_chat_preview_suggestion_dismissed.get(&agent_id) == Some(&value);
-                if !preview_was_dismissed
-                    && choro_preview_intent(&value) == ChoroPreviewIntent::Automatic
-                {
+                let preview_was_dismissed = this
+                    .agent_chat_preview_suggestion_dismissed
+                    .contains(&agent_id);
+                if should_auto_arm_choro_preview(&value, preview_was_dismissed) {
                     this.agent_chat_preview_armed.insert(agent_id);
                 }
                 cx.notify();
@@ -866,17 +909,78 @@ impl CenterArea {
     /// Claude Code / Codex expose, triggered from inside our composer. Sends the
     /// canonical review prompt as a turn; the agent replies with the findings.
     pub(super) fn request_agent_code_review(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        let mode = self
-            .agent_chats
-            .read(cx)
-            .session(agent_id)
-            .map(|session| session.interaction_mode)
-            .unwrap_or(AgentInteractionMode::Default);
+        let agent = self.agents.read(cx).agent(agent_id).cloned();
+        let filter = agent
+            .as_ref()
+            .map(|agent| VisualizationArtifactFilter::new(agent.id, agent.runtime_path()));
+        let (mode, attributed_files, observed_files, omitted_count) = {
+            let chats = self.agent_chats.read(cx);
+            let Some(session) = chats.session(agent_id) else {
+                return;
+            };
+            let mut attributed_files = session
+                .changed_files
+                .files
+                .iter()
+                .filter(|file| {
+                    filter
+                        .as_ref()
+                        .is_none_or(|filter| !filter.is_artifact(&file.path))
+                })
+                .map(|file| {
+                    file.path
+                        .to_string_lossy()
+                        .chars()
+                        .take(240)
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            attributed_files.sort();
+            attributed_files.dedup();
+
+            let mut observed_files = session
+                .changed_files
+                .observed_files
+                .iter()
+                .filter(|file| {
+                    filter
+                        .as_ref()
+                        .is_none_or(|filter| !filter.is_artifact(&file.path))
+                })
+                .map(|file| {
+                    file.path
+                        .to_string_lossy()
+                        .chars()
+                        .take(240)
+                        .collect::<String>()
+                })
+                .filter(|path| !attributed_files.contains(path))
+                .collect::<Vec<_>>();
+            observed_files.sort();
+            observed_files.dedup();
+
+            let total_count = attributed_files.len() + observed_files.len();
+            attributed_files.truncate(CODE_REVIEW_SCOPE_FILE_LIMIT);
+            let observed_limit =
+                CODE_REVIEW_SCOPE_FILE_LIMIT.saturating_sub(attributed_files.len());
+            observed_files.truncate(observed_limit);
+            let omitted_count =
+                total_count.saturating_sub(attributed_files.len() + observed_files.len());
+            (
+                session.interaction_mode,
+                attributed_files,
+                observed_files,
+                omitted_count,
+            )
+        };
+        let feature_scope =
+            code_review_feature_scope_prompt(&attributed_files, &observed_files, omitted_count);
         let prompt = {
             let workspace = self.workspace.read(cx);
             format!(
-                "{AGENT_CODE_REVIEW_REQUEST_MARKER}\n{}\n\n{}",
+                "{AGENT_CODE_REVIEW_REQUEST_MARKER}\n{}\n\n{}\n\n{}",
                 workspace.effective_code_review_prompt(),
+                feature_scope,
                 workspace.effective_code_review_output_instructions(),
             )
         };
@@ -1547,6 +1651,7 @@ impl CenterArea {
             .and_then(|session| session.proposed_plan.as_ref())
             .filter(|plan| plan.implemented_at.is_none())
             .map(|plan| plan.markdown.clone());
+        let had_actionable_plan = refine_plan_markdown.is_some();
         let submission_command = selected_command.clone();
         let Some((submission_text, mode)) = self.agent_chats.update(cx, |chats, cx| {
             let draft_with_pastes = append_pasted_text_blocks(&draft, &pasted_text_blocks);
@@ -1643,6 +1748,14 @@ impl CenterArea {
             mode
         } else {
             AgentInteractionMode::Default
+        };
+        let message_display_text = if had_actionable_plan
+            && mode == AgentInteractionMode::Default
+            && message_display_text.trim().is_empty()
+        {
+            "Implement this plan.".to_string()
+        } else {
+            message_display_text
         };
         let submitted = self.dispatch_agent_chat_submission_with_agent(
             agent,
@@ -3084,6 +3197,7 @@ impl CenterArea {
             .cloned()
             .unwrap_or_default();
         let draft = append_pasted_text_blocks(&draft, &pasted_text_blocks);
+        let implementing_plan = draft.trim().is_empty();
         let Some((submission_text, mode)) = self.agent_chats.update(cx, |chats, cx| {
             chats.resolve_proposed_plan_submission(agent_id, &draft, cx)
         }) else {
@@ -3092,7 +3206,17 @@ impl CenterArea {
 
         input.update(cx, |input, cx| input.set_value("", window, cx));
         self.agent_chat_pasted_text_blocks.remove(&agent_id);
-        if self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx) {
+        let display_text = implementing_plan.then(|| "Implement this plan.".to_string());
+        if self.dispatch_agent_chat_submission_inner(
+            agent_id,
+            submission_text,
+            display_text,
+            Vec::new(),
+            mode,
+            None,
+            false,
+            cx,
+        ) {
             self.agents.update(cx, |agents, cx| {
                 agents.update_status(agent_id, AgentStatus::InProgress, cx)
             });
@@ -3408,6 +3532,29 @@ mod verification_trigger_tests {
         assert!(prompt.contains("combine them into one core-flow check"));
         assert!(prompt.contains("group items under concise Markdown headings"));
         assert!(prompt.contains("Do not add a heading to a focused single-flow checklist"));
+    }
+
+    #[test]
+    fn code_review_scope_uses_conversation_and_agent_attribution() {
+        let prompt = code_review_feature_scope_prompt(
+            &["src/feature.rs".to_string()],
+            &["generated/schema.rs".to_string()],
+            2,
+        );
+
+        assert!(prompt.contains("reconstruct the feature intent from this agent conversation"));
+        assert!(prompt.contains("do not review or report"));
+        assert!(prompt.contains("src/feature.rs"));
+        assert!(prompt.contains("generated/schema.rs"));
+        assert!(prompt.contains("2 additional tracked file(s) were omitted"));
+    }
+
+    #[test]
+    fn code_review_scope_falls_back_to_conversation_when_attribution_is_missing() {
+        let prompt = code_review_feature_scope_prompt(&[], &[], 0);
+
+        assert!(prompt.contains("No reliable per-chat file attribution is available"));
+        assert!(prompt.contains("exclude unrelated working-tree changes"));
     }
 
     #[test]

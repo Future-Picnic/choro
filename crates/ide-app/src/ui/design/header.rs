@@ -19,18 +19,31 @@ use gpui_component::{h_flex, v_flex, Icon, IconName};
 
 use super::{scale, token};
 
-/// The canonical floating element-header band: full width on the base plane,
-/// with no enclosing divider, and top-aligned columns so actions stay aligned
-/// with the title when a metadata row is present.
-pub fn bar(cx: &gpui::App) -> Div {
+fn bar_base(cx: &gpui::App) -> Div {
     h_flex()
         .w_full()
         .flex_none()
         .items_start()
         .gap_3()
-        .px_5()
         .py_2p5()
         .bg(token::base(cx))
+}
+
+/// The canonical readable element-header band. Its title and action edges share
+/// the centered primary-content frame instead of drifting to viewport edges.
+/// Columns remain top-aligned so actions stay aligned with the title when a
+/// metadata row is present.
+pub fn bar(cx: &gpui::App) -> Div {
+    bar_base(cx)
+        .max_w(scale::center_content_frame_max_w())
+        .mx_auto()
+        .px(scale::agent_chat_gutter_x())
+}
+
+/// Full-width header for data workspaces and canvases whose content uses the
+/// entire center pane. The standard workspace inset aligns it with tables.
+pub fn workspace_bar(cx: &gpui::App) -> Div {
+    bar_base(cx).px_5()
 }
 
 /// Agent-chat header frame. Its inner edges share the exact responsive column
@@ -47,21 +60,6 @@ pub fn agent_chat_shell(cx: &gpui::App) -> Div {
 /// The constrained inner row carried by the full-width agent-chat shell.
 pub fn agent_chat_bar(cx: &gpui::App) -> Div {
     bar(cx)
-        .max_w(scale::agent_chat_frame_max_w())
-        .mx_auto()
-        .px(scale::agent_chat_gutter_x())
-        .pr(scale::agent_header_actions_reserve_w())
-}
-
-/// Full-edge action slot for the agent header. This deliberately does not
-/// inherit the centered conversation column used by the title and indicators.
-pub fn agent_chat_actions_overlay() -> Div {
-    actions()
-        .absolute()
-        .top(scale::agent_header_actions_top())
-        // Match the right edge of Scripts / Preview / microphone above. This is
-        // the titlebar inset, not the much larger conversation gutter.
-        .right(scale::header_edge_inset_x())
 }
 
 /// The growing left column that stacks the title over its subline.

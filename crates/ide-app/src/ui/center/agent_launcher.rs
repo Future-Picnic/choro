@@ -169,11 +169,10 @@ impl CenterArea {
                     }) {
                         composer.selected_command = None;
                     }
-                    if composer.preview_suggestion_dismissed.as_ref() != Some(&value) {
-                        composer.preview_suggestion_dismissed = None;
+                    if value.trim().is_empty() {
+                        composer.preview_suggestion_dismissed = false;
                     }
-                    if composer.preview_suggestion_dismissed.as_ref() != Some(&value)
-                        && choro_preview_intent(&value) == ChoroPreviewIntent::Automatic
+                    if should_auto_arm_choro_preview(&value, composer.preview_suggestion_dismissed)
                     {
                         composer.preview_armed = true;
                     }
@@ -209,7 +208,7 @@ impl CenterArea {
             lane_profile: ide_core::LaneProfile::Full,
             solo_base: None,
             preview_armed: false,
-            preview_suggestion_dismissed: None,
+            preview_suggestion_dismissed: false,
             selected_mentions: Vec::new(),
             attached_files: Vec::new(),
             attachment_pastes_pending: 0,
@@ -248,6 +247,30 @@ impl CenterArea {
         self.composer_branch_expanded = false;
         self.refresh_open_code_models(false, cx);
         self.set_view_mode(CenterMode::Agents, cx);
+        cx.notify();
+    }
+
+    pub fn open_new_agent_with_prompt(
+        &mut self,
+        project: ProjectId,
+        prompt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_new_agent_composer_for_project(project, window, cx);
+        let Some(composer) = self.new_agent_composer.as_mut() else {
+            return;
+        };
+        composer.prompt.update(cx, |input, cx| {
+            input.set_value(prompt.clone(), window, cx);
+            input.set_cursor_position(
+                input_position_for_byte_offset(&prompt, prompt.len()),
+                window,
+                cx,
+            );
+            input.focus(window, cx);
+        });
+        composer.error = None;
         cx.notify();
     }
 
@@ -892,7 +915,7 @@ impl CenterArea {
         if let Some(composer) = self.new_agent_composer.as_mut() {
             if command.is_choro_preview() {
                 composer.preview_armed = true;
-                composer.preview_suggestion_dismissed = None;
+                composer.preview_suggestion_dismissed = false;
             } else {
                 composer.selected_command = Some(command);
             }

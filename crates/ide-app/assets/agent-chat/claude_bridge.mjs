@@ -16,6 +16,7 @@ let promptController = null;
 let currentMessageId = null;
 let currentSessionId = null;
 let currentCwd = process.cwd();
+let currentVisualizationDir = null;
 let closing = false;
 let planCaptured = false;
 let activeTurnId = randomUUID();
@@ -249,7 +250,12 @@ async function ensureRuntime(command) {
   currentDesignAssistant = Boolean(command.designAssistant);
   currentDesignPreviewReview = Boolean(command.designPreviewReview);
   currentReadOnly = Boolean(command.readOnly);
-  const resumeSessionId = command.sessionId || command.session_id || null;
+  currentVisualizationDir = command.visualizationDir || currentVisualizationDir;
+  const requestedResumeSessionId = command.sessionId || command.session_id || null;
+  const resumeSessionId = resumeSessionIdForCommand(
+    requestedResumeSessionId,
+    currentSessionId,
+  );
   if (runtime) {
     if (typeof runtime.setPermissionMode === "function") {
       await runtime.setPermissionMode(permissionModeFor(command.mode, command.accessMode));
@@ -261,14 +267,14 @@ async function ensureRuntime(command) {
   }
 
   currentCwd = command.cwd || currentCwd;
-  currentSessionId = resumeSessionId || currentSessionId;
+  currentSessionId = resumeSessionId;
   promptController = createPromptController();
   runtime = query({
     prompt: promptController.stream(),
     options: {
       cwd: currentCwd,
       resume: resumeSessionId || undefined,
-      additionalDirectories: [currentCwd],
+      additionalDirectories: [currentCwd, currentVisualizationDir].filter(Boolean),
       pathToClaudeCodeExecutable: command.claudePath,
       model: command.model || undefined,
       effort: command.effort || undefined,
@@ -287,8 +293,8 @@ async function ensureRuntime(command) {
             autoAllowBashIfSandboxed: false,
             allowUnsandboxedCommands: false,
             filesystem: {
-              allowRead: [currentCwd],
-              allowWrite: [currentCwd],
+              allowRead: [currentCwd, currentVisualizationDir].filter(Boolean),
+              allowWrite: [currentCwd, currentVisualizationDir].filter(Boolean),
             },
           }
         : undefined,
@@ -301,6 +307,10 @@ async function ensureRuntime(command) {
   });
 
   void consumeRuntime(runtime);
+}
+
+function resumeSessionIdForCommand(requestedSessionId, activeSessionId) {
+  return requestedSessionId || activeSessionId || null;
 }
 
 function permissionModeFor(mode, accessMode) {
@@ -415,6 +425,18 @@ function projectRelativePath(path) {
     : local;
 }
 
+function isClaudePlanArtifactPath(path) {
+  if (typeof path !== "string" || path.trim().length === 0) {
+    return false;
+  }
+  const absolute = isAbsolute(path) ? resolve(path) : resolve(currentCwd, path);
+  const normalized = absolute.replaceAll("\\", "/");
+  return (
+    normalized.includes("/.claude/plans/") ||
+    normalized.endsWith("/.claude/plans")
+  );
+}
+
 function mutationPaths(toolName, input) {
   if (!isEditTool(toolName) || !input || typeof input !== "object") {
     return [];
@@ -427,7 +449,12 @@ function mutationPaths(toolName, input) {
     input.path,
   ];
   return Array.from(
-    new Set(candidates.map(projectRelativePath).filter(Boolean)),
+    new Set(
+      candidates
+        .filter((path) => !isClaudePlanArtifactPath(path))
+        .map(projectRelativePath)
+        .filter(Boolean),
+    ),
   );
 }
 
@@ -1153,8 +1180,10 @@ export {
   fileAttributionHooks,
   finishCancelledTurn,
   finishTurnAfterFileReceipt,
+  isClaudePlanArtifactPath,
   mergeTurnChange,
   mutationStateForContents,
   mutationStateUnchanged,
+  resumeSessionIdForCommand,
   setTurnProjection,
 };

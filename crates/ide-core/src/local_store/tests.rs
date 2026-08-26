@@ -1043,6 +1043,122 @@ fn migrates_schema_in_temp_root() {
 }
 
 #[test]
+fn quick_ask_history_round_trips_and_clears_globally() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let session_id = Uuid::new_v4();
+
+    let project_exchange = store
+        .save_quick_ask_exchange(
+            session_id,
+            Some((project.id, &project.name)),
+            "  Where is auth configured?  ",
+            "  In the remote auth module.  ",
+            "Codex",
+            "GPT-5.6 Luna",
+        )
+        .unwrap();
+
+    let history = store.load_quick_ask_exchanges().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, project_exchange.id);
+    assert_eq!(history[0].session_id, session_id);
+    assert_eq!(history[0].project_id, Some(project.id));
+    assert_eq!(
+        history[0].project_name.as_deref(),
+        Some(project.name.as_str())
+    );
+    assert_eq!(history[0].question, "Where is auth configured?");
+    assert_eq!(history[0].answer, "In the remote auth module.");
+    assert!(store
+        .save_quick_ask_exchange(session_id, None, "   ", "answer", "Codex", "GPT-5.6 Luna",)
+        .is_err());
+
+    let general_exchange = store
+        .save_quick_ask_exchange(
+            session_id,
+            None,
+            "General question",
+            "General answer",
+            "Codex",
+            "GPT-5.6 Luna",
+        )
+        .unwrap();
+    let history = store.load_quick_ask_exchanges().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].id, general_exchange.id);
+    assert_eq!(history[1].id, project_exchange.id);
+    assert_eq!(history[1].project_id, Some(project.id));
+    assert_eq!(
+        history[1].project_name.as_deref(),
+        Some(project.name.as_str())
+    );
+
+    store.clear_quick_ask_exchanges().unwrap();
+    assert!(store.load_quick_ask_exchanges().unwrap().is_empty());
+}
+
+#[test]
+fn migrates_v34_quick_ask_history_from_v33_db() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let mut config = AppConfig::default();
+        config.projects = vec![project.clone()];
+        store.save_workspace_config(&config).unwrap();
+        store.save_agents(&[agent.clone()]).unwrap();
+        store
+            .save_voice_turn(
+                "project_talk",
+                "assistant",
+                "Voice history survives v34",
+                None,
+            )
+            .unwrap();
+        store
+            .rt
+            .block_on(async {
+                let conn = store.connect().await?;
+                conn.execute("DROP TABLE quick_ask_exchanges", ()).await?;
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 34", ())
+                    .await?;
+                assert_eq!(schema_version(&conn).await?, 33);
+                Ok::<_, anyhow::Error>(())
+            })
+            .unwrap();
+    }
+
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(
+        store
+            .load_workspace_config(AppConfig::default())
+            .unwrap()
+            .projects,
+        vec![project]
+    );
+    assert_eq!(store.load_agents().unwrap(), vec![agent]);
+    assert!(store
+        .load_voice_turns(10)
+        .unwrap()
+        .iter()
+        .any(|turn| turn.text == "Voice history survives v34"));
+    store
+        .save_quick_ask_exchange(
+            Uuid::new_v4(),
+            None,
+            "Migrated?",
+            "Yes.",
+            "Claude",
+            "Sonnet",
+        )
+        .unwrap();
+    assert_eq!(store.load_quick_ask_exchanges().unwrap().len(), 1);
+}
+
+#[test]
 fn voice_turns_round_trip_and_clear_without_audio() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
@@ -3925,7 +4041,7 @@ fn analytics_values(name: &str, description: &str) -> BTreeMap<String, serde_jso
 }
 
 #[test]
-fn migrates_populated_v32_store_to_orbit_v33_without_touching_existing_data() {
+fn migrates_populated_v32_store_through_current_schema_without_touching_existing_data() {
     let dir = tempfile::tempdir().unwrap();
     let project = Project::from_path(PathBuf::from("/tmp/choro-orbit-v32"));
     {
@@ -3947,7 +4063,7 @@ fn migrates_populated_v32_store_to_orbit_v33_without_touching_existing_data() {
                 ] {
                     conn.execute(format!("DROP TABLE {table}"), ()).await?;
                 }
-                conn.execute("DELETE FROM schema_migrations WHERE version = 33", ())
+                conn.execute("DELETE FROM schema_migrations WHERE version >= 33", ())
                     .await?;
                 assert_eq!(schema_version(&conn).await?, 32);
                 Ok::<_, anyhow::Error>(())
@@ -3968,7 +4084,7 @@ fn migrates_populated_v32_store_to_orbit_v33_without_touching_existing_data() {
         .rt
         .block_on(async {
             let conn = store.connect().await?;
-            assert_eq!(schema_version(&conn).await?, 33);
+            assert_eq!(schema_version(&conn).await?, STORE_SCHEMA_VERSION);
             Ok::<_, anyhow::Error>(())
         })
         .unwrap();

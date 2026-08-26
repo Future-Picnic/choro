@@ -931,22 +931,7 @@ fn codex_developer_instructions(
         instructions.push_str(document_instructions);
         instructions.push_str("\n</document_assistant>");
     }
-    let Some(visualization_dir) = visualization_dir else {
-        return instructions;
-    };
-    format!(
-        r#"{instructions}
-
-<choro_visualizations>
-Choro can render one interactive visualization at a time inside the conversation. When a visualization materially improves the answer:
-- Write one self-contained HTML document or fragment under this exact directory: {visualization_dir}
-- Keep it under 2 MB. Do not use fetch, XHR, WebSocket, or other live API calls.
-- Do not write visualization HTML into the project or include it as a project change.
-- In the final response, put this exact directive on its own line where the visualization belongs: ::codex-inline-vis{{file="<absolute-file-path>"}}
-- Keep any necessary explanation outside the directive. Do not link to the HTML file.
-</choro_visualizations>"#,
-        visualization_dir = visualization_dir.display(),
-    )
+    super::append_choro_visualization_instructions(instructions, visualization_dir)
 }
 
 impl Drop for CodexRuntime {
@@ -963,6 +948,7 @@ pub(super) fn capture_changed_files_snapshot(
     let repo_path = agent.runtime_path().to_path_buf();
     summary.reconcile_final_files(&repo_path);
     summary.remove_visualization_artifacts(agent.id, &repo_path);
+    summary.remove_provider_private_artifacts();
     if summary.snapshot_id.is_some() || summary.files.is_empty() {
         return summary;
     }

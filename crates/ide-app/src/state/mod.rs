@@ -9,6 +9,7 @@ pub mod git_state;
 pub mod open_code;
 pub mod orbit;
 pub mod penpot;
+pub mod quick_ask;
 pub mod services;
 pub mod tasks;
 pub mod terminals;
@@ -31,6 +32,7 @@ pub use penpot::{
     DesignProvider, PenpotConnectionStatus, PenpotDesign, PenpotDesignSource, PenpotEvent,
     PenpotState,
 };
+pub use quick_ask::{QuickAskEvent, QuickAskPhase, QuickAskScope, QuickAskState};
 pub use services::{ServicesScanKind, ServicesState};
 pub use tasks::TasksState;
 pub use terminals::{SessionId, TerminalManager};

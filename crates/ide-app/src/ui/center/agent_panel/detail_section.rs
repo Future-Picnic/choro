@@ -398,11 +398,8 @@ impl CenterArea {
                                         ),
                                 )
                             }),
-                    ),
-                )
-                .child(
-                    crate::ui::design::header::agent_chat_actions_overlay()
-                            .child(
+                    )
+                    .child(crate::ui::design::header::actions().child(
                                 crate::ui::style::agent_status_dropdown_button(
                                     ("agent-status", agent.id.as_u128() as u64),
                                     cx,
@@ -460,49 +457,17 @@ impl CenterArea {
                                 ),
                             ),
                     ),
+                ),
             )
             .when_some(
                 self.agent_start_errors.get(&agent.id).cloned(),
                 |view, error| {
-                    let copy_error = error.clone();
-                    let readable_error = error.replace('/', "/\u{200b}");
                     view.child(
-                        h_flex()
-                            .w_full()
-                            .px_3()
-                            .py_2()
-                            .gap_2()
-                            .items_start()
-                            .border_b_1()
-                            .border_color(crate::ui::design::rose(cx).opacity(0.2))
-                            .bg(crate::ui::design::rose(cx).opacity(0.08))
-                            .child(
-                                gpui_component::Icon::new(IconName::TriangleAlert)
-                                    .size(crate::ui::design::icon())
-                                    .text_color(crate::ui::design::rose(cx)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .whitespace_normal()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .line_height(gpui::relative(1.45))
-                                    .text_color(crate::ui::design::rose(cx))
-                                    .child(readable_error),
-                            )
-                            .child(
-                                crate::ui::style::ghost_button_compact(
-                                    ("copy-agent-error", agent.id.as_u128() as u64),
-                                    "Copy error",
-                                )
-                                .icon(IconName::Copy)
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        copy_error.clone(),
-                                    ));
-                                }),
-                            ),
+                        crate::ui::style::agent_attention_strip(
+                            ("copy-agent-error", agent.id.as_u128() as u64),
+                            error,
+                            cx,
+                        ),
                     )
                 },
             )

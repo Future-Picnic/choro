@@ -10,7 +10,8 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::{button::ButtonVariants, h_flex, v_flex, Disableable, Icon, IconName};
-use ide_core::ProjectId;
+use ide_core::config::default_pinned_project_activities;
+use ide_core::{ProjectActivityId, ProjectId};
 use uuid::Uuid;
 
 use crate::onboarding::{manifest, OnboardingManifest, OnboardingProgress};
@@ -774,6 +775,25 @@ impl OnboardingTour {
         crate::onboarding::write_stack(&slugs);
     }
 
+    /// Turn the onboarding stack choices into the activity defaults inherited
+    /// by this playground and every project the user adds afterward.
+    fn apply_stack_activity_defaults(&self, cx: &mut Context<Self>) {
+        let mut activities = default_pinned_project_activities();
+        if self.stack.contains(&StackTool::Database) {
+            activities.push(ProjectActivityId::Db);
+        }
+        if self.stack.contains(&StackTool::Design) {
+            // Onboarding's broad "Design" choice covers both the connected
+            // Penpot workspace and the project's saved visual references.
+            activities.push(ProjectActivityId::Design);
+            activities.push(ProjectActivityId::Assets);
+        }
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.set_default_project_activities(activities.clone(), cx);
+            workspace.save_now();
+        });
+    }
+
     fn handle_event(&mut self, event: OnboardingEvent, cx: &mut Context<Self>) {
         match event {
             OnboardingEvent::Start if self.phase == Phase::Welcome => {
@@ -790,6 +810,7 @@ impl OnboardingTour {
             }
             OnboardingEvent::StackContinue if self.phase == Phase::Stack => {
                 self.write_stack_file();
+                self.apply_stack_activity_defaults(cx);
                 self.set_phase(Phase::ProviderChoice, cx)
             }
             OnboardingEvent::ProviderSelected(provider) if self.phase == Phase::ProviderChoice => {

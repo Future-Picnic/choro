@@ -249,7 +249,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         shortcut!(
             "toggle_focus_mode",
-            Some("cmd-f"),
+            Some("cmd-i"),
             ToggleFocusMode,
             "Focus mode",
             "Hide both sidebars and focus on the current work",
@@ -258,7 +258,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         shortcut!(
             "toggle_left",
-            Some("ctrl-cmd-s"),
+            Some("cmd-b"),
             ToggleLeftPanel,
             "Toggle project sidebar",
             "Show or hide project navigation",
@@ -267,7 +267,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         shortcut!(
             "toggle_right",
-            Some("ctrl-cmd-t"),
+            Some("cmd-shift-b"),
             ToggleRightPanel,
             "Toggle tools panel",
             "Show or hide Git, files, and agent tools",
@@ -345,6 +345,16 @@ pub fn shortcuts() -> Vec<Shortcut> {
             "Stop the selected running agent",
             ShortcutCategory::Agents,
             true
+        ),
+        shortcut_in!(
+            "quick_ask",
+            Some("cmd-alt-a"),
+            OpenQuickAsk,
+            "Quick Ask",
+            "Ask a quick question without starting an agent",
+            ShortcutCategory::Agents,
+            true,
+            "Root"
         ),
         shortcut_in!(
             "toggle_voice_director",
@@ -518,13 +528,23 @@ mod tests {
     }
 
     #[test]
-    fn focus_mode_owns_command_f() {
+    fn layout_shortcuts_use_command_b_family_and_command_i() {
         let focus_mode = shortcuts()
             .into_iter()
             .find(|shortcut| shortcut.id == "toggle_focus_mode")
             .unwrap();
+        let left_sidebar = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_left")
+            .unwrap();
+        let right_sidebar = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_right")
+            .unwrap();
 
-        assert_eq!(focus_mode.default_keystroke, Some("cmd-f"));
+        assert_eq!(focus_mode.default_keystroke, Some("cmd-i"));
+        assert_eq!(left_sidebar.default_keystroke, Some("cmd-b"));
+        assert_eq!(right_sidebar.default_keystroke, Some("cmd-shift-b"));
         assert_eq!(focus_mode.category, ShortcutCategory::NavigationLayout);
         assert!(focus_mode.in_commands);
     }
@@ -560,6 +580,23 @@ mod tests {
         assert_eq!(assistant.default_keystroke, Some("cmd-shift-a"));
         assert_eq!(assistant.context, Some("Root"));
         assert!(assistant.in_commands);
+    }
+
+    #[test]
+    fn quick_ask_uses_command_option_a_without_replacing_project_talk() {
+        let quick_ask = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "quick_ask")
+            .unwrap();
+        let project_talk = shortcuts()
+            .into_iter()
+            .find(|shortcut| shortcut.id == "toggle_voice_director")
+            .unwrap();
+
+        assert_eq!(quick_ask.default_keystroke, Some("cmd-alt-a"));
+        assert_eq!(quick_ask.context, Some("Root"));
+        assert!(quick_ask.in_commands);
+        assert_eq!(project_talk.default_keystroke, Some("cmd-shift-a"));
     }
 
     #[test]

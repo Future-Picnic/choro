@@ -40,6 +40,12 @@ type ChoroDocument = {
   format: "blocknote";
   title: string;
   blocks: PartialBlock[];
+  origin?: {
+    kind: "pocket_comet";
+    workspace_id: string;
+    project_id: string;
+    document_id: string;
+  };
 };
 
 type MentionSource = {
@@ -251,6 +257,7 @@ function App() {
   const [theme, setTheme] = useState(bootstrap.theme);
   const suppressChanges = useRef(false);
   const documentTitle = useRef(bootstrap.document.title);
+  const documentOrigin = useRef(bootstrap.document.origin);
   const pendingChange = useRef(false);
   const changeTimer = useRef<number | null>(null);
   const editor = useCreateBlockNote({
@@ -281,6 +288,7 @@ function App() {
         // The custom mention schema widens BlockNote's concrete Block type;
         // its persisted JSON remains compatible with PartialBlock on reload.
         blocks: editor.document as unknown as PartialBlock[],
+        origin: documentOrigin.current,
       } satisfies ChoroDocument,
     });
   }, [editor]);
@@ -301,6 +309,7 @@ function App() {
         // revision so the native side can merge or surface a real conflict.
         flushChanges();
         documentTitle.current = document.title;
+        documentOrigin.current = document.origin;
         suppressChanges.current = true;
         try {
           editor.replaceBlocks(

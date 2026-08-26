@@ -132,8 +132,13 @@ pub fn build_collapsed_proposed_plan_preview_markdown(markdown: &str, max_lines:
 }
 
 pub fn build_plan_implementation_prompt(markdown: &str) -> String {
-    let _ = markdown;
-    "Implement this plan.".to_string()
+    let markdown = markdown.trim();
+    if markdown.is_empty() {
+        return "Implement this plan.".to_string();
+    }
+    format!(
+        "Implement the approved plan below. The complete plan is repeated here so implementation does not depend on prior session memory.\n\n<approved_plan>\n{markdown}\n</approved_plan>"
+    )
 }
 
 fn markdown_heading_text(line: &str) -> String {
@@ -164,6 +169,20 @@ mod tests {
         let plan = ProposedPlan::new("p1", "# Plan\nDo it");
         let submission = plan.resolve_submission(" ");
         assert!(!submission.refine_in_plan_mode);
-        assert_eq!(submission.text, "Implement this plan.");
+        assert!(submission
+            .text
+            .starts_with("Implement the approved plan below."));
+        assert!(submission
+            .text
+            .contains("<approved_plan>\n# Plan\nDo it\n</approved_plan>"));
+    }
+
+    #[test]
+    fn implementation_prompt_keeps_the_complete_approved_plan() {
+        let markdown = "# Ship it\n\n1. Add the feature.\n2. Run the tests.";
+        let prompt = build_plan_implementation_prompt(markdown);
+
+        assert!(prompt.contains(markdown));
+        assert!(prompt.contains("does not depend on prior session memory"));
     }
 }

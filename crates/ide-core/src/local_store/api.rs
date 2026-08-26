@@ -1,6 +1,44 @@
 use super::*;
 
 impl LocalStore {
+    pub fn save_quick_ask_exchange(
+        &self,
+        session_id: Uuid,
+        project: Option<(ProjectId, &str)>,
+        question: &str,
+        answer: &str,
+        provider: &str,
+        model_label: &str,
+    ) -> Result<StoredQuickAskExchange> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            insert_quick_ask_exchange_async(
+                &conn,
+                session_id,
+                project,
+                question,
+                answer,
+                provider,
+                model_label,
+            )
+            .await
+        })
+    }
+
+    pub fn load_quick_ask_exchanges(&self) -> Result<Vec<StoredQuickAskExchange>> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            load_quick_ask_exchanges_async(&conn).await
+        })
+    }
+
+    pub fn clear_quick_ask_exchanges(&self) -> Result<()> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            clear_quick_ask_exchanges_async(&conn).await
+        })
+    }
+
     pub fn save_voice_turn(
         &self,
         mode: &str,

@@ -561,7 +561,6 @@ impl CenterArea {
             .items_center()
             .overflow_hidden()
             .when(preview_armed, |row| {
-                let input_for_remove = input.clone();
                 row.child(
                     crate::ui::style::preview_attachment_chip(
                         ("agent-chat-preview-token", agent_id.as_u128() as u64),
@@ -571,13 +570,12 @@ impl CenterArea {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.agent_chat_preview_armed.remove(&agent_id);
                         this.agent_chat_preview_suggestion_dismissed
-                            .insert(agent_id, input_for_remove.read(cx).value().to_string());
+                            .insert(agent_id);
                         cx.notify();
                     })),
                 )
             })
             .when(preview_suggested, |row| {
-                let input_for_dismiss = input.clone();
                 row.child(
                     crate::ui::style::composer_toggle_chip(
                         ("agent-chat-use-preview", agent_id.as_u128() as u64),
@@ -611,7 +609,7 @@ impl CenterArea {
                     .tooltip("Don't use Preview for this message")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.agent_chat_preview_suggestion_dismissed
-                            .insert(agent_id, input_for_dismiss.read(cx).value().to_string());
+                            .insert(agent_id);
                         cx.notify();
                     })),
                 )

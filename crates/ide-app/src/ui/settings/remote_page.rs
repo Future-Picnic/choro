@@ -349,11 +349,15 @@ impl SettingsView {
                                                         .on_click(cx.listener({
                                                             let device_id = device.id.clone();
                                                             move |this, _, _, cx| {
-                                                            this.remote_status = this
-                                                                .remote_auth
-                                                                .revoke(&device_id)
-                                                                .err()
-                                                                .map(|error| format!("Could not revoke device: {error:?}"));
+                                                            this.remote_status = match this.remote_auth.revoke(&device_id) {
+                                                                Ok(_) => {
+                                                                    this.workspace.update(cx, |workspace, cx| {
+                                                                        workspace.remove_pocketcomet_task_sources_for_device(&device_id, cx);
+                                                                    });
+                                                                    None
+                                                                }
+                                                                Err(error) => Some(format!("Could not revoke device: {error:?}")),
+                                                            };
                                                             cx.notify();
                                                         }})),
                                                 )

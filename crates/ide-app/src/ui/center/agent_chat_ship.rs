@@ -539,6 +539,9 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let task = result.task.clone()?;
+        if task.provider == ide_core::IssueTrackerProvider::PocketComet {
+            return None;
+        }
         let pr_url = result.pr_url.clone()?;
         if pr_url.starts_with("onboarding-demo://") {
             return None;

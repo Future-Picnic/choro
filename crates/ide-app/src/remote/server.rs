@@ -5,8 +5,9 @@ use std::thread;
 use std::time::Duration;
 
 use async_channel::Sender;
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -17,10 +18,12 @@ use serde_json::json;
 use tokio::sync::{broadcast, oneshot};
 
 use super::dto::{
-    AgentSyncBatchDto, AgentSyncRequest, AnswerQuestionRequest, CommandAcceptedResponse,
-    CompletePairingRequest, CreateAgentRequest, DismissPlanRequest, HealthResponse, RemoteEvent,
-    ResolveApprovalRequest, ResolvePlanRequest, SendMessageRequest, ShipRequest,
-    UpdateAgentConfigurationRequest, UpdateAgentStatusRequest, VerificationFixRequest,
+    AcknowledgePocketCometTaskActionsRequest, AgentSyncBatchDto, AgentSyncRequest,
+    AnswerQuestionRequest, CommandAcceptedResponse, CompletePairingRequest, CreateAgentRequest,
+    DismissPlanRequest, HealthResponse, RemoteEvent, ResolveApprovalRequest, ResolvePlanRequest,
+    SendMessageRequest, ShipRequest, SyncPocketCometTaskSourcesRequest,
+    UpdateAgentConfigurationRequest, UpdateAgentStatusRequest, UpsertChoroDocumentRequest,
+    VerificationFixRequest,
 };
 use super::{
     DevicePermission, PairedDevice, PairingError, RemoteAuth, RemoteCommand, RemoteError,
@@ -32,6 +35,9 @@ use super::{
 // existing remote URL already target 3848.
 const DEFAULT_PORT: u16 = 3848;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_DOCUMENT_ASSET_BYTES: usize = 25 * 1024 * 1024;
+const MAX_POCKETCOMET_TASK_ASSET_BYTES: usize = 25 * 1024 * 1024;
+const MAX_POCKETCOMET_TASK_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 struct ServerState {
@@ -269,6 +275,28 @@ fn router(state: ServerState) -> Router {
         )
         .route("/v1/configuration", get(configuration))
         .route("/v1/projects", get(list_projects))
+        .route(
+            "/v1/projects/{project_id}/documents/{document_id}",
+            get(get_document).put(upsert_document),
+        )
+        .route(
+            "/v1/projects/{project_id}/documents/{document_id}/assets",
+            post(store_document_asset).layer(DefaultBodyLimit::max(MAX_DOCUMENT_ASSET_BYTES)),
+        )
+        .route(
+            "/v1/projects/{project_id}/task-sources/pocketcomet/tasks/{task_id}/assets/{attachment_id}",
+            post(store_pocketcomet_task_asset)
+                .layer(DefaultBodyLimit::max(MAX_POCKETCOMET_TASK_ASSET_BYTES)),
+        )
+        .route(
+            "/v1/task-sources/pocketcomet/sync",
+            post(sync_pocketcomet_task_sources)
+                .layer(DefaultBodyLimit::max(MAX_POCKETCOMET_TASK_SOURCE_BYTES)),
+        )
+        .route(
+            "/v1/task-sources/pocketcomet/actions/acknowledge",
+            post(acknowledge_pocketcomet_task_actions),
+        )
         .route("/v1/projects/{project_id}/agents", get(list_agents))
         .route("/v1/agents/sync", post(sync_agents))
         .route("/v1/agents/{agent_id}", get(get_agent))
@@ -329,7 +357,7 @@ async fn health() -> Json<HealthResponse> {
         status: "ok".into(),
         app_version: env!("CARGO_PKG_VERSION").into(),
         host_name: std::env::var("HOSTNAME").unwrap_or_else(|_| "Choro Mac".into()),
-        protocol_version: 5,
+        protocol_version: 10,
         authentication_required: true,
     })
 }
@@ -410,6 +438,16 @@ async fn revoke_current_device(
     State(state): State<ServerState>,
     Extension(device): Extension<PairedDevice>,
 ) -> Response {
+    if let Err(error) = command_result(&state, |response| {
+        RemoteCommand::RemovePocketCometTaskSources {
+            device_id: device.id.clone(),
+            response,
+        }
+    })
+    .await
+    {
+        return api_error(error);
+    }
     match state.auth.revoke(&device.id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => api_error(RemoteError::not_found("paired device not found")),
@@ -444,6 +482,144 @@ fn request_token(headers: &HeaderMap) -> Option<String> {
 
 async fn list_projects(State(state): State<ServerState>) -> Response {
     command(&state, |response| RemoteCommand::ListProjects { response }).await
+}
+
+async fn get_document(
+    State(state): State<ServerState>,
+    Path((project_id, document_id)): Path<(String, String)>,
+) -> Response {
+    command(&state, |response| RemoteCommand::GetDocument {
+        project_id,
+        document_id,
+        response,
+    })
+    .await
+}
+
+async fn upsert_document(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+    Path((project_id, document_id)): Path<(String, String)>,
+    Json(request): Json<UpsertChoroDocumentRequest>,
+) -> Response {
+    if device.permission != DevicePermission::FullAccess {
+        return permission_denied();
+    }
+    command(&state, |response| RemoteCommand::UpsertDocument {
+        project_id,
+        document_id,
+        request,
+        response,
+    })
+    .await
+}
+
+async fn store_document_asset(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+    Path((project_id, document_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if device.permission != DevicePermission::FullAccess {
+        return permission_denied();
+    }
+    if body.is_empty() || body.len() > MAX_DOCUMENT_ASSET_BYTES {
+        return api_error(RemoteError::bad_request(
+            "Document assets must be between 1 byte and 25 MB",
+        ));
+    }
+    let mime = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    command(&state, |response| RemoteCommand::StoreDocumentAsset {
+        project_id,
+        document_id,
+        mime,
+        bytes: body.to_vec(),
+        response,
+    })
+    .await
+}
+
+async fn store_pocketcomet_task_asset(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+    Path((project_id, task_id, attachment_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if device.permission != DevicePermission::FullAccess {
+        return full_access_required();
+    }
+    if body.is_empty() || body.len() > MAX_POCKETCOMET_TASK_ASSET_BYTES {
+        return api_error(RemoteError::bad_request(
+            "Task images must be between 1 byte and 25 MB",
+        ));
+    }
+    let mime = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.to_ascii_lowercase().starts_with("image/"));
+    let Some(mime) = mime else {
+        return api_error(RemoteError::bad_request(
+            "PocketComet task attachments must be images",
+        ));
+    };
+    command(&state, |response| {
+        RemoteCommand::StorePocketCometTaskAsset {
+            project_id,
+            task_id,
+            attachment_id,
+            mime: mime.to_string(),
+            bytes: body.to_vec(),
+            response,
+        }
+    })
+    .await
+}
+
+async fn sync_pocketcomet_task_sources(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+    Json(request): Json<SyncPocketCometTaskSourcesRequest>,
+) -> Response {
+    if device.permission != DevicePermission::FullAccess {
+        return full_access_required();
+    }
+    command(&state, |response| {
+        RemoteCommand::SyncPocketCometTaskSources {
+            device_id: device.id,
+            request,
+            response,
+        }
+    })
+    .await
+}
+
+async fn acknowledge_pocketcomet_task_actions(
+    State(state): State<ServerState>,
+    Extension(device): Extension<PairedDevice>,
+    Json(request): Json<AcknowledgePocketCometTaskActionsRequest>,
+) -> Response {
+    if device.permission != DevicePermission::FullAccess {
+        return full_access_required();
+    }
+    command(&state, |response| {
+        RemoteCommand::AcknowledgePocketCometTaskActions {
+            device_id: device.id,
+            request,
+            response,
+        }
+    })
+    .await
 }
 
 async fn configuration(State(state): State<ServerState>) -> Response {
@@ -810,6 +986,16 @@ where
     T: Serialize,
     F: FnOnce(oneshot::Sender<RemoteResult<T>>) -> RemoteCommand,
 {
+    match command_result(state, make_command).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+async fn command_result<T, F>(state: &ServerState, make_command: F) -> RemoteResult<T>
+where
+    F: FnOnce(oneshot::Sender<RemoteResult<T>>) -> RemoteCommand,
+{
     let (response_tx, response_rx) = oneshot::channel();
     if state
         .commands
@@ -817,15 +1003,14 @@ where
         .await
         .is_err()
     {
-        return api_error(RemoteError::internal(
+        return Err(RemoteError::internal(
             "desktop command bridge is unavailable",
         ));
     }
     match tokio::time::timeout(COMMAND_TIMEOUT, response_rx).await {
-        Ok(Ok(Ok(value))) => Json(value).into_response(),
-        Ok(Ok(Err(error))) => api_error(error),
-        Ok(Err(_)) => api_error(RemoteError::internal("desktop command was cancelled")),
-        Err(_) => api_error(RemoteError::internal("desktop command timed out")),
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(RemoteError::internal("desktop command was cancelled")),
+        Err(_) => Err(RemoteError::internal("desktop command timed out")),
     }
 }
 

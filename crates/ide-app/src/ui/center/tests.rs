@@ -420,15 +420,32 @@ fn ambiguous_preview_requests_offer_a_suggestion() {
             ChoroPreviewIntent::Suggest,
             "{draft}"
         );
-        assert!(should_suggest_choro_preview(draft, false, None));
-        assert!(!should_suggest_choro_preview(draft, true, None));
-        assert!(!should_suggest_choro_preview(draft, false, Some(draft)));
+        assert!(should_suggest_choro_preview(draft, false, false));
+        assert!(!should_suggest_choro_preview(draft, true, false));
+        assert!(!should_suggest_choro_preview(draft, false, true));
     }
     assert_eq!(
         choro_preview_intent("change the card spacing"),
         ChoroPreviewIntent::None
     );
     assert_eq!(choro_preview_intent("/preview"), ChoroPreviewIntent::None);
+}
+
+#[test]
+fn dismissed_preview_stays_disabled_as_the_draft_changes() {
+    assert!(!should_auto_arm_choro_preview(
+        "open index.html in preview",
+        true,
+    ));
+    assert!(!should_auto_arm_choro_preview(
+        "open index.html in preview and inspect the header",
+        true,
+    ));
+    assert!(!should_suggest_choro_preview(
+        "improve the preview card and its spacing",
+        false,
+        true,
+    ));
 }
 
 #[test]

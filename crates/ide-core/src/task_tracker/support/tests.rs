@@ -36,6 +36,157 @@ fn pr_done_status_preserves_other_config_keys() {
 }
 
 #[test]
+fn pocketcomet_snapshot_filters_tasks_by_saved_assignee_identity() {
+    let snapshot = PocketCometTaskSourceSnapshot {
+        device_id: "device-1".into(),
+        workspace_id: "workspace-1".into(),
+        pocketcomet_project_id: "project-1".into(),
+        project_name: "Website".into(),
+        statuses: vec![
+            PocketCometTaskStatus {
+                id: "started".into(),
+                name: "In progress".into(),
+                category: "started".into(),
+            },
+            PocketCometTaskStatus {
+                id: "done".into(),
+                name: "Done".into(),
+                category: "completed".into(),
+            },
+            PocketCometTaskStatus {
+                id: "review".into(),
+                name: "Review".into(),
+                category: "started".into(),
+            },
+        ],
+        assignees: vec![
+            PocketCometTaskAssignee {
+                id: "user-ada".into(),
+                name: "Ada".into(),
+                email: Some("ada@example.com".into()),
+            },
+            PocketCometTaskAssignee {
+                id: "user-grace".into(),
+                name: "Grace".into(),
+                email: None,
+            },
+        ],
+        tasks: vec![
+            PocketCometTask {
+                id: "task-ada".into(),
+                title: "Design settings".into(),
+                description: "Keep the filter in Choro.".into(),
+                status_id: "started".into(),
+                status: "In progress".into(),
+                status_category: "started".into(),
+                list_id: "list-1".into(),
+                list_name: "Tasks".into(),
+                assignee_id: Some("user-ada".into()),
+                assignee_name: Some("Ada".into()),
+                priority: "high".into(),
+                labels: vec!["desktop".into()],
+                comments: vec![PocketCometTaskComment {
+                    id: "comment-1".into(),
+                    author_name: "Ada".into(),
+                    body: "Ready for review.".into(),
+                    created_at: 2,
+                }],
+                attachments: vec![PocketCometTaskAttachment {
+                    id: "attachment-1".into(),
+                    file_name: "mockup.png".into(),
+                    mime_type: Some("image/png".into()),
+                    size_bytes: 1_234,
+                    asset_file: format!("pocketcomet-{}.png", "a".repeat(64)),
+                }],
+                created_at: 1,
+                updated_at: 2,
+            },
+            PocketCometTask {
+                id: "task-grace".into(),
+                title: "Ship sync".into(),
+                description: String::new(),
+                status_id: "done".into(),
+                status: "Done".into(),
+                status_category: "completed".into(),
+                list_id: "list-1".into(),
+                list_name: "Tasks".into(),
+                assignee_id: Some("user-grace".into()),
+                assignee_name: Some("Grace".into()),
+                priority: "none".into(),
+                labels: Vec::new(),
+                comments: Vec::new(),
+                attachments: Vec::new(),
+                created_at: 1,
+                updated_at: 3,
+            },
+        ],
+    };
+    let mut connection = TaskTrackerConnection::new_external(
+        IssueTrackerProvider::PocketComet,
+        "PocketComet",
+        "",
+        "",
+    );
+    connection.provider_config_json = serde_json::to_string(&snapshot).unwrap();
+    connection.source_id = Some("project-1".into());
+    connection.assignee_account_id = Some("user-ada".into());
+    connection.assignee_display_name = Some("Ada".into());
+
+    let client = TaskTrackerClient::new(connection).unwrap();
+    let board = client.load_board().unwrap();
+
+    assert_eq!(board.issues.len(), 1);
+    assert_eq!(board.issues[0].reference.issue_id, "task-ada");
+    assert_eq!(board.issues[0].labels, vec!["desktop"]);
+    assert_eq!(
+        board.columns.len(),
+        3,
+        "empty project statuses stay visible"
+    );
+    assert_eq!(client.list_assignees().unwrap().len(), 2);
+
+    let detail = client
+        .load_task_detail(&board.issues[0].reference, &board.columns)
+        .expect("PocketComet task detail");
+    assert_eq!(detail.attachments.len(), 1);
+    assert_eq!(detail.attachments[0].filename, "mockup.png");
+    assert_eq!(detail.attachments[0].size, Some(1_234));
+    assert_eq!(detail.comments.len(), 1);
+    assert_eq!(detail.comments[0].author, "Ada");
+    assert_eq!(detail.comments[0].body.text, "Ready for review.");
+    assert_eq!(
+        client
+            .available_statuses(&board.issues[0].reference)
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn pocketcomet_task_actions_use_a_stable_tagged_wire_shape() {
+    let action = PocketCometTaskAction {
+        action_id: "00000000-0000-0000-0000-000000000123".into(),
+        device_id: "device-1".into(),
+        workspace_id: "workspace-1".into(),
+        pocketcomet_project_id: "project-1".into(),
+        task_id: "task-1".into(),
+        created_at: 1,
+        command: PocketCometTaskActionCommand::SetStatus {
+            status_id: "status-done".into(),
+        },
+    };
+
+    let wire = serde_json::to_value(&action).unwrap();
+    assert_eq!(wire["kind"], "set_status");
+    assert_eq!(wire["status_id"], "status-done");
+    assert_eq!(
+        serde_json::from_value::<PocketCometTaskAction>(wire).unwrap(),
+        action
+    );
+}
+
+#[test]
 fn personal_task_status_id_round_trips() {
     for status in PersonalTaskStatus::ALL {
         assert_eq!(

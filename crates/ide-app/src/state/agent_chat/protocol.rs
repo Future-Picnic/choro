@@ -62,6 +62,35 @@ const CHAT_STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(28);
 const CHAT_STREAM_MAX_BUFFER_BYTES: usize = 160;
 const CHORO_NATIVE_TOOL_INSTRUCTIONS: &str = "When the user explicitly asks for a Choro doc, a document in Choro Docs, or equivalent wording, use the Choro MCP create_choro_doc tool instead of writing a .choro file directly. When the user explicitly asks for a Choro script or a command in Choro's top-header Scripts control, use create_choro_script. Do not use these tools for ordinary repository documents, files, scripts, or commands.";
 
+fn append_choro_visualization_instructions(
+    instructions: String,
+    visualization_dir: Option<&Path>,
+) -> String {
+    let Some(visualization_dir) = visualization_dir else {
+        return instructions;
+    };
+    format!(
+        r#"{instructions}
+
+<choro_visualizations>
+Choro can render one interactive visualization at a time inside the conversation. When a visualization materially improves the answer:
+- Write one self-contained HTML document or fragment under this exact directory: {visualization_dir}
+- Keep it under 2 MB. Do not use fetch, XHR, WebSocket, or other live API calls.
+- Do not write visualization HTML into the project or include it as a project change.
+- In the final response, put this exact directive on its own line where the visualization belongs: ::codex-inline-vis{{file="<absolute-file-path>"}}
+- Keep any necessary explanation outside the directive. Do not link to the HTML file.
+</choro_visualizations>"#,
+        visualization_dir = visualization_dir.display(),
+    )
+}
+
+fn agent_visualization_dir(agent: &AgentRecord) -> Option<PathBuf> {
+    LocalStore::open_default().ok().and_then(|store| {
+        let path = store.agent_artifacts_dir(agent.id).join("visualizations");
+        fs::create_dir_all(&path).ok().map(|_| path)
+    })
+}
+
 /// Events flow to the GPUI foreground through an awaitable channel so the
 /// per-chat consumer task sleeps until a backend actually produces something,
 /// instead of polling on a timer.
@@ -392,6 +421,7 @@ struct ClaudeBridgeRuntime {
     effort: String,
     access_mode: AgentAccessMode,
     claude_path: PathBuf,
+    visualization_dir: Option<PathBuf>,
     assistant_buffer: String,
     assistant_stream: StreamChunkBuffer,
 }
@@ -529,6 +559,8 @@ fn run_claude_bridge(
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "Claude bridge");
 
+    let visualization_dir = agent_visualization_dir(&agent);
+
     let mut runtime = ClaudeBridgeRuntime {
         child,
         stdin,
@@ -541,6 +573,7 @@ fn run_claude_bridge(
         access_mode: agent.access_mode,
         agent,
         claude_path,
+        visualization_dir,
         assistant_buffer: String::new(),
         assistant_stream: StreamChunkBuffer::new(),
     };
@@ -966,10 +999,7 @@ fn run_codex_app_server(
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "Codex app-server");
 
-    let visualization_dir = LocalStore::open_default().ok().and_then(|store| {
-        let path = store.agent_artifacts_dir(agent.id).join("visualizations");
-        fs::create_dir_all(&path).ok().map(|_| path)
-    });
+    let visualization_dir = agent_visualization_dir(&agent);
 
     let mut runtime = CodexRuntime {
         child,
@@ -1137,6 +1167,16 @@ fn should_surface_stderr(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visualization_instructions_are_provider_neutral() {
+        let path = Path::new("/tmp/choro artifacts/visualizations");
+        let instructions = append_choro_visualization_instructions("base".to_string(), Some(path));
+
+        assert!(instructions.contains(&path.display().to_string()));
+        assert!(instructions.contains("::codex-inline-vis{file=\"<absolute-file-path>\"}"));
+        assert!(instructions.contains("Do not write visualization HTML into the project"));
+    }
 
     #[test]
     fn jsonrpc_id_key_preserves_numeric_request_ids() {

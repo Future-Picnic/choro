@@ -25,6 +25,7 @@ pub mod preset_editor;
 pub mod project_list;
 pub mod project_search;
 pub mod project_visuals;
+pub mod quick_ask;
 pub mod quick_task;
 pub mod right_panel;
 pub mod root_view;

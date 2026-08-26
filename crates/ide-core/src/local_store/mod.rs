@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 33;
+const STORE_SCHEMA_VERSION: u32 = 34;
 const EXPORT_FORMAT_VERSION: u32 = 8;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -87,6 +87,21 @@ pub struct StoredVoiceTurn {
     pub role: String,
     pub text: String,
     pub agent_id: Option<Uuid>,
+    pub created_at: u64,
+}
+
+/// One completed Quick Ask exchange. History is global, while the optional
+/// project identity records which repository grounded the answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredQuickAskExchange {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub project_id: Option<ProjectId>,
+    pub project_name: Option<String>,
+    pub question: String,
+    pub answer: String,
+    pub provider: String,
+    pub model_label: String,
     pub created_at: u64,
 }
 
@@ -763,6 +778,7 @@ mod memories;
 mod orbit;
 mod penpot;
 mod project_preview;
+mod quick_ask;
 mod references;
 mod schema;
 mod support;
@@ -786,6 +802,7 @@ pub use penpot::{
     StoredProjectPenpotBinding,
 };
 use project_preview::*;
+use quick_ask::*;
 use references::*;
 use schema::*;
 use support::*;

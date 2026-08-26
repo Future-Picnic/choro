@@ -30,6 +30,7 @@ pub(crate) fn provider_badge_bg(provider: IssueTrackerProvider) -> gpui::Hsla {
         IssueTrackerProvider::Linear => "linear",
         IssueTrackerProvider::Asana => "asana",
         IssueTrackerProvider::ClickUp => "clickup",
+        IssueTrackerProvider::PocketComet => "pocketcomet",
         IssueTrackerProvider::Personal => "personal",
     };
     crate::ui::design::palette::tracker_brand(key)
@@ -41,6 +42,7 @@ pub(crate) fn provider_brand_asset(provider: IssueTrackerProvider) -> Option<&'s
         IssueTrackerProvider::Linear => Some("brand/linear.svg"),
         IssueTrackerProvider::Asana => Some("brand/asana.svg"),
         IssueTrackerProvider::ClickUp => Some("brand/clickup.svg"),
+        IssueTrackerProvider::PocketComet => None,
         IssueTrackerProvider::Personal => None,
     }
 }
@@ -60,6 +62,14 @@ pub(crate) fn provider_badge(
         .size(px(size))
         .rounded(px((size * 0.28).max(4.)))
         .bg(provider_badge_bg(provider));
+    if provider == IssueTrackerProvider::PocketComet {
+        return tile
+            .child(crate::ui::design::indicator::pocketcomet_icon(
+                crate::ui::design::t1(cx),
+                inner,
+            ))
+            .into_any_element();
+    }
     match provider_brand_asset(provider) {
         Some(path) => tile.child(img(path).w(inner).h(inner)).into_any_element(),
         None => tile
@@ -174,6 +184,7 @@ pub(crate) fn provider_site_placeholder(provider: IssueTrackerProvider) -> &'sta
         IssueTrackerProvider::Linear => "https://api.linear.app/graphql",
         IssueTrackerProvider::ClickUp => "https://api.clickup.com",
         IssueTrackerProvider::Asana => "https://app.asana.com",
+        IssueTrackerProvider::PocketComet => "",
         IssueTrackerProvider::Personal => "",
     }
 }
@@ -184,6 +195,7 @@ pub(crate) fn provider_token_placeholder(provider: IssueTrackerProvider) -> &'st
         IssueTrackerProvider::Linear => "${LINEAR_API_TOKEN} or personal API key",
         IssueTrackerProvider::ClickUp => "${CLICKUP_API_TOKEN} or API token",
         IssueTrackerProvider::Asana => "${ASANA_API_TOKEN} or PAT",
+        IssueTrackerProvider::PocketComet => "",
         IssueTrackerProvider::Personal => "",
     }
 }
@@ -194,6 +206,7 @@ pub(crate) fn provider_default_token(provider: IssueTrackerProvider) -> String {
         IssueTrackerProvider::Linear => "${LINEAR_API_TOKEN}",
         IssueTrackerProvider::ClickUp => "${CLICKUP_API_TOKEN}",
         IssueTrackerProvider::Asana => "${ASANA_API_TOKEN}",
+        IssueTrackerProvider::PocketComet => "",
         IssueTrackerProvider::Personal => "",
     }
     .to_string()
@@ -205,6 +218,7 @@ pub(crate) fn provider_default_site_url(provider: IssueTrackerProvider) -> Strin
         IssueTrackerProvider::Linear => "https://api.linear.app/graphql",
         IssueTrackerProvider::ClickUp => "https://api.clickup.com",
         IssueTrackerProvider::Asana => "https://app.asana.com",
+        IssueTrackerProvider::PocketComet => "",
         IssueTrackerProvider::Personal => "",
     }
     .to_string()
@@ -216,6 +230,7 @@ pub(crate) fn provider_source_id_placeholder(provider: IssueTrackerProvider) -> 
         IssueTrackerProvider::Linear => "team id",
         IssueTrackerProvider::ClickUp => "list id",
         IssueTrackerProvider::Asana => "project gid",
+        IssueTrackerProvider::PocketComet => "project id",
         IssueTrackerProvider::Personal => "",
     }
 }
@@ -226,6 +241,7 @@ pub(crate) fn provider_source_name_placeholder(provider: IssueTrackerProvider) -
         IssueTrackerProvider::Linear => "team name",
         IssueTrackerProvider::ClickUp => "list name",
         IssueTrackerProvider::Asana => "project name",
+        IssueTrackerProvider::PocketComet => "project name",
         IssueTrackerProvider::Personal => "",
     }
 }
@@ -236,6 +252,7 @@ pub(crate) fn provider_source_kind(provider: IssueTrackerProvider) -> &'static s
         IssueTrackerProvider::Linear => "team",
         IssueTrackerProvider::ClickUp => "list",
         IssueTrackerProvider::Asana => "project",
+        IssueTrackerProvider::PocketComet => "project",
         IssueTrackerProvider::Personal => "personal",
     }
 }
@@ -256,6 +273,7 @@ pub(crate) fn provider_source_label(provider: IssueTrackerProvider) -> &'static 
         IssueTrackerProvider::Linear => "Team",
         IssueTrackerProvider::ClickUp => "List",
         IssueTrackerProvider::Asana => "Project",
+        IssueTrackerProvider::PocketComet => "Project",
         IssueTrackerProvider::Personal => "Source",
     }
 }
@@ -266,6 +284,7 @@ pub(crate) fn provider_help_title(provider: IssueTrackerProvider) -> &'static st
         IssueTrackerProvider::Linear => "Connect Linear",
         IssueTrackerProvider::ClickUp => "Connect ClickUp",
         IssueTrackerProvider::Asana => "Connect Asana",
+        IssueTrackerProvider::PocketComet => "PocketComet project",
         IssueTrackerProvider::Personal => "Personal Board",
     }
 }
@@ -291,6 +310,11 @@ pub(crate) fn provider_help_steps(provider: IssueTrackerProvider) -> &'static [&
             "Create an Asana personal access token and paste it as the token.",
             "Paste the Asana Project GID for the project you want this app to show.",
             "Add an optional project name, click Use Source, then Save. The MVP reads one project at a time.",
+        ],
+        IssueTrackerProvider::PocketComet => &[
+            "Map this Choro project from PocketComet project settings.",
+            "PocketComet keeps the task list synchronized while both desktop apps are open.",
+            "Use Show tasks for to keep all tasks or narrow the source to one assignee.",
         ],
         IssueTrackerProvider::Personal => &[
             "Personal Board is built in for every project.",

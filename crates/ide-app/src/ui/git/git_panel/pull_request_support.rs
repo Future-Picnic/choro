@@ -753,9 +753,34 @@ impl GitPanel {
 }
 
 pub(crate) fn open_url(url: &str) {
-    if let Err(error) = Command::new("open").arg("--").arg(url).spawn() {
-        eprintln!("open pull request url failed: {error}");
+    let mut command = Command::new("open");
+    if is_pocketcomet_deep_link(url) {
+        let (selector, application) =
+            pocketcomet_open_target_for(Path::new(POCKETCOMET_APPLICATION_PATH).is_dir());
+        command.arg(selector).arg(application);
     }
+    if let Err(error) = command.arg("--").arg(url).spawn() {
+        eprintln!("open url failed: {error}");
+    }
+}
+
+const POCKETCOMET_APPLICATION_PATH: &str = "/Applications/PocketComet.app";
+const POCKETCOMET_BUNDLE_ID: &str = "com.futurepicnic.dailybob";
+
+fn pocketcomet_open_target_for(installed_application_exists: bool) -> (&'static str, &'static str) {
+    if installed_application_exists {
+        // DailyBob.app and PocketComet.app can share the legacy bundle id.
+        // Select the renamed production app by path so Launch Services cannot
+        // send the deep link to the obsolete DailyBob build.
+        ("-a", POCKETCOMET_APPLICATION_PATH)
+    } else {
+        // Development builds may only be registered with Launch Services.
+        ("-b", POCKETCOMET_BUNDLE_ID)
+    }
+}
+
+fn is_pocketcomet_deep_link(url: &str) -> bool {
+    url.starts_with("pocketcomet://") || url.starts_with("dailybob://")
 }
 
 pub(crate) fn pull_request_url_with_text(url: &str, pull_request: &GeneratedPullRequest) -> String {
@@ -769,6 +794,25 @@ pub(crate) fn pull_request_url_with_text(url: &str, pull_request: &GeneratedPull
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    #[test]
+    fn recognizes_only_pocketcomet_deep_links_for_app_targeting() {
+        assert!(is_pocketcomet_deep_link("pocketcomet://document/123"));
+        assert!(is_pocketcomet_deep_link("dailybob://task/123"));
+        assert!(!is_pocketcomet_deep_link("https://example.com"));
+    }
+
+    #[test]
+    fn pocketcomet_open_target_prefers_the_renamed_installed_app() {
+        assert_eq!(
+            pocketcomet_open_target_for(true),
+            ("-a", "/Applications/PocketComet.app")
+        );
+        assert_eq!(
+            pocketcomet_open_target_for(false),
+            ("-b", "com.futurepicnic.dailybob")
+        );
+    }
 
     #[test]
     fn preferred_merge_method_uses_allowed_viewer_default() {

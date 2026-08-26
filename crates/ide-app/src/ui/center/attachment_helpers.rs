@@ -24,14 +24,14 @@ pub(super) fn clipboard_image_mime_type(format: ImageFormat) -> &'static str {
     }
 }
 
-pub(super) fn clipboard_image_from_item(item: gpui::ClipboardItem) -> Option<gpui::Image> {
+pub(crate) fn clipboard_image_from_item(item: gpui::ClipboardItem) -> Option<gpui::Image> {
     item.into_entries().find_map(|entry| match entry {
         ClipboardEntry::Image(image) => Some(image),
         ClipboardEntry::String(_) => None,
     })
 }
 
-pub(super) fn image_format_for_path(path: &Path) -> Option<ImageFormat> {
+pub(crate) fn image_format_for_path(path: &Path) -> Option<ImageFormat> {
     match path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -73,6 +73,27 @@ pub(super) fn materialize_project_clipboard_image(
     Ok(target)
 }
 
+/// Persist a pasted Quick Ask image independently of any project. The session
+/// directory keeps General questions working and leaves the image available to
+/// the global history/continuation flow after the composer closes.
+pub(crate) fn materialize_quick_ask_clipboard_image(
+    session_id: Uuid,
+    image: &gpui::Image,
+) -> anyhow::Result<PathBuf> {
+    let dir = AppConfig::config_root()
+        .join("quick-ask-attachments")
+        .join(session_id.to_string());
+    fs::create_dir_all(&dir)?;
+    let extension = clipboard_image_extension(image.format);
+    let target = dir.join(format!(
+        "pasted-image-{}.{}",
+        Uuid::new_v4().simple(),
+        extension
+    ));
+    fs::write(&target, &image.bytes)?;
+    Ok(target)
+}
+
 pub(super) fn materialize_agent_clipboard_image(
     agent_id: Uuid,
     image: &gpui::Image,
@@ -89,7 +110,7 @@ pub(super) fn materialize_agent_clipboard_image(
     Ok(store.root().join(attachment.relative_path))
 }
 
-pub(super) fn prompt_with_attached_files(prompt: &str, attached_files: &[PathBuf]) -> String {
+pub(crate) fn prompt_with_attached_files(prompt: &str, attached_files: &[PathBuf]) -> String {
     if attached_files.is_empty() {
         return prompt.to_string();
     }
@@ -104,7 +125,7 @@ pub(super) fn prompt_with_attached_files(prompt: &str, attached_files: &[PathBuf
     result
 }
 
-pub(super) fn split_prompt_attached_files(prompt: &str) -> (String, Vec<PathBuf>) {
+pub(crate) fn split_prompt_attached_files(prompt: &str) -> (String, Vec<PathBuf>) {
     let Some((body, attachment_block)) = prompt
         .rsplit_once("\n\nAttached files:\n")
         .or_else(|| prompt.rsplit_once("\n\nAttached images:\n"))

@@ -88,14 +88,12 @@ pub const EDITOR_TAB_BAR_H: f32 = 34.0;
 pub const EDITOR_TAB_MAX_W: f32 = 180.0;
 pub const EDITOR_TAB_PAD_X: f32 = 11.0;
 pub const EDITOR_TAB_GAP: f32 = 6.0;
-/// Responsive conversation column shared by messages, composer, and agent
-/// header. The frame includes one gutter on each side of the content maximum.
-pub const AGENT_CHAT_CONTENT_MAX_W: f32 = 1100.0;
+/// Shared readable width for primary center-workspace content. Agent chat,
+/// docs, tasks, services, and sibling center views all converge on this cap.
+pub const CENTER_CONTENT_MAX_W: f32 = 1100.0;
+/// Compatibility alias for agent-chat call sites.
+pub const AGENT_CHAT_CONTENT_MAX_W: f32 = CENTER_CONTENT_MAX_W;
 pub const AGENT_CHAT_GUTTER_X: f32 = 16.0;
-/// Agent status + Ship stay pinned to the full header edge while this reserve
-/// keeps the chat-aligned title column clear at narrow widths.
-pub const AGENT_HEADER_ACTIONS_TOP: f32 = 10.0;
-pub const AGENT_HEADER_ACTIONS_RESERVE_W: f32 = 200.0;
 
 pub const RAIL_FOOTER_CELL_H: f32 = 52.0;
 
@@ -157,20 +155,20 @@ pub fn agent_chat_content_max_w() -> Pixels {
     px(AGENT_CHAT_CONTENT_MAX_W)
 }
 
+pub fn center_content_max_w() -> Pixels {
+    px(CENTER_CONTENT_MAX_W)
+}
+
 pub fn agent_chat_gutter_x() -> Pixels {
     px(AGENT_CHAT_GUTTER_X)
 }
 
 pub fn agent_chat_frame_max_w() -> Pixels {
-    px(AGENT_CHAT_CONTENT_MAX_W + AGENT_CHAT_GUTTER_X * 2.0)
+    center_content_frame_max_w()
 }
 
-pub fn agent_header_actions_top() -> Pixels {
-    px(AGENT_HEADER_ACTIONS_TOP)
-}
-
-pub fn agent_header_actions_reserve_w() -> Pixels {
-    px(AGENT_HEADER_ACTIONS_RESERVE_W)
+pub fn center_content_frame_max_w() -> Pixels {
+    px(CENTER_CONTENT_MAX_W + AGENT_CHAT_GUTTER_X * 2.0)
 }
 
 pub fn rail_footer_cell_h() -> Pixels {
@@ -321,7 +319,7 @@ pub const CONTEXT_PANEL_ROW_PAD_X: f32 = 14.0;
 pub const CONTEXT_PANEL_ROW_PAD_Y: f32 = 7.0;
 pub const CONTEXT_PANEL_ROW_GAP: f32 = 9.0;
 /// Canonical centered content column (`--col`) and its horizontal inset.
-pub const CENTER_COLUMN_MAX_W: f32 = 860.0;
+pub const CENTER_COLUMN_MAX_W: f32 = CENTER_CONTENT_MAX_W;
 pub const CENTER_COLUMN_PAD_X: f32 = 22.0;
 pub const CENTER_COLUMN_PAD_Y: f32 = 20.0;
 /// Services/Env center-detail rhythm.

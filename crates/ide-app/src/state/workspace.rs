@@ -1,12 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{Context, EventEmitter, PathPromptOptions};
 use ide_core::config::{
-    AppConfig, CompanionMusicSettings, ConversationLayout, GenerationAgent, GitStatusGroupMode,
+    default_pinned_project_activities, normalized_project_activities, AppConfig,
+    CompanionMusicSettings, ConversationLayout, GenerationAgent, GitStatusGroupMode,
     GitStatusViewMode, NavStyle, NewAgentDefaults, NotificationSettings, PanelSizes,
-    ReviewChecklistMode, ThemeMode, VerificationMode, VoiceSettings,
+    ProjectActivityId, ReviewChecklistMode, ThemeMode, VerificationMode, VoiceSettings,
 };
 use ide_core::local_store::LocalStore;
 use ide_core::{GitWorkflow, GitWorkflowRun, Project, ProjectId, ProjectSection, ProjectSectionId};
@@ -45,6 +46,7 @@ pub struct Workspace {
     pub companion_music: CompanionMusicSettings,
     pub voice: VoiceSettings,
     pub generation_agent: GenerationAgent,
+    pub quick_ask_agent: GenerationAgent,
     /// `None` = config predates the composer/generation split; readers fall
     /// back to the generation agent via [`Self::new_agent_defaults`].
     stored_new_agent_defaults: Option<NewAgentDefaults>,
@@ -59,6 +61,8 @@ pub struct Workspace {
     pub favorites_collapsed: bool,
     pub projects_collapsed: bool,
     pub attention_collapsed: bool,
+    pub default_project_activities: Vec<ProjectActivityId>,
+    pub project_activity_overrides: HashMap<ProjectId, Vec<ProjectActivityId>>,
     save_scheduled: bool,
 }
 
@@ -108,6 +112,21 @@ impl Workspace {
             .into_iter()
             .filter(|id| projects.iter().any(|project| project.id == *id))
             .collect();
+        let mut default_project_activities =
+            normalized_project_activities(config.default_project_activities);
+        if default_project_activities.is_empty() {
+            default_project_activities = default_pinned_project_activities();
+        }
+        let project_ids: HashSet<ProjectId> = projects.iter().map(|project| project.id).collect();
+        let project_activity_overrides = config
+            .project_activity_overrides
+            .into_iter()
+            .filter_map(|(project_id, activities)| {
+                let activities = normalized_project_activities(activities);
+                (project_ids.contains(&project_id) && !activities.is_empty())
+                    .then_some((project_id, activities))
+            })
+            .collect();
         let mut workspace = Self {
             projects,
             project_sections,
@@ -123,6 +142,7 @@ impl Workspace {
             companion_music: config.companion_music,
             voice: config.voice,
             generation_agent: config.generation_agent.normalized(),
+            quick_ask_agent: config.quick_ask_agent.normalized(),
             stored_new_agent_defaults: config.new_agent_defaults.map(NewAgentDefaults::normalized),
             code_review_prompt: user_code_review_prompt(config.code_review_prompt),
             code_review_output_instructions: config.code_review_output_instructions,
@@ -135,6 +155,8 @@ impl Workspace {
             favorites_collapsed: config.favorites_collapsed,
             projects_collapsed: config.projects_collapsed,
             attention_collapsed: config.attention_collapsed,
+            default_project_activities,
+            project_activity_overrides,
             save_scheduled: false,
         };
         if migrated_legacy_icons || migrated_legacy_theme {
@@ -190,6 +212,81 @@ impl Workspace {
         self.conversation_layout = layout;
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    pub fn project_activities(&self, project_id: ProjectId) -> Vec<ProjectActivityId> {
+        self.project_activity_overrides
+            .get(&project_id)
+            .cloned()
+            .unwrap_or_else(|| self.default_project_activities.clone())
+    }
+
+    pub fn has_project_activity_override(&self, project_id: ProjectId) -> bool {
+        self.project_activity_overrides.contains_key(&project_id)
+    }
+
+    pub fn set_default_project_activities(
+        &mut self,
+        activities: Vec<ProjectActivityId>,
+        cx: &mut Context<Self>,
+    ) {
+        let activities = normalized_project_activities(activities);
+        if activities.is_empty() || activities == self.default_project_activities {
+            return;
+        }
+        self.default_project_activities = activities;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// Pin or unpin one activity for a project. At least one activity must
+    /// remain visible so the rail always has a valid destination.
+    pub fn set_project_activity_pinned(
+        &mut self,
+        project_id: ProjectId,
+        activity: ProjectActivityId,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.projects.iter().any(|project| project.id == project_id)
+            || activity == ProjectActivityId::Unknown
+        {
+            return false;
+        }
+        let mut activities = self.project_activities(project_id);
+        let currently_pinned = activities.contains(&activity);
+        if currently_pinned == pinned {
+            return false;
+        }
+        if pinned {
+            activities.push(activity);
+        } else {
+            if activities.len() == 1 {
+                return false;
+            }
+            activities.retain(|candidate| *candidate != activity);
+        }
+        activities = normalized_project_activities(activities);
+        if activities == self.default_project_activities {
+            self.project_activity_overrides.remove(&project_id);
+        } else {
+            self.project_activity_overrides
+                .insert(project_id, activities);
+        }
+        self.schedule_save(cx);
+        cx.notify();
+        true
+    }
+
+    pub fn reset_project_activities(&mut self, project_id: ProjectId, cx: &mut Context<Self>) {
+        if self
+            .project_activity_overrides
+            .remove(&project_id)
+            .is_some()
+        {
+            self.schedule_save(cx);
+            cx.notify();
+        }
     }
 
     pub fn set_notification_settings(
@@ -273,6 +370,20 @@ impl Workspace {
             return;
         }
         self.generation_agent = generation_agent;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_quick_ask_agent(
+        &mut self,
+        quick_ask_agent: GenerationAgent,
+        cx: &mut Context<Self>,
+    ) {
+        let quick_ask_agent = quick_ask_agent.normalized();
+        if self.quick_ask_agent == quick_ask_agent {
+            return;
+        }
+        self.quick_ask_agent = quick_ask_agent;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -374,6 +485,7 @@ impl Workspace {
     pub fn remove_project(&mut self, id: ProjectId, cx: &mut Context<Self>) {
         self.projects.retain(|p| p.id != id);
         self.expanded_projects.remove(&id);
+        self.project_activity_overrides.remove(&id);
         if self.active == Some(id) {
             self.active = self.projects.first().map(|p| p.id);
             cx.emit(WorkspaceEvent::ActiveChanged);
@@ -699,6 +811,30 @@ impl Workspace {
         }
     }
 
+    pub fn remove_pocketcomet_task_sources_for_device(
+        &mut self,
+        device_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        for project in &mut self.projects {
+            let before = project.task_tracker_connections.len();
+            project.task_tracker_connections.retain(|connection| {
+                if connection.provider != ide_core::IssueTrackerProvider::PocketComet {
+                    return true;
+                }
+                ide_core::PocketCometTaskSourceSnapshot::from_connection(connection)
+                    .is_ok_and(|snapshot| snapshot.device_id != device_id)
+            });
+            changed |= project.task_tracker_connections.len() != before;
+        }
+        if changed {
+            cx.emit(WorkspaceEvent::ProjectsChanged);
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
     pub fn add_git_workflow(
         &mut self,
         project_id: ProjectId,
@@ -974,6 +1110,7 @@ impl Workspace {
             companion_music: self.companion_music.clone(),
             voice: self.voice.clone(),
             generation_agent: self.generation_agent.clone(),
+            quick_ask_agent: self.quick_ask_agent.clone(),
             new_agent_defaults: self.stored_new_agent_defaults.clone(),
             code_review_prompt: self.code_review_prompt.clone(),
             code_review_output_instructions: self.code_review_output_instructions.clone(),
@@ -986,6 +1123,8 @@ impl Workspace {
             favorites_collapsed: self.favorites_collapsed,
             projects_collapsed: self.projects_collapsed,
             attention_collapsed: self.attention_collapsed,
+            default_project_activities: self.default_project_activities.clone(),
+            project_activity_overrides: self.project_activity_overrides.clone(),
         }
     }
 

@@ -46,6 +46,7 @@ pub fn load_persisted_file_ledger(agent_id: Uuid) -> Option<ChangedFilesSummary>
             summary.files.push(file);
         }
     }
+    summary.remove_provider_private_artifacts();
     Some(summary)
 }
 
