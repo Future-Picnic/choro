@@ -26,6 +26,11 @@ enum {
     ChoroSparkleEventUpdateFoundReady = 13,
 };
 
+enum {
+    ChoroSparkleUpdateCheckManual = 0,
+    ChoroSparkleNoUpdateError = 1001,
+};
+
 typedef NS_ENUM(NSInteger, ChoroSparkleChoice) {
     ChoroSparkleChoiceSkip = 0,
     ChoroSparkleChoiceInstall = 1,
@@ -63,6 +68,7 @@ static const char *ChoroUTF8(NSString *value) {
 @property(nonatomic, copy, nullable) void (^readyReply)(NSInteger);
 @property(nonatomic, copy, nullable) void (^cancellation)(void);
 @property(nonatomic, assign) BOOL manualCheck;
+@property(nonatomic, assign) BOOL terminalEventEmitted;
 - (void)emit:(int)event primary:(nullable NSString *)primary secondary:(nullable NSString *)secondary value:(uint64_t)value;
 @end
 
@@ -105,6 +111,7 @@ static const char *ChoroUTF8(NSString *value) {
         self.readyReply = nil;
         self.offerReply = reply;
     }
+    self.terminalEventEmitted = YES;
     [self emit:alreadyInstalling ? ChoroSparkleEventUpdateFoundReady : ChoroSparkleEventUpdateFound
           primary:displayVersion
         secondary:[NSString stringWithFormat:@"%@\n%@", buildVersion ?: @"", notes ?: @""]
@@ -116,17 +123,23 @@ static const char *ChoroUTF8(NSString *value) {
 - (void)showUpdateReleaseNotesFailedToDownloadWithError:(NSError *)error { (void)error; }
 
 - (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
-    [self emit:ChoroSparkleEventNoUpdate primary:error.localizedDescription secondary:nil value:self.manualCheck ? 1 : 0];
+    if (!self.terminalEventEmitted) {
+        self.terminalEventEmitted = YES;
+        [self emit:ChoroSparkleEventNoUpdate primary:error.localizedDescription secondary:nil value:self.manualCheck ? 1 : 0];
+    }
     self.manualCheck = NO;
     self.cancellation = nil;
     acknowledgement();
 }
 
 - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
-    [self emit:ChoroSparkleEventError
-          primary:error.localizedDescription
-        secondary:error.localizedRecoverySuggestion
-            value:self.manualCheck ? 1 : 0];
+    if (!self.terminalEventEmitted) {
+        self.terminalEventEmitted = YES;
+        [self emit:ChoroSparkleEventError
+              primary:error.localizedDescription
+            secondary:error.localizedRecoverySuggestion
+                value:self.manualCheck ? 1 : 0];
+    }
     self.manualCheck = NO;
     self.cancellation = nil;
     acknowledgement();
@@ -191,6 +204,36 @@ static const char *ChoroUTF8(NSString *value) {
 @end
 
 @implementation ChoroSparkleBridge
+
+- (BOOL)updater:(id)updater mayPerformUpdateCheck:(NSInteger)updateCheck error:(NSError **)error {
+    (void)updater;
+    (void)error;
+    self.driver.manualCheck = updateCheck == ChoroSparkleUpdateCheckManual;
+    self.driver.terminalEventEmitted = NO;
+    return YES;
+}
+
+- (void)updater:(id)updater didFinishUpdateCycleForUpdateCheck:(NSInteger)updateCheck error:(NSError *)error {
+    (void)updater;
+    if (self.driver.terminalEventEmitted) return;
+
+    self.driver.terminalEventEmitted = YES;
+    BOOL manual = updateCheck == ChoroSparkleUpdateCheckManual;
+    if (error == nil || error.code == ChoroSparkleNoUpdateError) {
+        [self.driver emit:ChoroSparkleEventNoUpdate
+                   primary:error.localizedDescription
+                 secondary:nil
+                     value:manual ? 1 : 0];
+    } else {
+        [self.driver emit:ChoroSparkleEventError
+                   primary:error.localizedDescription
+                 secondary:error.localizedRecoverySuggestion
+                     value:manual ? 1 : 0];
+    }
+    self.driver.manualCheck = NO;
+    self.driver.cancellation = nil;
+}
+
 @end
 
 static NSString *ChoroString(const char *value) {
@@ -238,11 +281,19 @@ void *choro_sparkle_create(
         driver.callback = callback;
         driver.callbackContext = callbackContext;
 
+        ChoroSparkleBridge *bridge = [ChoroSparkleBridge new];
+        bridge.frameworkBundle = frameworkBundle;
+        bridge.driver = driver;
+        Protocol *updaterDelegateProtocol = objc_getProtocol("SPUUpdaterDelegate");
+        if (updaterDelegateProtocol != nil) {
+            class_addProtocol(ChoroSparkleBridge.class, updaterDelegateProtocol);
+        }
+
         id updater = [[updaterClass alloc]
             initWithHostBundle:NSBundle.mainBundle
             applicationBundle:NSBundle.mainBundle
             userDriver:driver
-            delegate:nil];
+            delegate:bridge];
         if (updater == nil) {
             if (errorOut != NULL) *errorOut = ChoroCopyError(@"Sparkle could not create its updater");
             return NULL;
@@ -271,10 +322,7 @@ void *choro_sparkle_create(
             return NULL;
         }
 
-        ChoroSparkleBridge *bridge = [ChoroSparkleBridge new];
-        bridge.frameworkBundle = frameworkBundle;
         bridge.updater = updater;
-        bridge.driver = driver;
         if (manualStart) {
             [updater checkForUpdates];
         } else {
