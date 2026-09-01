@@ -1,5 +1,6 @@
 mod actions;
 mod app_assets;
+mod app_update;
 #[cfg(target_os = "macos")]
 mod chromium;
 mod companion_music;
@@ -23,7 +24,7 @@ use gpui_component::{
     Root, Theme, ThemeMode, TitleBar,
 };
 
-use crate::actions::{QuitApplication, ToggleFocusMode};
+use crate::actions::{CheckForUpdates, QuitApplication, ToggleFocusMode};
 use crate::app_assets::AppAssets;
 use crate::ui::root_view::RootView;
 
@@ -104,6 +105,8 @@ fn main() {
             Menu {
                 name: ide_core::APP_NAME.into(),
                 items: vec![
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
+                    MenuItem::separator(),
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
                     MenuItem::action(format!("Quit {}", ide_core::APP_NAME), QuitApplication),
@@ -144,6 +147,12 @@ fn main() {
                 let view = RootView::view(window, cx);
                 companion_context = Some(view.read(cx).companion_context());
                 let root_view = view.downgrade();
+                let update_root = view.downgrade();
+                cx.on_action(move |_: &CheckForUpdates, cx| {
+                    update_root
+                        .update(cx, |view, cx| view.check_for_updates(cx))
+                        .ok();
+                });
                 cx.on_action(move |_: &QuitApplication, cx| {
                     root_view
                         .update(cx, |view, cx| {

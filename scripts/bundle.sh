@@ -4,8 +4,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 APP_NAME="Choro"
-APP_VERSION="${CHORO_APP_VERSION:-0.88}"
-BUILD_VERSION="${CHORO_BUILD_VERSION:-88}"
+VERSION_FILE="VERSION"
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "Missing product version source: $VERSION_FILE" >&2
+  exit 1
+fi
+DEFAULT_APP_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+APP_VERSION="${CHORO_APP_VERSION:-$DEFAULT_APP_VERSION}"
+if [[ ! "$APP_VERSION" =~ '^0\.[1-9][0-9]*$' ]]; then
+  echo "Invalid Choro version '$APP_VERSION'; expected 0.N." >&2
+  exit 1
+fi
+DEFAULT_BUILD_VERSION="${APP_VERSION#0.}"
+BUILD_VERSION="${CHORO_BUILD_VERSION:-$DEFAULT_BUILD_VERSION}"
+if [[ ! "$BUILD_VERSION" =~ '^[1-9][0-9]*$' ]] || [[ "$BUILD_VERSION" != "$DEFAULT_BUILD_VERSION" ]]; then
+  echo "Build version '$BUILD_VERSION' must match product version '$APP_VERSION' (${DEFAULT_BUILD_VERSION})." >&2
+  exit 1
+fi
 BUNDLE="${CHORO_BUNDLE_PATH:-target/release/bundle/$APP_NAME.app}"
 INSTALL_BUNDLE="${CHORO_INSTALL_BUNDLE_PATH:-/Applications/$APP_NAME.app}"
 ENTITLEMENTS="scripts/choro.entitlements"
@@ -15,6 +30,18 @@ CEF_PLUGIN_ENTITLEMENTS="scripts/choro-cef-plugin.entitlements"
 INSTALL_TO_APPLICATIONS="${CHORO_INSTALL_TO_APPLICATIONS:-${MY_IDE_INSTALL_TO_APPLICATIONS:-1}}"
 SKIP_DOC_EDITOR_BUILD="${CHORO_SKIP_DOC_EDITOR_BUILD:-0}"
 REPLACE_EXISTING_BUNDLE="${CHORO_REPLACE_BUNDLE:-0}"
+SPARKLE_ROOT="$(scripts/fetch-sparkle.sh)"
+SPARKLE_FRAMEWORK="$SPARKLE_ROOT/Sparkle.framework"
+SPARKLE_PUBLIC_KEY_FILE="release/sparkle-public-key.txt"
+if [[ ! -f "$SPARKLE_PUBLIC_KEY_FILE" ]]; then
+  echo "Missing Sparkle public key: $SPARKLE_PUBLIC_KEY_FILE" >&2
+  exit 1
+fi
+SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < "$SPARKLE_PUBLIC_KEY_FILE")"
+if [[ -z "$SPARKLE_PUBLIC_KEY" ]]; then
+  echo "Sparkle public key is empty: $SPARKLE_PUBLIC_KEY_FILE" >&2
+  exit 1
+fi
 source scripts/resolve-codesign-identity.zsh
 SIGN_IDENTITY="$(resolve_choro_codesign_identity)"
 
@@ -75,6 +102,7 @@ cp crates/ide-app/assets/app-icon/AppIcon.icns "$BUNDLE/Contents/Resources/AppIc
 # `ditto` preserves the framework's versioned directory symlinks.
 ditto "$CEF_FRAMEWORK" \
   "$BUNDLE/Contents/Frameworks/Chromium Embedded Framework.framework"
+ditto "$SPARKLE_FRAMEWORK" "$BUNDLE/Contents/Frameworks/Sparkle.framework"
 for HELPER_SUFFIX in "Helper (GPU)" "Helper (Renderer)" "Helper (Plugin)" "Helper (Alerts)" "Helper"; do
   HELPER_NAME="choro $HELPER_SUFFIX"
   HELPER_BUNDLE="$BUNDLE/Contents/Frameworks/$HELPER_NAME.app"
@@ -132,6 +160,8 @@ node scripts/collect-third-party-licenses.mjs \
 mkdir -p "$BUNDLE/Contents/Resources/licenses/chromium"
 cp "$CEF_ROOT/CREDITS.html" \
   "$BUNDLE/Contents/Resources/licenses/chromium/CREDITS.html"
+mkdir -p "$BUNDLE/Contents/Resources/licenses/sparkle"
+cp "$SPARKLE_ROOT/LICENSE" "$BUNDLE/Contents/Resources/licenses/sparkle/LICENSE"
 
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -148,6 +178,16 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/Future-Pinic/choro/dev/release/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>3600</integer>
+    <key>SUAutomaticallyUpdate</key><false/>
+    <key>SUAllowsAutomaticUpdates</key><false/>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
+    <key>SURequireSignedFeed</key><true/>
+    <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>LSEnvironment</key>
@@ -185,10 +225,23 @@ while IFS= read -r -d '' NESTED_FILE; do
   if [[ "$NESTED_FILE" == "$BUNDLE/Contents/MacOS/choro" ]]; then
     continue
   fi
+  if [[ "$NESTED_FILE" == "$BUNDLE/Contents/Frameworks/Sparkle.framework/"* ]]; then
+    continue
+  fi
   if file -b "$NESTED_FILE" | grep -q 'Mach-O'; then
     codesign "${SIGN_ARGS[@]}" "$NESTED_FILE"
   fi
 done < <(find "$BUNDLE/Contents" -type f -print0)
+
+# Sparkle's installer services must be signed in this exact inside-out order.
+# Downloader carries upstream entitlements that are required for its XPC work.
+SPARKLE_BUNDLE="$BUNDLE/Contents/Frameworks/Sparkle.framework"
+codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE/Versions/B/XPCServices/Installer.xpc"
+codesign "${SIGN_ARGS[@]}" --preserve-metadata=entitlements \
+  "$SPARKLE_BUNDLE/Versions/B/XPCServices/Downloader.xpc"
+codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE/Versions/B/Autoupdate"
+codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE/Versions/B/Updater.app"
+codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE"
 
 # Seal nested CEF bundles after their binaries, then seal Choro itself. The
 # renderer/GPU helpers need JIT under hardened runtime; the optional plugin

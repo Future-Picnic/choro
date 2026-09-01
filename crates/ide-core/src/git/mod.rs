@@ -1,4 +1,4 @@
-pub mod accounts;
+mod accounts;
 pub mod diff;
 pub mod ignore;
 pub mod log;
@@ -57,10 +57,13 @@ pub fn is_generated_tool_path(path: &Path) -> bool {
     })
 }
 
+#[cfg(all(target_os = "macos", feature = "app-update-bridge"))]
+pub use accounts::start_authenticated_choro_release_updater;
 pub use accounts::{
-    assign_github_account, assigned_github_account, configure_selected_github_cli,
-    connected_github_accounts, handle_git_credential, open_github_account_login, primary_remote,
-    repository_remotes, GitHubAccount, GitRemote,
+    assign_github_account, assigned_github_account, choro_release_credential,
+    configure_selected_github_cli, connected_github_accounts, handle_git_credential,
+    open_github_account_login, primary_remote, repository_remotes, ChoroReleaseCredential,
+    GitHubAccount, GitRemote,
 };
 pub use diff::{DiffHunk, DiffLine, FileDiff, LineOrigin};
 pub use ignore::{ensure_local_choro_docs_exclude, ensure_local_dependency_excludes};

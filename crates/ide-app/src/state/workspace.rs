@@ -444,15 +444,28 @@ impl Workspace {
     }
 
     pub fn save_now(&mut self) {
+        if let Err(error) = self.try_save_now() {
+            eprintln!("failed to save workspace: {error:#}");
+        }
+    }
+
+    pub(crate) fn try_save_now(&mut self) -> anyhow::Result<()> {
         self.save_scheduled = false;
         let config = self.to_config();
-        if let Err(error) =
-            LocalStore::open_default().and_then(|store| store.save_workspace_config(&config))
-        {
-            eprintln!("failed to save workspace to local store: {error:#}");
-        }
-        if let Err(error) = config.save() {
-            eprintln!("failed to save config: {error:#}");
+        let local_store_result =
+            LocalStore::open_default().and_then(|store| store.save_workspace_config(&config));
+        let config_result = config.save();
+        match (local_store_result, config_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(local_error), Ok(())) => Err(anyhow::anyhow!(
+                "could not save workspace to local store: {local_error:#}"
+            )),
+            (Ok(()), Err(config_error)) => {
+                Err(anyhow::anyhow!("could not save config: {config_error:#}"))
+            }
+            (Err(local_error), Err(config_error)) => Err(anyhow::anyhow!(
+                "could not save workspace to local store: {local_error:#}; could not save config: {config_error:#}"
+            )),
         }
     }
 

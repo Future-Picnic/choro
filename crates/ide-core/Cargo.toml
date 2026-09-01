@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 license.workspace = true
 
+[features]
+app-update-bridge = []
+
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true }

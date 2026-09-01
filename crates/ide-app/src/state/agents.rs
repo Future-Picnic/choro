@@ -845,9 +845,15 @@ impl AgentRecords {
     }
 
     fn save_immediately(&mut self) {
+        if let Err(error) = self.try_save_now() {
+            eprintln!("failed to save agents: {error:#}");
+        }
+    }
+
+    pub(crate) fn try_save_now(&mut self) -> anyhow::Result<()> {
         self.save_scheduled = false;
         let store = AgentStoreFile::new(self.records.clone());
-        persist_agent_store(next_agent_save_revision(), store);
+        try_persist_agent_store(next_agent_save_revision(), store)
     }
 
     /// Capture the exact durable state required before a newly-created agent

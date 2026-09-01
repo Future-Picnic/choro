@@ -41,6 +41,7 @@ actions!(
         ToggleVoiceDictation,
         ToggleHandsFreeDictation,
         QuickAddTask,
+        CheckForUpdates,
         QuitApplication
     ]
 );

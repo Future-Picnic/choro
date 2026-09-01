@@ -16,7 +16,7 @@ name = "choro-cef-helper"
 path = "src/bin/choro_cef_helper.rs"
 
 [dependencies]
-ide-core = { workspace = true }
+ide-core = { workspace = true, features = ["app-update-bridge"] }
 anyhow = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }

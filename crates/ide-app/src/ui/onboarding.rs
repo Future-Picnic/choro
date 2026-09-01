@@ -676,6 +676,10 @@ impl OnboardingTour {
         self.workspace.read(cx).active == Some(self.project_id)
     }
 
+    pub(crate) fn covers_application(&self, cx: &App) -> bool {
+        self.is_active_project(cx) && self.phase != Phase::Finished
+    }
+
     fn restore_surface(&mut self, cx: &mut Context<Self>) {
         if !self.is_active_project(cx) {
             return;

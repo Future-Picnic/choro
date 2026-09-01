@@ -2,8 +2,9 @@ mod chrome;
 mod settings;
 
 mod shutdown;
+mod update_card;
 
-use shutdown::ShutdownState;
+use shutdown::{ShutdownPurpose, ShutdownState};
 
 use gpui::{
     div, prelude::FluentBuilder, px, svg, AnyElement, App, AppContext, Context, DragMoveEvent,
@@ -30,6 +31,7 @@ use crate::actions::{
     ViewCode, ViewDb, ViewDesign, ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit,
     ViewTasks, ViewTerminal,
 };
+use crate::app_update::{AppUpdateController, AppUpdatePhase};
 use crate::remote::dto::RemoteEvent;
 use crate::state::{
     AgentActivityCache, AgentCapabilityCacheFile, AgentChatState, AgentRecords, DesignsState,
@@ -188,6 +190,7 @@ pub struct RootView {
     agent_chats: Entity<AgentChatState>,
     voice: Entity<VoiceState>,
     quick_ask: Entity<QuickAskState>,
+    app_update: Entity<AppUpdateController>,
     project_list: Entity<ProjectList>,
     center: Entity<CenterArea>,
     title_preset_bar: Entity<PresetBar>,
@@ -212,6 +215,8 @@ pub struct RootView {
     remote_relay_control: crate::remote::RelayControl,
     remote_connected_devices: usize,
     shutdown_state: ShutdownState,
+    shutdown_purpose: ShutdownPurpose,
+    deferred_normal_quit: bool,
     onboarding: Option<Entity<OnboardingTour>>,
 }
 
@@ -285,6 +290,7 @@ impl RootView {
         penpot.update(cx, |penpot, cx| penpot.ensure_auto_provisioned(cx));
         let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
         let quick_ask = cx.new(|cx| QuickAskState::load(workspace.clone(), cx));
+        let app_update = cx.new(|_| AppUpdateController::new());
         let center = CenterArea::view(
             workspace.clone(),
             terminals.clone(),
@@ -450,6 +456,32 @@ impl RootView {
             .detach();
             cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            cx.observe(&app_update, |this: &mut Self, updates, cx| {
+                if this.shutdown_purpose == ShutdownPurpose::InstallUpdate
+                    && matches!(
+                        this.shutdown_state,
+                        ShutdownState::Ready | ShutdownState::Failed(_)
+                    )
+                    && matches!(updates.read(cx).phase(), AppUpdatePhase::Failed { .. })
+                {
+                    // Sparkle can still reject an install after Choro has safely
+                    // stopped its processes. Return to the app so the updater's
+                    // actionable error card is visible instead of trapping the
+                    // user behind the completed shutdown overlay.
+                    this.shutdown_state = ShutdownState::Idle;
+                    this.shutdown_purpose = ShutdownPurpose::Quit;
+                }
+                if this.deferred_normal_quit
+                    && matches!(this.shutdown_state, ShutdownState::Idle)
+                    && updates.read(cx).normal_quit_can_resume()
+                {
+                    this.deferred_normal_quit = false;
+                    this.shutdown_purpose = ShutdownPurpose::Quit;
+                    this.begin_shutdown(cx);
+                }
+                cx.notify();
+            })
+            .detach();
             cx.subscribe(
                 &voice,
                 |this: &mut Self, _, event: &VoiceEvent, cx| match event {
@@ -524,6 +556,7 @@ impl RootView {
                 agent_chats,
                 voice,
                 quick_ask,
+                app_update: app_update.clone(),
                 project_list,
                 center,
                 title_preset_bar,
@@ -547,9 +580,12 @@ impl RootView {
                 remote_relay_control,
                 remote_connected_devices: 0,
                 shutdown_state: ShutdownState::Idle,
+                shutdown_purpose: ShutdownPurpose::Quit,
+                deferred_normal_quit: false,
                 onboarding,
             }
         });
+        app_update.update(cx, |updates, cx| updates.start(cx));
         view.update(cx, |this, cx| this.update_dock_badge(cx));
 
         let remote_presence_root = view.downgrade();
@@ -1778,6 +1814,7 @@ impl Render for RootView {
             .when_some(self.render_voice_source_popover(cx), |root, popover| {
                 root.child(popover)
             })
+            .when_some(self.render_update_card(cx), |root, card| root.child(card))
             .when_some(settings_screen, |root, screen| root.child(screen))
             .children(sheet_layer)
             .children(dialog_layer)

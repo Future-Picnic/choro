@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(all(target_os = "macos", feature = "app-update-bridge"))]
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+#[cfg(all(target_os = "macos", feature = "app-update-bridge"))]
+use std::ptr::NonNull;
+
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +22,111 @@ const CREDENTIAL_SENTINEL: &str = "choro-git-credential";
 /// Only operations that can contact a remote get managed credentials; local
 /// commands (`add`, `stash`, `merge`…) must never carry them.
 const NETWORK_OPERATIONS: &[&str] = &["push", "pull", "fetch", "ls-remote", "clone"];
+const CHORO_RELEASE_OWNER: &str = "Future-Pinic";
+const CHORO_RELEASE_REPOSITORY: &str = "choro";
+
+/// A bearer credential validated specifically against Choro's private release
+/// repository.
+///
+/// The type is opaque outside this module: the raw token has no getter, and the
+/// only consumer exposed to the application is the updater-specific native
+/// bridge start operation below.
+pub struct ChoroReleaseCredential {
+    account: String,
+    #[cfg_attr(
+        not(all(target_os = "macos", feature = "app-update-bridge")),
+        allow(dead_code)
+    )]
+    token: String,
+}
+
+impl std::fmt::Debug for ChoroReleaseCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChoroReleaseCredential")
+            .field("account", &self.account)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl ChoroReleaseCredential {
+    pub fn account(&self) -> &str {
+        &self.account
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "app-update-bridge"))]
+pub type ChoroReleaseUpdateCallback = unsafe extern "C" fn(
+    context: *mut c_void,
+    event: c_int,
+    primary: *const c_char,
+    secondary: *const c_char,
+    value: u64,
+);
+
+#[cfg(all(target_os = "macos", feature = "app-update-bridge"))]
+unsafe extern "C" {
+    fn choro_sparkle_create(
+        feed_url: *const c_char,
+        token: *const c_char,
+        callback: ChoroReleaseUpdateCallback,
+        callback_context: *mut c_void,
+        manual_start: i8,
+        error_out: *mut *mut c_char,
+    ) -> *mut c_void;
+    fn choro_sparkle_free_string(value: *mut c_char);
+}
+
+/// Starts the one native operation allowed to consume a validated Choro
+/// release credential. The token never crosses into a general application API.
+///
+/// # Safety
+///
+/// `callback_context` must remain valid for every invocation of `callback`
+/// until the returned Sparkle bridge is destroyed by the caller.
+#[cfg(all(target_os = "macos", feature = "app-update-bridge"))]
+pub unsafe fn start_authenticated_choro_release_updater(
+    credential: ChoroReleaseCredential,
+    feed_url: &str,
+    callback: ChoroReleaseUpdateCallback,
+    callback_context: *mut c_void,
+    manual_start: bool,
+) -> Result<NonNull<c_void>> {
+    let feed_url = CString::new(feed_url).map_err(|_| anyhow!("Update feed URL is invalid"))?;
+    let token =
+        CString::new(credential.token).map_err(|_| anyhow!("GitHub credential is invalid"))?;
+    let mut raw_error = std::ptr::null_mut();
+    let bridge = unsafe {
+        choro_sparkle_create(
+            feed_url.as_ptr(),
+            token.as_ptr(),
+            callback,
+            callback_context,
+            i8::from(manual_start),
+            &mut raw_error,
+        )
+    };
+    NonNull::new(bridge).ok_or_else(|| {
+        let message = if raw_error.is_null() {
+            "Sparkle could not start the updater".to_string()
+        } else {
+            let message = unsafe { CStr::from_ptr(raw_error) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { choro_sparkle_free_string(raw_error) };
+            message
+        };
+        anyhow!(message)
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ChoroRepositoryAccess {
+    Granted,
+    Denied,
+    Transient(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubAccount {
@@ -101,6 +211,107 @@ pub fn connected_github_accounts() -> Result<Vec<GitHubAccount>> {
         });
     }
     Ok(accounts)
+}
+
+/// Finds the first connected GitHub account that can read Choro's private
+/// release repository. The active account is tried first, followed by the
+/// remaining connected accounts in their existing display order.
+pub fn choro_release_credential() -> Result<ChoroReleaseCredential> {
+    crate::blocking_guard::debug_warn_if_ui_thread("choro_release_credential");
+    let accounts = connected_github_accounts().map_err(|error| {
+        let detail = error.to_string();
+        if detail.contains("No GitHub accounts") || detail.contains("GitHub CLI is required") {
+            anyhow!(
+                "Connect a GitHub account with access to {CHORO_RELEASE_OWNER}/{CHORO_RELEASE_REPOSITORY}."
+            )
+        } else {
+            anyhow!("Could not check connected GitHub accounts: {detail}")
+        }
+    })?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .user_agent("Choro-Updater")
+        .build()
+        .context("Could not prepare GitHub release authentication")?;
+    select_choro_release_credential(accounts, github_token_for_account, |token| {
+        let response = client
+            .get(format!(
+                "https://api.github.com/repos/{CHORO_RELEASE_OWNER}/{CHORO_RELEASE_REPOSITORY}"
+            ))
+            .bearer_auth(&token)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send();
+        match response {
+            Ok(response) if response.status().is_success() => ChoroRepositoryAccess::Granted,
+            Ok(response) if matches!(response.status().as_u16(), 401 | 403 | 404) => {
+                ChoroRepositoryAccess::Denied
+            }
+            Ok(response) => ChoroRepositoryAccess::Transient(format!(
+                "GitHub returned HTTP {}",
+                response.status().as_u16()
+            )),
+            Err(error) => ChoroRepositoryAccess::Transient(error.to_string()),
+        }
+    })
+}
+
+fn select_choro_release_credential(
+    accounts: Vec<GitHubAccount>,
+    mut token_for_account: impl FnMut(&str) -> Result<String>,
+    mut repository_access: impl FnMut(&str) -> ChoroRepositoryAccess,
+) -> Result<ChoroReleaseCredential> {
+    let mut transient_failure = None;
+
+    for account in accounts {
+        let Ok(token) = token_for_account(&account.login) else {
+            continue;
+        };
+        match repository_access(&token) {
+            ChoroRepositoryAccess::Granted => {
+                return Ok(ChoroReleaseCredential {
+                    account: account.login,
+                    token,
+                });
+            }
+            ChoroRepositoryAccess::Denied => {}
+            ChoroRepositoryAccess::Transient(failure) => {
+                transient_failure.get_or_insert(failure);
+            }
+        }
+    }
+
+    if let Some(failure) = transient_failure {
+        return Err(anyhow!(
+            "Could not reach GitHub to check for updates: {failure}"
+        ));
+    }
+    Err(anyhow!(
+        "Connect a GitHub account with access to {CHORO_RELEASE_OWNER}/{CHORO_RELEASE_REPOSITORY}."
+    ))
+}
+
+fn github_token_for_account(account: &str) -> Result<String> {
+    let mut command = github_cli_command()?;
+    command.args([
+        "auth",
+        "token",
+        "--hostname",
+        GITHUB_HOST,
+        "--user",
+        account,
+    ]);
+    command.env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN");
+    let output = output_with_timeout(command, Duration::from_secs(30))
+        .with_context(|| format!("Could not read the GitHub credential for @{account}"))?;
+    if !output.status.success() {
+        anyhow::bail!("Could not use GitHub account @{account}");
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        anyhow::bail!("GitHub CLI returned an empty credential for @{account}");
+    }
+    Ok(token)
 }
 
 fn parse_auth_status(text: &str) -> Vec<GitHubAccount> {
@@ -310,34 +521,7 @@ pub fn configure_selected_github_cli(command: &mut Command, repo_path: &Path) ->
         return Ok(());
     };
 
-    let mut token_command = github_cli_command()?;
-    token_command.args([
-        "auth",
-        "token",
-        "--hostname",
-        GITHUB_HOST,
-        "--user",
-        &account,
-    ]);
-    // The stored account selection must win even if Choro itself was launched
-    // from a shell that already exported a different GitHub token.
-    token_command
-        .env_remove("GH_TOKEN")
-        .env_remove("GITHUB_TOKEN");
-    let output = output_with_timeout(token_command, Duration::from_secs(30))
-        .with_context(|| format!("Could not read the GitHub credential for @{account}"))?;
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        anyhow::bail!(if message.is_empty() {
-            format!("Could not read the GitHub credential for @{account}")
-        } else {
-            format!("Could not use GitHub account @{account}: {message}")
-        });
-    }
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if token.is_empty() {
-        anyhow::bail!("GitHub CLI returned an empty credential for @{account}");
-    }
+    let token = github_token_for_account(&account)?;
     command.env("GH_TOKEN", token).env("GH_HOST", GITHUB_HOST);
     Ok(())
 }
@@ -617,6 +801,58 @@ mod tests {
                     login: "liranRitmus".into(),
                     active: false,
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn release_credentials_are_redacted_from_debug_output() {
+        let credential = ChoroReleaseCredential {
+            account: "work".into(),
+            token: "secret-token".into(),
+        };
+        let debug = format!("{credential:?}");
+        assert!(debug.contains("work"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("secret-token"));
+    }
+
+    #[test]
+    fn release_credentials_fall_back_from_active_to_authorized_account() {
+        use std::cell::RefCell;
+
+        let attempts = RefCell::new(Vec::new());
+        let credential = select_choro_release_credential(
+            vec![
+                GitHubAccount {
+                    login: "active-without-access".into(),
+                    active: true,
+                },
+                GitHubAccount {
+                    login: "fallback-with-access".into(),
+                    active: false,
+                },
+            ],
+            |account| {
+                attempts.borrow_mut().push(account.to_string());
+                Ok(format!("token-for-{account}"))
+            },
+            |token| {
+                if token == "token-for-fallback-with-access" {
+                    ChoroRepositoryAccess::Granted
+                } else {
+                    ChoroRepositoryAccess::Denied
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(credential.account(), "fallback-with-access");
+        assert_eq!(
+            attempts.into_inner(),
+            vec![
+                "active-without-access".to_string(),
+                "fallback-with-access".to_string()
             ]
         );
     }

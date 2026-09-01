@@ -10,11 +10,26 @@ pub(super) enum ShutdownState {
     Ready,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShutdownPurpose {
+    Quit,
+    InstallUpdate,
+}
+
 impl RootView {
     pub(crate) fn handle_close_request(&mut self, cx: &mut Context<Self>) -> bool {
         match self.shutdown_state {
             ShutdownState::Ready => true,
             ShutdownState::Idle => {
+                let may_quit = self
+                    .app_update
+                    .update(cx, |updates, cx| updates.prepare_for_normal_quit(cx));
+                if !may_quit {
+                    self.deferred_normal_quit = self.app_update.read(cx).normal_quit_is_deferred();
+                    return false;
+                }
+                self.deferred_normal_quit = false;
+                self.shutdown_purpose = ShutdownPurpose::Quit;
                 self.begin_shutdown(cx);
                 false
             }
@@ -39,10 +54,11 @@ impl RootView {
             let save_result = this
                 .update(cx, |this, cx| {
                     this.workspace
-                        .update(cx, |workspace, _| workspace.save_now());
-                    this.agents.update(cx, |agents, _| agents.save_now());
+                        .update(cx, |workspace, _| workspace.try_save_now())?;
+                    this.agents.update(cx, |agents, _| agents.try_save_now())?;
                     this.center
-                        .update(cx, |center, cx| center.save_for_shutdown(cx))
+                        .update(cx, |center, cx| center.save_for_shutdown(cx))?;
+                    Ok::<(), anyhow::Error>(())
                 })
                 .unwrap_or_else(|error| Err(anyhow::anyhow!(error.to_string())));
 
@@ -66,30 +82,69 @@ impl RootView {
                 .await;
 
             this.update(cx, |this, cx| {
-                this.agent_chats
-                    .update(cx, |chats, cx| chats.shutdown_all(cx));
-                this.terminals
-                    .update(cx, |terminals, cx| terminals.shutdown_all(cx));
+                this.stop_processes(cx);
                 this.shutdown_state = ShutdownState::Finishing;
                 cx.notify();
             })
             .ok();
-            let finish_delay = if std::env::var_os("CHORO_DEBUG_SHUTDOWN").is_some()
-                || std::env::var_os("MYIDE_DEBUG_SHUTDOWN").is_some()
-            {
-                std::time::Duration::from_secs(5)
-            } else {
-                std::time::Duration::from_millis(160)
-            };
+            let finish_delay = Self::shutdown_finish_delay();
             cx.background_executor().timer(finish_delay).await;
 
             this.update(cx, |this, cx| {
-                this.shutdown_state = ShutdownState::Ready;
-                crate::notifications::set_dock_badge(None);
-                cx.notify();
-                cx.quit();
+                this.complete_shutdown(cx);
             })
             .ok();
+        })
+        .detach();
+    }
+
+    fn stop_processes(&mut self, cx: &mut Context<Self>) {
+        self.agent_chats
+            .update(cx, |chats, cx| chats.shutdown_all(cx));
+        self.terminals
+            .update(cx, |terminals, cx| terminals.shutdown_all(cx));
+    }
+
+    fn shutdown_finish_delay() -> std::time::Duration {
+        if std::env::var_os("CHORO_DEBUG_SHUTDOWN").is_some()
+            || std::env::var_os("MYIDE_DEBUG_SHUTDOWN").is_some()
+        {
+            std::time::Duration::from_secs(5)
+        } else {
+            std::time::Duration::from_millis(160)
+        }
+    }
+
+    fn complete_shutdown(&mut self, cx: &mut Context<Self>) {
+        self.shutdown_state = ShutdownState::Ready;
+        crate::notifications::set_dock_badge(None);
+        cx.notify();
+        match self.shutdown_purpose {
+            ShutdownPurpose::Quit => cx.quit(),
+            ShutdownPurpose::InstallUpdate => {
+                let install = self
+                    .app_update
+                    .update(cx, |updates, cx| updates.finish_restart_and_install(cx));
+                if let Err(error) = install {
+                    self.shutdown_state = ShutdownState::Failed(
+                        format!("Could not start the update: {error}").into(),
+                    );
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn finish_after_failed_save(&mut self, cx: &mut Context<Self>) {
+        self.shutdown_state = ShutdownState::StoppingProcesses;
+        self.stop_processes(cx);
+        self.shutdown_state = ShutdownState::Finishing;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Self::shutdown_finish_delay())
+                .await;
+            this.update(cx, |this, cx| this.complete_shutdown(cx)).ok();
         })
         .detach();
     }
@@ -189,6 +244,10 @@ impl RootView {
                                     .text_color(crate::ui::design::t1(cx))
                                     .child(if failed.is_some() {
                                         "Couldn’t close safely"
+                                    } else if self.shutdown_purpose
+                                        == ShutdownPurpose::InstallUpdate
+                                    {
+                                        "Saving before update…"
                                     } else {
                                         "Saving and closing…"
                                     }),
@@ -197,7 +256,13 @@ impl RootView {
                                 div()
                                     .text_size(crate::ui::design::text_ui())
                                     .text_color(crate::ui::design::t3(cx))
-                                    .child("Keeping your local work consistent."),
+                                    .child(
+                                        if self.shutdown_purpose == ShutdownPurpose::InstallUpdate {
+                                            "Choro will install only after your work is safe."
+                                        } else {
+                                            "Keeping your local work consistent."
+                                        },
+                                    ),
                             ),
                     ),
             );
@@ -219,22 +284,29 @@ impl RootView {
                         .justify_end()
                         .gap_2()
                         .child(
-                            Button::new("shutdown-back")
-                                .label("Back to app")
-                                .custom(crate::ui::style::dialog_neutral_variant(cx))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.shutdown_state = ShutdownState::Idle;
-                                    cx.notify();
-                                })),
+                            crate::ui::style::dialog_neutral_button(
+                                "shutdown-back",
+                                "Back to app",
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.shutdown_state = ShutdownState::Idle;
+                                this.shutdown_purpose = ShutdownPurpose::Quit;
+                                cx.notify();
+                            })),
                         )
                         .child(
-                            Button::new("shutdown-force-quit")
-                                .label("Quit anyway")
-                                .danger()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.shutdown_state = ShutdownState::Ready;
-                                    cx.quit();
-                                })),
+                            crate::ui::style::danger_button_compact(
+                                "shutdown-force-quit",
+                                if self.shutdown_purpose == ShutdownPurpose::InstallUpdate {
+                                    "Restart anyway"
+                                } else {
+                                    "Quit anyway"
+                                },
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.finish_after_failed_save(cx);
+                            })),
                         ),
                 );
         } else {
@@ -254,7 +326,11 @@ impl RootView {
                         cx,
                     ))
                     .child(self.render_shutdown_step(
-                        "Close application",
+                        if self.shutdown_purpose == ShutdownPurpose::InstallUpdate {
+                            "Restart and install update"
+                        } else {
+                            "Close application"
+                        },
                         false,
                         matches!(self.shutdown_state, ShutdownState::Finishing),
                         cx,
