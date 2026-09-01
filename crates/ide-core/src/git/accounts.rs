@@ -22,7 +22,7 @@ const CREDENTIAL_SENTINEL: &str = "choro-git-credential";
 /// Only operations that can contact a remote get managed credentials; local
 /// commands (`add`, `stash`, `merge`…) must never carry them.
 const NETWORK_OPERATIONS: &[&str] = &["push", "pull", "fetch", "ls-remote", "clone"];
-const CHORO_RELEASE_OWNER: &str = "Future-Pinic";
+const CHORO_RELEASE_OWNER: &str = "Future-Picnic";
 const CHORO_RELEASE_REPOSITORY: &str = "choro";
 
 /// A bearer credential validated specifically against Choro's private release

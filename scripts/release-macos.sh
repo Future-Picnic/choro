@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-REPOSITORY="Future-Pinic/choro"
+REPOSITORY="Future-Picnic/choro"
 BRANCH="dev"
 SIGN_IDENTITY="${CHORO_RELEASE_SIGN_IDENTITY:-Developer ID Application: Liran Gabai (NQTUZ98HJZ)}"
 NOTARY_PROFILE="${CHORO_NOTARY_PROFILE:-choro-notary}"

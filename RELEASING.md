@@ -1,7 +1,7 @@
 # Releasing Choro for macOS
 
 Choro releases are built locally from a clean, up-to-date `dev` branch and are
-published to the private `Future-Pinic/choro` GitHub repository. The release
+published to the private `Future-Picnic/choro` GitHub repository. The release
 command never deletes or overwrites an existing tag, release asset, bundle, or
 staging directory.
 

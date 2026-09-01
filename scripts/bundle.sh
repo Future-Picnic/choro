@@ -179,7 +179,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
     <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/Future-Pinic/choro/dev/release/appcast.xml</string>
+    <string>https://raw.githubusercontent.com/Future-Picnic/choro/dev/release/appcast.xml</string>
     <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
     <key>SUEnableAutomaticChecks</key><true/>
     <key>SUScheduledCheckInterval</key><integer>3600</integer>

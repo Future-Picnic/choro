@@ -97,7 +97,7 @@ function validateAppcast(path, expected) {
 
   const publicationDate = tagText(item, "pubDate");
   if (Number.isNaN(Date.parse(publicationDate))) fail(`Invalid appcast publication date: ${publicationDate}`);
-  if (!expected.assetUrl.startsWith("https://api.github.com/repos/Future-Pinic/choro/releases/assets/")) {
+  if (!expected.assetUrl.startsWith("https://api.github.com/repos/Future-Picnic/choro/releases/assets/")) {
     fail(`Invalid private GitHub release asset URL: ${expected.assetUrl}`);
   }
   if (/github\.com\/.*\/releases\/(download|tag)\//.test(signedDocument)) {
@@ -126,7 +126,7 @@ const document = `<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Choro Updates</title>
-    <link>https://github.com/Future-Pinic/choro</link>
+    <link>https://github.com/Future-Picnic/choro</link>
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
     <item>
