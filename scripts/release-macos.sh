@@ -126,11 +126,11 @@ write_state() {
 }
 
 on_error() {
-  local status=$?
+  local exit_code=$?
   write_state "failed:$CURRENT_STAGE"
   echo "Release stopped during: $CURRENT_STAGE" >&2
   echo "No tags, releases, or artifacts were deleted. Resume with: ./scripts/release-macos.sh --resume $TAG" >&2
-  exit "$status"
+  exit "$exit_code"
 }
 trap on_error ERR
 
@@ -143,7 +143,9 @@ require_command() {
 
 verify_signing_authority() {
   local artifact="$1"
-  if ! codesign -dv --verbose=4 "$artifact" 2>&1 | grep -Fq "Authority=$SIGN_IDENTITY"; then
+  local signing_details
+  signing_details="$(codesign -dv --verbose=4 "$artifact" 2>&1)"
+  if ! grep -Fq "Authority=$SIGN_IDENTITY" <<< "$signing_details"; then
     echo "Artifact is not signed by the configured Developer ID identity:" >&2
     echo "  $artifact" >&2
     echo "  Expected: $SIGN_IDENTITY" >&2
@@ -351,7 +353,7 @@ for HELPER_PLIST in "$APP_PATH"/Contents/Frameworks/choro\ Helper*.app/Contents/
   file "${HELPER_PLIST:h}/MacOS/$HELPER_EXECUTABLE" | grep -q 'arm64'
 done
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-codesign -dv --verbose=4 "$APP_PATH" 2>&1 | grep -Fq "Authority=$SIGN_IDENTITY"
+verify_signing_authority "$APP_PATH"
 
 POST_BUILD_STATUS="$(git status --porcelain --untracked-files=all)"
 if [[ "$RESUMING" == "0" && -n "$POST_BUILD_STATUS" ]]; then
