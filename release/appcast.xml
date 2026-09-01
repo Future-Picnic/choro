@@ -6,8 +6,20 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/Future-Picnic/choro</link>
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
+    <item>
+      <title>Choro 0.89</title>
+      <pubDate>Tue, 01 Sep 2026 20:57:53 +0300</pubDate>
+      <sparkle:version>89</sparkle:version>
+      <sparkle:shortVersionString>0.89</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description sparkle:format="plain-text"><![CDATA[First signed and notarized Choro release with in-app updates.
+
+Source: 2d0227e]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/539926674" length="312925529" type="application/octet-stream" sparkle:edSignature="HyCmMxPiX1J+NY6V8My52TtCDp5qwCbBIW9911nWQQ7kEILhoSmbyiPNkMCoktOJe2NfN4SZdJsRSecQN4UoBw=="></enclosure>
+    </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: yIEerinfo6DVjtc8oqWWGuCPIDn9d3+p4TynYwGEZ3N31OOaX6PFPUvquEko6GCsNuveJFpMrJ/LEtCCQ9c0BQ==
-length: 591
+edSignature: MgtfJFBp0aKtgE9gyJ6+tpQxMkmykU6p9ahmazFk1m+/5yoGbmstV1rU5WRlVGF3FmRb3DvwURONhwtMz4kLDg==
+length: 1385
 -->
