@@ -206,6 +206,10 @@ pub(super) fn agent_chat_rows(
     if session.timeline.is_empty() {
         rows.extend((0..session.messages.len()).map(AgentChatRow::Message));
     } else {
+        let has_ship_result = session
+            .timeline
+            .iter()
+            .any(|item| matches!(item, AgentChatTimelineItem::ShipResult(_)));
         for (index, message) in session.messages.iter().enumerate() {
             if let AgentChatMessage::User { text, .. } = message {
                 if !timeline_contains_user_message(&session.timeline, text) {
@@ -243,6 +247,15 @@ pub(super) fn agent_chat_rows(
                     rows.push(AgentChatRow::TimelineItem(index));
                     index += 1;
                 }
+                AgentChatTimelineItem::AgentSummary(_) if hidden_background_summary_turn => {
+                    // A completed conversation keeps its Brain summary as the
+                    // durable completion signal. Ship already has a stronger
+                    // completion card, so avoid stacking both outcomes.
+                    if !has_ship_result {
+                        rows.push(AgentChatRow::TimelineItem(index));
+                    }
+                    index += 1;
+                }
                 _ if hidden_review_checklist_turn => {
                     index += 1;
                 }
@@ -250,7 +263,6 @@ pub(super) fn agent_chat_rows(
                 | AgentChatTimelineItem::Message(AgentChatMessage::Thought { .. })
                 | AgentChatTimelineItem::WorkLog(_)
                 | AgentChatTimelineItem::FileChangeActivity(_)
-                | AgentChatTimelineItem::AgentSummary(_)
                     if hidden_background_summary_turn =>
                 {
                     index += 1;
@@ -322,6 +334,32 @@ pub(super) fn agent_chat_rows(
     }
 
     rows
+}
+
+/// Whether the chat should show its working indicator.
+///
+/// `session.status` is the primary signal, but it goes stale in exactly the
+/// cases the user notices: the machine slept, or the backend stream dropped
+/// while the CLI kept working. The agents sidebar has always fallen back to the
+/// transcript's own freshness, which is why it kept spinning while the chat
+/// showed nothing. In the idle-but-still-writing window the chat now trusts the
+/// same evidence. A settled turn (waiting on the user, a ready plan, a failure)
+/// is a deliberate stop and never spins.
+pub(super) fn chat_shows_activity(
+    status: AgentChatStatus,
+    agent_finished: bool,
+    transcript_is_fresh: bool,
+) -> bool {
+    if agent_finished {
+        return false;
+    }
+    match status {
+        AgentChatStatus::Running | AgentChatStatus::Cancelling => true,
+        AgentChatStatus::Idle => transcript_is_fresh,
+        AgentChatStatus::WaitingForUser | AgentChatStatus::PlanReady | AgentChatStatus::Failed => {
+            false
+        }
+    }
 }
 
 /// A cheap fingerprint of everything that can change a row's rendered height
@@ -733,6 +771,47 @@ mod tests {
     }
 
     #[test]
+    fn completed_background_summary_card_remains_visible() {
+        let session = session_with_timeline(vec![
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: format!(
+                    "{}\n{}\nUpdate the summary.",
+                    super::super::agent_chat_brain::SUMMARY_REQUEST_MARKER,
+                    super::super::agent_chat_brain::BACKGROUND_SUMMARY_REQUEST_MARKER,
+                ),
+                display_text: Some("Update Choro Brain summary".to_string()),
+                tags: Vec::new(),
+                created_at: 1,
+            }),
+            AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+                "summary-save",
+                "summary-save",
+                WorkLogEntryKind::Tool,
+                "Saved Brain summary",
+                WorkLogStatus::Completed,
+            )),
+            AgentChatTimelineItem::AgentSummary(crate::state::agent_chat::AgentSummaryCard {
+                summary_text: "Completed the sidebar improvement.".to_string(),
+                last_summarized_sequence: 4,
+                updated_at: 2,
+                edited_by_user: false,
+                expanded: false,
+            }),
+            AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                message_id: Some("summary-response".to_string()),
+                text: "Saved the Brain summary.".to_string(),
+                created_at: 3,
+            }),
+        ]);
+        let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+
+        assert!(matches!(
+            agent_chat_rows(&session, false, false, &filter).as_slice(),
+            [AgentChatRow::TimelineItem(2)]
+        ));
+    }
+
+    #[test]
     fn background_brain_transcript_is_hidden_while_ship_stays_last() {
         let session = session_with_timeline(vec![
             AgentChatTimelineItem::Message(AgentChatMessage::User {
@@ -767,6 +846,13 @@ mod tests {
                 "Saved Brain summary",
                 WorkLogStatus::Completed,
             )),
+            AgentChatTimelineItem::AgentSummary(crate::state::agent_chat::AgentSummaryCard {
+                summary_text: "Shipped the sidebar improvement.".to_string(),
+                last_summarized_sequence: 4,
+                updated_at: 2,
+                edited_by_user: false,
+                expanded: false,
+            }),
             AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
                 message_id: Some("summary-response".to_string()),
                 text: "Saved the Brain summary.".to_string(),

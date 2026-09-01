@@ -10,6 +10,10 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let collapsible = plan.should_collapse();
+        // Keyed by plan, not just by agent: two plan cards sharing one element
+        // id would share one hitbox, so clicking the revised plan's button
+        // toggled the original card instead.
+        let card_key = proposed_plan_card_key(agent_id, &plan.id);
         let body = if plan.expanded || !plan.should_collapse() {
             plan.display_markdown()
         } else {
@@ -43,16 +47,13 @@ impl CenterArea {
                             )
                             .child(div().flex_1())
                             .child(
-                                Button::new((
-                                    "agent-chat-proposed-plan-menu",
-                                    agent_id.as_u128() as u64,
-                                ))
-                                .ghost()
-                                .xsmall()
-                                .compact()
-                                .h(crate::ui::design::control_h_xs())
-                                .icon(IconName::Ellipsis)
-                                .tooltip("Plan actions"),
+                                Button::new(("agent-chat-proposed-plan-menu", card_key))
+                                    .ghost()
+                                    .xsmall()
+                                    .compact()
+                                    .h(crate::ui::design::control_h_xs())
+                                    .icon(IconName::Ellipsis)
+                                    .tooltip("Plan actions"),
                             ),
                     )
                     .child(
@@ -79,7 +80,7 @@ impl CenterArea {
                 card.child(
                     h_flex().w_full().justify_center().child(
                         crate::ui::style::secondary_button_compact(
-                            ("agent-chat-proposed-plan-toggle", agent_id.as_u128() as u64),
+                            ("agent-chat-proposed-plan-toggle", card_key),
                             if expanded {
                                 "Collapse plan"
                             } else {

@@ -99,6 +99,22 @@ impl ServerContext {
             .ok_or_else(|| anyhow!("project is no longer in the workspace"))
     }
 
+    /// The Solo lane worktree this chat actually works in, when it has one.
+    /// A Solo edits its own checkout, so anything resolved from a
+    /// project-relative path — Preview targets above all — has to land there;
+    /// resolving against the project root would hand back the main checkout's
+    /// copy of the very file the Solo is changing.
+    fn agent_lane_root(&self) -> Option<PathBuf> {
+        let agent_id = self.agent_id?;
+        let agents = self.store.as_ref()?.load_agents().ok()?;
+        let agent = agents.into_iter().find(|agent| agent.id == agent_id)?;
+        agent
+            .is_active_solo()
+            .then_some(())
+            .and(agent.lane_path)
+            .filter(|lane| lane.is_dir())
+    }
+
     /// Find and fully load a task by key (e.g. `KAN-3`) or full URL, searching
     /// this project's external boards first, then the local personal board.
     fn resolve_task(&self, input: &str) -> Result<ResolvedTask> {
@@ -1355,7 +1371,8 @@ impl Tool for ProjectPreviewOpenTool {
             .unwrap_or_default()
             .trim();
         let project = ctx.project()?;
-        let url = resolve_project_preview_target(&project, target)?;
+        let lane_root = ctx.agent_lane_root();
+        let url = resolve_project_preview_target(&project, lane_root.as_deref(), target)?;
         let preview = ctx
             .store()?
             .upsert_project_preview(project.id, &url, title, ctx.agent_id)?;
@@ -1776,7 +1793,11 @@ impl Tool for ProjectPreviewStopTool {
     }
 }
 
-fn resolve_project_preview_target(project: &Project, target: &str) -> Result<String> {
+fn resolve_project_preview_target(
+    project: &Project,
+    lane_root: Option<&Path>,
+    target: &str,
+) -> Result<String> {
     if let Ok(url) = url::Url::parse(target) {
         return match url.scheme() {
             "http" | "https" => Ok(url.to_string()),
@@ -1784,7 +1805,7 @@ fn resolve_project_preview_target(project: &Project, target: &str) -> Result<Str
                 let path = url
                     .to_file_path()
                     .map_err(|_| anyhow!("the file preview URL is invalid"))?;
-                resolve_project_html_file(project, path)
+                resolve_project_html_file(project, lane_root, path)
             }
             scheme => Err(anyhow!(
                 "project Preview does not support the {scheme} URL scheme"
@@ -1796,22 +1817,41 @@ fn resolve_project_preview_target(project: &Project, target: &str) -> Result<Str
     let path = if path.is_absolute() {
         path
     } else {
-        project.path.join(path)
+        // A Solo's relative paths belong to its own worktree.
+        lane_root.unwrap_or(&project.path).join(path)
     };
-    resolve_project_html_file(project, path)
+    resolve_project_html_file(project, lane_root, path)
 }
 
-fn resolve_project_html_file(project: &Project, path: PathBuf) -> Result<String> {
+fn resolve_project_html_file(
+    project: &Project,
+    lane_root: Option<&Path>,
+    path: PathBuf,
+) -> Result<String> {
     let project_root = project.path.canonicalize().with_context(|| {
         format!(
             "failed to resolve project folder {}",
             project.path.display()
         )
     })?;
+    let lane_root = lane_root.and_then(|lane| lane.canonicalize().ok());
     let path = path
         .canonicalize()
         .with_context(|| format!("HTML preview file does not exist: {}", path.display()))?;
-    if !path.starts_with(&project_root) {
+    // A Solo that names a file by its main-checkout path almost always means
+    // its own copy — showing main's version is how a Solo Preview silently
+    // ends up on the wrong branch.
+    let path = lane_root
+        .as_ref()
+        .and_then(|lane| {
+            let relative = path.strip_prefix(&project_root).ok()?;
+            lane.join(relative).canonicalize().ok()
+        })
+        .unwrap_or(path);
+    let inside_lane = lane_root
+        .as_ref()
+        .is_some_and(|lane| path.starts_with(lane));
+    if !path.starts_with(&project_root) && !inside_lane {
         return Err(anyhow!(
             "local Preview files must be inside the current project"
         ));
@@ -2630,7 +2670,7 @@ mod tests {
         let project = Project::from_path(dir.path().to_path_buf());
         std::fs::write(dir.path().join("index.html"), "<h1>Preview</h1>").unwrap();
 
-        let target = resolve_project_preview_target(&project, "index.html").unwrap();
+        let target = resolve_project_preview_target(&project, None, "index.html").unwrap();
 
         assert!(target.starts_with("file://"));
         assert!(target.ends_with("/index.html"));
@@ -2644,8 +2684,67 @@ mod tests {
         let outside = outside_dir.path().join("index.html");
         std::fs::write(&outside, "<h1>Outside</h1>").unwrap();
 
-        let error = resolve_project_preview_target(&project, outside.to_str().unwrap())
+        let error = resolve_project_preview_target(&project, None, outside.to_str().unwrap())
             .expect_err("outside files must be rejected");
+
+        assert!(error.to_string().contains("inside the current project"));
+    }
+
+    #[test]
+    fn solo_preview_resolves_relative_paths_inside_its_own_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        let lane_dir = dir.path().join("lane");
+        std::fs::create_dir_all(project_dir.join("landing")).unwrap();
+        std::fs::create_dir_all(lane_dir.join("landing")).unwrap();
+        std::fs::write(project_dir.join("landing/index.html"), "<h1>main</h1>").unwrap();
+        std::fs::write(lane_dir.join("landing/index.html"), "<h1>solo</h1>").unwrap();
+        let project = Project::from_path(project_dir);
+
+        let target =
+            resolve_project_preview_target(&project, Some(&lane_dir), "landing/index.html")
+                .unwrap();
+
+        let path = url::Url::parse(&target).unwrap().to_file_path().unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "<h1>solo</h1>");
+    }
+
+    #[test]
+    fn solo_preview_redirects_a_main_checkout_path_to_the_lane_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        let lane_dir = dir.path().join("lane");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&lane_dir).unwrap();
+        std::fs::write(project_dir.join("index.html"), "<h1>main</h1>").unwrap();
+        std::fs::write(lane_dir.join("index.html"), "<h1>solo</h1>").unwrap();
+        let project = Project::from_path(project_dir.clone());
+
+        let target = resolve_project_preview_target(
+            &project,
+            Some(&lane_dir),
+            project_dir.join("index.html").to_str().unwrap(),
+        )
+        .unwrap();
+
+        let path = url::Url::parse(&target).unwrap().to_file_path().unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "<h1>solo</h1>");
+    }
+
+    #[test]
+    fn solo_preview_keeps_files_outside_both_roots_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        let lane_dir = dir.path().join("lane");
+        let outside = dir.path().join("outside.html");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&lane_dir).unwrap();
+        std::fs::write(&outside, "<h1>outside</h1>").unwrap();
+        let project = Project::from_path(project_dir);
+
+        let error =
+            resolve_project_preview_target(&project, Some(&lane_dir), outside.to_str().unwrap())
+                .expect_err("files outside the project and its lane must be rejected");
 
         assert!(error.to_string().contains("inside the current project"));
     }

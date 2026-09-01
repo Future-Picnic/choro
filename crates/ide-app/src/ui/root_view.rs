@@ -290,6 +290,7 @@ impl RootView {
             terminals.clone(),
             agents.clone(),
             agent_chats.clone(),
+            agent_activity.clone(),
             git_states.clone(),
             docs.clone(),
             designs.clone(),

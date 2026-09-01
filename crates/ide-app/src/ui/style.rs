@@ -1425,6 +1425,38 @@ pub fn header_lucide_icon_button(
         ))
 }
 
+/// A 20px-square icon action revealed at the trailing edge of a sidebar agent
+/// row. It is intentionally tighter than toolbar controls so two actions can
+/// replace the compact activity age without changing the row height.
+pub fn sidebar_agent_action_button(
+    id: impl Into<ElementId>,
+    icon: lucide_icons::Icon,
+    color: Hsla,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .h(px(20.))
+        .w(px(20.))
+        .p_0()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent)
+                .foreground(color)
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx).opacity(0.82)),
+        )
+        .child(design::indicator::lucide_icon(
+            icon,
+            color,
+            design::icon_sm(),
+        ))
+}
+
 /// A labelled utility toggle anchored in a panel footer/status bar. The active
 /// treatment stays neutral so diagnostic tools remain visible without reading
 /// like a primary workflow action.

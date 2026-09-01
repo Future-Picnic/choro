@@ -192,6 +192,8 @@ impl ProjectSearch {
                 .detach();
             cx.observe(&agents, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            cx.observe(&center, |_: &mut Self, _, cx| cx.notify())
+                .detach();
             cx.observe(&docs, |_: &mut Self, _, cx| cx.notify())
                 .detach();
             cx.observe(&tasks, |_: &mut Self, _, cx| cx.notify())
@@ -256,9 +258,10 @@ impl ProjectSearch {
     fn filtered_items(&self, cx: &App) -> Vec<SearchItem> {
         let query = self.query(cx);
         let mut items = Vec::new();
+        let center = self.center.read(cx);
 
         for agent in self.agents.read(cx).records_for_project(self.project) {
-            if let Some(item) = agent_item(&agent, &query) {
+            if let Some(item) = agent_item(&agent, center.agent_short_outcome(agent.id), &query) {
                 items.push(item);
             }
         }
@@ -699,8 +702,14 @@ fn file_item(file: &ProjectFile, query: &str) -> Option<SearchItem> {
     })
 }
 
-fn agent_item(agent: &AgentRecord, query: &str) -> Option<SearchItem> {
-    let haystack = format!("{} {} {}", agent.title, agent.doc, agent.meta_label());
+fn agent_item(agent: &AgentRecord, short_outcome: Option<&str>, query: &str) -> Option<SearchItem> {
+    let haystack = format!(
+        "{} {} {} {}",
+        agent.title,
+        agent.doc,
+        agent.meta_label(),
+        short_outcome.unwrap_or_default()
+    );
     let score = if query.is_empty() {
         1_200
     } else {
@@ -758,4 +767,36 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<i32> {
     }
 
     Some(score - haystack.len().min(500) as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ide_core::{AgentAccessMode, AgentEffort, AgentKind, AgentModel};
+
+    fn agent(title: &str, doc: &str) -> AgentRecord {
+        AgentRecord::new(
+            ProjectId::new(),
+            PathBuf::new(),
+            title,
+            doc,
+            AgentKind::Codex,
+            AgentModel::default_for(AgentKind::Codex),
+            AgentEffort::Medium,
+            AgentAccessMode::default(),
+        )
+    }
+
+    #[test]
+    fn agent_search_matches_short_outcome() {
+        let agent = agent("Navigation work", "Polish the project sidebar");
+
+        assert!(agent_item(
+            &agent,
+            Some("Added reliable keyboard shortcuts"),
+            "reliable"
+        )
+        .is_some());
+        assert!(agent_item(&agent, None, "reliable").is_none());
+    }
 }

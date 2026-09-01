@@ -734,6 +734,7 @@ impl CenterArea {
                 (crate::ui::design::docs_icon(), crate::ui::design::amber(cx))
             }
             ComposerMentionKind::File => (IconName::File, crate::ui::design::sage(cx)),
+            ComposerMentionKind::Folder => (IconName::FolderOpen, crate::ui::design::sage(cx)),
             ComposerMentionKind::PenpotDesign => (
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
@@ -1068,11 +1069,11 @@ impl CenterArea {
                                 .into_any_element()
                         })
                         .child(if *loading {
-                            "Indexing project files…".to_string()
+                            "Indexing project files and folders…".to_string()
                         } else if mention.query.is_empty() {
-                            "No files in this project".to_string()
+                            "No files or folders in this project".to_string()
                         } else {
-                            format!("No files matching {}", mention.query)
+                            format!("No files or folders matching {}", mention.query)
                         }),
                 )
             })
@@ -1109,13 +1110,17 @@ impl CenterArea {
                         );
                     }))
                     .child(
-                        gpui_component::Icon::new(IconName::File)
-                            .size(crate::ui::design::icon_md())
-                            .text_color(if is_active {
-                                crate::ui::design::sage(cx)
-                            } else {
-                                crate::ui::design::t3(cx)
-                            }),
+                        gpui_component::Icon::new(if file.is_directory {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::File
+                        })
+                        .size(crate::ui::design::icon_md())
+                        .text_color(if is_active {
+                            crate::ui::design::sage(cx)
+                        } else {
+                            crate::ui::design::t3(cx)
+                        }),
                     )
                     .child(
                         div()
@@ -1144,7 +1149,7 @@ impl CenterArea {
                             .py_0p5()
                             .text_size(crate::ui::design::text_label())
                             .text_color(crate::ui::design::t3(cx))
-                            .child("File"),
+                            .child(if file.is_directory { "Folder" } else { "File" }),
                     )
                     .into_any_element()
             }))

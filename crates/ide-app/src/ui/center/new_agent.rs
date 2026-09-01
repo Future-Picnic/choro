@@ -32,6 +32,7 @@ impl CenterArea {
                 (crate::ui::design::docs_icon(), crate::ui::design::amber(cx))
             }
             ComposerMentionKind::File => (IconName::File, crate::ui::design::sage(cx)),
+            ComposerMentionKind::Folder => (IconName::FolderOpen, crate::ui::design::sage(cx)),
             ComposerMentionKind::PenpotDesign => (
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),

@@ -135,14 +135,29 @@ impl Render for CenterArea {
                 let files = self
                     .workspace_file_entries(project, &doc.project_path, cx)
                     .into_iter()
-                    .map(|entry| web_preview::DocEditorMention {
-                        label: entry.name,
-                        target: format!("ref:file:{}", entry.relative_label),
-                        detail: entry.relative_label,
-                        kind: "file".to_string(),
-                        badge: "File".to_string(),
-                        preview_url: None,
-                        preview_path: None,
+                    .map(|entry| {
+                        let (kind, badge, target) = if entry.is_directory {
+                            (
+                                "folder".to_string(),
+                                "Folder".to_string(),
+                                format!("ref:folder:{}", entry.relative_label),
+                            )
+                        } else {
+                            (
+                                "file".to_string(),
+                                "File".to_string(),
+                                format!("ref:file:{}", entry.relative_label),
+                            )
+                        };
+                        web_preview::DocEditorMention {
+                            label: entry.name,
+                            target,
+                            detail: entry.relative_label,
+                            kind,
+                            badge,
+                            preview_url: None,
+                            preview_path: None,
+                        }
                     })
                     .collect::<Vec<_>>();
                 let assets = self

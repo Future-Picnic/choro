@@ -306,20 +306,39 @@ impl AgentChatState {
         let Some(session) = self.sessions.get_mut(&agent_id) else {
             return;
         };
-        let mut expanded = None;
+        // Read the current state from whichever card carries this id. Only the
+        // newest plan lives in `proposed_plan`, so keying off it alone left
+        // every earlier plan card in the transcript unable to toggle.
+        let Some(expanded) = session
+            .timeline
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                AgentChatTimelineItem::ProposedPlan(plan) if plan.id == plan_id => {
+                    Some(plan.expanded)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                session
+                    .proposed_plan
+                    .as_ref()
+                    .filter(|plan| plan.id == plan_id)
+                    .map(|plan| plan.expanded)
+            })
+        else {
+            return;
+        };
+        let expanded = !expanded;
         let mut persist_plan = None;
         if let Some(plan) = session
             .proposed_plan
             .as_mut()
             .filter(|plan| plan.id == plan_id)
         {
-            plan.expanded = !plan.expanded;
-            expanded = Some(plan.expanded);
+            plan.expanded = expanded;
             persist_plan = Some(plan.clone());
         }
-        let Some(expanded) = expanded else {
-            return;
-        };
         for item in &mut session.timeline {
             if let AgentChatTimelineItem::ProposedPlan(plan) = item {
                 if plan.id == plan_id {
