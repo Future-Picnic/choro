@@ -48,6 +48,8 @@ pub struct QuickAskModal {
     attachment_pastes_pending: usize,
     composer_error: Option<String>,
     pending_started_at: Option<u64>,
+    error_details_expanded: bool,
+    failed_submission: Option<(String, Vec<PathBuf>)>,
 }
 
 impl QuickAskModal {
@@ -101,6 +103,8 @@ impl QuickAskModal {
                 attachment_pastes_pending: 0,
                 composer_error: None,
                 pending_started_at: None,
+                error_details_expanded: false,
+                failed_submission: None,
             };
             cx.observe(&quick_ask, |_, _, cx| cx.notify()).detach();
             // Message hover/copy state belongs to the canonical agent renderer
@@ -122,6 +126,8 @@ impl QuickAskModal {
                 |this: &mut Self, _, event: &QuickAskEvent, window, cx| match event {
                     QuickAskEvent::Completed => {
                         this.pending_started_at = None;
+                        this.error_details_expanded = false;
+                        this.failed_submission = None;
                         this.question.focus_handle(cx).focus(window);
                     }
                     QuickAskEvent::Failed {
@@ -129,6 +135,8 @@ impl QuickAskModal {
                         attachments,
                     } => {
                         this.pending_started_at = None;
+                        this.error_details_expanded = false;
+                        this.failed_submission = Some((question.clone(), attachments.clone()));
                         this.question.update(cx, |input, cx| {
                             // Clear-on-send matches agent chat. Restore the
                             // failed question only when the user has not
@@ -178,12 +186,23 @@ impl QuickAskModal {
             return;
         }
         let attachments = std::mem::take(&mut self.attached_images);
+        self.failed_submission = None;
         self.composer_error = None;
         self.pending_started_at = Some(unix_now_secs());
         self.question
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.quick_ask
             .update(cx, |state, cx| state.submit(question, attachments, cx));
+    }
+
+    fn retry_failed_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((question, attachments)) = self.failed_submission.take() else {
+            return;
+        };
+        self.question
+            .update(cx, |input, cx| input.set_value(question, window, cx));
+        self.attached_images = attachments;
+        self.submit(window, cx);
     }
 
     fn paste_image(&mut self, cx: &mut Context<Self>) -> bool {
@@ -593,6 +612,10 @@ impl QuickAskModal {
     }
 
     fn render_error(&self, error: String, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.quick_ask.read(cx).needs_claude_login() {
+            return self.render_claude_auth_error(error, cx);
+        }
+
         div()
             .w_full()
             .px(crate::ui::design::agent_chat_gutter_x())
@@ -607,6 +630,143 @@ impl QuickAskModal {
                         error,
                         cx,
                     )),
+            )
+            .into_any_element()
+    }
+
+    fn render_claude_auth_error(&self, error: String, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let details_expanded = self.error_details_expanded;
+        let has_active_project = self.workspace.read(cx).active.is_some();
+        let view = cx.entity().clone();
+        let open_terminal = crate::ui::style::primary_button_compact(
+            "quick-ask-claude-auth-open-terminal",
+            "Open Terminal",
+            cx,
+        )
+        .icon(IconName::SquareTerminal)
+        .disabled(!has_active_project)
+        .tooltip(if has_active_project {
+            "Open a terminal in the active project"
+        } else {
+            "Select a project before opening a terminal"
+        })
+        .on_click({
+            let view = view.clone();
+            move |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    window.close_dialog(cx);
+                    this.center
+                        .update(cx, |center, cx| center.spawn_shell(window, cx));
+                });
+            }
+        });
+
+        div()
+            .w_full()
+            .px(crate::ui::design::agent_chat_gutter_x())
+            .pb_2()
+            .child(
+                h_flex()
+                    .w_full()
+                    .max_w(crate::ui::design::agent_chat_content_max_w())
+                    .mx_auto()
+                    .px_3()
+                    .py_3()
+                    .gap_2()
+                    .items_start()
+                    .border_b_1()
+                    .border_color(crate::ui::design::rose(cx).opacity(0.2))
+                    .bg(crate::ui::design::rose(cx).opacity(0.08))
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .size(crate::ui::design::icon())
+                            .text_color(crate::ui::design::rose(cx)),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_2()
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_size(crate::ui::design::text_ui())
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(crate::ui::design::rose(cx))
+                                            .child("Claude needs you to sign in again"),
+                                    )
+                                    .child(
+                                        div()
+                                            .whitespace_normal()
+                                            .text_size(crate::ui::design::text_ui())
+                                            .line_height(gpui::relative(1.45))
+                                            .text_color(crate::ui::design::t2(cx))
+                                            .child("Your Claude login has expired. Open a project terminal and run claude auth login. After signing in, return here and try again."),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .child(open_terminal)
+                                    .child(
+                                        crate::ui::style::dialog_neutral_button(
+                                            "quick-ask-claude-auth-retry",
+                                            "Try Again",
+                                            cx,
+                                        )
+                                        .icon(IconName::Redo2)
+                                        .on_click({
+                                            let view = view.clone();
+                                            move |_, window, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.retry_failed_submission(window, cx)
+                                                });
+                                            }
+                                        }),
+                                    )
+                                    .child(
+                                        crate::ui::style::ghost_button_compact(
+                                            "quick-ask-claude-auth-details",
+                                            if details_expanded {
+                                                "Hide Details"
+                                            } else {
+                                                "Details"
+                                            },
+                                        )
+                                        .icon(if details_expanded {
+                                            IconName::ChevronUp
+                                        } else {
+                                            IconName::ChevronDown
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            view.update(cx, |this, cx| {
+                                                this.error_details_expanded =
+                                                    !this.error_details_expanded;
+                                                cx.notify();
+                                            });
+                                        }),
+                                    ),
+                            )
+                            .when(details_expanded, |content| {
+                                content.child(
+                                    div()
+                                        .w_full()
+                                        .px_2()
+                                        .py_2()
+                                        .rounded(crate::ui::design::r_sm())
+                                        .bg(crate::ui::design::base(cx))
+                                        .whitespace_normal()
+                                        .text_size(crate::ui::design::text_label())
+                                        .line_height(gpui::relative(1.45))
+                                        .text_color(crate::ui::design::t3(cx))
+                                        .child(error.replace('/', "/\u{200b}")),
+                                )
+                            }),
+                    ),
             )
             .into_any_element()
     }

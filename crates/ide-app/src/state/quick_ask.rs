@@ -14,6 +14,7 @@ use crate::voice::{answer_quick_ask, VoiceConversationTurn};
 const SESSION_CONTEXT_EXCHANGES: usize = 8;
 const SESSION_CONTEXT_CHARS: usize = 12_000;
 const MAX_SESSION_IMAGES: usize = 5;
+const CLAUDE_AUTH_EXPIRED_ERROR: &str = "OAuth session expired and could not be refreshed";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickAskScope {
@@ -113,6 +114,12 @@ impl QuickAskState {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub fn needs_claude_login(&self) -> bool {
+        self.error
+            .as_deref()
+            .is_some_and(is_claude_auth_expired_error)
     }
 
     pub fn begin_session(&mut self, cx: &mut Context<Self>) {
@@ -315,6 +322,10 @@ impl QuickAskState {
         self.phase = QuickAskPhase::Idle;
         self.error = None;
     }
+}
+
+fn is_claude_auth_expired_error(error: &str) -> bool {
+    error.contains(CLAUDE_AUTH_EXPIRED_ERROR)
 }
 
 pub(crate) fn quick_ask_question_text(question: &str) -> String {
@@ -525,5 +536,15 @@ mod tests {
         let attachments = vec![PathBuf::from("/missing/current.png")];
 
         assert_eq!(session_image_paths(&[], &attachments), attachments);
+    }
+
+    #[test]
+    fn recognizes_claude_oauth_expiry_inside_captured_cli_error() {
+        assert!(is_claude_auth_expired_error(
+            "Claude failed: OAuth session expired and could not be refreshed"
+        ));
+        assert!(!is_claude_auth_expired_error(
+            "Claude failed: request timed out"
+        ));
     }
 }

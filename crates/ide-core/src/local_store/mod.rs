@@ -783,6 +783,8 @@ mod references;
 mod schema;
 mod support;
 mod tasks;
+
+pub use brain::MAX_AGENT_MESSAGE_CHARS;
 mod voice;
 mod workspace;
 

@@ -94,17 +94,17 @@ impl RootView {
                 crate::ui::design::sage(cx),
                 "Ready to install".to_string(),
                 format!(
-                    "Choro {} is ready. Your work will be saved before replacing {} and reopening.",
-                    update.short_version, update.current_bundle_path
+                    "Choro {} is downloaded and verified. Restart to save your work and finish installing.",
+                    update.short_version
                 ),
-                Some(1.0),
+                None,
             ),
             AppUpdatePhase::Installing(update) => (
                 IconName::Loader,
                 crate::ui::design::accent(cx),
                 format!("Installing Choro {}…", update.short_version),
                 "Choro will reopen when installation is complete.".to_string(),
-                Some(1.0),
+                None,
             ),
             AppUpdatePhase::UpToDate => (
                 IconName::CircleCheck,
@@ -126,8 +126,9 @@ impl RootView {
             AppUpdatePhase::Idle | AppUpdatePhase::Checking { .. } => return None,
         };
 
-        let header = h_flex()
-            .items_start()
+        let title_row = h_flex()
+            .flex_none()
+            .items_center()
             .gap_3()
             .child(
                 div()
@@ -145,29 +146,34 @@ impl RootView {
                     ),
             )
             .child(
-                v_flex()
+                div()
                     .min_w(px(0.))
                     .flex_1()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_title())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t1(cx))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_ui())
-                            .line_height(gpui::relative(1.42))
-                            .text_color(crate::ui::design::t3(cx))
-                            .child(message),
-                    ),
+                    .text_size(crate::ui::design::text_title())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(crate::ui::design::t1(cx))
+                    .child(title),
             );
 
+        // Keep wrapped copy outside the icon row. GPUI may otherwise size the
+        // row from the fixed-height icon and let long text paint into the
+        // progress/actions below it.
+        let message = div()
+            .ml(px(42.))
+            .min_w(px(0.))
+            .text_size(crate::ui::design::text_ui())
+            .line_height(gpui::relative(1.42))
+            .text_color(crate::ui::design::t3(cx))
+            .child(message);
+
         let mut card = v_flex()
+            .id("app-update-card")
+            .absolute()
+            .left(px(16.))
+            .bottom(px(16.))
             .w(px(336.))
-            .max_w(gpui::relative(0.88))
+            .max_w(gpui::relative(0.92))
+            .occlude()
             .gap_3()
             .rounded(crate::ui::design::r_md())
             .border_1()
@@ -175,7 +181,8 @@ impl RootView {
             .bg(crate::ui::design::focus(cx))
             .shadow_lg()
             .p_4()
-            .child(header);
+            .child(title_row)
+            .child(message);
 
         if let Some(progress) = progress {
             card = card.child(
@@ -195,21 +202,19 @@ impl RootView {
             );
         }
 
-        card = card.child(self.render_update_actions(&phase, cx));
-        Some(
-            div()
-                .absolute()
-                .left(px(16.))
-                .bottom(px(16.))
-                .max_w(gpui::relative(0.92))
-                .child(card)
-                .into_any_element(),
-        )
+        if let Some(actions) = self.render_update_actions(&phase, cx) {
+            card = card.child(actions);
+        }
+        Some(card.into_any_element())
     }
 
-    fn render_update_actions(&self, phase: &AppUpdatePhase, cx: &mut Context<Self>) -> AnyElement {
+    fn render_update_actions(
+        &self,
+        phase: &AppUpdatePhase,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let row = h_flex().w_full().justify_end().gap_2();
-        match phase {
+        Some(match phase {
             AppUpdatePhase::Available(_) => row
                 .child(
                     style::dialog_neutral_button("update-later", "Later", cx).on_click(
@@ -285,20 +290,57 @@ impl RootView {
                     ),
                 )
                 .into_any_element(),
-            _ => div().into_any_element(),
-        }
+            _ => return None,
+        })
     }
 }
 
 fn available_message(update: &AvailableUpdate, current: &SharedString) -> String {
     let version_line = format!("You’re on {current}. Update to {}.", update.short_version);
-    let notes = update.notes.trim();
-    if notes.is_empty() {
-        version_line
-    } else {
-        let excerpt: String = notes.chars().take(150).collect();
-        format!("{version_line} {excerpt}")
+    let Some(notes) = release_note_excerpt(&update.notes) else {
+        return version_line;
+    };
+    format!("{version_line} {notes}")
+}
+
+fn release_note_excerpt(notes: &str) -> Option<String> {
+    const MAX_CHARS: usize = 92;
+    const INTERNAL_PREFIXES: [&str; 2] = ["chore: publish update feed", "chore: release"];
+    const CHANGE_PREFIXES: [&str; 5] = ["feat:", "fix:", "perf:", "refactor:", "docs:"];
+
+    let note = notes.lines().find_map(|line| {
+        let line = line
+            .trim()
+            .trim_start_matches(|character: char| matches!(character, '-' | '*' | '•'))
+            .trim();
+        if line.is_empty()
+            || INTERNAL_PREFIXES
+                .iter()
+                .any(|prefix| line.to_ascii_lowercase().starts_with(prefix))
+        {
+            return None;
+        }
+        let lower = line.to_ascii_lowercase();
+        let line = CHANGE_PREFIXES
+            .iter()
+            .find_map(|prefix| {
+                lower
+                    .starts_with(prefix)
+                    .then(|| line[prefix.len()..].trim())
+            })
+            .unwrap_or(line);
+        (!line.is_empty()).then_some(line)
+    })?;
+
+    let mut excerpt = note.chars().take(MAX_CHARS + 1).collect::<String>();
+    if excerpt.chars().count() > MAX_CHARS {
+        excerpt = excerpt.chars().take(MAX_CHARS).collect();
+        if let Some(last_space) = excerpt.rfind(char::is_whitespace) {
+            excerpt.truncate(last_space);
+        }
+        excerpt.push('…');
     }
+    Some(excerpt)
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -325,5 +367,26 @@ mod tests {
     fn byte_progress_copy_uses_readable_units() {
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_536), "2 KB");
+    }
+
+    #[test]
+    fn release_note_excerpt_prefers_user_facing_copy() {
+        assert_eq!(
+            release_note_excerpt(
+                "- chore: publish update feed for 0.89\n- fix: Complete silent Sparkle update checks"
+            )
+            .as_deref(),
+            Some("Complete silent Sparkle update checks")
+        );
+    }
+
+    #[test]
+    fn release_note_excerpt_stays_compact() {
+        let excerpt = release_note_excerpt(
+            "feat: A deliberately long release note that should remain readable without allowing the update card to take over the workspace around it",
+        )
+        .expect("release note excerpt");
+        assert!(excerpt.chars().count() <= 93);
+        assert!(excerpt.ends_with('…'));
     }
 }

@@ -348,13 +348,13 @@ impl RootView {
         let defaults = workspace.read(cx).default_project_activities.clone();
         let current_id = current.persisted_id();
 
-        style::rail_footer_button(
+        style::rail_activity_menu_button(
             "rail-customize-activities",
-            IconName::Settings2,
-            "Customize",
+            lucide_icons::Icon::Grip,
+            "Manage",
             cx,
         )
-        .tooltip("Customize project activities")
+        .tooltip("Choose activities shown in this rail")
         .dropdown_menu_with_anchor(gpui::Corner::TopRight, move |menu, _, _| {
             let menu = ProjectActivityId::ALL.iter().copied().fold(
                 menu.min_w(px(220.))

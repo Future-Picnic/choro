@@ -667,6 +667,9 @@ impl CenterArea {
         self.agent_chat_selected_agent_targets.remove(&agent_id);
         self.agent_chat_agent_request_kind_overrides
             .remove(&agent_id);
+        self.agent_handoff_previews.remove(&agent_id);
+        self.agent_handoff_preparations_pending.remove(&agent_id);
+        self.agent_handoff_sends_pending.remove(&agent_id);
         self.agent_chat_slash_dismissed_query.remove(&agent_id);
         self.agent_chat_agent_dismissed_query.remove(&agent_id);
         self.agent_chat_project_dismissed_query.remove(&agent_id);
@@ -849,6 +852,11 @@ impl CenterArea {
         let agent_id = agent.id;
         cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                // A prepared teammate brief is tied to the exact draft. Any
+                // edit invalidates both its preview and any generation result
+                // still racing back from the background.
+                this.agent_handoff_previews.remove(&agent_id);
+                this.agent_handoff_preparations_pending.remove(&agent_id);
                 this.agent_chat_slash_selection.insert(agent_id, 0);
                 this.agent_chat_project_selection.insert(agent_id, 0);
                 this.agent_chat_agent_selection.insert(agent_id, 0);
@@ -1643,18 +1651,29 @@ impl CenterArea {
             }
             let request_kind = self
                 .agent_chat_agent_request_kind_overrides
-                .remove(&agent.id)
+                .get(&agent.id)
+                .copied()
                 .unwrap_or_else(|| classify_agent_request(&message));
-            input.update(cx, |input, cx| input.set_value("", window, cx));
-            self.agent_chat_attached_files.remove(&agent.id);
-            self.agent_chat_pasted_text_blocks.remove(&agent.id);
-            self.agent_chat_selected_commands.remove(&agent.id);
-            self.agent_chat_selected_mentions.remove(&agent.id);
-            self.agent_chat_selected_agent_targets.remove(&agent.id);
-            self.agent_chat_preview_armed.remove(&agent.id);
-            self.queue_composer_agent_message(agent.id, target_agent_id, message, request_kind, cx);
-            self.acknowledge_agent_chat_seen(agent.id, cx);
-            cx.notify();
+            let preview_matches =
+                self.agent_handoff_previews
+                    .get(&agent.id)
+                    .is_some_and(|preview| {
+                        preview.target_agent_id == target_agent_id
+                            && preview.original_text == message
+                            && preview.request_kind == request_kind
+                    });
+            if preview_matches {
+                self.send_prepared_agent_handoff(agent, input, false, window, cx);
+            } else {
+                self.prepare_composer_agent_handoff(
+                    agent,
+                    target_agent_id,
+                    message,
+                    request_kind,
+                    input,
+                    cx,
+                );
+            }
             return;
         }
         // Captured before resolution: plan feedback is a decision worth
@@ -2255,6 +2274,35 @@ impl CenterArea {
             fallback_mode,
             Some(agent),
             false,
+            cx,
+        )
+    }
+
+    pub(super) fn dispatch_agent_chat_read_only_submission_with_agent(
+        &mut self,
+        agent: &AgentRecord,
+        submission_text: String,
+        display_text: Option<String>,
+        fallback_mode: AgentInteractionMode,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let agent = self
+            .agents
+            .read(cx)
+            .agent(agent.id)
+            .cloned()
+            .unwrap_or_else(|| agent.clone());
+        let connected_context = self.agent_connected_context_extras(&agent, cx);
+        let submission_text =
+            ide_core::prompt_with_connected_context(&submission_text, &agent, &connected_context);
+        self.dispatch_agent_chat_submission_inner(
+            agent.id,
+            submission_text,
+            display_text,
+            Vec::new(),
+            fallback_mode,
+            Some(agent),
+            true,
             cx,
         )
     }
@@ -2924,6 +2972,9 @@ impl CenterArea {
             .insert(source_agent_id, target.id);
         self.agent_chat_agent_request_kind_overrides
             .remove(&source_agent_id);
+        self.agent_handoff_previews.remove(&source_agent_id);
+        self.agent_handoff_preparations_pending
+            .remove(&source_agent_id);
         self.agent_chat_agent_selection.insert(source_agent_id, 0);
         self.agent_chat_agent_dismissed_query
             .remove(&source_agent_id);
@@ -3342,6 +3393,8 @@ impl CenterArea {
                 line_count,
                 expanded: false,
             });
+        self.agent_handoff_previews.remove(&agent_id);
+        self.agent_handoff_preparations_pending.remove(&agent_id);
         cx.notify();
         true
     }
@@ -3367,6 +3420,8 @@ impl CenterArea {
                 attachments.push(path);
             }
         }
+        self.agent_handoff_previews.remove(&agent_id);
+        self.agent_handoff_preparations_pending.remove(&agent_id);
         self.agent_start_errors.remove(&agent_id);
         cx.notify();
         true

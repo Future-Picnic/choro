@@ -126,6 +126,11 @@ impl CenterArea {
             .agent_chat_selected_agent_targets
             .get(&agent.id)
             .and_then(|target_id| self.agents.read(cx).agent(*target_id).cloned());
+        let handoff_preview = self.agent_handoff_previews.get(&agent.id).cloned();
+        let handoff_preparing = self
+            .agent_handoff_preparations_pending
+            .contains_key(&agent.id);
+        let handoff_sending = self.agent_handoff_sends_pending.contains_key(&agent.id);
         let pending_attachment_count = self
             .agent_chat_attachment_pastes_pending
             .get(&agent.id)
@@ -658,6 +663,30 @@ impl CenterArea {
                                         .min_w(px(0.))
                                         .min_h(crate::ui::design::composer_input_min_h())
                                         .gap_2()
+                                        .when_some(handoff_preview.as_ref(), |col, preview| {
+                                            col.child(self.render_agent_handoff_preview(
+                                                agent,
+                                                input.clone(),
+                                                preview,
+                                                window,
+                                                cx,
+                                            ))
+                                        })
+                                        .when(
+                                            handoff_preparing || handoff_sending,
+                                            |col| {
+                                                col.when_some(
+                                                    selected_agent_target.as_ref(),
+                                                    |col, target| {
+                                                        col.child(self.render_agent_handoff_status(
+                                                            &target.title,
+                                                            handoff_sending,
+                                                            cx,
+                                                        ))
+                                                    },
+                                                )
+                                            },
+                                        )
                                         .when(has_pasted_text_blocks, |col| {
                                             col.child(
                                                 v_flex()
@@ -1143,7 +1172,9 @@ impl CenterArea {
                                     })
                                     .child({
                                         let can_send = (has_draft || !attached_files.is_empty())
-                                            && !attachment_paste_pending;
+                                            && !attachment_paste_pending
+                                            && !handoff_preparing
+                                            && !handoff_sending;
                                         if is_running && !can_send {
                                             if compact_assistant_controls {
                                                 crate::ui::style::composer_stop(

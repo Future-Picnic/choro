@@ -1500,7 +1500,24 @@ impl Render for RootView {
                                             .w(left_size)
                                             .h_full()
                                             .flex_none()
-                                            .bg(crate::ui::design::nav(cx))
+                                            // A single static GPU gradient: the
+                                            // theme's accent gently colors the
+                                            // upper-left edge, then resolves to
+                                            // the ordinary sidebar plane.
+                                            .bg(
+                                                gpui::linear_gradient(
+                                                    135.0,
+                                                    gpui::linear_color_stop(
+                                                        crate::ui::design::nav_glow(cx),
+                                                        0.0,
+                                                    ),
+                                                    gpui::linear_color_stop(
+                                                        crate::ui::design::nav(cx),
+                                                        1.0,
+                                                    ),
+                                                )
+                                                .color_space(gpui::ColorSpace::Oklab),
+                                            )
                                             .child(
                                                 v_flex()
                                                     .size_full()
