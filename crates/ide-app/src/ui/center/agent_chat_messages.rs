@@ -406,7 +406,9 @@ impl CenterArea {
                 // Incoming agent requests already have a dedicated timeline
                 // card. The provider still needs this hidden user turn, but a
                 // second "Question from …" bubble only repeats the card.
-                if super::agent_chat_brain::is_agent_request_submission(text) {
+                if super::agent_chat_brain::is_agent_request_submission(text)
+                    || super::agent_chat_brain::is_teammate_result_submission(text)
+                {
                     return div().into_any_element();
                 }
                 if let Some(label) = super::agent_chat_brain::summary_request_action_label(text) {

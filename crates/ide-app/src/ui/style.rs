@@ -893,6 +893,62 @@ pub fn rail_footer_button(
         )
 }
 
+/// Menu trigger placed directly after project activities in the right rail.
+/// A horizontal hairline separates it from the destination list; otherwise it
+/// keeps the same neutral color and icon-tile hover treatment as those items.
+pub fn rail_activity_menu_button(
+    id: impl Into<ElementId>,
+    icon: lucide_icons::Icon,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    let muted = design::t3(cx);
+
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w_full()
+        .h(px(64.))
+        .p_0()
+        .rounded(px(0.))
+        .group("rail-activity-menu")
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent)
+                .foreground(muted)
+                .border(transparent)
+                .hover(transparent)
+                .active(transparent),
+        )
+        .child(
+            v_flex()
+                .h_full()
+                .w_full()
+                .gap_1()
+                .items_center()
+                .justify_center()
+                .border_l_1()
+                .border_t_1()
+                .border_color(hairline(cx))
+                .child(
+                    div()
+                        .size(px(30.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(design::r_sm())
+                        .group_hover("rail-activity-menu", |tile| tile.bg(design::surface(cx)))
+                        .child(design::indicator::lucide_icon(
+                            icon,
+                            muted,
+                            design::icon_lg(),
+                        )),
+                )
+                .child(div().text_size(design::text_label()).child(label.into())),
+        )
+}
+
 /// Labelled action used by the expanded sidebar footer. This is the horizontal
 /// companion to [`rail_footer_button`].
 pub fn sidebar_footer_button(

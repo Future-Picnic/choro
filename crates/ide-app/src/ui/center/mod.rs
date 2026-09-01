@@ -579,6 +579,16 @@ struct ComposerAgentMentionView {
     selected: usize,
 }
 
+#[derive(Clone, Debug)]
+struct PreparedAgentHandoff {
+    target_agent_id: Uuid,
+    target_title: String,
+    original_text: String,
+    prepared_text: String,
+    request_kind: AgentRequestKind,
+    used_fallback: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ComposerProjectMention {
     range: Range<usize>,
@@ -2051,6 +2061,15 @@ pub struct CenterArea {
     /// Optional user correction to the Ask / Delegate intent inferred from the
     /// free-text draft for an agent-targeted composer turn.
     agent_chat_agent_request_kind_overrides: HashMap<Uuid, AgentRequestKind>,
+    /// Contextual teammate briefs prepared from the source conversation and
+    /// awaiting explicit user confirmation in the composer.
+    agent_handoff_previews: HashMap<Uuid, PreparedAgentHandoff>,
+    /// Per-source generation identity. Removing or replacing the id makes a
+    /// stale background preparation result harmless.
+    agent_handoff_preparations_pending: HashMap<Uuid, Uuid>,
+    /// Per-source durable send identity. The composer is cleared only after
+    /// the request has been stored successfully.
+    agent_handoff_sends_pending: HashMap<Uuid, Uuid>,
     agent_chat_agent_selection: HashMap<Uuid, usize>,
     agent_chat_agent_dismissed_query: HashMap<Uuid, String>,
     agent_chat_project_selection: HashMap<Uuid, usize>,

@@ -42,6 +42,24 @@ pub fn sink(cx: &App) -> Hsla {
 pub fn nav(cx: &App) -> Hsla {
     cx.theme().sidebar
 }
+/// Theme-colored cast at the sidebar's upper-left edge. This is deliberately
+/// mixed into the sidebar plane rather than painted as a translucent overlay:
+/// every theme owns the resulting color and foreground contrast stays
+/// predictable.
+pub fn nav_glow(cx: &App) -> Hsla {
+    nav_glow_color(nav(cx), accent(cx), on_accent(cx), cx.theme().is_dark())
+}
+
+fn nav_glow_color(nav: Hsla, accent: Hsla, on_accent: Hsla, is_dark: bool) -> Hsla {
+    if is_dark {
+        mix(nav, accent, 0.10)
+    } else {
+        // Light-theme accents are intentionally pale. Deepen the target within
+        // the same theme family before mixing so the cast remains perceptible
+        // without turning the sidebar into a colored surface.
+        mix(nav, mix(accent, on_accent, 0.35), 0.08)
+    }
+}
 /// The canvas everything sits on.
 pub fn base(cx: &App) -> Hsla {
     cx.theme().background
@@ -430,6 +448,7 @@ mod tests {
         focus: Hsla,
         nav: Hsla,
         t1: Hsla,
+        t2: Hsla,
         accent: Hsla,
         on_accent: Hsla,
     }
@@ -456,6 +475,7 @@ mod tests {
                     focus: get("popover.background"),
                     nav: get("sidebar.background"),
                     t1: get("foreground"),
+                    t2: get("sidebar.foreground"),
                     accent: get("primary.background"),
                     on_accent: get("primary.foreground"),
                 }
@@ -483,6 +503,33 @@ mod tests {
     }
 
     const AA: f32 = 4.5;
+
+    #[test]
+    fn sidebar_glow_is_theme_colored_restrained_and_readable() {
+        for t in themes() {
+            let glow = nav_glow_color(t.nav, t.accent, t.on_accent, t.is_dark);
+            let surface_gap = contrast(glow, t.nav);
+            let minimum_gap = if t.is_dark { 1.05 } else { 1.03 };
+
+            assert!(
+                surface_gap >= minimum_gap,
+                "{}: sidebar glow is imperceptible at {surface_gap:.3}:1",
+                t.name
+            );
+            assert!(
+                surface_gap <= 1.35,
+                "{}: sidebar glow is too strong at {surface_gap:.3}:1",
+                t.name
+            );
+
+            let text_ratio = contrast(t.t2, glow);
+            assert!(
+                text_ratio >= AA,
+                "{}: sidebar foreground is only {text_ratio:.2}:1 on the glow",
+                t.name
+            );
+        }
+    }
 
     /// The accent tier's fill as the app builds it, for a parsed theme.
     fn ship_fill(t: &ThemeColors) -> Hsla {
