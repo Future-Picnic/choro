@@ -651,7 +651,6 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let route = format!("{} → {}", pr.branch, pr.base_branch);
         let title = format!("Merge pull request #{}?", pr.number);
         let panel = cx.entity();
         let expected_head_sha = pr.head_oid.clone();
@@ -661,7 +660,7 @@ impl GitPanel {
         )
         .tone(crate::ui::confirm::ConfirmTone::Primary)
         .icon(IconName::GitHub)
-        .detail(route)
+        .branch_route(pr.branch.clone(), pr.base_branch.clone())
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-branch-pr")
         .on_confirm(move |window, cx| {

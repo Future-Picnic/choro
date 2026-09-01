@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::branding::{APP_ID, LEGACY_APP_ID};
 use crate::project::{Project, ProjectId, ProjectSection};
@@ -536,6 +537,12 @@ pub struct AppConfig {
     /// Whether the built-in Needs attention sidebar group is collapsed.
     #[serde(default)]
     pub attention_collapsed: bool,
+    /// Agent conversations the user keeps at the top of the sidebar.
+    #[serde(default)]
+    pub pinned_agents: Vec<Uuid>,
+    /// Whether the built-in Pinned sidebar group is collapsed.
+    #[serde(default)]
+    pub pinned_agents_collapsed: bool,
     /// Legacy persisted layout. The application now always renders RailRight;
     /// this field remains so older config files continue to deserialize.
     #[serde(default)]
@@ -622,6 +629,8 @@ impl Default for AppConfig {
             favorites_collapsed: false,
             projects_collapsed: false,
             attention_collapsed: false,
+            pinned_agents: Vec::new(),
+            pinned_agents_collapsed: false,
             nav_style: NavStyle::default(),
             default_project_activities: default_pinned_project_activities(),
             project_activity_overrides: HashMap::new(),
@@ -784,6 +793,8 @@ mod tests {
             favorites_collapsed: true,
             projects_collapsed: true,
             attention_collapsed: true,
+            pinned_agents: Vec::new(),
+            pinned_agents_collapsed: true,
             projects: vec![project],
             panels: PanelSizes {
                 left: 200.0,
@@ -1097,6 +1108,7 @@ mod tests {
         let path = dir.path().join("config.json");
         let mut project = Project::from_path(PathBuf::from("/tmp/favorite-app"));
         let section = ProjectSection::new("Ops");
+        let pinned_agent = Uuid::new_v4();
         project.section_id = Some(section.id);
         project.is_favorite = true;
         let config = AppConfig {
@@ -1104,6 +1116,8 @@ mod tests {
             project_sections: vec![section],
             favorites_collapsed: true,
             projects_collapsed: true,
+            pinned_agents: vec![pinned_agent],
+            pinned_agents_collapsed: true,
             ..AppConfig::default()
         };
         config.save_to(&path).unwrap();

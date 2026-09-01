@@ -436,12 +436,11 @@ impl CenterArea {
                 "Choro will attempt the merge now. Required reviews, checks, and branch protections still apply."
                     .to_string()
             });
-        let route = format!("{branch} → {base_branch}");
         let center = cx.entity();
         ConfirmDialog::new(title, message)
             .tone(ConfirmTone::Primary)
             .icon(IconName::GitHub)
-            .detail(route)
+            .branch_route(branch.clone(), base_branch.clone())
             .confirm_label("Merge PR")
             .confirm_id("confirm-merge-agent-ship-pr")
             .on_confirm(move |window, cx| {

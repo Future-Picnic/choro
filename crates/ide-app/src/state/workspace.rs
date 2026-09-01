@@ -61,6 +61,8 @@ pub struct Workspace {
     pub favorites_collapsed: bool,
     pub projects_collapsed: bool,
     pub attention_collapsed: bool,
+    pub pinned_agents: Vec<Uuid>,
+    pub pinned_agents_collapsed: bool,
     pub default_project_activities: Vec<ProjectActivityId>,
     pub project_activity_overrides: HashMap<ProjectId, Vec<ProjectActivityId>>,
     save_scheduled: bool,
@@ -155,6 +157,8 @@ impl Workspace {
             favorites_collapsed: config.favorites_collapsed,
             projects_collapsed: config.projects_collapsed,
             attention_collapsed: config.attention_collapsed,
+            pinned_agents: config.pinned_agents,
+            pinned_agents_collapsed: config.pinned_agents_collapsed,
             default_project_activities,
             project_activity_overrides,
             save_scheduled: false,
@@ -684,6 +688,33 @@ impl Workspace {
         cx.notify();
     }
 
+    pub fn is_agent_pinned(&self, agent_id: Uuid) -> bool {
+        self.pinned_agents.contains(&agent_id)
+    }
+
+    pub fn set_agent_pinned(&mut self, agent_id: Uuid, pinned: bool, cx: &mut Context<Self>) {
+        let changed = if pinned && !self.pinned_agents.contains(&agent_id) {
+            self.pinned_agents.push(agent_id);
+            true
+        } else if !pinned && self.pinned_agents.contains(&agent_id) {
+            self.pinned_agents
+                .retain(|candidate| *candidate != agent_id);
+            true
+        } else {
+            false
+        };
+        if changed {
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn toggle_pinned_agents_collapsed(&mut self, cx: &mut Context<Self>) {
+        self.pinned_agents_collapsed = !self.pinned_agents_collapsed;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
     pub fn set_project_favorite(&mut self, id: ProjectId, favorite: bool, cx: &mut Context<Self>) {
         if let Some(project) = self.projects.iter_mut().find(|project| project.id == id) {
             if project.is_favorite == favorite && (!favorite || project.section_id.is_none()) {
@@ -1123,6 +1154,8 @@ impl Workspace {
             favorites_collapsed: self.favorites_collapsed,
             projects_collapsed: self.projects_collapsed,
             attention_collapsed: self.attention_collapsed,
+            pinned_agents: self.pinned_agents.clone(),
+            pinned_agents_collapsed: self.pinned_agents_collapsed,
             default_project_activities: self.default_project_activities.clone(),
             project_activity_overrides: self.project_activity_overrides.clone(),
         }

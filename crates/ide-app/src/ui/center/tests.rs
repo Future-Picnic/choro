@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::agent_capabilities::AgentCapabilitySource;
+use crate::ui::center::agent_composer_picker::collect_composer_file_entries;
 
 fn command(provider: AgentKind, name: &str, invocation: &str) -> AgentCapability {
     AgentCapability {
@@ -646,11 +647,43 @@ fn file_mention_matches_path_or_name() {
         absolute_path: PathBuf::from("/repo/crates/ide-app/src/main.rs"),
         relative_label: "crates/ide-app/src/main.rs".to_string(),
         name: "main.rs".to_string(),
+        is_directory: false,
     };
 
     assert!(file_matches_composer_mention(&file, "ide-app"));
     assert!(file_matches_composer_mention(&file, "main"));
     assert!(!file_matches_composer_mention(&file, "missing"));
+}
+
+#[test]
+fn file_mention_index_includes_folders_as_tag_targets() {
+    let project = tempfile::tempdir().expect("project tempdir");
+    std::fs::create_dir_all(project.path().join("src/ui")).expect("nested source folder");
+    std::fs::create_dir_all(project.path().join("target/debug")).expect("ignored target folder");
+    std::fs::write(project.path().join("src/ui/mod.rs"), "").expect("source file");
+
+    let entries = collect_composer_file_entries(project.path());
+    let src = entries
+        .iter()
+        .find(|entry| entry.relative_label == "src/")
+        .expect("src folder mention");
+    let ui = entries
+        .iter()
+        .find(|entry| entry.relative_label == "src/ui/")
+        .expect("nested folder mention");
+
+    assert!(src.is_directory);
+    assert!(ui.is_directory);
+    assert_eq!(
+        ComposerMentionToken::file(ui).kind,
+        ComposerMentionKind::Folder
+    );
+    assert!(entries
+        .iter()
+        .any(|entry| entry.relative_label == "src/ui/mod.rs" && !entry.is_directory));
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.relative_label.starts_with("target/")));
 }
 
 #[test]
@@ -663,6 +696,18 @@ fn inserting_file_mention_replaces_active_token() {
 
     assert_eq!(next, "open @src/main.rs please");
     assert_eq!(cursor, "open @src/main.rs ".len());
+}
+
+#[test]
+fn inserting_folder_mention_keeps_the_trailing_slash() {
+    let mention = ComposerFileMention {
+        range: 5..9,
+        query: "src".to_string(),
+    };
+    let (next, cursor) = apply_composer_file_mention("open @src please", &mention, "src/ui/");
+
+    assert_eq!(next, "open @src/ui/ please");
+    assert_eq!(cursor, "open @src/ui/ ".len());
 }
 
 #[test]
@@ -868,4 +913,40 @@ fn table_cell_markdown_leaves_ordinary_cells_alone() {
     assert_eq!(table_cell_markdown("-1 offset"), "-1 offset");
     assert_eq!(table_cell_markdown("2024 release"), "2024 release");
     assert_eq!(table_cell_markdown(""), "");
+}
+
+#[test]
+fn chat_spinner_survives_a_stale_session_status() {
+    // The machine slept or the backend stream dropped, but the CLI kept
+    // appending to its transcript: the sidebar spun, the chat did not.
+    assert!(chat_shows_activity(AgentChatStatus::Idle, false, true));
+    assert!(!chat_shows_activity(AgentChatStatus::Idle, false, false));
+}
+
+#[test]
+fn chat_spinner_follows_a_live_session_status() {
+    assert!(chat_shows_activity(AgentChatStatus::Running, false, false));
+    assert!(chat_shows_activity(
+        AgentChatStatus::Cancelling,
+        false,
+        false
+    ));
+}
+
+#[test]
+fn chat_spinner_stays_off_for_settled_and_finished_turns() {
+    // A turn that stopped on purpose must not spin just because the transcript
+    // was written moments ago.
+    assert!(!chat_shows_activity(
+        AgentChatStatus::WaitingForUser,
+        false,
+        true
+    ));
+    assert!(!chat_shows_activity(
+        AgentChatStatus::PlanReady,
+        false,
+        true
+    ));
+    assert!(!chat_shows_activity(AgentChatStatus::Failed, false, true));
+    assert!(!chat_shows_activity(AgentChatStatus::Running, true, true));
 }

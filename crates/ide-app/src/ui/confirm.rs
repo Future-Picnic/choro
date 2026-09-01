@@ -43,6 +43,7 @@ pub struct ConfirmDialog {
     title: SharedString,
     message: SharedString,
     detail: Option<SharedString>,
+    route: Option<(SharedString, SharedString)>,
     confirm_label: SharedString,
     cancel_label: SharedString,
     confirm_id: SharedString,
@@ -60,6 +61,7 @@ impl ConfirmDialog {
             title: title.into(),
             message: message.into(),
             detail: None,
+            route: None,
             confirm_label: "Confirm".into(),
             cancel_label: "Cancel".into(),
             confirm_id: "confirm-dialog-ok".into(),
@@ -81,6 +83,20 @@ impl ConfirmDialog {
     /// A secondary line shown in a subtle chip (e.g. the file path or branch).
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// A branch route shown as a stacked two-row chip: the source branch on top,
+    /// the branch it lands in underneath. A single `source → base` line hides the
+    /// destination behind an ellipsis whenever the source name is long, and the
+    /// destination is exactly the part people re-read before merging, so it gets
+    /// its own row and never truncates away.
+    pub fn branch_route(
+        mut self,
+        from: impl Into<SharedString>,
+        into: impl Into<SharedString>,
+    ) -> Self {
+        self.route = Some((from.into(), into.into()));
         self
     }
 
@@ -121,6 +137,7 @@ impl ConfirmDialog {
             title,
             message,
             detail,
+            route,
             confirm_label,
             cancel_label,
             confirm_id,
@@ -136,6 +153,7 @@ impl ConfirmDialog {
             let confirm_id = confirm_id.clone();
             let cancel_label = cancel_label.clone();
             let detail = detail.clone();
+            let route = route.clone();
 
             dialog
                 .w(px(width))
@@ -158,7 +176,8 @@ impl ConfirmDialog {
                                 .text_color(crate::ui::design::t3(cx))
                                 .child(message.clone()),
                         )
-                        .children(detail.map(|detail| detail_chip(detail, cx))),
+                        .children(detail.map(|detail| detail_chip(detail, cx)))
+                        .children(route.map(|(from, into)| route_chip(from, into, cx))),
                 )
                 .footer(move |_, _, _, cx| {
                     let on_confirm = on_confirm.clone();
@@ -228,6 +247,63 @@ pub fn icon_badge(icon: IconName, accent: Hsla, cx: &App) -> impl IntoElement {
             Icon::new(icon)
                 .size(crate::ui::design::icon())
                 .text_color(accent),
+        )
+}
+
+/// The stacked chip that spells out a branch route: where the work is now, and
+/// the branch it lands in. Both rows are labelled so neither has to be inferred
+/// from an arrow that may have been truncated away.
+fn route_chip(from: SharedString, into: SharedString, cx: &App) -> impl IntoElement {
+    v_flex()
+        .w_full()
+        .min_w(px(0.))
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(crate::ui::design::line(cx).opacity(0.6))
+        .bg(crate::ui::design::surface(cx).opacity(0.4))
+        .child(route_row("From", from, crate::ui::design::t2(cx), cx))
+        .child(
+            div()
+                .h(px(1.))
+                .w_full()
+                .bg(crate::ui::design::line(cx).opacity(0.45)),
+        )
+        .child(route_row("Into", into, crate::ui::design::accent(cx), cx))
+}
+
+/// One labelled branch row inside [`route_chip`].
+fn route_row(
+    label: &'static str,
+    value: SharedString,
+    value_color: Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .min_w(px(0.))
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py(px(7.))
+        .child(
+            div()
+                .flex_none()
+                .w(px(32.))
+                .text_size(crate::ui::design::text_label())
+                .text_color(crate::ui::design::t4(cx))
+                .child(label),
+        )
+        .child(crate::ui::branch_icon::branch_icon(
+            value_color.opacity(0.7),
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_size(crate::ui::design::text_ui())
+                .text_color(value_color)
+                .child(value),
         )
 }
 

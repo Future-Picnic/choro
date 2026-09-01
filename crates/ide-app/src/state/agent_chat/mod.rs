@@ -199,6 +199,7 @@ pub enum AgentChatMessageTagKind {
     Skill,
     Command,
     File,
+    Folder,
     Doc,
     Design,
     Project,

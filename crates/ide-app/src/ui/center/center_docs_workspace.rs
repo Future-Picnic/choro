@@ -334,6 +334,21 @@ impl CenterArea {
         project_path: &Path,
         cx: &mut Context<Self>,
     ) {
+        // Rendering a document or Design assistant calls this method for every
+        // composer change. `ensure_session` notifies AgentChatState even when
+        // the session already exists, which used to invalidate the chat render
+        // cache and schedule another full center render for every keystroke.
+        // `hidden_from_notifications` is set below as part of the one-time
+        // specialized-assistant hydration, so it also serves as the stable
+        // initialized marker here.
+        if self
+            .agent_chats
+            .read(cx)
+            .session(record.chat_agent_id)
+            .is_some_and(|session| session.hidden_from_notifications)
+        {
+            return;
+        }
         let session_id = record
             .chat_session_id
             .as_deref()

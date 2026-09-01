@@ -679,6 +679,21 @@ impl CenterArea {
         cx.notify();
     }
 
+    /// True while the agent's transcript file is still being appended to. This
+    /// is the same evidence the agents sidebar uses, read from the shared
+    /// background cache so the chat never pays for the file check itself.
+    pub(super) fn agent_transcript_is_fresh(&self, agent_id: Uuid, cx: &App) -> bool {
+        self.agent_activity
+            .read(cx)
+            .updated_at(agent_id)
+            .is_some_and(|updated_at| {
+                std::time::SystemTime::now()
+                    .duration_since(updated_at)
+                    .map(|age| age < ide_core::agents::WORKING_WINDOW)
+                    .unwrap_or(false)
+            })
+    }
+
     pub(super) fn agent_runtime(
         &self,
         agent: &AgentRecord,

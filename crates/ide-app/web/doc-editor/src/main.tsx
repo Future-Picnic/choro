@@ -52,7 +52,7 @@ type MentionSource = {
   label: string;
   target: string;
   detail: string;
-  kind: "file" | "asset";
+  kind: "file" | "folder" | "asset";
   badge: string;
   previewUrl?: string;
 };
@@ -100,12 +100,15 @@ const Mention = createReactInlineContentSpec(
           data-choro-target={inlineContent.props.target}
           title={inlineContent.props.target}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() =>
-            postToHost({
-              type: "openReference",
-              path: bootstrap.path,
-              target: inlineContent.props.target,
-            })
+          onClick={
+            inlineContent.props.kind === "folder"
+              ? undefined
+              : () =>
+                  postToHost({
+                    type: "openReference",
+                    path: bootstrap.path,
+                    target: inlineContent.props.target,
+                  })
           }
         >
           {prefix}{inlineContent.props.label}
@@ -365,7 +368,7 @@ function App() {
         subtext: source.detail,
         badge: source.badge,
         aliases: [source.target, source.detail],
-        group: "Files",
+        group: "Files & folders",
         onItemClick: () => {
           editor.insertInlineContent([
             {

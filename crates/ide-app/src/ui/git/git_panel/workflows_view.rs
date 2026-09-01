@@ -105,7 +105,6 @@ impl GitPanel {
         let Some(number) = run.pull_request_number else {
             return;
         };
-        let route = format!("{} → {}", run.source_branch, run.destination_branch);
         let workspace = self.workspace.clone();
         ConfirmDialog::new(
             format!("Merge pull request #{number}?"),
@@ -113,7 +112,7 @@ impl GitPanel {
         )
         .tone(crate::ui::confirm::ConfirmTone::Primary)
         .icon(IconName::GitHub)
-        .detail(route)
+        .branch_route(run.source_branch.clone(), run.destination_branch.clone())
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-git-workflow")
         .on_confirm(move |window, cx| {

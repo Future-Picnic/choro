@@ -132,11 +132,12 @@ use crate::state::docs::{
     clean_doc_label, DocEntry as WorkspaceDocEntry, DocsEvent, DOCS_DIR_NAME,
 };
 use crate::state::{
-    AgentCapability, AgentCapabilityCacheFile, AgentCapabilitySource, AgentChatState, AgentRecords,
-    DesignsState, DocAssistantState, DocSaveStatus, DocsState, GitState, GitStates,
-    OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel, OrbitEvent, OrbitState,
-    PenpotConnectionStatus, PenpotDesignSource, PenpotEvent, PenpotState, QuickAskState,
-    ServicesScanKind, ServicesState, SessionId, TasksState, TerminalManager, Workspace,
+    AgentActivityCache, AgentCapability, AgentCapabilityCacheFile, AgentCapabilitySource,
+    AgentChatState, AgentRecords, DesignsState, DocAssistantState, DocSaveStatus, DocsState,
+    GitState, GitStates, OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel, OrbitEvent,
+    OrbitState, PenpotConnectionStatus, PenpotDesignSource, PenpotEvent, PenpotState,
+    QuickAskState, ServicesScanKind, ServicesState, SessionId, TasksState, TerminalManager,
+    Workspace,
 };
 use crate::ui::agent_status_style::{status_accent, status_dot, status_icon, status_menu_row};
 use crate::ui::branch_icon::{branch_icon, pr_icon};
@@ -496,10 +497,12 @@ impl AgentChatSurface {
     fn input_placeholder(&self) -> &'static str {
         match self {
             Self::Standard => {
-                "Ask your agent — / commands, @ files, @@ docs, # agents, ## projects"
+                "Ask your agent — / commands, @ files & folders, @@ docs, # agents, ## projects"
             }
-            Self::Document { .. } => "Ask about this doc — @ files, @@ docs & designs",
-            Self::Design { .. } => "Ask the Design Assistant — @ files, @@ docs & designs",
+            Self::Document { .. } => "Ask about this doc — @ files & folders, @@ docs & designs",
+            Self::Design { .. } => {
+                "Ask the Design Assistant — @ files & folders, @@ docs & designs"
+            }
         }
     }
 }
@@ -545,6 +548,7 @@ struct ComposerFileEntry {
     absolute_path: PathBuf,
     relative_label: String,
     name: String,
+    is_directory: bool,
 }
 
 struct ComposerFileMentionView {
@@ -599,6 +603,7 @@ struct ComposerProjectMentionView {
 enum ComposerMentionKind {
     Doc,
     File,
+    Folder,
     PenpotDesign,
     Project,
 }
@@ -626,7 +631,11 @@ impl ComposerMentionToken {
 
     fn file(file: &ComposerFileEntry) -> Self {
         Self {
-            kind: ComposerMentionKind::File,
+            kind: if file.is_directory {
+                ComposerMentionKind::Folder
+            } else {
+                ComposerMentionKind::File
+            },
             title: file.name.clone(),
             path_label: file.relative_label.clone(),
             context: None,
@@ -670,7 +679,9 @@ impl ComposerMentionToken {
     fn invocation(&self) -> String {
         match self.kind {
             ComposerMentionKind::Doc => format!("@@{} ", self.path_label),
-            ComposerMentionKind::File => format!("@{} ", self.path_label),
+            ComposerMentionKind::File | ComposerMentionKind::Folder => {
+                format!("@{} ", self.path_label)
+            }
             ComposerMentionKind::PenpotDesign => self.context.clone().unwrap_or_default(),
             ComposerMentionKind::Project => self.project_context_invocation(None),
         }
@@ -802,6 +813,7 @@ fn composer_message_tags(
         kind: match mention.kind {
             ComposerMentionKind::Doc => AgentChatMessageTagKind::Doc,
             ComposerMentionKind::File => AgentChatMessageTagKind::File,
+            ComposerMentionKind::Folder => AgentChatMessageTagKind::Folder,
             ComposerMentionKind::PenpotDesign => AgentChatMessageTagKind::Design,
             ComposerMentionKind::Project => AgentChatMessageTagKind::Project,
         },
@@ -1897,6 +1909,7 @@ pub struct CenterArea {
     terminals: Entity<TerminalManager>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
+    agent_activity: Entity<AgentActivityCache>,
     git_states: Entity<GitStates>,
     docs: Entity<DocsState>,
     designs: Entity<DesignsState>,

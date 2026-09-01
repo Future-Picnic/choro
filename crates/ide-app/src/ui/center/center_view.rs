@@ -6,6 +6,7 @@ impl CenterArea {
         terminals: Entity<TerminalManager>,
         agents: Entity<AgentRecords>,
         agent_chats: Entity<AgentChatState>,
+        agent_activity: Entity<AgentActivityCache>,
         git_states: Entity<GitStates>,
         docs: Entity<DocsState>,
         designs: Entity<DesignsState>,
@@ -72,6 +73,15 @@ impl CenterArea {
                     (None, receiver)
                 }
             };
+        // Baseline already-loaded agents before subscribing to changes. Without
+        // this, the first status event can itself be the transition to Done and
+        // terminal summary maintenance has no previous state to compare.
+        let agent_record_status_seen = agents
+            .read(cx)
+            .all_records()
+            .into_iter()
+            .map(|agent| (agent.id, agent.status))
+            .collect();
         let center = cx.new(move |cx| {
             cx.observe(&workspace, |this: &mut Self, _, cx| {
                 this.refresh_open_code_models(false, cx);
@@ -81,6 +91,9 @@ impl CenterArea {
             .detach();
             cx.observe(&terminals, |_, _, cx| cx.notify()).detach();
             cx.observe(&agents, |_, _, cx| cx.notify()).detach();
+            // Transcript freshness drives the chat's working indicator when the
+            // session status has gone stale, so a cache refresh must repaint.
+            cx.observe(&agent_activity, |_, _, cx| cx.notify()).detach();
             cx.observe(&quick_ask, |_, _, cx| cx.notify()).detach();
             cx.observe(&quick_ask_history_search, |_, _, cx| cx.notify())
                 .detach();
@@ -669,6 +682,7 @@ impl CenterArea {
                 terminals,
                 agents,
                 agent_chats,
+                agent_activity,
                 git_states,
                 docs,
                 designs,
@@ -817,7 +831,7 @@ impl CenterArea {
                 agent_summary_silent_requests: HashSet::new(),
                 agent_summary_maintenance_status_seen: HashMap::new(),
                 pocketcomet_handoffs_pending: HashSet::new(),
-                agent_record_status_seen: HashMap::new(),
+                agent_record_status_seen,
                 agent_messages_inflight: HashSet::new(),
                 memory_distills_inflight: HashSet::new(),
                 memory_proposal_accepts_pending: HashSet::new(),

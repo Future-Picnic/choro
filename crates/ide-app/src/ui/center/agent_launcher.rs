@@ -126,7 +126,7 @@ impl CenterArea {
         let prompt = cx.new(|cx| {
             InputState::new(window, cx)
                 .auto_grow(4, 8)
-                .placeholder("Do anything — / skills, @ files, @@ docs, ## projects")
+                .placeholder("Do anything — / skills, @ files & folders, @@ docs, ## projects")
         });
         prompt.update(cx, |input, cx| {
             if !saved_draft.is_empty() {

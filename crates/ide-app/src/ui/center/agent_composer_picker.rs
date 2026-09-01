@@ -1606,11 +1606,11 @@ impl CenterArea {
                                 .into_any_element()
                         })
                         .child(if *loading {
-                            "Indexing project files…".to_string()
+                            "Indexing project files and folders…".to_string()
                         } else if mention.query.is_empty() {
-                            "No files in this project".to_string()
+                            "No files or folders in this project".to_string()
                         } else {
-                            format!("No files matching {}", mention.query)
+                            format!("No files or folders matching {}", mention.query)
                         }),
                 )
             })
@@ -1635,13 +1635,17 @@ impl CenterArea {
                     })
                     .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.46)))
                     .child(
-                        gpui_component::Icon::new(IconName::File)
-                            .size(crate::ui::design::icon_md())
-                            .text_color(if is_active {
-                                crate::ui::design::sage(cx)
-                            } else {
-                                crate::ui::design::t3(cx)
-                            }),
+                        gpui_component::Icon::new(if file.is_directory {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::File
+                        })
+                        .size(crate::ui::design::icon_md())
+                        .text_color(if is_active {
+                            crate::ui::design::sage(cx)
+                        } else {
+                            crate::ui::design::t3(cx)
+                        }),
                     )
                     .child(
                         div()
@@ -1671,7 +1675,7 @@ impl CenterArea {
                             .py_0p5()
                             .text_size(crate::ui::design::text_label())
                             .text_color(crate::ui::design::t3(cx))
-                            .child("File"),
+                            .child(if file.is_directory { "Folder" } else { "File" }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.insert_file_mention_into_composer(
@@ -1687,7 +1691,7 @@ impl CenterArea {
     }
 }
 
-fn collect_composer_file_entries(root: &Path) -> Vec<ComposerFileEntry> {
+pub(super) fn collect_composer_file_entries(root: &Path) -> Vec<ComposerFileEntry> {
     let ignored_dirs = [
         ".git",
         "target",
@@ -1719,6 +1723,23 @@ fn collect_composer_file_entries(root: &Path) -> Vec<ComposerFileEntry> {
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| ignored_dirs.contains(&name));
                 if !should_skip {
+                    let Ok(relative) = path.strip_prefix(root) else {
+                        continue;
+                    };
+                    let relative_path = relative.to_path_buf();
+                    let relative_label = format!("{}/", relative_path.to_string_lossy());
+                    let name = relative_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(relative_label.as_str())
+                        .to_string();
+                    entries.push(ComposerFileEntry {
+                        relative_path,
+                        absolute_path: path.clone(),
+                        relative_label,
+                        name,
+                        is_directory: true,
+                    });
                     stack.push(path);
                 }
                 continue;
@@ -1741,6 +1762,7 @@ fn collect_composer_file_entries(root: &Path) -> Vec<ComposerFileEntry> {
                 absolute_path: path,
                 relative_label,
                 name,
+                is_directory: false,
             });
         }
         if entries.len() >= COMPOSER_FILE_CACHE_LIMIT {
@@ -1748,9 +1770,11 @@ fn collect_composer_file_entries(root: &Path) -> Vec<ComposerFileEntry> {
         }
     }
     entries.sort_by(|left, right| {
-        left.relative_label
-            .to_ascii_lowercase()
-            .cmp(&right.relative_label.to_ascii_lowercase())
+        right.is_directory.cmp(&left.is_directory).then_with(|| {
+            left.relative_label
+                .to_ascii_lowercase()
+                .cmp(&right.relative_label.to_ascii_lowercase())
+        })
     });
     entries
 }

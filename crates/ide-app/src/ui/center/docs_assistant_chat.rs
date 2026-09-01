@@ -265,11 +265,19 @@ impl CenterArea {
                         })
                     });
                     for file in matches.into_iter().take(8) {
+                        let (badge, markdown) = if file.is_directory {
+                            ("Folder".to_string(), format!("@{}", file.relative_label))
+                        } else {
+                            (
+                                "File".to_string(),
+                                format!("[{}](ref:file:{})", file.name, file.relative_label),
+                            )
+                        };
                         candidates.push(velotype::MentionCandidate {
                             label: file.name.clone(),
                             sublabel: file.relative_label.clone(),
-                            badge: "File".to_string(),
-                            markdown: format!("[{}](ref:file:{})", file.name, file.relative_label),
+                            badge,
+                            markdown,
                             is_block: false,
                         });
                     }

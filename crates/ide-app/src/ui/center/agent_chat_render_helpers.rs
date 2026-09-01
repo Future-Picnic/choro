@@ -157,6 +157,13 @@ pub(super) fn code_review_finding_key(agent_id: Uuid, review_id: &str, index: us
     fnv_mix_u64(code_review_card_key(agent_id, review_id), index as u64)
 }
 
+/// Stable element-id key for a plan card's buttons (unique per agent+plan, so a
+/// revised plan's Expand/Collapse never drives the earlier card above it).
+pub(super) fn proposed_plan_card_key(agent_id: Uuid, plan_id: &str) -> u64 {
+    let key = fnv_mix_u64(0x9e3779b97f4a7c15u64, agent_id.as_u128() as u64);
+    fnv_mix_str(key, plan_id)
+}
+
 /// Stable element-id key for a verification card's buttons (unique per
 /// agent+verification, so several cards in one chat don't collide).
 pub(super) fn verification_card_key(agent_id: Uuid, verification_id: &str) -> u64 {
@@ -290,6 +297,25 @@ pub(super) fn fnv_mix_str(mut key: u64, value: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_plan_card_in_a_chat_gets_its_own_element_key() {
+        let agent = Uuid::from_u128(7);
+        let other_agent = Uuid::from_u128(8);
+
+        assert_ne!(
+            proposed_plan_card_key(agent, "plan-1"),
+            proposed_plan_card_key(agent, "plan-2")
+        );
+        assert_ne!(
+            proposed_plan_card_key(agent, "plan-1"),
+            proposed_plan_card_key(other_agent, "plan-1")
+        );
+        assert_eq!(
+            proposed_plan_card_key(agent, "plan-1"),
+            proposed_plan_card_key(agent, "plan-1")
+        );
+    }
 
     #[test]
     fn historical_code_review_action_still_renders_as_a_chip() {

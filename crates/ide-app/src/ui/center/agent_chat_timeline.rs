@@ -236,7 +236,11 @@ impl CenterArea {
         // Automatic Brain maintenance is background-only. Its persisted turn
         // is filtered from the timeline, and its synthetic running row must not
         // displace a completion card (notably the PR card created by Ship).
-        let show_activity = is_running && !self.agent_summary_silent_requests.contains(&agent.id);
+        let show_activity = chat_shows_activity(
+            session.status,
+            agent.status.is_finished(),
+            self.agent_transcript_is_fresh(agent.id, cx),
+        ) && !self.agent_summary_silent_requests.contains(&agent.id);
         let rows = agent_chat_rows(&session, show_activity, has_saved_session, &artifact_filter);
         let (display_order, newest_turn_len) = agent_chat_display_order(&rows, &session, top_down);
         // When the resume prompt is the only content, it's rendered as a

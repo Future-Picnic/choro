@@ -211,15 +211,23 @@ fn preview_server_origin(value: &str) -> Option<PreviewServerOrigin> {
     ))
 }
 
-fn stored_preview_is_available(value: &str, active_origins: &HashSet<PreviewServerOrigin>) -> bool {
+fn stored_preview_is_available(
+    value: &str,
+    active_origins: &HashSet<PreviewServerOrigin>,
+    agent_registered: bool,
+) -> bool {
     let Ok(parsed) = url::Url::parse(value) else {
         return false;
     };
     match parsed.scheme() {
         "file" => true,
-        "http" | "https" => {
-            preview_server_origin(value).is_some_and(|origin| active_origins.contains(&origin))
-        }
+        "http" | "https" => preview_server_origin(value).is_some_and(|origin| {
+            // Choro only sees servers it started itself. An agent that runs its
+            // own dev server and then asks for it by URL has no matching
+            // service, and dropping the record here would silently leave an
+            // older preview — a different branch's file — on screen.
+            active_origins.contains(&origin) || (agent_registered && origin.1 == "loopback")
+        }),
         _ => false,
     }
 }
@@ -924,13 +932,15 @@ impl CenterArea {
                 .and_then(solo_preview_owner)
                 .map(PreviewScope::Solo)
                 .unwrap_or(PreviewScope::Project);
-            if !stored_preview_is_available(&preview.url, &active_service_origins)
-                || !take_latest_preview_scope(
-                    &scope,
-                    &mut project_record_taken,
-                    &mut solo_records_taken,
-                )
-            {
+            if !stored_preview_is_available(
+                &preview.url,
+                &active_service_origins,
+                preview.source_agent_id.is_some(),
+            ) || !take_latest_preview_scope(
+                &scope,
+                &mut project_record_taken,
+                &mut solo_records_taken,
+            ) {
                 continue;
             }
             choices.push(PreviewChoice {
@@ -2792,15 +2802,36 @@ mod tests {
 
         assert!(stored_preview_is_available(
             "http://localhost:5173/dashboard",
-            &active
+            &active,
+            false
         ));
         assert!(!stored_preview_is_available(
             "http://localhost:4173/",
-            &active
+            &active,
+            false
         ));
         assert!(stored_preview_is_available(
             "file:///tmp/project/index.html",
-            &active
+            &active,
+            false
+        ));
+    }
+
+    #[test]
+    fn agent_registered_loopback_preview_survives_without_a_choro_service() {
+        let active = HashSet::from([preview_server_origin("http://127.0.0.1:5173/").unwrap()]);
+
+        // The agent started this server itself, so Choro has no service for it.
+        assert!(stored_preview_is_available(
+            "http://localhost:4173/",
+            &active,
+            true
+        ));
+        // Remote hosts still need a service Choro can vouch for.
+        assert!(!stored_preview_is_available(
+            "http://example.com/",
+            &active,
+            true
         ));
     }
 

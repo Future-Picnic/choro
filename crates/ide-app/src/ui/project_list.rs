@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use gpui::{
-    div, ease_out_quint, prelude::FluentBuilder, px, uniform_list, Animation, AnimationExt, App,
-    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity,
-    Window,
+    div, ease_in_out, ease_out_quint, prelude::FluentBuilder, px, uniform_list, Animation,
+    AnimationExt, App, AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled,
+    WeakEntity, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -110,18 +110,11 @@ enum ProjectAgentRuntime {
     Ended,
 }
 
-fn compact_relative_time(updated_at: SystemTime) -> SharedString {
-    let secs = SystemTime::now()
-        .duration_since(updated_at)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    match secs {
-        0..=59 => "now".into(),
-        60..=3599 => format!("{}m", secs / 60).into(),
-        3600..=86_399 => format!("{}h", secs / 3600).into(),
-        86_400..=2_591_999 => format!("{}d", secs / 86_400).into(),
-        _ => format!("{}mo", secs / 2_592_000).into(),
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoveredAgentRow {
+    Project(Uuid),
+    Pinned(Uuid),
+    Attention(Uuid),
 }
 
 struct ProjectIconDialog {
@@ -511,7 +504,7 @@ pub struct ProjectList {
     /// Agent opened from the attention section; kept visible there until another
     /// agent is opened, so the row doesn't vanish under the click.
     attention_pinned: Option<Uuid>,
-    hovered_attention: Option<Uuid>,
+    hovered_agent: Option<HoveredAgentRow>,
     /// Waiting agent ids seen on the last refresh; `None` until the first scan.
     /// A newly waiting agent auto-expands a collapsed attention section, but the
     /// baseline scan at startup respects the persisted collapse.
@@ -550,10 +543,40 @@ impl ProjectList {
     fn render_agent_title(
         &self,
         agent: &AgentRecord,
+        hovered: bool,
         weight: FontWeight,
         color: gpui::Hsla,
         cx: &App,
     ) -> gpui::AnyElement {
+        // Only mount a one-shot animation for the single hovered title, and
+        // only when its character count is likely to overflow the compact row.
+        // This keeps idle sidebar rows completely animation-free.
+        let title_chars = agent.title.chars().count();
+        if hovered && title_chars > 28 {
+            let travel = (((title_chars - 28) as f32 * 6.4) + 12.0).min(420.0);
+            let duration = Duration::from_millis((1_500.0 + travel * 8.0) as u64);
+            let seed = (agent.id.as_u128() as u64).rotate_left(11);
+            return div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .text_size(crate::ui::design::text_head())
+                .font_weight(weight)
+                .text_color(color)
+                .child(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(SharedString::from(agent.title.clone()))
+                        .with_animation(
+                            ("agent-title-hover-reveal", seed),
+                            Animation::new(duration).with_easing(ease_in_out),
+                            move |title, delta| title.relative().left(px(-travel * delta)),
+                        ),
+                )
+                .into_any_element();
+        }
+
         let title = div()
             .flex_1()
             .min_w(px(0.))
@@ -760,7 +783,7 @@ impl ProjectList {
                 menu_section: None,
                 expanded_agent_lists: HashSet::new(),
                 attention_pinned: None,
-                hovered_attention: None,
+                hovered_agent: None,
                 known_waiting: None,
                 known_agent_titles,
                 agent_title_animation_epochs: HashMap::new(),
@@ -1102,48 +1125,6 @@ impl ProjectList {
         }
     }
 
-    fn agent_activity_label(
-        &self,
-        project: ProjectId,
-        agent: &AgentRecord,
-        cx: &Context<Self>,
-    ) -> Option<SharedString> {
-        let live_chat_time = (agent.runtime == AgentRuntimeKind::Chat)
-            .then(|| {
-                self.agent_chats
-                    .read(cx)
-                    .session(agent.id)
-                    .map(|session| UNIX_EPOCH + Duration::from_secs(session.last_activity_at))
-            })
-            .flatten();
-
-        let manager = self.terminals.read(cx);
-        let transcript_time = manager
-            .agent_record_session(project, agent.id)
-            .and_then(|session| {
-                session
-                    .agent_session_id
-                    .as_deref()
-                    .or(agent.chat_session_id.as_deref())
-                    .or(agent.cli_session_id.as_deref())
-            })
-            .or(agent.chat_session_id.as_deref())
-            .or(agent.cli_session_id.as_deref())
-            .and_then(|_| self.agent_activity.read(cx).updated_at(agent.id));
-
-        let fallback_time = if agent.updated_at > 0 {
-            Some(UNIX_EPOCH + Duration::from_secs(agent.updated_at))
-        } else {
-            agent
-                .started_at
-                .map(|started_at| UNIX_EPOCH + Duration::from_secs(started_at))
-        };
-        live_chat_time
-            .or(transcript_time)
-            .or(fallback_time)
-            .map(compact_relative_time)
-    }
-
     fn open_agent(
         &mut self,
         project: ProjectId,
@@ -1214,7 +1195,9 @@ impl ProjectList {
         let selected = active_project == Some(project)
             && self.agents.read(cx).explicitly_selected_agent_id(project) == Some(agent_id);
         let warning = crate::ui::design::amber(cx);
-        let activity_label = self.agent_activity_label(project, agent, cx);
+        let hover_key = HoveredAgentRow::Project(agent_id);
+        let hovered = self.hovered_agent == Some(hover_key);
+        let pinned = self.workspace.read(cx).is_agent_pinned(agent_id);
 
         h_flex()
             .id(("project-agent-row", row_ix * 1000 + agent_ix))
@@ -1228,6 +1211,16 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
+            .on_hover(cx.listener(move |this, is_hovered, _, cx| {
+                this.hovered_agent = if *is_hovered {
+                    Some(hover_key)
+                } else if this.hovered_agent == Some(hover_key) {
+                    None
+                } else {
+                    this.hovered_agent
+                };
+                cx.notify();
+            }))
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.open_agent(project, agent_id, window, cx);
@@ -1255,6 +1248,7 @@ impl ProjectList {
             // list reads calm; only the selected/waiting row lifts to `t1`.
             .child(self.render_agent_title(
                 agent,
+                hovered,
                 if waiting {
                     FontWeight::MEDIUM
                 } else {
@@ -1269,7 +1263,10 @@ impl ProjectList {
                 },
                 cx,
             ))
-            .when(runtime == ProjectAgentRuntime::Working, |row| {
+            .when(hovered, |row| {
+                row.child(self.render_agent_actions(agent_id, pinned, cx))
+            })
+            .when(!hovered && runtime == ProjectAgentRuntime::Working, |row| {
                 row.child(
                     div()
                         .flex_none()
@@ -1284,7 +1281,7 @@ impl ProjectList {
                         )),
                 )
             })
-            .when(waiting, |row| {
+            .when(!hovered && waiting, |row| {
                 row.child(
                     div()
                         .flex_none()
@@ -1295,20 +1292,61 @@ impl ProjectList {
                         .child(div().size(px(6.)).rounded_full().bg(warning)),
                 )
             })
-            .when(runtime != ProjectAgentRuntime::Working && !waiting, |row| {
-                row.when_some(activity_label, |row, label| {
-                    row.child(
-                        div()
-                            .flex_none()
-                            .w(px(34.))
-                            .flex()
-                            .justify_end()
-                            .text_size(crate::ui::design::text_label())
-                            .text_color(crate::ui::design::t4(cx))
-                            .child(label),
-                    )
-                })
-            })
+            .into_any_element()
+    }
+
+    fn render_agent_actions(
+        &self,
+        agent_id: Uuid,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        h_flex()
+            .flex_none()
+            .w(px(42.))
+            .gap_0p5()
+            .items_center()
+            .justify_end()
+            .child(
+                style::sidebar_agent_action_button(
+                    ("sidebar-agent-pin", agent_id.as_u128() as u64),
+                    lucide_icons::Icon::Pin,
+                    if pinned {
+                        crate::ui::design::accent(cx)
+                    } else {
+                        crate::ui::design::t3(cx)
+                    },
+                    cx,
+                )
+                .tooltip(if pinned { "Unpin agent" } else { "Pin agent" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.set_agent_pinned(agent_id, !pinned, cx);
+                    });
+                })),
+            )
+            .child(
+                style::sidebar_agent_action_button(
+                    ("sidebar-agent-complete", agent_id.as_u128() as u64),
+                    lucide_icons::Icon::Check,
+                    crate::ui::design::sage(cx),
+                    cx,
+                )
+                .tooltip("Mark complete")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.set_agent_pinned(agent_id, false, cx);
+                    });
+                    // This is deliberately the same status transition used by
+                    // the agent's Done controls. CenterArea observes it and
+                    // requests the terminal brain summary for chat agents.
+                    this.agents.update(cx, |agents, cx| {
+                        agents.update_status(agent_id, AgentStatus::Done, cx);
+                    });
+                })),
+            )
             .into_any_element()
     }
 
@@ -1410,6 +1448,203 @@ impl ProjectList {
         waiting
     }
 
+    fn collect_pinned_agents(
+        &self,
+        cx: &App,
+    ) -> Vec<(ProjectId, SharedString, String, AgentRecord)> {
+        let state = self.workspace.read(cx);
+        let mut pinned = Vec::new();
+        for project in &state.projects {
+            let project_name = SharedString::from(project.name.clone());
+            for agent in self.agents.read(cx).records_for_project(project.id) {
+                if agent.status.is_finished()
+                    || !state.is_agent_pinned(agent.id)
+                    || self.runtime_for_agent(project.id, &agent, cx)
+                        == ProjectAgentRuntime::Waiting
+                {
+                    continue;
+                }
+                pinned.push((
+                    project.id,
+                    project_name.clone(),
+                    project.icon.clone(),
+                    agent,
+                ));
+            }
+        }
+        pinned.sort_by_key(|(_, _, _, agent)| std::cmp::Reverse(agent.updated_at));
+        pinned
+    }
+
+    fn render_pinned_agent(
+        &self,
+        ix: usize,
+        project: ProjectId,
+        project_name: SharedString,
+        project_icon_id: &str,
+        agent: &AgentRecord,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let agent_id = agent.id;
+        let runtime = self.runtime_for_agent(project, agent, cx);
+        let active_project = self.workspace.read(cx).active;
+        let selected = active_project == Some(project)
+            && self.agents.read(cx).explicitly_selected_agent_id(project) == Some(agent_id);
+        let hover_key = HoveredAgentRow::Pinned(agent_id);
+        let hovered = self.hovered_agent == Some(hover_key);
+        let custom_svg_path = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .find(|candidate| candidate.id == project)
+            .and_then(|candidate| candidate.icon_image_path.clone());
+
+        h_flex()
+            .id(("pinned-agent-row", ix))
+            .w_full()
+            .pl(px(34.))
+            .pr_2()
+            .py_1()
+            .gap_2()
+            .items_center()
+            .rounded(crate::ui::design::r_sm())
+            .cursor_pointer()
+            .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
+            .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
+            .on_hover(cx.listener(move |this, is_hovered, _, cx| {
+                this.hovered_agent = if *is_hovered {
+                    Some(hover_key)
+                } else if this.hovered_agent == Some(hover_key) {
+                    None
+                } else {
+                    this.hovered_agent
+                };
+                cx.notify();
+            }))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_agent(project, agent_id, window, cx);
+            }))
+            .child(
+                div()
+                    .id(("pinned-agent-project", agent_id.as_u128() as u64))
+                    .flex_none()
+                    .tooltip(move |window, cx| Tooltip::new(project_name.clone()).build(window, cx))
+                    .child(project_icon_visual_glyph(
+                        project_icon_id,
+                        custom_svg_path.as_deref(),
+                        crate::ui::design::t3(cx),
+                        px(13.),
+                    )),
+            )
+            .when(agent.is_active_solo(), |row| {
+                row.child(crate::ui::design::indicator::solo_icon(
+                    crate::ui::design::sky(cx),
+                    crate::ui::design::icon_sm(),
+                ))
+            })
+            .child(self.render_agent_title(
+                agent,
+                hovered,
+                FontWeight::NORMAL,
+                if selected {
+                    crate::ui::design::t1(cx)
+                } else {
+                    crate::ui::design::t2(cx)
+                },
+                cx,
+            ))
+            .when(hovered, |row| {
+                row.child(self.render_agent_actions(agent_id, true, cx))
+            })
+            .when(!hovered && runtime == ProjectAgentRuntime::Working, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .w(px(34.))
+                        .flex()
+                        .justify_end()
+                        .child(logo_spinner(
+                            16.,
+                            "pinned-agent-logo",
+                            ix,
+                            crate::ui::design::t3(cx),
+                        )),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_pinned_section(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let pinned = self.collect_pinned_agents(cx);
+        if pinned.is_empty() {
+            return None;
+        }
+        let collapsed = self.workspace.read(cx).pinned_agents_collapsed;
+
+        Some(
+            v_flex()
+                .w_full()
+                .gap_0p5()
+                .mb_3()
+                .child(
+                    h_flex()
+                        .id("pinned-agents-section-header")
+                        .w_full()
+                        .h(px(30.))
+                        .px_2()
+                        .gap_1()
+                        .items_center()
+                        .rounded(crate::ui::design::r_sm())
+                        .cursor_pointer()
+                        .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.28)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.workspace.update(cx, |workspace, cx| {
+                                workspace.toggle_pinned_agents_collapsed(cx);
+                            });
+                        }))
+                        .child(
+                            Icon::new(if collapsed {
+                                IconName::ChevronRight
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .size(crate::ui::design::icon_sm())
+                            .text_color(crate::ui::design::t4(cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(crate::ui::design::text_label())
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(crate::ui::design::t4(cx))
+                                .child("PINNED"),
+                        ),
+                )
+                .when(!collapsed, |section| {
+                    section.children(
+                        pinned
+                            .into_iter()
+                            .enumerate()
+                            .map(|(ix, (project, project_name, project_icon_id, agent))| {
+                                self.render_pinned_agent(
+                                    ix,
+                                    project,
+                                    project_name,
+                                    &project_icon_id,
+                                    &agent,
+                                    cx,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     /// Auto-expand a collapsed attention section when an agent starts waiting
     /// that wasn't waiting on the previous scan. The first scan only records
     /// the baseline so a persisted collapse survives app launch.
@@ -1443,7 +1678,9 @@ impl ProjectList {
         let agent_id = agent.id;
         let warning = crate::ui::design::amber(cx);
         let selected = self.attention_pinned == Some(agent_id);
-        let hovered = self.hovered_attention == Some(agent_id);
+        let hover_key = HoveredAgentRow::Attention(agent_id);
+        let hovered = self.hovered_agent == Some(hover_key);
+        let pinned = self.workspace.read(cx).is_agent_pinned(agent_id);
         let custom_svg_path = self
             .workspace
             .read(cx)
@@ -1465,12 +1702,12 @@ impl ProjectList {
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
             .on_hover(cx.listener(move |this, hovered, _, cx| {
-                this.hovered_attention = if *hovered {
-                    Some(agent_id)
-                } else if this.hovered_attention == Some(agent_id) {
+                this.hovered_agent = if *hovered {
+                    Some(hover_key)
+                } else if this.hovered_agent == Some(hover_key) {
                     None
                 } else {
-                    this.hovered_attention
+                    this.hovered_agent
                 };
                 cx.notify();
             }))
@@ -1485,24 +1722,26 @@ impl ProjectList {
                     crate::ui::design::icon_sm(),
                 ))
             })
-            .child(self.render_agent_title(agent, FontWeight::MEDIUM, warning, cx))
+            .child(self.render_agent_title(agent, hovered, FontWeight::MEDIUM, warning, cx))
             .when(hovered, |row| {
+                row.child(self.render_agent_actions(agent_id, pinned, cx))
+            })
+            .when(!hovered, |row| {
                 row.child(
                     div()
+                        .id(("attention-agent-project", agent_id.as_u128() as u64))
                         .flex_none()
-                        .max_w(px(110.))
-                        .text_size(crate::ui::design::text_label())
-                        .text_color(crate::ui::design::t4(cx))
-                        .truncate()
-                        .child(project_name),
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(project_name.clone()).build(window, cx)
+                        })
+                        .child(project_icon_visual_glyph(
+                            project_icon_id,
+                            custom_svg_path.as_deref(),
+                            warning,
+                            px(13.),
+                        )),
                 )
             })
-            .child(project_icon_visual_glyph(
-                project_icon_id,
-                custom_svg_path.as_deref(),
-                warning,
-                px(13.),
-            ))
             .into_any_element()
     }
 
@@ -2343,6 +2582,7 @@ impl Render for ProjectList {
         }
         let is_empty = sections.is_empty();
         let attention_section = self.render_attention_section(cx);
+        let pinned_section = self.render_pinned_section(cx);
         // The 16px section break exists to close a list of projects. A header
         // that follows a closed (or empty) section has no list to close, so it
         // stacks at row rhythm instead of floating in its own band.
@@ -2369,6 +2609,7 @@ impl Render for ProjectList {
                     .gap_0p5()
                     .overflow_y_scroll()
                     .children(attention_section)
+                    .children(pinned_section)
                     .children(section_elements)
                     .when(is_empty, |list| {
                         list.child(

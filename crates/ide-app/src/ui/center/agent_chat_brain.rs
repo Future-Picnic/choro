@@ -162,6 +162,14 @@ fn replied_request_id(message: &StoredAgentMessage) -> Option<Uuid> {
 }
 
 impl CenterArea {
+    pub(crate) fn agent_short_outcome(&self, agent_id: Uuid) -> Option<&str> {
+        self.agent_summaries
+            .get(&agent_id)
+            .and_then(|summary| summary.outcome_text.as_deref())
+            .map(str::trim)
+            .filter(|outcome| !outcome.is_empty())
+    }
+
     pub(super) fn maybe_finish_summary_maintenance(&mut self, cx: &mut Context<Self>) {
         let mut silent_completions = Vec::new();
         {
@@ -221,10 +229,12 @@ impl CenterArea {
         let mut candidates = Vec::new();
         for agent in records {
             let previous = self.agent_record_status_seen.insert(agent.id, agent.status);
+            let can_continue_chat = self.agent_chats.read(cx).has_backend(agent.id)
+                || agent_has_backend_resume_id(&agent);
             if previous
                 .is_some_and(|status| !matches!(status, AgentStatus::Done | AgentStatus::Rejected))
                 && matches!(agent.status, AgentStatus::Done | AgentStatus::Rejected)
-                && self.agent_chats.read(cx).has_backend(agent.id)
+                && can_continue_chat
                 && !agent
                     .origin
                     .as_ref()

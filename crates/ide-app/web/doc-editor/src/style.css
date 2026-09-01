@@ -118,6 +118,14 @@ body,
   text-underline-offset: 2px;
 }
 
+.choro-mention-folder {
+  cursor: default;
+}
+
+.choro-mention-folder:hover {
+  text-decoration: none;
+}
+
 .choro-mention-asset {
   background: color-mix(in srgb, var(--choro-accent) 28%, transparent);
   box-shadow: inset 0 0 0 1px

@@ -85,6 +85,14 @@ fn render_saved_message_tag(
                 .into_any_element(),
             "File",
         ),
+        AgentChatMessageTagKind::Folder => (
+            crate::ui::design::sage(cx),
+            gpui_component::Icon::new(IconName::FolderOpen)
+                .size(crate::ui::design::icon_sm())
+                .text_color(crate::ui::design::sage(cx))
+                .into_any_element(),
+            "Folder",
+        ),
         AgentChatMessageTagKind::Doc => (
             crate::ui::design::amber(cx),
             gpui_component::Icon::new(crate::ui::design::docs_icon())
