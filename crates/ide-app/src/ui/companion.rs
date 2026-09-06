@@ -948,7 +948,6 @@ impl CompanionView {
 
         crate::ui::style::companion_notification_card(
             SharedString::from(format!("companion-attention-row-{agent_id}")),
-            needs_attention,
             cx,
         )
         .h(px(ATTENTION_ROW_HEIGHT))
@@ -970,11 +969,7 @@ impl CompanionView {
                         .text_size(crate::ui::design::text_body())
                         .line_height(gpui::relative(1.2))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(if needs_attention {
-                            attention_color
-                        } else {
-                            crate::ui::design::t1(cx)
-                        })
+                        .text_color(crate::ui::design::t1(cx))
                         .child(title),
                 )
                 .child(

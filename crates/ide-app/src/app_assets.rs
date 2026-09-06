@@ -5,7 +5,7 @@ use gpui::{AssetSource, Result, SharedString};
 pub struct AppAssets;
 
 impl AppAssets {
-    const APP_ASSETS: [(&'static str, &'static [u8]); 117] = [
+    const APP_ASSETS: [(&'static str, &'static [u8]); 118] = [
         (
             "avatar/choro-companion-idle.webp",
             include_bytes!("../assets/avatar/exports/v22/idle/choro-companion-idle.webp"),
@@ -416,6 +416,10 @@ impl AppAssets {
         (
             "brand/choro-riff.svg",
             include_bytes!("../assets/brand/choro-riff.svg"),
+        ),
+        (
+            "brand/tumble.svg",
+            include_bytes!("../assets/brand/tumble.svg"),
         ),
         (
             "icons/operations-icon.svg",

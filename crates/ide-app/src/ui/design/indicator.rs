@@ -68,26 +68,14 @@ pub fn pocketcomet_icon(color: Hsla, size: gpui::Pixels) -> Div {
     lucide_icon(lucide_icons::Icon::Orbit, color, size)
 }
 
-/// Neutral orbit with an orange core; the label and selection stay rail-colored.
-pub fn pocketcomet_rail_icon(color: Hsla) -> Div {
-    gpui::div()
-        .relative()
-        .size(scale::icon_lg())
-        .child(pocketcomet_icon(color, scale::icon_lg()))
-        .child(
-            gpui::div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    gpui::div()
-                        .size(px(5.))
-                        .rounded_full()
-                        .bg(super::palette::pocketcomet_brand()),
-                ),
-        )
+/// Tumble's app-icon silhouette without its tile; the label stays rail-colored.
+pub fn tumble_rail_icon() -> Div {
+    gpui::div().flex_none().size(scale::icon_lg()).child(
+        gpui::svg()
+            .path("brand/tumble.svg")
+            .size(scale::icon_lg())
+            .text_color(super::palette::tumble_brand()),
+    )
 }
 
 /// A header-subline indicator with a supplied icon element. This keeps custom
