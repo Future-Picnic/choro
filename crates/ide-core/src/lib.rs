@@ -12,6 +12,7 @@ pub mod local_store;
 pub mod memory;
 pub mod penpot_assistant;
 pub mod preview_control;
+pub mod process;
 pub mod project;
 pub mod redaction;
 pub mod search;

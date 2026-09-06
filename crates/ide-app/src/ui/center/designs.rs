@@ -110,7 +110,7 @@ impl CenterArea {
             .size_full()
             .bg(crate::ui::design::base(cx))
             .child(
-                crate::ui::design::header::bar(cx)
+                crate::ui::design::header::workspace_bar(cx)
                     .child(
                         crate::ui::design::header::title_col(cx)
                             .child(crate::ui::design::header::title(title, cx))

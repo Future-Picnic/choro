@@ -724,8 +724,8 @@ impl CollectionPane {
         cx.notify();
     }
 
-    /// Opens the full document in a JSON editor dialog; Save writes back
-    /// via replace_one and reloads the page.
+    /// Opens the full document in a JSON editor dialog. Save writes back via
+    /// replace_one; Delete requires a second explicit click before delete_one.
     fn open_doc_editor(
         &mut self,
         id: String,
@@ -768,6 +768,69 @@ impl CollectionPane {
                     let pane = pane.clone();
                     let invalid_json = editor.read(cx).parse_error.is_some();
                     let prod_save_armed = editor.read(cx).prod_save_armed;
+                    let confirming_delete = editor.read(cx).confirming_delete;
+                    if confirming_delete {
+                        let keep_editor = editor.clone();
+                        let delete_handle = handle.clone();
+                        let delete_db = db.clone();
+                        let delete_collection = collection.clone();
+                        let delete_id = id.clone();
+                        let delete_pane = pane.clone();
+                        let delete_label = if prod {
+                            "Confirm Delete from PROD"
+                        } else {
+                            "Confirm Delete"
+                        };
+                        return vec![
+                            crate::ui::style::dialog_neutral_button(
+                                "db-doc-keep",
+                                "Keep document",
+                                cx,
+                            )
+                            .on_click(move |_, _, cx| {
+                                keep_editor.update(cx, |editor, cx| {
+                                    editor.confirming_delete = false;
+                                    cx.notify();
+                                });
+                            }),
+                            crate::ui::style::danger_button_compact(
+                                "db-doc-delete-confirm",
+                                delete_label,
+                            )
+                            .on_click(move |_, window, cx| {
+                                let handle = delete_handle.clone();
+                                let db = delete_db.clone();
+                                let collection = delete_collection.clone();
+                                let id = delete_id.clone();
+                                let pane = delete_pane.clone();
+                                window.close_dialog(cx);
+                                pane.update(cx, |pane_ref, cx| {
+                                    pane_ref.loading = true;
+                                    cx.notify();
+                                    cx.spawn(async move |this, cx| {
+                                        let result = cx
+                                            .background_executor()
+                                            .spawn(async move {
+                                                handle.delete_doc(&db, &collection, &id)
+                                            })
+                                            .await;
+                                        this.update(cx, |this, cx| match result {
+                                            Ok(()) => this.load(cx),
+                                            Err(error) => {
+                                                this.loading = false;
+                                                this.error = Some(
+                                                    format!("delete failed: {error:#}").into(),
+                                                );
+                                                cx.notify();
+                                            }
+                                        })
+                                        .ok();
+                                    })
+                                    .detach();
+                                });
+                            }),
+                        ];
+                    }
                     let save_label = if prod && prod_save_armed {
                         "Confirm Save to PROD"
                     } else if prod {
@@ -775,6 +838,7 @@ impl CollectionPane {
                     } else {
                         "Save"
                     };
+                    let delete_editor = editor.clone();
                     let save = if prod {
                         crate::ui::style::danger_button_compact("db-doc-save", save_label)
                     } else {
@@ -825,9 +889,24 @@ impl CollectionPane {
                         });
                     });
                     vec![
-                        save,
+                        crate::ui::style::danger_button_compact(
+                            "db-doc-delete",
+                            if prod {
+                                "Delete from PROD…"
+                            } else {
+                                "Delete…"
+                            },
+                        )
+                        .on_click(move |_, _, cx| {
+                            delete_editor.update(cx, |editor, cx| {
+                                editor.confirming_delete = true;
+                                editor.prod_save_armed = false;
+                                cx.notify();
+                            });
+                        }),
                         crate::ui::style::dialog_neutral_button("db-doc-cancel", "Cancel", cx)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
+                        save,
                     ]
                 })
         });
@@ -861,6 +940,7 @@ struct DocEditorView {
     parse_error: Option<SharedString>,
     expanded_tree_nodes: HashSet<String>,
     prod_save_armed: bool,
+    confirming_delete: bool,
 }
 
 impl DocEditorView {
@@ -884,6 +964,7 @@ impl DocEditorView {
             parse_error,
             expanded_tree_nodes: HashSet::new(),
             prod_save_armed: false,
+            confirming_delete: false,
         }
     }
 
@@ -901,6 +982,7 @@ impl DocEditorView {
         self.parse_error = parse_error;
         self.expanded_tree_nodes.clear();
         self.prod_save_armed = false;
+        self.confirming_delete = false;
         cx.notify();
     }
 
@@ -987,6 +1069,14 @@ impl Render for DocEditorView {
                                 .text_size(crate::ui::design::text_ui())
                                 .text_color(crate::ui::design::rose(cx))
                                 .child("Click Confirm Save to PROD to write this document."),
+                        )
+                    })
+                    .when(self.confirming_delete, |col| {
+                        col.child(
+                            div()
+                                .text_size(crate::ui::design::text_ui())
+                                .text_color(crate::ui::design::rose(cx))
+                                .child("This permanently deletes the document. This action cannot be undone."),
                         )
                     })
                     .child(

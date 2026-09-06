@@ -357,7 +357,7 @@ verify_signing_authority "$APP_PATH"
 
 POST_BUILD_STATUS="$(git status --porcelain --untracked-files=all)"
 if [[ "$RESUMING" == "0" && -n "$POST_BUILD_STATUS" ]]; then
-  echo "The build changed the source worktree; release was stopped before confirmation:" >&2
+  echo "The build changed the source worktree; release was stopped before publishing:" >&2
   printf '%s\n' "$POST_BUILD_STATUS" >&2
   exit 1
 elif [[ "$RESUMING" == "1" && -n "$POST_BUILD_STATUS" ]]; then
@@ -370,21 +370,13 @@ elif [[ "$RESUMING" == "1" && -n "$POST_BUILD_STATUS" ]]; then
     exit 1
   fi
 fi
-write_state "awaiting-confirmation"
+write_state "validated"
 
 echo
 print_plan
 echo
-echo "Ready to release Choro $CANDIDATE_VERSION."
-echo "This will submit the app and DMG to Apple, commit VERSION, create and push $TAG,"
-echo "push $BRANCH, publish a private GitHub release, then update release/appcast.xml."
-echo "No existing files, tags, releases, or assets will be deleted or overwritten."
-read "CONFIRMATION?Type $TAG to continue: "
-if [[ "$CONFIRMATION" != "$TAG" ]]; then
-  echo "Release cancelled. Candidate artifacts remain at $OUTPUT_DIR."
-  write_state "cancelled"
-  exit 0
-fi
+echo "Preflight, build, and local validation passed for Choro $CANDIDATE_VERSION."
+echo "Continuing automatically with notarization and publishing."
 
 CURRENT_STAGE="app notarization"
 write_state "notarizing-app"

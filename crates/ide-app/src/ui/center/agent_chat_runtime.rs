@@ -667,7 +667,6 @@ impl CenterArea {
         self.agent_chat_selected_agent_targets.remove(&agent_id);
         self.agent_chat_agent_request_kind_overrides
             .remove(&agent_id);
-        self.agent_handoff_previews.remove(&agent_id);
         self.agent_handoff_preparations_pending.remove(&agent_id);
         self.agent_handoff_sends_pending.remove(&agent_id);
         self.agent_chat_slash_dismissed_query.remove(&agent_id);
@@ -852,10 +851,8 @@ impl CenterArea {
         let agent_id = agent.id;
         cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
-                // A prepared teammate brief is tied to the exact draft. Any
-                // edit invalidates both its preview and any generation result
-                // still racing back from the background.
-                this.agent_handoff_previews.remove(&agent_id);
+                // A contextual handoff is tied to the exact draft. Editing
+                // cancels any generation result still racing back.
                 this.agent_handoff_preparations_pending.remove(&agent_id);
                 this.agent_chat_slash_selection.insert(agent_id, 0);
                 this.agent_chat_project_selection.insert(agent_id, 0);
@@ -1467,6 +1464,9 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.agent_handoff_busy(agent.id) {
+            return;
+        }
         if self
             .agent_chat_attachment_pastes_pending
             .get(&agent.id)
@@ -1654,26 +1654,15 @@ impl CenterArea {
                 .get(&agent.id)
                 .copied()
                 .unwrap_or_else(|| classify_agent_request(&message));
-            let preview_matches =
-                self.agent_handoff_previews
-                    .get(&agent.id)
-                    .is_some_and(|preview| {
-                        preview.target_agent_id == target_agent_id
-                            && preview.original_text == message
-                            && preview.request_kind == request_kind
-                    });
-            if preview_matches {
-                self.send_prepared_agent_handoff(agent, input, false, window, cx);
-            } else {
-                self.prepare_composer_agent_handoff(
-                    agent,
-                    target_agent_id,
-                    message,
-                    request_kind,
-                    input,
-                    cx,
-                );
-            }
+            self.prepare_composer_agent_handoff(
+                agent,
+                target_agent_id,
+                message,
+                request_kind,
+                input,
+                window,
+                cx,
+            );
             return;
         }
         // Captured before resolution: plan feedback is a decision worth
@@ -2972,7 +2961,6 @@ impl CenterArea {
             .insert(source_agent_id, target.id);
         self.agent_chat_agent_request_kind_overrides
             .remove(&source_agent_id);
-        self.agent_handoff_previews.remove(&source_agent_id);
         self.agent_handoff_preparations_pending
             .remove(&source_agent_id);
         self.agent_chat_agent_selection.insert(source_agent_id, 0);
@@ -3296,6 +3284,9 @@ impl CenterArea {
         announce: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.agent_handoff_busy(agent.id) {
+            return true;
+        }
         let _slow_operation =
             crate::ui::performance::UiOperationTimer::start("agent_chat.clipboard_read");
         let has_project = self
@@ -3376,6 +3367,9 @@ impl CenterArea {
         agent_id: Uuid,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.agent_handoff_busy(agent_id) {
+            return true;
+        }
         let Some(text) = cx
             .read_from_clipboard()
             .and_then(|item| item.text())
@@ -3393,7 +3387,6 @@ impl CenterArea {
                 line_count,
                 expanded: false,
             });
-        self.agent_handoff_previews.remove(&agent_id);
         self.agent_handoff_preparations_pending.remove(&agent_id);
         cx.notify();
         true
@@ -3405,6 +3398,9 @@ impl CenterArea {
         paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.agent_handoff_busy(agent_id) {
+            return false;
+        }
         let dropped_files = paths
             .iter()
             .filter(|path| path.is_file())
@@ -3420,7 +3416,6 @@ impl CenterArea {
                 attachments.push(path);
             }
         }
-        self.agent_handoff_previews.remove(&agent_id);
         self.agent_handoff_preparations_pending.remove(&agent_id);
         self.agent_start_errors.remove(&agent_id);
         cx.notify();

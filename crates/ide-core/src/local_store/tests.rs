@@ -3187,6 +3187,122 @@ fn timeline_pages_walk_backwards_without_overlap() {
 }
 
 #[test]
+fn timeline_message_search_candidates_use_folded_text_and_stay_agent_scoped() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let agent_id = Uuid::new_v4();
+    let other_agent_id = Uuid::new_v4();
+
+    let events = [
+        (
+            agent_id,
+            "first",
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "text": "Die Maße sind korrekt.",
+                "search_text_version": 1,
+                "search_text": "die masse sind korrekt.",
+                "created_at": 1,
+                "backend_message_id": "a-1"
+            }),
+        ),
+        (
+            agent_id,
+            "second",
+            serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "text": "hidden connected context performance token",
+                "display_text": "Please check PERFORMANCE before shipping.",
+                "search_text_version": 1,
+                "search_text": "please check performance before shipping.",
+                "created_at": 2,
+                "backend_message_id": null
+            }),
+        ),
+        (
+            other_agent_id,
+            "other",
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "text": "performance in another conversation",
+                "search_text_version": 1,
+                "search_text": "performance in another conversation",
+                "created_at": 3,
+                "backend_message_id": "other-1"
+            }),
+        ),
+    ];
+    for (owner, key, payload) in events {
+        store
+            .upsert_timeline_event(
+                owner,
+                "message",
+                Some(key.to_string()),
+                payload.to_string(),
+                1,
+            )
+            .unwrap();
+    }
+
+    let performance = store
+        .search_timeline_message_candidates_page(agent_id, "performance", 1, None, 20)
+        .unwrap();
+    // The user row is present both as a real match and as the delimiter the
+    // caller uses to decide whether following assistant rows are visible.
+    assert_eq!(performance.events.len(), 1);
+    assert!(!performance.has_more);
+
+    // Unicode folding happens before SQL sees either side, so SQLite's
+    // ASCII-only lower() behavior is not part of matching.
+    let unicode = store
+        .search_timeline_message_candidates_page(agent_id, "masse", 1, None, 20)
+        .unwrap();
+    assert_eq!(unicode.events.len(), 2);
+    assert!(unicode.events[0].sequence < unicode.events[1].sequence);
+
+    let other = store
+        .search_timeline_message_candidates_page(agent_id, "another conversation", 1, None, 20)
+        .unwrap();
+    assert_eq!(
+        other.events.len(),
+        1,
+        "only the local user delimiter remains"
+    );
+}
+
+#[test]
+fn timeline_message_search_keeps_legacy_payloads_as_filter_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let agent_id = Uuid::new_v4();
+
+    store
+        .upsert_timeline_event(
+            agent_id,
+            "message",
+            Some("legacy".to_string()),
+            serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "text": "An older payload without a search index.",
+                "created_at": 1,
+                "backend_message_id": "legacy-1"
+            })
+            .to_string(),
+            1,
+        )
+        .unwrap();
+
+    let page = store
+        .search_timeline_message_candidates_page(agent_id, "not present", 1, None, 20)
+        .unwrap();
+    assert_eq!(page.events.len(), 1);
+}
+
+#[test]
 fn scale_query_shape_handles_large_sets() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();

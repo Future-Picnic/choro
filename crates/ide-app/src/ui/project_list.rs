@@ -57,8 +57,47 @@ struct RowInfo {
     agents_working: bool,
     /// Agents waiting for user attention.
     agents_waiting: usize,
-    /// App-owned agents currently in the manual In progress lane.
+    /// Agents included by the selected view (the In progress lane in All agents).
     in_progress_agents: Vec<AgentRecord>,
+}
+
+/// Budget for the list's 16px padding and card's 24px padding. Script chips
+/// start at the project icon, size to their labels up to a readable cap, and
+/// reserve the overflow indicator before choosing how many fit on one line.
+fn visible_sidebar_script_count(scripts: &[(SharedString, bool)], sidebar_width: f32) -> usize {
+    const INSET: f32 = 40.;
+    const GAP: f32 = 4.;
+    let available = (sidebar_width - INSET).max(0.);
+    let all_width = scripts
+        .iter()
+        .map(|(name, _)| style::sidebar_script_chip_width(name.as_ref()))
+        .sum::<f32>()
+        + GAP * scripts.len().saturating_sub(1) as f32;
+    if all_width <= available {
+        return scripts.len();
+    }
+
+    // The total is a conservative digit-width bound for the eventual hidden
+    // count, so the +N chip cannot get clipped when crossing 9 or 99 scripts.
+    let chip_budget =
+        (available - style::sidebar_script_overflow_width(scripts.len()) - GAP).max(0.);
+    let mut used = 0.;
+    scripts
+        .iter()
+        .take_while(|(name, _)| {
+            let width = style::sidebar_script_chip_width(name.as_ref());
+            let next = if used == 0. {
+                width
+            } else {
+                used + GAP + width
+            };
+            if next > chip_budget {
+                return false;
+            }
+            used = next;
+            true
+        })
+        .count()
 }
 
 #[derive(Clone, Copy)]
@@ -108,6 +147,44 @@ enum ProjectAgentRuntime {
     Open,
     Idle,
     Ended,
+}
+
+/// Active work has its own single expanded project; normal project expansion
+/// remains in Workspace and is restored when returning to All agents.
+struct AgentListView {
+    active_work: bool,
+    expanded_project: Option<ProjectId>,
+}
+
+impl Default for AgentListView {
+    fn default() -> Self {
+        Self {
+            active_work: true,
+            expanded_project: None,
+        }
+    }
+}
+
+impl AgentListView {
+    fn toggle_project(&mut self, project: ProjectId) {
+        self.expanded_project = (self.expanded_project != Some(project)).then_some(project);
+    }
+
+    fn includes(
+        &self,
+        project: ProjectId,
+        status: AgentStatus,
+        runtime: ProjectAgentRuntime,
+    ) -> bool {
+        if !self.active_work {
+            return status == AgentStatus::InProgress;
+        }
+        !status.is_finished()
+            && (matches!(
+                runtime,
+                ProjectAgentRuntime::Working | ProjectAgentRuntime::Waiting
+            ) || (self.expanded_project == Some(project) && status == AgentStatus::InProgress))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -501,6 +578,7 @@ pub struct ProjectList {
     menu_project: Option<ProjectId>,
     menu_section: Option<ProjectSectionId>,
     expanded_agent_lists: HashSet<ProjectId>,
+    agent_list_view: AgentListView,
     /// Agent opened from the attention section; kept visible there until another
     /// agent is opened, so the row doesn't vanish under the click.
     attention_pinned: Option<Uuid>,
@@ -769,6 +847,7 @@ impl ProjectList {
                 cx.notify();
             })
             .detach();
+            let sidebar_active_work = workspace.read(cx).sidebar_active_work;
             Self {
                 workspace,
                 git_states,
@@ -782,6 +861,10 @@ impl ProjectList {
                 menu_project: None,
                 menu_section: None,
                 expanded_agent_lists: HashSet::new(),
+                agent_list_view: AgentListView {
+                    active_work: sidebar_active_work,
+                    expanded_project: None,
+                },
                 attention_pinned: None,
                 hovered_agent: None,
                 known_waiting: None,
@@ -843,7 +926,14 @@ impl ProjectList {
                 let in_progress_agents = agent_records
                     .iter()
                     .filter(|agent| {
-                        agent.project_id == p.id && agent.status == AgentStatus::InProgress
+                        agent.project_id == p.id && self.agent_list_view.includes(
+                            p.id, agent.status,
+                            if self.agent_list_view.active_work {
+                                self.runtime_for_agent(p.id, agent, cx)
+                            } else {
+                                ProjectAgentRuntime::Idle
+                            },
+                        )
                     })
                     .cloned()
                     .collect();
@@ -1161,23 +1251,30 @@ impl ProjectList {
         }
     }
 
-    /// Selecting a project opens its new-agent screen rather than restoring
-    /// whichever agent happened to be selected last — the same click always
-    /// lands in the same place, ready for the next thing you want to start.
+    /// Selecting a project restores its previous activity through CenterArea's
+    /// workspace observer. Creating an agent remains an explicit row action.
     /// Clicking the project that is already active only folds its agent list.
     fn select_or_toggle_project(
         &mut self,
         project: ProjectId,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.agent_list_view.active_work {
+            self.agent_list_view.toggle_project(project);
+            if self.workspace.read(cx).active != Some(project) {
+                self.workspace.update(cx, |workspace, cx| workspace.set_active(project, cx));
+            }
+            cx.notify();
+            return;
+        }
         if self.workspace.read(cx).active == Some(project) {
             self.workspace.update(cx, |workspace, cx| {
                 workspace.toggle_project_expanded(project, cx)
             });
             return;
         }
-        self.open_new_agent_for_project(project, window, cx);
+        self.workspace.update(cx, |workspace, cx| workspace.set_active(project, cx));
     }
 
     fn render_project_agent(
@@ -1503,10 +1600,11 @@ impl ProjectList {
         h_flex()
             .id(("pinned-agent-row", ix))
             .w_full()
-            .pl(px(34.))
+            .min_h(px(30.))
+            .pl_3()
             .pr_2()
             .py_1()
-            .gap_2()
+            .gap_1p5()
             .items_center()
             .rounded(crate::ui::design::r_sm())
             .cursor_pointer()
@@ -1526,18 +1624,6 @@ impl ProjectList {
                 cx.stop_propagation();
                 this.open_agent(project, agent_id, window, cx);
             }))
-            .child(
-                div()
-                    .id(("pinned-agent-project", agent_id.as_u128() as u64))
-                    .flex_none()
-                    .tooltip(move |window, cx| Tooltip::new(project_name.clone()).build(window, cx))
-                    .child(project_icon_visual_glyph(
-                        project_icon_id,
-                        custom_svg_path.as_deref(),
-                        crate::ui::design::t3(cx),
-                        px(13.),
-                    )),
-            )
             .when(agent.is_active_solo(), |row| {
                 row.child(crate::ui::design::indicator::solo_icon(
                     crate::ui::design::sky(cx),
@@ -1570,6 +1656,26 @@ impl ProjectList {
                             "pinned-agent-logo",
                             ix,
                             crate::ui::design::t3(cx),
+                        )),
+                )
+            })
+            .when(!hovered, |row| {
+                row.child(
+                    div()
+                        .id(("pinned-agent-project", agent_id.as_u128() as u64))
+                        .flex_none()
+                        .size(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(project_name.clone()).build(window, cx)
+                        })
+                        .child(project_icon_visual_glyph(
+                            project_icon_id,
+                            custom_svg_path.as_deref(),
+                            crate::ui::design::t3(cx),
+                            px(13.),
                         )),
                 )
             })
@@ -1692,10 +1798,11 @@ impl ProjectList {
         h_flex()
             .id(("attention-agent-row", ix))
             .w_full()
-            .pl(px(34.))
+            .min_h(px(30.))
+            .pl_3()
             .pr_2()
             .py_1()
-            .gap_2()
+            .gap_1p5()
             .items_center()
             .rounded(crate::ui::design::r_sm())
             .cursor_pointer()
@@ -1731,6 +1838,10 @@ impl ProjectList {
                     div()
                         .id(("attention-agent-project", agent_id.as_u128() as u64))
                         .flex_none()
+                        .size(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .tooltip(move |window, cx| {
                             Tooltip::new(project_name.clone()).build(window, cx)
                         })
@@ -2268,6 +2379,100 @@ impl ProjectList {
             .into_any_element()
     }
 
+    fn render_script_indicators(
+        &self,
+        row_ix: usize,
+        scripts: Vec<SharedString>,
+        cx: &App,
+    ) -> impl IntoElement {
+        // Preserve real scripts first, followed by sky-marked Solo runs.
+        let (solos, real): (Vec<_>, Vec<_>) = scripts.into_iter().partition(|script| {
+            crate::state::terminals::solo_script_slug(script.as_ref()).is_some()
+        });
+        let scripts: Vec<(SharedString, bool)> = real
+            .into_iter()
+            .map(|name| (name, false))
+            .chain(solos.into_iter().map(|script| {
+                let slug =
+                    crate::state::terminals::solo_script_slug(script.as_ref()).unwrap_or_default();
+                (SharedString::from(slug.to_string()), true)
+            }))
+            .collect();
+        let visible = visible_sidebar_script_count(&scripts, self.workspace.read(cx).panels.left);
+        let hidden = scripts.len() - visible;
+
+        h_flex()
+            .w_full()
+            .min_w(px(0.))
+            .h(px(20.))
+            .gap(px(4.))
+            .overflow_hidden()
+            .children(
+                scripts
+                    .iter()
+                    .take(visible)
+                    .enumerate()
+                    .map(|(ix, (name, solo))| {
+                        let full_name = if *solo {
+                            SharedString::from(format!("Solo: {name}"))
+                        } else {
+                            name.clone()
+                        };
+                        style::sidebar_script_chip(name.clone(), *solo, cx)
+                            .id(("project-script", ix))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(full_name.clone()).build(window, cx)
+                            })
+                    }),
+            )
+            .when(hidden > 0, |row| {
+                row.child(
+                    style::sidebar_script_overflow(hidden, cx)
+                        .id(("project-script-overflow", row_ix))
+                        .tooltip(move |window, cx| {
+                            let scripts = scripts.clone();
+                            Tooltip::element(move |_, cx| {
+                                v_flex()
+                                    .max_w(px(320.))
+                                    .py_1()
+                                    .gap_1()
+                                    .text_size(crate::ui::design::text_label())
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(format!("{} running scripts", scripts.len())),
+                                    )
+                                    .children(scripts.iter().map(|(name, solo)| {
+                                        let color = if *solo {
+                                            crate::ui::design::sky(cx)
+                                        } else {
+                                            crate::ui::design::sage(cx)
+                                        };
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .size(px(5.))
+                                                    .flex_none()
+                                                    .rounded_full()
+                                                    .bg(color),
+                                            )
+                                            .child(div().min_w(px(0.)).whitespace_normal().child(
+                                                if *solo {
+                                                    SharedString::from(format!("Solo: {name}"))
+                                                } else {
+                                                    name.clone()
+                                                },
+                                            ))
+                                    }))
+                            })
+                            .build(window, cx)
+                        }),
+                )
+            })
+    }
+
     fn render_row(&self, row: RowInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.workspace.clone();
         let dropdown_workspace = self.workspace.clone();
@@ -2279,7 +2484,11 @@ impl ProjectList {
         let path = row.path.clone();
         let dropdown_row = row.clone();
         let context_row = row.clone();
-        let collapsed = !self.workspace.read(cx).expanded_projects.contains(&id);
+        let collapsed = if self.agent_list_view.active_work {
+            self.agent_list_view.expanded_project != Some(id)
+        } else {
+            !self.workspace.read(cx).expanded_projects.contains(&id)
+        };
         let hovered = self.hovered_project == Some(id);
         let show_actions = hovered || row.is_active || self.menu_project == Some(id);
         let has_in_progress_agents = !row.in_progress_agents.is_empty();
@@ -2421,7 +2630,9 @@ impl ProjectList {
                                                 },
                                                 cx,
                                             )
-                                            .tooltip(if collapsed {
+                                            .tooltip(if self.agent_list_view.active_work {
+                                                if collapsed { "Show all agents in project" } else { "Show active work only" }
+                                            } else if collapsed {
                                                 "Expand project"
                                             } else {
                                                 "Collapse project"
@@ -2429,16 +2640,23 @@ impl ProjectList {
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
                                                     cx.stop_propagation();
-                                                    this.workspace.update(cx, |workspace, cx| {
-                                                        workspace.toggle_project_expanded(id, cx);
-                                                    });
+                                                    if this.agent_list_view.active_work {
+                                                        this.agent_list_view.toggle_project(id);
+                                                        cx.notify();
+                                                    } else {
+                                                        this.workspace.update(cx, |workspace, cx| {
+                                                            workspace.toggle_project_expanded(id, cx);
+                                                        });
+                                                    }
                                                 }),
                                             ),
                                         )
                                     }),
                             )
                             .when(
-                                collapsed && (row.agents_working || row.agents_waiting > 0),
+                                !self.agent_list_view.active_work
+                                    && collapsed
+                                    && (row.agents_working || row.agents_waiting > 0),
                                 |line| line.child(self.render_agent_indicator(&row, collapsed, cx)),
                             )
                             .when(show_actions, |line| {
@@ -2484,30 +2702,7 @@ impl ProjectList {
                             }),
                     )
                     .when(has_scripts, |card| {
-                        let running = crate::ui::design::sage(cx);
-                        // Real scripts first; Solo lane runs after them, sky
-                        // colored and reduced to just the Solo's name.
-                        let (solos, real): (Vec<_>, Vec<_>) =
-                            scripts.into_iter().partition(|script| {
-                                crate::state::terminals::solo_script_slug(script.as_ref()).is_some()
-                            });
-                        card.child(
-                            h_flex()
-                                .pl(px(24.))
-                                .gap_1p5()
-                                .flex_wrap()
-                                .children(
-                                    real.into_iter()
-                                        .map(|script| style::script_chip(script, running, cx)),
-                                )
-                                .children(solos.into_iter().map(|script| {
-                                    let slug =
-                                        crate::state::terminals::solo_script_slug(script.as_ref())
-                                            .unwrap_or_default()
-                                            .to_string();
-                                    style::solo_script_chip(slug, cx)
-                                })),
-                        )
+                        card.child(self.render_script_indicators(row.ix, scripts, cx))
                     })
                     .context_menu(move |menu, window, cx| {
                         Self::build_project_menu(
@@ -2519,7 +2714,7 @@ impl ProjectList {
                         )
                     }),
             )
-            .when(!collapsed && has_in_progress_agents, |column| {
+            .when((!collapsed || self.agent_list_view.active_work) && has_in_progress_agents, |column| {
                 column.child(agents_section)
             })
     }
@@ -2527,6 +2722,9 @@ impl ProjectList {
 
 impl Render for ProjectList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The Active/All choice lives in Workspace (persisted, switched from the
+        // sidebar footer). Mirror it before collecting rows so the filter agrees.
+        self.agent_list_view.active_work = self.workspace.read(cx).sidebar_active_work;
         let rows = self.collect_rows(cx);
         let (project_sections, favorites_collapsed, projects_collapsed) = {
             let workspace = self.workspace.read(cx);
@@ -2606,6 +2804,7 @@ impl Render for ProjectList {
                 v_flex()
                     .id("project-rows")
                     .flex_1()
+                    .min_h(px(0.))
                     .gap_0p5()
                     .overflow_y_scroll()
                     .children(attention_section)
@@ -2623,5 +2822,76 @@ impl Render for ProjectList {
                     }),
             )
             .min_w(px(0.))
+    }
+}
+
+#[cfg(test)]
+mod sidebar_view_tests {
+    use super::*;
+
+    fn script_names(names: &[&str]) -> Vec<(SharedString, bool)> {
+        names
+            .iter()
+            .map(|name| (SharedString::from((*name).to_string()), false))
+            .collect()
+    }
+
+    #[test]
+    fn sidebar_scripts_collapse_only_the_items_that_do_not_fit() {
+        let scripts = script_names(&["API Server", "Web Dev", "Web Dev", "Web Actions"]);
+        assert_eq!(visible_sidebar_script_count(&scripts, 320.), 3);
+        assert_eq!(visible_sidebar_script_count(&scripts, 500.), 4);
+    }
+
+    #[test]
+    fn sidebar_script_width_caps_long_names() {
+        assert_eq!(style::sidebar_script_chip_width(&"x".repeat(100)), 96.);
+    }
+
+    #[test]
+    fn sidebar_active_work_keeps_work_visible_when_expanding_another_project() {
+        let a = ProjectId::new();
+        let b = ProjectId::new();
+        let mut view = AgentListView {
+            active_work: true,
+            ..Default::default()
+        };
+        view.toggle_project(a);
+        assert!(view.includes(a, AgentStatus::InProgress, ProjectAgentRuntime::Idle));
+        assert!(!view.includes(b, AgentStatus::InProgress, ProjectAgentRuntime::Idle));
+        view.toggle_project(b);
+        assert!(!view.includes(a, AgentStatus::InProgress, ProjectAgentRuntime::Idle));
+        assert!(view.includes(a, AgentStatus::InProgress, ProjectAgentRuntime::Working));
+        assert!(view.includes(a, AgentStatus::InProgress, ProjectAgentRuntime::Waiting));
+        assert!(view.includes(b, AgentStatus::InProgress, ProjectAgentRuntime::Idle));
+        view.toggle_project(b);
+        assert!(!view.includes(b, AgentStatus::InProgress, ProjectAgentRuntime::Idle));
+        assert!(view.includes(b, AgentStatus::InProgress, ProjectAgentRuntime::Working));
+    }
+
+    #[test]
+    fn sidebar_active_work_filters_runtime_without_changing_the_all_agents_lane() {
+        let project = ProjectId::new();
+        let mut view = AgentListView {
+            active_work: true,
+            ..Default::default()
+        };
+        for runtime in [
+            ProjectAgentRuntime::NotStarted,
+            ProjectAgentRuntime::Open,
+            ProjectAgentRuntime::Idle,
+            ProjectAgentRuntime::Ended,
+        ] {
+            assert!(!view.includes(project, AgentStatus::InProgress, runtime));
+        }
+        // Runtime activity still counts if the manual board lane is different.
+        assert!(view.includes(project, AgentStatus::Todo, ProjectAgentRuntime::Working));
+        assert!(view.includes(project, AgentStatus::Todo, ProjectAgentRuntime::Waiting));
+        view.toggle_project(project);
+        assert!(!view.includes(project, AgentStatus::Done, ProjectAgentRuntime::Working));
+        assert!(!view.includes(project, AgentStatus::Rejected, ProjectAgentRuntime::Waiting));
+        view.active_work = false;
+        assert!(view.includes(project, AgentStatus::InProgress, ProjectAgentRuntime::Idle));
+        assert!(!view.includes(project, AgentStatus::Todo, ProjectAgentRuntime::Working));
     }
 }

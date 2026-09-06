@@ -11,6 +11,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     menu::{ContextMenuExt, PopupMenuItem},
+    tooltip::Tooltip,
     v_flex, Disableable, IconName, Root,
 };
 use ide_core::{AgentRuntimeKind, ProjectId};
@@ -34,8 +35,9 @@ const ASSISTANT_STATUS_WIDTH: f32 = 220.0;
 const ANIMATION_CANVAS_WIDTH: u64 = 320;
 #[cfg(test)]
 const ANIMATION_CANVAS_HEIGHT: u64 = 320;
-const ATTENTION_ROW_HEIGHT: f32 = 48.0;
-const ATTENTION_ROW_STEP: f32 = 54.0;
+const ATTENTION_ROW_HEIGHT: f32 = 52.0;
+const ATTENTION_ROW_GAP: f32 = 8.0;
+const ATTENTION_ROW_STEP: f32 = ATTENTION_ROW_HEIGHT + ATTENTION_ROW_GAP;
 const ATTENTION_PREVIEW_LIMIT: usize = 3;
 const ATTENTION_OVERFLOW_STEP: f32 = 36.0;
 const MUSIC_MENU_HEIGHT: f32 = 180.0;
@@ -587,10 +589,18 @@ impl CompanionView {
                     .into_iter()
                     .enumerate()
                     .map(|(index, playlist)| {
-                        let uri = playlist.spotify_uri();
-                        let configured = uri.is_some();
+                        let uris = playlist.spotify_uris();
+                        let configured = !uris.is_empty();
                         let label = if configured {
-                            playlist.display_label(index)
+                            if uris.len() > 1 {
+                                format!(
+                                    "{} · {} playlists",
+                                    playlist.display_label(index),
+                                    uris.len()
+                                )
+                            } else {
+                                playlist.display_label(index)
+                            }
                         } else {
                             format!("{} · Set in Settings", playlist.display_label(index))
                         };
@@ -602,8 +612,9 @@ impl CompanionView {
                         )
                         .disabled(!configured)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(uri) = uri.clone() {
-                                this.play_music(index, uri, cx);
+                            use rand::seq::SliceRandom;
+                            if let Some(uri) = uris.choose(&mut rand::thread_rng()) {
+                                this.play_music(index, uri.clone(), cx);
                             }
                         }))
                     }),
@@ -923,144 +934,90 @@ impl CompanionView {
         items
     }
 
-    fn render_item_row(
-        &self,
-        ix: usize,
-        item: CompanionItem,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    fn render_item_row(&self, item: CompanionItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         let project_id = item.project_id;
         let agent_id = item.agent_id;
         let acknowledge = item.acknowledge_on_open;
         let title = SharedString::from(item.title);
         let status = SharedString::from(item.status);
         let project_name = SharedString::from(item.project_name);
-        let (accent, badge_fill, icon) = match item.animation {
-            CompanionAnimation::Working => (
-                crate::ui::design::accent(cx),
-                crate::ui::design::accent_soft(cx),
-                lucide_icons::Icon::Activity,
-            ),
-            CompanionAnimation::NeedsAttention => (
-                crate::ui::design::amber(cx),
-                crate::ui::design::amber_soft(cx),
-                lucide_icons::Icon::MessageCircleMore,
-            ),
-            CompanionAnimation::Done => (
-                crate::ui::design::sage(cx),
-                crate::ui::design::sage_soft(cx),
-                lucide_icons::Icon::CheckCheck,
-            ),
-            CompanionAnimation::DeepFocus
-            | CompanionAnimation::LofiFlow
-            | CompanionAnimation::Calm
-            | CompanionAnimation::HighEnergy
-            | CompanionAnimation::AgentAssistant => (
-                crate::ui::design::accent(cx),
-                crate::ui::design::accent_soft(cx),
-                lucide_icons::Icon::Bot,
-            ),
-            CompanionAnimation::Idle => (
-                crate::ui::design::t3(cx),
-                crate::ui::design::surface(cx),
-                lucide_icons::Icon::Bot,
-            ),
-        };
-        let card_fill = crate::ui::design::focus(cx);
+        let working = item.animation == CompanionAnimation::Working;
+        let needs_attention = item.animation == CompanionAnimation::NeedsAttention;
+        let attention_color = crate::ui::design::amber(cx);
+        let tooltip = SharedString::from(format!("{title}\n{status} · {project_name}"));
 
-        h_flex()
-            .id(("companion-attention-row", ix))
-            .w_full()
-            .h(px(ATTENTION_ROW_HEIGHT))
-            .px_2()
-            .gap_2()
-            .items_center()
-            .rounded(crate::ui::design::r_lg())
-            .border_1()
-            .border_color(accent.opacity(0.24))
-            .bg(card_fill.opacity(0.96))
-            .shadow_sm()
-            .cursor_pointer()
-            .hover(|row| row.bg(crate::ui::design::control_on(card_fill, cx)))
-            .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.open_item(project_id, agent_id, acknowledge, cx);
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .relative()
-                    .size(px(34.0))
-                    .items_center()
-                    .justify_center()
-                    .rounded(crate::ui::design::r_md())
-                    .bg(badge_fill)
-                    .child(crate::ui::design::indicator::lucide_icon(
-                        icon,
-                        accent,
-                        crate::ui::design::icon_sm(),
-                    ))
-                    .when(item.animation == CompanionAnimation::Done, |badge| {
-                        badge.child(
+        crate::ui::style::companion_notification_card(
+            SharedString::from(format!("companion-attention-row-{agent_id}")),
+            needs_attention,
+            cx,
+        )
+        .h(px(ATTENTION_ROW_HEIGHT))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+            cx.stop_propagation();
+        })
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.open_item(project_id, agent_id, acknowledge, cx);
+        }))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(3.0))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(crate::ui::design::text_body())
+                        .line_height(gpui::relative(1.2))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(if needs_attention {
+                            attention_color
+                        } else {
+                            crate::ui::design::t1(cx)
+                        })
+                        .child(title),
+                )
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .items_center()
+                        .gap_1()
+                        .text_size(crate::ui::design::text_ui())
+                        .line_height(gpui::relative(1.2))
+                        .text_color(crate::ui::design::t1_soft(cx))
+                        .when(working, |row| {
+                            row.child(crate::ui::logo_spinner::logo_spinner(
+                                12.,
+                                "companion-working",
+                                agent_id.as_u128() as usize,
+                                crate::ui::design::t2(cx),
+                            ))
+                        })
+                        .when(needs_attention, |row| {
+                            row.child(
+                                gpui_component::Icon::new(IconName::TriangleAlert)
+                                    .size(px(12.))
+                                    .text_color(attention_color),
+                            )
+                        })
+                        .child(
                             div()
-                                .absolute()
-                                .top(px(4.0))
-                                .right(px(4.0))
+                                .flex_none()
+                                .when(needs_attention, |label| label.text_color(attention_color))
+                                .child(status),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
                                 .size(px(3.0))
                                 .rounded_full()
-                                .bg(accent.opacity(0.75)),
+                                .bg(crate::ui::design::t4(cx)),
                         )
-                    }),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .gap(px(0.0))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(crate::ui::design::text_body())
-                            .line_height(gpui::relative(1.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t1(cx))
-                            .child(title),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .text_size(crate::ui::design::text_label())
-                            .line_height(gpui::relative(1.0))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(accent)
-                                    .child(status),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .size(px(3.0))
-                                    .rounded_full()
-                                    .bg(crate::ui::design::t4(cx)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .text_color(crate::ui::design::t3(cx))
-                                    .child(project_name),
-                            ),
-                    ),
-            )
-            .into_any_element()
+                        .child(div().flex_1().min_w(px(0.0)).truncate().child(project_name)),
+                ),
+        )
+        .into_any_element()
     }
 }
 
@@ -1159,13 +1116,12 @@ impl Render for CompanionView {
                     .right(px(10.0))
                     .max_h(px(attention_list_height))
                     .overflow_y_scroll()
-                    .gap(px(8.0))
+                    .gap(px(ATTENTION_ROW_GAP))
                     .children(
                         items
                             .into_iter()
                             .take(visible_item_count)
-                            .enumerate()
-                            .map(|(ix, item)| self.render_item_row(ix, item, cx)),
+                            .map(|item| self.render_item_row(item, cx)),
                     )
                     .when(overflow_count > 0, |list| {
                         let label = if agents_expanded {

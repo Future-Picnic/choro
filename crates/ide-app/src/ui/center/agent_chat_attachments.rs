@@ -33,7 +33,6 @@ impl CenterArea {
     fn remove_composer_attachment(&mut self, removal: &AttachmentRemoval) {
         match removal {
             AttachmentRemoval::AgentChat { agent_id, path } => {
-                self.agent_handoff_previews.remove(agent_id);
                 self.agent_handoff_preparations_pending.remove(agent_id);
                 if let Some(files) = self.agent_chat_attached_files.get_mut(agent_id) {
                     files.retain(|candidate| candidate != path);
@@ -257,7 +256,6 @@ impl CenterArea {
                                         this.agent_chat_pasted_text_blocks.remove(&agent_id);
                                     }
                                 }
-                                this.agent_handoff_previews.remove(&agent_id);
                                 this.agent_handoff_preparations_pending.remove(&agent_id);
                                 cx.notify();
                             })),

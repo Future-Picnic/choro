@@ -9,7 +9,16 @@ use super::*;
 /// Rows shown under the composer. Enough to recognise what you were doing,
 /// short enough that the composer stays the subject of the screen.
 const RECENT_AGENTS: usize = 4;
+const WEEKLY_DIGEST_PREVIEW_ROWS: usize = 5;
 const WEEK_SECS: u64 = 7 * 24 * 60 * 60;
+
+fn weekly_digest_visible_count(total: usize, expanded: bool) -> usize {
+    if expanded {
+        total
+    } else {
+        total.min(WEEKLY_DIGEST_PREVIEW_ROWS)
+    }
+}
 
 fn weekly_outcome_preview(outcome: &str) -> String {
     let flattened = outcome
@@ -84,77 +93,83 @@ impl CenterArea {
             return None;
         }
         let count = entries.len();
-        let rows = entries.into_iter().map(|(agent, summary)| {
-            let agent_id = agent.id;
-            let outcome = summary
-                .outcome_text
-                .as_deref()
-                .filter(|outcome| !outcome.trim().is_empty())
-                .map(weekly_outcome_preview);
-            h_flex()
-                .id(SharedString::from(format!("weekly-brain-agent-{agent_id}")))
-                .w_full()
-                .min_w(px(0.))
-                .items_start()
-                .gap_2()
-                .px_1p5()
-                .py_2()
-                .rounded(crate::ui::design::r_sm())
-                .cursor_pointer()
-                .hover(|row| row.bg(crate::ui::design::hover(cx)))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_agent(agent_id, window, cx);
-                }))
-                .child(
-                    div()
-                        .mt(px(5.))
-                        .child(crate::ui::agent_status_style::status_dot(
-                            agent.status,
-                            6.,
-                            cx,
-                        )),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .gap_0p5()
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .min_w(px(0.))
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .truncate()
-                                        .text_size(crate::ui::design::text_ui())
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(crate::ui::design::t1(cx))
-                                        .child(agent.title),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(crate::ui::design::text_label())
-                                        .text_color(crate::ui::design::t4(cx))
-                                        .child(branch_relative_time(summary.updated_at as i64)),
-                                ),
-                        )
-                        .when_some(outcome, |column, outcome| {
-                            column.child(
-                                div()
-                                    .max_h(px(32.))
-                                    .overflow_hidden()
-                                    .text_size(crate::ui::design::text_label())
-                                    .line_height(gpui::relative(1.35))
-                                    .text_color(crate::ui::design::t3(cx))
-                                    .child(outcome),
+        let expanded = self.weekly_digest_expanded.contains(&project);
+        let visible_count = weekly_digest_visible_count(count, expanded);
+        let hidden_count = count.saturating_sub(visible_count);
+        let rows = entries
+            .into_iter()
+            .take(visible_count)
+            .map(|(agent, summary)| {
+                let agent_id = agent.id;
+                let outcome = summary
+                    .outcome_text
+                    .as_deref()
+                    .filter(|outcome| !outcome.trim().is_empty())
+                    .map(weekly_outcome_preview);
+                h_flex()
+                    .id(SharedString::from(format!("weekly-brain-agent-{agent_id}")))
+                    .w_full()
+                    .min_w(px(0.))
+                    .items_start()
+                    .gap_2()
+                    .px_1p5()
+                    .py_2()
+                    .rounded(crate::ui::design::r_sm())
+                    .cursor_pointer()
+                    .hover(|row| row.bg(crate::ui::design::hover(cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_agent(agent_id, window, cx);
+                    }))
+                    .child(
+                        div()
+                            .mt(px(5.))
+                            .child(crate::ui::agent_status_style::status_dot(
+                                agent.status,
+                                6.,
+                                cx,
+                            )),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(crate::ui::design::text_ui())
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(crate::ui::design::t1(cx))
+                                            .child(agent.title),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(crate::ui::design::text_label())
+                                            .text_color(crate::ui::design::t4(cx))
+                                            .child(branch_relative_time(summary.updated_at as i64)),
+                                    ),
                             )
-                        }),
-                )
-        });
+                            .when_some(outcome, |column, outcome| {
+                                column.child(
+                                    div()
+                                        .max_h(px(32.))
+                                        .overflow_hidden()
+                                        .text_size(crate::ui::design::text_label())
+                                        .line_height(gpui::relative(1.35))
+                                        .text_color(crate::ui::design::t3(cx))
+                                        .child(outcome),
+                                )
+                            }),
+                    )
+            });
 
         Some(
             v_flex()
@@ -180,6 +195,39 @@ impl CenterArea {
                         ),
                 )
                 .children(rows)
+                .when(count > WEEKLY_DIGEST_PREVIEW_ROWS, |digest| {
+                    let label = if expanded {
+                        "Show less".to_string()
+                    } else {
+                        format!("Show {hidden_count} more")
+                    };
+                    digest.child(
+                        h_flex().w_full().justify_center().pt_1().child(
+                            crate::ui::style::ghost_button_compact(
+                                SharedString::from(format!("weekly-digest-toggle-{}", project.0)),
+                                label,
+                            )
+                            .icon(if expanded {
+                                gpui_component::IconName::ChevronUp
+                            } else {
+                                gpui_component::IconName::ChevronDown
+                            })
+                            .tooltip(if expanded {
+                                "Collapse weekly changes"
+                            } else {
+                                "Show all weekly changes"
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if !this.weekly_digest_expanded.remove(&project) {
+                                        this.weekly_digest_expanded.insert(project);
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -282,7 +330,7 @@ impl CenterArea {
 
 #[cfg(test)]
 mod tests {
-    use super::weekly_outcome_preview;
+    use super::{weekly_digest_visible_count, weekly_outcome_preview, WEEKLY_DIGEST_PREVIEW_ROWS};
 
     #[test]
     fn weekly_outcome_preview_flattens_and_bounds_outcomes() {
@@ -290,5 +338,15 @@ mod tests {
         let excerpt = weekly_outcome_preview(&"x".repeat(400));
         assert_eq!(excerpt.chars().count(), 220);
         assert!(excerpt.ends_with('…'));
+    }
+
+    #[test]
+    fn weekly_digest_defaults_to_five_rows_and_can_expand() {
+        assert_eq!(weekly_digest_visible_count(3, false), 3);
+        assert_eq!(
+            weekly_digest_visible_count(12, false),
+            WEEKLY_DIGEST_PREVIEW_ROWS
+        );
+        assert_eq!(weekly_digest_visible_count(12, true), 12);
     }
 }

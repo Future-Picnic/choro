@@ -396,6 +396,7 @@ impl CenterArea {
         let agent_id = agent.id;
         let hovered = self.agent_chat_hovered_message == Some((agent_id, index));
         let render_key = agent_chat_message_render_key(agent_id, index, message);
+        let search_query = self.agent_chat_search_query(agent_id);
         match message {
             AgentChatMessage::User {
                 text,
@@ -531,7 +532,13 @@ impl CenterArea {
                                         cx,
                                     )
                                     .selectable(true)
-                                    .style(chat_message_text_style()),
+                                    .style(chat_message_text_style())
+                                    .when_some(search_query.clone(), |view, query| {
+                                        view.highlight_matches(
+                                            query,
+                                            super::agent_chat_search::chat_search_highlight_style(cx),
+                                        )
+                                    }),
                                 )
                             })
                             .when(is_long_user_message, |bubble| {
@@ -611,6 +618,7 @@ impl CenterArea {
                             reveal.warmth,
                             &visualization,
                             render_key,
+                            search_query.as_deref(),
                             window,
                             cx,
                         )
@@ -619,6 +627,7 @@ impl CenterArea {
                         text,
                         &visualization,
                         render_key,
+                        search_query.as_deref(),
                         window,
                         cx,
                     ),
@@ -1023,6 +1032,19 @@ impl CenterArea {
             return div().into_any_element();
         };
 
+        let current_search_match = match row {
+            AgentChatRow::Message(index) => session
+                .messages
+                .get(index)
+                .is_some_and(|message| {
+                    self.agent_chat_search_message_is_current(agent.id, message)
+                }),
+            AgentChatRow::TimelineItem(index) => session.timeline.get(index).is_some_and(|item| {
+                matches!(item, AgentChatTimelineItem::Message(message) if self.agent_chat_search_message_is_current(agent.id, message))
+            }),
+            _ => false,
+        };
+
         let content = match row {
             AgentChatRow::Message(index) => session
                 .messages
@@ -1044,7 +1066,34 @@ impl CenterArea {
             AgentChatRow::Activity => self.render_agent_activity_indicator(session, cx),
         };
 
-        self.wrap_agent_chat_row(content)
+        self.wrap_agent_chat_row_with_search_match(content, current_search_match, cx)
+    }
+
+    fn wrap_agent_chat_row_with_search_match(
+        &self,
+        content: gpui::AnyElement,
+        current_search_match: bool,
+        cx: &App,
+    ) -> gpui::AnyElement {
+        div()
+            .w_full()
+            .min_w(px(0.))
+            .px(crate::ui::design::agent_chat_gutter_x())
+            .pb_2()
+            .when(current_search_match, |row| {
+                row.border_l_1()
+                    .border_color(crate::ui::design::amber(cx).opacity(0.72))
+                    .bg(crate::ui::design::amber(cx).opacity(0.07))
+            })
+            .child(
+                v_flex()
+                    .w_full()
+                    .min_w(px(0.))
+                    .max_w(crate::ui::design::agent_chat_content_max_w())
+                    .mx_auto()
+                    .child(content),
+            )
+            .into_any_element()
     }
 
     /// Apply the canonical agent-timeline geometry around rendered message
@@ -1137,7 +1186,7 @@ impl CenterArea {
                 self.render_agent_summary_card(agent.id, card, window, cx)
             }
             AgentChatTimelineItem::AgentMessage(card) => {
-                self.render_agent_message_card(card, window, cx)
+                self.render_agent_message_card(agent.id, card, window, cx)
             }
         }
     }

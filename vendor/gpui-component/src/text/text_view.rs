@@ -7,9 +7,10 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, AppContext, Bounds, ClipboardItem, Context, Element, ElementId, Entity,
-    EntityId, FocusHandle, GlobalElementId, InspectorElementId, InteractiveElement, IntoElement,
-    KeyBinding, LayoutId, ListState, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, Point, RenderOnce, SharedString, Size, StyleRefinement, Styled, Timer, Window, div, px,
+    EntityId, FocusHandle, GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement,
+    IntoElement, KeyBinding, LayoutId, ListState, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Point, RenderOnce, SharedString, Size, StyleRefinement, Styled, Timer,
+    Window, div, px,
 };
 use smol::stream::StreamExt;
 
@@ -41,6 +42,7 @@ pub(crate) fn init(cx: &mut App) {
 struct TextViewElement {
     list_state: Option<ListState>,
     state: Entity<TextViewState>,
+    match_highlight: Option<(SharedString, HighlightStyle)>,
 }
 
 impl RenderOnce for TextViewElement {
@@ -49,12 +51,16 @@ impl RenderOnce for TextViewElement {
             v_flex()
                 .size_full()
                 .map(|this| match &mut state.parsed_result {
-                    Some(Ok(content)) => this.child(content.root_node.render_root(
-                        self.list_state.clone(),
-                        &content.node_cx,
-                        window,
-                        cx,
-                    )),
+                    Some(Ok(content)) => {
+                        let mut node_cx = content.node_cx.clone();
+                        node_cx.match_highlight = self.match_highlight.clone();
+                        this.child(content.root_node.render_root(
+                            self.list_state.clone(),
+                            &node_cx,
+                            window,
+                            cx,
+                        ))
+                    }
                     Some(Err(err)) => this.child(
                         v_flex()
                             .gap_1()
@@ -97,6 +103,7 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    match_highlight: Option<(SharedString, HighlightStyle)>,
 }
 
 #[derive(PartialEq)]
@@ -464,6 +471,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            match_highlight: None,
         }
     }
 
@@ -495,6 +503,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            match_highlight: None,
         }
     }
 
@@ -546,6 +555,20 @@ impl TextView {
     /// This mode is suitable for small content, such as a few lines of text, a label, etc.
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Highlight every case-insensitive occurrence of `query` in the rendered
+    /// rich text without reparsing the Markdown/HTML document.
+    pub fn highlight_matches(
+        mut self,
+        query: impl Into<SharedString>,
+        style: HighlightStyle,
+    ) -> Self {
+        let query = query.into();
+        if !query.trim().is_empty() {
+            self.match_highlight = Some((query, style));
+        }
         self
     }
 
@@ -693,6 +716,7 @@ impl Element for TextView {
                     None
                 },
                 state: self.state.clone(),
+                match_highlight: self.match_highlight.clone(),
             })
             .refine_style(&self.style)
             .vertical_scrollbar(list_state)

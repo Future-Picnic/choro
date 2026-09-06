@@ -261,13 +261,7 @@ impl DbPanel {
 impl Render for DbPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(project) = self.workspace.read(cx).active_project() else {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .text_size(crate::ui::design::text_body())
-                .text_color(crate::ui::design::t3(cx))
-                .child("Open a project to browse databases")
+            return style::empty_context_panel("DB", "Open a project to browse databases", cx)
                 .into_any_element();
         };
         let project_id = project.id;
@@ -291,7 +285,8 @@ impl Render for DbPanel {
                 .on_click(move |_, window, cx| {
                     DbConnectionsEditor::open(workspace.clone(), window, cx);
                 })
-            });
+            })
+            .child(style::right_sidebar_toggle(true, false, cx));
 
         if connections.is_empty() {
             return v_flex()

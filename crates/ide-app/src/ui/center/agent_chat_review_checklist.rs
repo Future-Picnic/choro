@@ -143,7 +143,7 @@ impl CenterArea {
                             .and_then(|previous| checklist.items.get(previous)?.flow.as_deref());
                         (previous != Some(flow.as_str())).then(|| flow.clone())
                     });
-                    let action = item.action.clone();
+                    let action = item.action_label().to_string();
                     let expected = item.expected.clone();
                     v_flex()
                         .w_full()

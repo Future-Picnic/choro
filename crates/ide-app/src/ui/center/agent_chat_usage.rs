@@ -305,9 +305,8 @@ fn format_usage_count(value: u64) -> String {
 fn format_token_usage_label(totals: &UsageTotals) -> String {
     if totals.cache_read_tokens > 0 {
         format!(
-            "Usage ({} regular · {} cached)",
-            format_usage_count_compact(regular_token_count(totals)),
-            format_usage_count_compact(totals.cache_read_tokens)
+            "Usage ({} regular)",
+            format_usage_count_compact(regular_token_count(totals))
         )
     } else {
         format!(
@@ -374,17 +373,14 @@ mod tests {
     }
 
     #[test]
-    fn separates_regular_and_cached_token_usage() {
+    fn hides_cached_tokens_until_usage_details_are_opened() {
         let totals = UsageTotals {
             reported_total_tokens: 11_694_308,
             cache_read_tokens: 11_211_008,
             ..Default::default()
         };
 
-        assert_eq!(
-            format_token_usage_label(&totals),
-            "Usage (483K regular · 11.2M cached)"
-        );
+        assert_eq!(format_token_usage_label(&totals), "Usage (483K regular)");
         assert_eq!(
             format_token_usage_detail(&totals),
             "483,300 regular · 11,211,008 cached"

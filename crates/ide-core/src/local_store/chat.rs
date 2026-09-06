@@ -377,6 +377,101 @@ pub(super) async fn load_timeline_events_page_async(
     })
 }
 
+pub(super) async fn search_timeline_message_candidates_page_async(
+    conn: &Connection,
+    agent_id: Uuid,
+    folded_query: &str,
+    search_text_version: u64,
+    before_sequence: Option<i64>,
+    limit: usize,
+) -> Result<StoredTimelinePage> {
+    if folded_query.is_empty() || limit == 0 {
+        return Ok(StoredTimelinePage {
+            events: Vec::new(),
+            oldest_sequence: None,
+            has_more: false,
+        });
+    }
+
+    // User rows delimit turns and are intentionally retained so the caller can
+    // suppress assistant output belonging to hidden maintenance turns. Current
+    // assistant rows use their pre-folded, display-equivalent text as the fast
+    // path. Older/future payload versions are returned as candidates so the
+    // caller can normalize them without a destructive data migration.
+    let query_limit = i64::try_from(limit.saturating_add(1))?;
+    let search_text_version = i64::try_from(search_text_version)?;
+    let mut rows = match before_sequence {
+        Some(before_sequence) => {
+            conn.query(
+                "SELECT id, agent_id, kind, event_key, payload_json, sequence, created_at
+                 FROM chat_timeline_events
+                 WHERE agent_id = ?1
+                   AND sequence < ?2
+                   AND kind = 'message'
+                   AND (
+                        json_extract(payload_json, '$.role') = 'user'
+                        OR (
+                            json_extract(payload_json, '$.role') = 'assistant'
+                            AND (
+                                COALESCE(CAST(json_extract(payload_json, '$.search_text_version') AS INTEGER), 0) != ?3
+                                OR instr(COALESCE(json_extract(payload_json, '$.search_text'), ''), ?4) > 0
+                            )
+                        )
+                   )
+                 ORDER BY sequence DESC
+                 LIMIT ?5",
+                params![
+                    agent_id.to_string(),
+                    before_sequence,
+                    search_text_version,
+                    folded_query,
+                    query_limit
+                ],
+            )
+            .await?
+        }
+        None => {
+            conn.query(
+                "SELECT id, agent_id, kind, event_key, payload_json, sequence, created_at
+                 FROM chat_timeline_events
+                 WHERE agent_id = ?1
+                   AND kind = 'message'
+                   AND (
+                        json_extract(payload_json, '$.role') = 'user'
+                        OR (
+                            json_extract(payload_json, '$.role') = 'assistant'
+                            AND (
+                                COALESCE(CAST(json_extract(payload_json, '$.search_text_version') AS INTEGER), 0) != ?2
+                                OR instr(COALESCE(json_extract(payload_json, '$.search_text'), ''), ?3) > 0
+                            )
+                        )
+                   )
+                 ORDER BY sequence DESC
+                 LIMIT ?4",
+                params![
+                    agent_id.to_string(),
+                    search_text_version,
+                    folded_query,
+                    query_limit
+                ],
+            )
+            .await?
+        }
+    };
+    let mut events = timeline_events_from_rows(&mut rows).await?;
+    let has_more = events.len() > limit;
+    if has_more {
+        events.truncate(limit);
+    }
+    events.reverse();
+
+    Ok(StoredTimelinePage {
+        oldest_sequence: events.first().map(|event| event.sequence),
+        events,
+        has_more,
+    })
+}
+
 pub(super) async fn timeline_events_from_rows(
     rows: &mut turso::Rows,
 ) -> Result<Vec<StoredTimelineEvent>> {

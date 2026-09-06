@@ -7,7 +7,8 @@ use ide_core::config::{
     default_pinned_project_activities, normalized_project_activities, AppConfig,
     CompanionMusicSettings, ConversationLayout, GenerationAgent, GitStatusGroupMode,
     GitStatusViewMode, NavStyle, NewAgentDefaults, NotificationSettings, PanelSizes,
-    ProjectActivityId, ReviewChecklistMode, ThemeMode, VerificationMode, VoiceSettings,
+    ProjectActivityId, ReviewChecklistMode, SeparatorStyle, SidebarStyle, ThemeMode,
+    VerificationMode, VoiceSettings,
 };
 use ide_core::local_store::LocalStore;
 use ide_core::{GitWorkflow, GitWorkflowRun, Project, ProjectId, ProjectSection, ProjectSectionId};
@@ -41,6 +42,8 @@ pub struct Workspace {
     pub git_status_view: GitStatusViewMode,
     pub git_status_group: GitStatusGroupMode,
     pub conversation_layout: ConversationLayout,
+    pub sidebar_style: SidebarStyle,
+    pub separator_style: SeparatorStyle,
     pub notifications: NotificationSettings,
     pub companion_enabled: bool,
     pub companion_music: CompanionMusicSettings,
@@ -63,6 +66,8 @@ pub struct Workspace {
     pub attention_collapsed: bool,
     pub pinned_agents: Vec<Uuid>,
     pub pinned_agents_collapsed: bool,
+    /// Sidebar project list shows only active work (working or waiting agents).
+    pub sidebar_active_work: bool,
     pub default_project_activities: Vec<ProjectActivityId>,
     pub project_activity_overrides: HashMap<ProjectId, Vec<ProjectActivityId>>,
     save_scheduled: bool,
@@ -139,6 +144,8 @@ impl Workspace {
             git_status_view: config.git_status_view,
             git_status_group: config.git_status_group,
             conversation_layout: config.conversation_layout,
+            sidebar_style: config.sidebar_style,
+            separator_style: config.separator_style,
             notifications: config.notifications,
             companion_enabled: config.companion_enabled,
             companion_music: config.companion_music,
@@ -159,6 +166,7 @@ impl Workspace {
             attention_collapsed: config.attention_collapsed,
             pinned_agents: config.pinned_agents,
             pinned_agents_collapsed: config.pinned_agents_collapsed,
+            sidebar_active_work: config.sidebar_active_work,
             default_project_activities,
             project_activity_overrides,
             save_scheduled: false,
@@ -214,6 +222,24 @@ impl Workspace {
             return;
         }
         self.conversation_layout = layout;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_sidebar_style(&mut self, style: SidebarStyle, cx: &mut Context<Self>) {
+        if self.sidebar_style == style {
+            return;
+        }
+        self.sidebar_style = style;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_separator_style(&mut self, style: SeparatorStyle, cx: &mut Context<Self>) {
+        if self.separator_style == style {
+            return;
+        }
+        self.separator_style = style;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -722,6 +748,18 @@ impl Workspace {
         }
     }
 
+    /// Switch the sidebar project list between Active (working or waiting
+    /// agents) and All (every in-progress agent). Persisted like the other
+    /// sidebar layout preferences.
+    pub fn set_sidebar_active_work(&mut self, active_work: bool, cx: &mut Context<Self>) {
+        if self.sidebar_active_work == active_work {
+            return;
+        }
+        self.sidebar_active_work = active_work;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
     pub fn toggle_pinned_agents_collapsed(&mut self, cx: &mut Context<Self>) {
         self.pinned_agents_collapsed = !self.pinned_agents_collapsed;
         self.schedule_save(cx);
@@ -1096,6 +1134,7 @@ impl Workspace {
         }
         self.panels.left = left;
         self.schedule_save(cx);
+        cx.notify();
     }
 
     pub fn set_right_panel_size(&mut self, right: f32, cx: &mut Context<Self>) {
@@ -1149,6 +1188,8 @@ impl Workspace {
             git_status_view: self.git_status_view,
             git_status_group: self.git_status_group,
             conversation_layout: self.conversation_layout,
+            sidebar_style: self.sidebar_style,
+            separator_style: self.separator_style,
             notifications: self.notifications,
             companion_enabled: self.companion_enabled,
             companion_music: self.companion_music.clone(),
@@ -1169,6 +1210,7 @@ impl Workspace {
             attention_collapsed: self.attention_collapsed,
             pinned_agents: self.pinned_agents.clone(),
             pinned_agents_collapsed: self.pinned_agents_collapsed,
+            sidebar_active_work: self.sidebar_active_work,
             default_project_activities: self.default_project_activities.clone(),
             project_activity_overrides: self.project_activity_overrides.clone(),
         }

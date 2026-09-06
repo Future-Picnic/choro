@@ -58,7 +58,7 @@ pub(crate) use generation::{
     generate_pull_request_for_files, generate_riff, pull_request_base_branch_options,
     GeneratedPullRequest, MemoryDecisionContext,
 };
-pub(crate) use generation::{run_safe_text_generation, run_safe_text_generation_with_images};
+pub(crate) use generation::{run_quick_ask_generation_with_images, run_safe_text_generation};
 use pull_request_dialog::{confirm_git_action, GitConfirmation};
 use pull_request_support::{
     branch_from_push_message, existing_pull_request_url, repo_pull_requests,

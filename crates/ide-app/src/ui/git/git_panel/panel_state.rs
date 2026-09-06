@@ -31,11 +31,16 @@ impl GitPanel {
             let last_active_project = workspace.read(cx).active;
             let last_active_repository = last_active_project
                 .and_then(|project_id| git_states.read(cx).active_repository_path(project_id));
-            cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
+            cx.observe(&workspace, |this: &mut Self, _, cx| {
+                this.sync_lane_scope(cx);
+                cx.notify();
+            })
+            .detach();
             cx.observe(&git_states, |_, _, cx| cx.notify()).detach();
             // Solo lanes appear/disappear with agent changes.
             cx.observe(&agents, |this: &mut Self, _, cx| {
                 this.solo_ahead_checked_at = None;
+                this.sync_lane_scope(cx);
                 cx.notify();
             })
             .detach();
@@ -116,7 +121,10 @@ impl GitPanel {
                 lane_git: None,
             }
         });
-        view.update(cx, |view, cx| view.refresh_git_accounts(cx));
+        view.update(cx, |view, cx| {
+            view.sync_lane_scope(cx);
+            view.refresh_git_accounts(cx);
+        });
         view
     }
 
@@ -137,6 +145,13 @@ impl GitPanel {
     pub(crate) fn git_account_remote(&self, cx: &App) -> Option<GitRemote> {
         let git = self.active_git(cx)?;
         git.read(cx).snapshot.as_ref()?.primary_remote.clone()
+    }
+
+    /// Match the panel's repository/Solo scope, including while it is hidden.
+    pub(crate) fn change_count(&self, cx: &App) -> Option<usize> {
+        let git = self.active_git(cx)?;
+        let state = git.read(cx);
+        state.snapshot.as_ref().map(|snapshot| snapshot.entries.len())
     }
 
     pub(crate) fn connected_git_accounts(&self) -> Vec<GitHubAccount> {

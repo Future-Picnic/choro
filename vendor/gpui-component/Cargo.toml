@@ -138,6 +138,9 @@ features = [
     "metric_utf16",
 ]
 
+[dependencies.unicase]
+version = "2.9"
+
 [dependencies.rust-i18n]
 version = "3"
 

@@ -27,8 +27,8 @@ use crate::state::{
 use ide_core::{
     config::{
         CompletionNotifications, ConversationLayout, GenerationAgent, NewAgentDefaults,
-        ReviewChecklistMode, ThemeMode as ConfigTheme, VerificationMode,
-        DEFAULT_CODE_REVIEW_PROMPT,
+        ReviewChecklistMode, SeparatorStyle, SidebarStyle, ThemeMode as ConfigTheme,
+        VerificationMode, DEFAULT_CODE_REVIEW_PROMPT,
     },
     local_store::{
         analytics_orbit_template, blank_orbit_module, normalize_orbit_field_key,
@@ -54,6 +54,7 @@ mod remote_page;
 mod render;
 mod shortcuts;
 mod skills_page;
+mod theme_preview;
 mod voice;
 
 const PENPOT_CLOUD_URL: &str = "https://design.penpot.app";
@@ -107,7 +108,7 @@ impl SettingsSection {
             }
             Self::Voice => "Manage local speech models, spoken feedback, and patient turn-taking.",
             Self::Companion => {
-                "Choose the Spotify playlists available from the floating companion."
+                "Your desktop companion and the music for every mood."
             }
             Self::Notifications => {
                 "Choose when agent questions, approvals, and completed turns can interrupt you."
@@ -181,7 +182,7 @@ struct OrbitFieldEditor {
 }
 
 struct CompanionPlaylistInputs {
-    url: Entity<InputState>,
+    urls: Vec<Entity<InputState>>,
 }
 
 #[derive(Clone)]
@@ -419,11 +420,17 @@ impl SettingsView {
             .playlists
             .iter()
             .map(|playlist| CompanionPlaylistInputs {
-                url: cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .default_value(playlist.url.clone())
-                        .placeholder("https://open.spotify.com/playlist/…")
-                }),
+                urls: playlist
+                    .urls
+                    .iter()
+                    .map(|url| {
+                        cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .default_value(url.clone())
+                                .placeholder("Paste a Spotify playlist link…")
+                        })
+                    })
+                    .collect(),
             })
             .collect::<Vec<_>>();
         let skills_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search skills"));
@@ -472,16 +479,15 @@ impl SettingsView {
                 },
             )
             .detach();
-            for index in 0..companion_playlists.len() {
-                cx.subscribe(
-                    &companion_playlists[index].url,
-                    move |this: &mut Self, _, event: &InputEvent, cx| {
+            for (index, playlist) in companion_playlists.iter().enumerate() {
+                for url in &playlist.urls {
+                    cx.subscribe(url, move |this: &mut Self, _, event: &InputEvent, cx| {
                         if matches!(event, InputEvent::Change) {
                             this.sync_companion_playlist(index, cx);
                         }
-                    },
-                )
-                .detach();
+                    })
+                    .detach();
+                }
             }
             cx.subscribe(
                 &shortcut_search,
@@ -666,6 +672,22 @@ impl SettingsView {
     fn select_conversation_layout(&mut self, layout: ConversationLayout, cx: &mut Context<Self>) {
         self.workspace.update(cx, |workspace, cx| {
             workspace.set_conversation_layout(layout, cx);
+            workspace.save_now();
+        });
+        cx.notify();
+    }
+
+    fn select_sidebar_style(&mut self, style: SidebarStyle, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.set_sidebar_style(style, cx);
+            workspace.save_now();
+        });
+        cx.notify();
+    }
+
+    fn select_separator_style(&mut self, style: SeparatorStyle, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.set_separator_style(style, cx);
             workspace.save_now();
         });
         cx.notify();

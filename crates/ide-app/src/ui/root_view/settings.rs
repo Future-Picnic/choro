@@ -13,24 +13,35 @@ impl RootView {
         // Keep the interactive hitbox on the handle itself. An absolutely
         // positioned child does not enlarge its parent's GPUI hitbox, so making
         // the parent only 1px wide leaves the sidebar effectively impossible to
-        // drag. The extra width is painted as part of the adjacent sidebar and
-        // the center-facing edge remains a single hairline seam.
-        let line_color = style::hairline(cx);
+        // drag.
+        //
+        // The handle is absolutely positioned inside the panel it resizes —
+        // pinned to the sidebar's right edge (left side) or the panel's left
+        // edge (right side) — so it takes no flex width and paints no strip
+        // over the panel gradients. Absolute insets, unlike negative flex
+        // margins, are laid out reliably by taffy (negative margins shifted
+        // every downstream sibling and clipped the rail off the window edge).
+        // Only the 1px seam rule on the center-facing edge is visible.
+        let separator_style = self.workspace.read(cx).separator_style;
+        let is_left = side == SidebarResizeSide::Left;
 
         div()
             .id(id)
-            .flex_none()
+            .absolute()
+            .top(px(0.))
+            .bottom(px(0.))
             .w(px(5.))
-            .h_full()
-            .bg(crate::ui::design::nav(cx))
+            .when(is_left, |handle| {
+                handle
+                    .right(px(0.))
+                    .child(style::separator_vline(separator_style, cx).ml_auto())
+            })
+            .when(!is_left, |handle| {
+                handle
+                    .left(px(0.))
+                    .child(style::separator_vline(separator_style, cx))
+            })
             .cursor_ew_resize()
-            .child(
-                div()
-                    .when(side == SidebarResizeSide::Left, |line| line.ml_auto())
-                    .w(px(1.))
-                    .h_full()
-                    .bg(line_color),
-            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {

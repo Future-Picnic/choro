@@ -1,6 +1,172 @@
 use super::*;
 
+struct SavedProjectView {
+    mode: CenterMode,
+    context: ContextMode,
+    last_code_mode: CenterMode,
+    back: Vec<CenterMode>,
+    forward: Vec<CenterMode>,
+}
+
+impl Default for SavedProjectView {
+    fn default() -> Self {
+        Self {
+            mode: CenterMode::Agents,
+            context: ContextMode::Docs,
+            last_code_mode: CenterMode::Split,
+            back: Vec::new(),
+            forward: Vec::new(),
+        }
+    }
+}
+
+/// Session memory for each project's activity and navigation history.
+pub(super) struct ProjectNavigation {
+    active: Option<ProjectId>,
+    saved: HashMap<ProjectId, SavedProjectView>,
+}
+
+impl ProjectNavigation {
+    pub(super) fn new(active: Option<ProjectId>) -> Self {
+        Self {
+            active,
+            saved: HashMap::new(),
+        }
+    }
+
+    fn switch_to(
+        &mut self,
+        project: Option<ProjectId>,
+        current: SavedProjectView,
+    ) -> SavedProjectView {
+        if let Some(previous) = self.active {
+            self.saved.insert(previous, current);
+        }
+        self.active = project;
+        project
+            .and_then(|id| self.saved.remove(&id))
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod project_navigation_tests {
+    use super::*;
+
+    #[test]
+    fn project_navigation_restores_docs_and_each_projects_history() {
+        let a = ProjectId::new();
+        let b = ProjectId::new();
+        let mut navigation = ProjectNavigation::new(Some(a));
+        let docs = SavedProjectView {
+            mode: CenterMode::Docs,
+            back: vec![CenterMode::Agents],
+            forward: vec![CenterMode::Tasks],
+            ..Default::default()
+        };
+        let first_visit = navigation.switch_to(Some(b), docs);
+        assert!(first_visit.mode == CenterMode::Agents);
+        assert!(first_visit.back.is_empty());
+        let tasks = SavedProjectView {
+            mode: CenterMode::Tasks,
+            ..Default::default()
+        };
+        let restored = navigation.switch_to(Some(a), tasks);
+        assert!(restored.mode == CenterMode::Docs);
+        assert!(restored.context == ContextMode::Docs);
+        assert!(restored.back == [CenterMode::Agents]);
+        assert!(restored.forward == [CenterMode::Tasks]);
+        assert!(navigation.switch_to(Some(b), restored).mode == CenterMode::Tasks);
+    }
+
+    #[test]
+    fn project_navigation_keeps_assets_and_code_layouts_separate() {
+        let a = ProjectId::new();
+        let b = ProjectId::new();
+        let mut navigation = ProjectNavigation::new(Some(a));
+        navigation.switch_to(
+            Some(b),
+            SavedProjectView {
+                mode: CenterMode::Docs,
+                context: ContextMode::Designs,
+                ..Default::default()
+            },
+        );
+        let assets = navigation.switch_to(
+            Some(a),
+            SavedProjectView {
+                mode: CenterMode::Files,
+                last_code_mode: CenterMode::Files,
+                ..Default::default()
+            },
+        );
+        assert!(assets.mode == CenterMode::Docs);
+        assert!(assets.context == ContextMode::Designs);
+        let code = navigation.switch_to(Some(b), assets);
+        assert!(code.mode == CenterMode::Files);
+        assert!(code.last_code_mode == CenterMode::Files);
+    }
+
+    #[test]
+    fn project_navigation_remembers_explicit_navigation_after_restoring_a_project() {
+        let a = ProjectId::new();
+        let b = ProjectId::new();
+        let mut navigation = ProjectNavigation::new(Some(a));
+        navigation.switch_to(
+            Some(b),
+            SavedProjectView {
+                mode: CenterMode::Docs,
+                ..Default::default()
+            },
+        );
+        let a_view = navigation.switch_to(
+            Some(a),
+            SavedProjectView {
+                mode: CenterMode::Tasks,
+                ..Default::default()
+            },
+        );
+        let mut b_view = navigation.switch_to(Some(b), a_view);
+        assert!(b_view.mode == CenterMode::Tasks);
+        // An explicit agent link overrides B's restored Tasks view.
+        b_view.mode = CenterMode::Agents;
+        let a_view = navigation.switch_to(Some(a), b_view);
+        assert!(a_view.mode == CenterMode::Docs);
+        assert!(navigation.switch_to(Some(b), a_view).mode == CenterMode::Agents);
+    }
+}
+
 impl CenterArea {
+    /// Synchronize before explicit navigation as well as workspace observation:
+    /// opening a doc/agent may switch project and view in the same event.
+    pub(super) fn sync_project_navigation(&mut self, cx: &mut Context<Self>) {
+        let project = self.workspace.read(cx).active;
+        if self.project_navigation.active == project {
+            return;
+        }
+        let current = SavedProjectView {
+            mode: self.view_mode,
+            context: self.context_mode,
+            last_code_mode: self.last_code_mode,
+            back: std::mem::take(&mut self.view_history_back),
+            forward: std::mem::take(&mut self.view_history_forward),
+        };
+        let restored = self.project_navigation.switch_to(project, current);
+        if self.penpot_compare_open {
+            self.close_penpot_compare(cx);
+        }
+        self.view_mode = restored.mode;
+        self.context_mode = restored.context;
+        self.last_code_mode = restored.last_code_mode;
+        self.view_history_back = restored.back;
+        self.view_history_forward = restored.forward;
+        if self.view_mode == CenterMode::Tasks {
+            self.refresh_active_task_board(cx);
+            self.start_tasks_auto_refresh(cx);
+        }
+        cx.notify();
+    }
+
     /// App-level routes are painted by RootView, above the center panel. Native
     /// WKWebViews sit above GPUI itself, so they must be explicitly hidden while
     /// one of those routes owns the window.
@@ -55,6 +221,7 @@ impl CenterArea {
     }
 
     pub fn set_view_mode(&mut self, mode: CenterMode, cx: &mut Context<Self>) {
+        self.sync_project_navigation(cx);
         if self.view_mode == mode {
             return;
         }
@@ -71,6 +238,7 @@ impl CenterArea {
     }
 
     pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        self.sync_project_navigation(cx);
         let Some(previous) = self.view_history_back.pop() else {
             return;
         };
@@ -90,6 +258,7 @@ impl CenterArea {
     }
 
     pub fn go_forward(&mut self, cx: &mut Context<Self>) {
+        self.sync_project_navigation(cx);
         let Some(next) = self.view_history_forward.pop() else {
             return;
         };
@@ -125,6 +294,7 @@ impl CenterArea {
     }
 
     pub fn show_code(&mut self, cx: &mut Context<Self>) {
+        self.sync_project_navigation(cx);
         self.set_view_mode(self.last_code_mode, cx);
     }
 
@@ -223,7 +393,7 @@ impl CenterArea {
     }
 
     pub fn show_docs(&mut self, cx: &mut Context<Self>) {
-        self.set_view_mode(CenterMode::Docs, cx);
+        self.set_context_mode(ContextMode::Docs, cx);
     }
 
     pub fn toggle_terminal_area(&mut self, cx: &mut Context<Self>) {
@@ -240,6 +410,7 @@ impl CenterArea {
     }
 
     pub fn set_context_mode(&mut self, mode: ContextMode, cx: &mut Context<Self>) {
+        self.sync_project_navigation(cx);
         // Always switch to the Docs center view — Docs and Designs are now
         // separate activities reachable from anywhere, so selecting one must
         // navigate even when the context mode itself is unchanged.

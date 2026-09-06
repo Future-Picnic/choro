@@ -95,7 +95,7 @@ pub const CENTER_CONTENT_MAX_W: f32 = 1100.0;
 pub const AGENT_CHAT_CONTENT_MAX_W: f32 = CENTER_CONTENT_MAX_W;
 pub const AGENT_CHAT_GUTTER_X: f32 = 16.0;
 
-pub const RAIL_FOOTER_CELL_H: f32 = 52.0;
+pub const RAIL_FOOTER_CELL_H: f32 = 64.0;
 
 pub fn text_label() -> Pixels {
     px(TEXT_LABEL)
@@ -253,6 +253,10 @@ pub const COMPOSER_INPUT_MIN_H: f32 = 50.0;
 /// This accommodates the input region, control row, and their vertical insets
 /// without either surface growing beyond the shared baseline.
 pub const COMPOSER_FRAME_H: f32 = 128.0;
+/// 36px — one or two short lines in lightweight assistant composers.
+pub const COMPACT_COMPOSER_INPUT_MIN_H: f32 = 36.0;
+/// 96px — compact empty frame for assistants without agent-only controls.
+pub const COMPACT_COMPOSER_FRAME_H: f32 = 96.0;
 /// 188px — canonical minimum width for every popup menu.
 pub const MENU_MIN_W: f32 = 188.0;
 /// 500px — maximum popup width unless a caller supplies a tighter constraint.
@@ -362,6 +366,12 @@ pub fn composer_input_min_h() -> Pixels {
 }
 pub fn composer_frame_h() -> Pixels {
     px(COMPOSER_FRAME_H)
+}
+pub fn compact_composer_input_min_h() -> Pixels {
+    px(COMPACT_COMPOSER_INPUT_MIN_H)
+}
+pub fn compact_composer_frame_h() -> Pixels {
+    px(COMPACT_COMPOSER_FRAME_H)
 }
 
 pub fn menu_min_w() -> Pixels {

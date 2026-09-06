@@ -1,16 +1,10 @@
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
-
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 
 const GIT_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
-const GIT_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Result of a `git` CLI network operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,73 +43,15 @@ fn run_git_with_timeout(
         .args(args)
         .current_dir(repo_path)
         // Fail fast instead of hanging on an interactive credential prompt.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Git can start SSH, credential helpers, and hooks. Give the command its
-    // own process group so a timeout stops the complete operation.
-    #[cfg(unix)]
-    command.process_group(0);
-
-    let mut child = command
-        .spawn()
-        .context("failed to run git — is it installed?")?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("failed to capture git stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("failed to capture git stderr"))?;
-    let stdout_reader = thread::spawn(move || read_output(stdout));
-    let stderr_reader = thread::spawn(move || read_output(stderr));
-
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().context("failed while waiting for git")? {
-            break status;
-        }
-        if started.elapsed() >= timeout {
-            terminate_git_process_group(&mut child);
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            let operation = args.first().copied().unwrap_or("operation");
-            return Err(anyhow!(
-                "Git {operation} timed out after {} seconds. Check the network or remote and try again.",
-                timeout.as_secs()
-            ));
-        }
-        thread::sleep(GIT_WAIT_POLL_INTERVAL.min(timeout.saturating_sub(started.elapsed())));
-    };
-
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| anyhow!("failed to collect git stdout"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| anyhow!("failed to collect git stderr"))??;
-
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let operation = args.first().copied().unwrap_or("operation");
+    let output = crate::process::output_with_timeout(&mut command, timeout)
+        .map_err(|error| anyhow!("Git {operation} failed: {error:#}. Check the network or remote and try again."))?;
     Ok(RemoteOutput {
-        success: status.success(),
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
-}
-
-fn read_output(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    pipe.read_to_end(&mut output)?;
-    Ok(output)
-}
-
-fn terminate_git_process_group(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    unsafe {
-        let _ = libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-    }
-    let _ = child.kill();
 }
 
 pub fn push(repo_path: &Path, branch: Option<&str>, set_upstream: bool) -> Result<RemoteOutput> {

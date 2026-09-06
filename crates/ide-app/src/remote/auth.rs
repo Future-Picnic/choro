@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ const TOKEN_PREFIX: &str = "choro_device_";
 const ADMISSION_TOKEN_PREFIX: &str = "choro_admit_";
 const DEVICE_TTL_SECS: u64 = 90 * 24 * 60 * 60;
 const KEYCHAIN_SERVICE: &str = "com.ritmus.choro.remote.transport";
+// PocketComet polls every 30 seconds while idle; allow a delayed request.
+const POCKETCOMET_PRESENCE_TTL: Duration = Duration::from_secs(65);
 
 #[derive(Clone)]
 pub struct RemoteAuth {
@@ -28,6 +31,7 @@ pub struct RemoteAuth {
 struct AuthState {
     devices: Vec<StoredDevice>,
     pairing: Option<PairingWindow>,
+    authenticated_at: HashMap<String, Instant>,
 }
 
 #[derive(Clone)]
@@ -153,6 +157,7 @@ impl RemoteAuth {
             inner: Arc::new(Mutex::new(AuthState {
                 devices,
                 pairing: None,
+                authenticated_at: HashMap::new(),
             })),
             storage_path: Arc::new(storage_path),
             use_keychain,
@@ -315,10 +320,28 @@ impl RemoteAuth {
                 && constant_time_eq(device.token_hash.as_bytes(), hash.as_bytes())
             {
                 device.last_seen_at = now;
-                return Some(public_device(device));
+                let device = public_device(device);
+                state
+                    .authenticated_at
+                    .insert(device.id.clone(), Instant::now());
+                return Some(device);
             }
         }
         None
+    }
+
+    /// Live activity only: saved pairing timestamps never establish presence.
+    pub fn pocketcomet_connected(&self) -> bool {
+        let now = unix_now();
+        let state = self.inner.lock();
+        state.devices.iter().any(|device| {
+            device.name.starts_with("PocketComet on ")
+                && device.expires_at > now
+                && state
+                    .authenticated_at
+                    .get(&device.id)
+                    .is_some_and(|seen| seen.elapsed() < POCKETCOMET_PRESENCE_TTL)
+        })
     }
 
     pub fn is_device_active(&self, device_id: &str) -> bool {
@@ -398,6 +421,7 @@ impl RemoteAuth {
                 state.devices = previous_devices;
                 return Err(error);
             }
+            state.authenticated_at.remove(device_id);
             if self.use_keychain {
                 let _ = keychain_delete(device_id);
             }
@@ -537,6 +561,51 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pocketcomet_presence_requires_live_authentication_and_clears_on_revoke() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("devices.json");
+        let auth = RemoteAuth::load(path.clone());
+        let code = auth.start_pairing().active_code.unwrap();
+        let phone = auth.pair(&code, "iPhone").unwrap();
+        assert!(auth.authorize(&phone.token));
+        assert!(!auth.pocketcomet_connected());
+
+        let code = auth.start_pairing().active_code.unwrap();
+        let comet = auth.pair(&code, "PocketComet on this Mac").unwrap();
+        assert!(!auth.pocketcomet_connected());
+        assert!(!auth.authorize("choro_device_invalid"));
+        assert!(!auth.pocketcomet_connected());
+        assert!(auth.authorize(&comet.token));
+        assert!(auth.pocketcomet_connected());
+        assert!(!RemoteAuth::load(path).pocketcomet_connected());
+        assert!(auth.revoke(&comet.device.id).unwrap());
+        assert!(!auth.pocketcomet_connected());
+    }
+
+    #[test]
+    fn pocketcomet_presence_tolerates_idle_polling_but_expires() {
+        let directory = tempfile::tempdir().unwrap();
+        let auth = RemoteAuth::load(directory.path().join("devices.json"));
+        let code = auth.start_pairing().active_code.unwrap();
+        let comet = auth.pair(&code, "PocketComet on this Mac").unwrap();
+        assert!(auth.authorize(&comet.token));
+        auth.inner.lock().authenticated_at.insert(
+            comet.device.id.clone(),
+            Instant::now() - Duration::from_secs(30),
+        );
+        assert!(auth.pocketcomet_connected());
+        auth.inner.lock().authenticated_at.insert(
+            comet.device.id.clone(),
+            Instant::now() - POCKETCOMET_PRESENCE_TTL,
+        );
+        assert!(!auth.pocketcomet_connected());
+        assert!(auth.authorize(&comet.token));
+        assert!(auth.pocketcomet_connected());
+        auth.inner.lock().devices[0].expires_at = unix_now();
+        assert!(!auth.pocketcomet_connected());
+    }
 
     #[test]
     fn pairing_is_one_time_and_tokens_survive_reload() {

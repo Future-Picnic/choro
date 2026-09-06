@@ -9,6 +9,7 @@ actions!(
         OpenProjectSearch,
         OpenCommands,
         OpenContentSearch,
+        OpenAgentChatSearch,
         OpenFolder,
         ToggleFocusMode,
         ToggleLeftPanel,

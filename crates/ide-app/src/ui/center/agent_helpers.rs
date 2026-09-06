@@ -237,9 +237,22 @@ pub(super) fn agent_chat_rows(
                     hidden_review_checklist_turn = true;
                     index += 1;
                 }
-                AgentChatTimelineItem::Message(AgentChatMessage::User { .. }) => {
+                AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
                     hidden_background_summary_turn = false;
                     hidden_review_checklist_turn = false;
+                    // The received card is the visible prompt for a teammate
+                    // turn. A second, empty prompt row would split the card
+                    // from its answer in newest-turn-first layout.
+                    if !super::agent_chat_brain::is_agent_request_submission(text)
+                        && !super::agent_chat_brain::is_teammate_result_submission(text)
+                    {
+                        rows.push(AgentChatRow::TimelineItem(index));
+                    }
+                    index += 1;
+                }
+                AgentChatTimelineItem::AgentMessage(_) => {
+                    // These arrive independently of background checklist and
+                    // summary turns; their receipts must never be suppressed.
                     rows.push(AgentChatRow::TimelineItem(index));
                     index += 1;
                 }
@@ -474,12 +487,13 @@ pub(super) fn agent_chat_display_order(
                 .messages
                 .get(*index)
                 .is_some_and(|message| matches!(message, AgentChatMessage::User { .. })),
-            AgentChatRow::TimelineItem(index) => session.timeline.get(*index).is_some_and(|item| {
-                matches!(
-                    item,
-                    AgentChatTimelineItem::Message(AgentChatMessage::User { .. })
-                )
-            }),
+            AgentChatRow::TimelineItem(index) => {
+                session.timeline.get(*index).is_some_and(|item| match item {
+                    AgentChatTimelineItem::Message(AgentChatMessage::User { .. }) => true,
+                    AgentChatTimelineItem::AgentMessage(card) => card.target_agent_id.is_none(),
+                    _ => false,
+                })
+            }
             _ => false,
         })
         .collect::<Vec<_>>();
@@ -677,6 +691,94 @@ mod tests {
 
         assert_eq!(order, vec![5, 6, 7, 3, 4, 0, 1, 2]);
         assert_eq!(newest_len, 3);
+    }
+
+    fn teammate_card(kind: &str, outgoing: bool) -> AgentChatTimelineItem {
+        AgentChatTimelineItem::AgentMessage(crate::state::agent_chat::AgentMessageCard {
+            id: Uuid::new_v4(),
+            source_agent_id: Uuid::new_v4(),
+            source_title: "Teammate".to_string(),
+            target_agent_id: outgoing.then(Uuid::new_v4),
+            target_title: outgoing.then(|| "Recipient".to_string()),
+            text: "Context from the teammate".to_string(),
+            kind: kind.to_string(),
+            created_at: 2,
+        })
+    }
+
+    fn user_row(text: &str) -> AgentChatTimelineItem {
+        AgentChatTimelineItem::Message(AgentChatMessage::User {
+            text: text.to_string(),
+            display_text: None,
+            tags: Vec::new(),
+            created_at: 1,
+        })
+    }
+
+    #[test]
+    fn received_teammate_cards_stay_with_their_answer_in_both_layouts() {
+        for (kind, prompt) in [
+            ("ask", "<choro-agent-request>\nRequest id: question"),
+            ("delegate", "<choro-agent-request>\nRequest id: task"),
+            ("reply", "<!-- choro:teammate-result -->\nResult"),
+        ] {
+            let session = session_with_timeline(vec![
+                user_row("Original user request"),
+                teammate_card("ask", true),
+                teammate_card(kind, false),
+                user_row(prompt),
+                AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                    message_id: None,
+                    text: "Using the teammate's context".to_string(),
+                    created_at: 3,
+                }),
+            ]);
+            let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+            let rows = agent_chat_rows(&session, false, false, &filter);
+            assert!(matches!(
+                rows.as_slice(),
+                [
+                    AgentChatRow::TimelineItem(0),
+                    AgentChatRow::TimelineItem(1),
+                    AgentChatRow::TimelineItem(2),
+                    AgentChatRow::TimelineItem(4),
+                ]
+            ));
+            assert_eq!(
+                agent_chat_display_order(&rows, &session, false).0,
+                vec![0, 1, 2, 3]
+            );
+            assert_eq!(
+                agent_chat_display_order(&rows, &session, true),
+                (vec![2, 3, 0, 1], 2)
+            );
+        }
+    }
+
+    #[test]
+    fn teammate_receipts_are_visible_during_hidden_checklist_turns() {
+        for outgoing in [false, true] {
+            let session = session_with_timeline(vec![
+                user_row(REVIEW_CHECKLIST_REQUEST_MARKER),
+                teammate_card("reply", outgoing),
+                AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                    message_id: None,
+                    text: "Hidden checklist maintenance".to_string(),
+                    created_at: 3,
+                }),
+                user_row("<!-- choro:teammate-result -->\nResult"),
+                AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                    message_id: None,
+                    text: "Visible continuation".to_string(),
+                    created_at: 4,
+                }),
+            ]);
+            let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+            assert!(matches!(
+                agent_chat_rows(&session, false, false, &filter).as_slice(),
+                [AgentChatRow::TimelineItem(1), AgentChatRow::TimelineItem(4)]
+            ));
+        }
     }
 
     #[test]

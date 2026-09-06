@@ -12,6 +12,7 @@ mod persistence;
 mod proposed_plan;
 pub(crate) mod protocol;
 mod review_checklist;
+mod search;
 mod timeline;
 mod usage;
 mod verification;
@@ -37,6 +38,9 @@ use protocol::{spawn_chat_backend, ChatBackendCommand, ChatBackendController, Ch
 pub use review_checklist::{
     split_review_checklist, ReviewChecklist, ReviewChecklistItem, ReviewChecklistStatus,
     REVIEW_CHECKLIST_REQUEST_MARKER,
+};
+pub(crate) use search::{
+    fold_search_text, search_turn_is_hidden, searchable_message_text, TIMELINE_SEARCH_TEXT_VERSION,
 };
 pub use usage::{ConversationUsage, ModelUsage, UsageTotals};
 pub use verification::{split_verification, Verification, VerificationItem, VerificationStatus};
@@ -379,6 +383,10 @@ enum StoredTimelinePayload {
         display_text: Option<String>,
         #[serde(default)]
         tags: Vec<AgentChatMessageTag>,
+        #[serde(default)]
+        search_text_version: u64,
+        #[serde(default)]
+        search_text: String,
         created_at: u64,
         backend_message_id: Option<String>,
     },

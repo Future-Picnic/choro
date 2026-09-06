@@ -91,7 +91,7 @@ impl CenterArea {
             .update(cx, |workspace, cx| workspace.set_active(project, cx));
         self.docs
             .update(cx, |docs, cx| docs.select_doc(project, path, cx));
-        self.set_view_mode(CenterMode::Docs, cx);
+        self.set_context_mode(ContextMode::Docs, cx);
         self.new_agent_composer = None;
         cx.notify();
     }
@@ -549,7 +549,7 @@ impl CenterArea {
             .update(cx, |workspace, cx| workspace.set_active(project, cx));
         self.docs_focus_mode = DocsFocusMode::Assistant;
         self.docs_terminal_mode = DocsTerminalMode::Implementor;
-        self.set_view_mode(CenterMode::Docs, cx);
+        self.set_context_mode(ContextMode::Docs, cx);
         self.start_agent_in_mode(agent_id, CenterMode::Docs, window, cx);
     }
 

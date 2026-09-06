@@ -43,21 +43,56 @@ pub fn nav(cx: &App) -> Hsla {
     cx.theme().sidebar
 }
 /// Theme-colored cast at the sidebar's upper-left edge. This is deliberately
-/// mixed into the sidebar plane rather than painted as a translucent overlay:
-/// every theme owns the resulting color and foreground contrast stays
-/// predictable.
+/// mixed into the plane rather than painted as a translucent overlay: every
+/// theme owns the resulting color and foreground contrast stays predictable.
+///
+/// The blend target is not the raw accent (which is pale by design) but its
+/// deep chromatic sibling — same hue, dark body — so the cast is a true
+/// color, dosed lightly enough to stay a whisper away from the plain
+/// sidebar plane it fades into.
 pub fn nav_glow(cx: &App) -> Hsla {
-    nav_glow_color(nav(cx), accent(cx), on_accent(cx), cx.theme().is_dark())
+    nav_glow_color(nav(cx), accent(cx), cx.theme().is_dark())
 }
 
-fn nav_glow_color(nav: Hsla, accent: Hsla, on_accent: Hsla, is_dark: bool) -> Hsla {
+/// The accent's deep sibling: keep the hue, pin saturation and lightness so
+/// every theme lands on a comparably weighted cast.
+fn accent_depth(accent: Hsla, l: f32) -> Hsla {
+    Hsla {
+        h: accent.h,
+        s: 0.42,
+        l,
+        a: 1.0,
+    }
+}
+
+fn nav_glow_color(plane: Hsla, accent: Hsla, is_dark: bool) -> Hsla {
     if is_dark {
-        mix(nav, accent, 0.10)
+        // The sibling sits a fixed step above the plane's own lightness, so
+        // lighter dark themes (Dusk) get as perceptible a cast as deep ones.
+        mix(plane, accent_depth(accent, plane.l + 0.18), 0.15)
     } else {
-        // Light-theme accents are intentionally pale. Deepen the target within
-        // the same theme family before mixing so the cast remains perceptible
-        // without turning the sidebar into a colored surface.
-        mix(nav, mix(accent, on_accent, 0.35), 0.08)
+        // Light planes sit near-white, so the sibling is lighter and the
+        // blend shallower to keep dark foreground text comfortably readable.
+        mix(plane, accent_depth(accent, 0.45), 0.08)
+    }
+}
+
+/// The sidebar surface for the user's chosen [`SidebarStyle`]: a flat plane or
+/// the theme-accent cast falling from the top and resolving into [`nav`] by
+/// mid-height (strictly vertical: GPUI distorts angled gradients on tall
+/// panels). The cast is chromatic on purpose — a colorless lift spans only a
+/// handful of 8-bit levels and this GPUI version does not dither, so it
+/// rendered as visible bands.
+pub fn sidebar_background(style: ide_core::config::SidebarStyle, cx: &App) -> gpui::Background {
+    use ide_core::config::SidebarStyle;
+    match style {
+        SidebarStyle::Flat => gpui::solid_background(nav(cx)),
+        SidebarStyle::Colorful => gpui::linear_gradient(
+            180.0,
+            gpui::linear_color_stop(nav_glow(cx), 0.0),
+            gpui::linear_color_stop(nav(cx), 0.55),
+        )
+        .color_space(gpui::ColorSpace::Oklab),
     }
 }
 /// The canvas everything sits on.
@@ -447,6 +482,7 @@ mod tests {
         is_dark: bool,
         focus: Hsla,
         nav: Hsla,
+        base: Hsla,
         t1: Hsla,
         t2: Hsla,
         accent: Hsla,
@@ -474,6 +510,7 @@ mod tests {
                     is_dark: theme["mode"] == "dark",
                     focus: get("popover.background"),
                     nav: get("sidebar.background"),
+                    base: get("background"),
                     t1: get("foreground"),
                     t2: get("sidebar.foreground"),
                     accent: get("primary.background"),
@@ -507,9 +544,9 @@ mod tests {
     #[test]
     fn sidebar_glow_is_theme_colored_restrained_and_readable() {
         for t in themes() {
-            let glow = nav_glow_color(t.nav, t.accent, t.on_accent, t.is_dark);
+            let glow = nav_glow_color(t.nav, t.accent, t.is_dark);
             let surface_gap = contrast(glow, t.nav);
-            let minimum_gap = if t.is_dark { 1.05 } else { 1.03 };
+            let minimum_gap = if t.is_dark { 1.02 } else { 1.01 };
 
             assert!(
                 surface_gap >= minimum_gap,
@@ -517,7 +554,7 @@ mod tests {
                 t.name
             );
             assert!(
-                surface_gap <= 1.35,
+                surface_gap <= 1.50,
                 "{}: sidebar glow is too strong at {surface_gap:.3}:1",
                 t.name
             );

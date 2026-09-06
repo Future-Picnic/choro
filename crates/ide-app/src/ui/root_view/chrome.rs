@@ -1,10 +1,35 @@
 use super::*;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_component::scroll::ScrollableElement;
 use ide_core::ProjectActivityId;
 
 enum RailIcon {
     Component(IconName),
     Lucide(lucide_icons::Icon),
+    PocketComet,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn pocketcomet_is_running() -> bool {
+    use objc2_app_kit::NSRunningApplication;
+    use objc2_foundation::NSString;
+
+    // Support the current app and builds using its former DailyBob identity.
+    ["com.futurepicnic.pocketcomet", "com.futurepicnic.dailybob"]
+        .iter()
+        .any(|bundle_id| {
+            NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(
+                bundle_id,
+            ))
+            .iter()
+            .any(|app| !app.isTerminated())
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn pocketcomet_is_running() -> bool {
+    // Other platforms use the authenticated activity timeout.
+    true
 }
 
 fn project_activity_label(activity: ProjectActivityId) -> &'static str {
@@ -283,14 +308,11 @@ impl RootView {
                     this.toggle_settings(window, cx);
                 }));
 
-        v_flex().flex_none().w_full().pb_2().child(
-            v_flex()
-                .w_full()
-                .border_l_1()
-                .border_color(style::hairline(cx))
-                .child(help)
-                .child(settings),
-        )
+        v_flex()
+            .flex_none()
+            .w_full()
+            .pb_2()
+            .child(v_flex().w_full().child(help).child(settings))
     }
 
     /// Help and Settings controls anchored at the bottom of the right sidebar.
@@ -348,7 +370,7 @@ impl RootView {
         let defaults = workspace.read(cx).default_project_activities.clone();
         let current_id = current.persisted_id();
 
-        style::rail_activity_menu_button(
+        let trigger = style::rail_activity_menu_button(
             "rail-customize-activities",
             lucide_icons::Icon::Grip,
             "Manage",
@@ -415,7 +437,9 @@ impl RootView {
                         }
                     }),
             )
-        })
+        });
+
+        div().w_full().flex_none().child(trigger)
     }
 
     /// The center's back/forward history controls. Rendered in the header when
@@ -691,12 +715,6 @@ impl RootView {
         }
         let design_connection_pending = self.penpot.read(cx).connection_pending();
         let design_connection_needs_attention = self.penpot.read(cx).connection_needs_attention();
-        let pocketcomet_paired = self
-            .remote_auth
-            .snapshot()
-            .devices
-            .iter()
-            .any(|device| device.name.starts_with("PocketComet on "));
         // The design's `.rail` sits on `sink` — the darkest plane, one step below
         // the `nav` sidebar — so the rail reads as its own deepest column.
         let panel_bg = crate::ui::design::sink(cx);
@@ -731,7 +749,12 @@ impl RootView {
             v_flex()
                 .id(id)
                 .relative()
-                .h(px(if on_right { 64. } else { 56. }))
+                .flex_none()
+                .h(if on_right {
+                    crate::ui::design::rail_footer_cell_h()
+                } else {
+                    px(56.)
+                })
                 .gap_1()
                 .items_center()
                 .justify_center()
@@ -739,9 +762,10 @@ impl RootView {
                 .text_color(fg)
                 .map(|el| {
                     // The cell never fills — the highlight lives on the icon pill
-                    // only (below). The right rail keeps its left-edge divider.
+                    // only (below). The right rail's left-edge divider is one
+                    // soft overlay on the rail itself, not per-cell borders.
                     if on_right {
-                        el.w_full().border_l_1().border_color(style::hairline(cx))
+                        el.w_full()
                     } else {
                         el.mx(px(8.))
                     }
@@ -772,6 +796,10 @@ impl RootView {
                                 crate::ui::design::icon_lg(),
                             )
                             .into_any_element(),
+                            RailIcon::PocketComet => {
+                                crate::ui::design::indicator::pocketcomet_rail_icon(fg)
+                                    .into_any_element()
+                            }
                         })
                         .children(design_connection_color.map(|color| {
                             div()
@@ -917,39 +945,53 @@ impl RootView {
             .when(show_divider && !on_right, |rail| {
                 rail.border_r_1().border_color(style::hairline(cx))
             })
-            // Right rail: a short top spacer (carrying the divider) so the first
-            // cell's chip lines up with the top of the panel's Board/Git toggle.
+            // Right rail: the left-edge divider is a single soft rule that
+            // fades at both ends, overlaid on the rail — "light instead of
+            // lines" — rather than border segments chained across every cell.
             .when(on_right, |rail| {
-                rail.child(
-                    div()
-                        .flex_none()
-                        .h(px(4.))
-                        .border_l_1()
-                        .border_color(style::hairline(cx)),
-                )
+                let separator_style = self.workspace.read(cx).separator_style;
+                rail.relative()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(0.))
+                            .top(px(0.))
+                            .bottom(px(0.))
+                            .w(px(1.))
+                            .child(style::separator_vline(separator_style, cx)),
+                    )
+                    // Short top spacer so the first cell's chip lines up with
+                    // the top of the panel's Board/Git toggle.
+                    .child(div().flex_none().h(px(4.)))
             })
-            .children(activity_items)
-            .when_some(customizer, |rail, customizer| rail.child(customizer))
-            // Right rail: a flexible spacer (carrying the divider) pushes the
-            // Settings cell to the bottom, VS Code-style.
+            .child(
+                v_flex()
+                    .id(if on_right {
+                        "right-rail-activities"
+                    } else {
+                        "left-rail-activities"
+                    })
+                    .w_full()
+                    .min_h(px(0.))
+                    .when(on_right, |list| list.flex_1())
+                    .when(!on_right, |list| list.gap_1())
+                    .overflow_y_scrollbar()
+                    .children(activity_items),
+            )
+            // The activity list absorbs spare height and scrolls on short
+            // windows, keeping the equally spaced footer actions reachable.
             .when(on_right, |rail| {
-                rail.child(
-                    div()
-                        .flex_1()
-                        .min_h(px(0.))
-                        .border_l_1()
-                        .border_color(style::hairline(cx)),
-                )
-                .when(pocketcomet_paired, |rail| {
-                    rail.child(item(
-                        "rail-pocketcomet",
-                        RailIcon::Lucide(lucide_icons::Icon::Orbit),
-                        "PComet",
-                        ProjectActivity::PocketComet,
-                        cx,
-                    ))
-                })
-                .child(self.rail_footer(cx))
+                rail.when_some(customizer, |rail, customizer| rail.child(customizer))
+                    .when(self.pocketcomet_connected, |rail| {
+                        rail.child(item(
+                            "rail-pocketcomet",
+                            RailIcon::PocketComet,
+                            "PComet",
+                            ProjectActivity::PocketComet,
+                            cx,
+                        ))
+                    })
+                    .child(self.rail_footer(cx))
             })
     }
 }

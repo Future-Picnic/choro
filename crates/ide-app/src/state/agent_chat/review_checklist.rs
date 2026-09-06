@@ -23,6 +23,12 @@ pub struct ReviewChecklistItem {
     pub checked: bool,
 }
 
+impl ReviewChecklistItem {
+    pub fn action_label(&self) -> &str {
+        strip_task_marker(&self.action)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewChecklist {
     pub id: String,
@@ -113,7 +119,7 @@ pub fn parse_review_checklist_items(markdown: &str) -> Vec<ReviewChecklistItem> 
             if content.is_empty() {
                 return None;
             }
-            let (action, expected) = split_action_expected(content);
+            let (action, expected) = split_action_expected(strip_task_marker(content));
             let action = bounded(action.trim_matches('*').trim(), MAX_ACTION_CHARS);
             if action.is_empty() {
                 return None;
@@ -143,6 +149,18 @@ pub fn parse_review_checklist_items(markdown: &str) -> Vec<ReviewChecklistItem> 
 fn markdown_heading(line: &str) -> Option<&str> {
     let heading = line.strip_prefix('#')?.trim_start_matches('#').trim();
     (!heading.is_empty()).then_some(heading.trim_matches('*').trim())
+}
+
+fn strip_task_marker(value: &str) -> &str {
+    let value = value.trim();
+    for marker in ["[ ]", "[]", "[x]", "[X]"] {
+        if let Some(rest) = value.strip_prefix(marker) {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                return rest.trim_start();
+            }
+        }
+    }
+    value
 }
 
 fn split_action_expected(content: &str) -> (&str, Option<&str>) {

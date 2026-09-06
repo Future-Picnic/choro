@@ -462,8 +462,8 @@ impl Render for GitPanel {
                     h_flex()
                         .id("view-diff-row")
                         .w_full()
-                        .pl_2()
-                        .pr_3()
+                        // Same 14px edges as the panel header identity.
+                        .px_3p5()
                         .py_1p5()
                         .gap_1p5()
                         .items_center()
@@ -539,6 +539,8 @@ impl Render for GitPanel {
                         .id("git-status-scroll")
                         .flex_1()
                         .min_h(px(0.))
+                        // Row hover pills inset evenly from both seams.
+                        .px_2()
                         .overflow_hidden()
                         .when(clean, |scroll| scroll.child(clean_status_content))
                         .when(!clean, |scroll| {

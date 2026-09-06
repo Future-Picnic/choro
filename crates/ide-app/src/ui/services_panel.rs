@@ -54,16 +54,7 @@ impl ServicesPanel {
 impl Render for ServicesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some((project, _root)) = self.active_project(cx) else {
-            return Self::v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_body())
-                        .text_color(crate::ui::design::t3(cx))
-                        .child("Open a project"),
-                );
+            return crate::ui::style::empty_context_panel("Orbit", "Open a project", cx);
         };
 
         let orbit_state = self.orbit.read(cx);
@@ -149,7 +140,8 @@ impl Render for ServicesPanel {
                                 },
                             ))
                         }),
-                    ),
+                    )
+                    .child(crate::ui::style::right_sidebar_toggle(true, false, cx)),
             )
             .child(
                 Self::v_flex()

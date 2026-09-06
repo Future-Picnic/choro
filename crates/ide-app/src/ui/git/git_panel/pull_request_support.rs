@@ -1,5 +1,10 @@
 use super::*;
 
+fn gh_output(command: &mut Command) -> anyhow::Result<std::process::Output> {
+    ide_core::process::output_with_timeout(command, Duration::from_secs(60))
+        .map_err(|error| anyhow::anyhow!("GitHub request failed: {error:#}. Check your connection and GitHub authentication, then retry."))
+}
+
 pub(super) fn url_encode(input: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(input.len());
@@ -65,14 +70,15 @@ pub(super) fn branch_from_push_message(message: &str) -> Option<PushNoticeEvent>
 }
 
 pub(super) fn existing_pull_request_url(repo: &Path, branch: &str) -> Option<String> {
-    let output = gh_command_for_repo(repo)
-        .ok()?
-        .args(["pr", "view", branch, "--json", "url", "--jq", ".url"])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .ok()?;
+    let output = gh_output(
+        gh_command_for_repo(repo)
+            .ok()?
+            .args(["pr", "view", branch, "--json", "url", "--jq", ".url"])
+            .current_dir(repo)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -81,17 +87,18 @@ pub(super) fn existing_pull_request_url(repo: &Path, branch: &str) -> Option<Str
         return Some(url);
     }
 
-    let output = gh_command_for_repo(repo)
-        .ok()?
-        .args([
-            "pr", "list", "--head", branch, "--state", "all", "--limit", "1", "--json", "url",
-            "--jq", ".[0].url",
-        ])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .ok()?;
+    let output = gh_output(
+        gh_command_for_repo(repo)
+            .ok()?
+            .args([
+                "pr", "list", "--head", branch, "--state", "all", "--limit", "1", "--json", "url",
+                "--jq", ".[0].url",
+            ])
+            .current_dir(repo)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -103,35 +110,38 @@ pub(super) fn existing_pull_request_url_for_base(
     repo: &Path,
     branch: &str,
     base_branch: &str,
-) -> Option<String> {
-    let output = gh_command_for_repo(repo)
-        .ok()?
-        .args([
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--base",
-            base_branch,
-            "--state",
-            "open",
-            "--limit",
-            "1",
-            "--json",
-            "url",
-            "--jq",
-            ".[0].url",
-        ])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .ok()?;
+) -> anyhow::Result<Option<String>> {
+    let output = gh_output(
+        gh_command_for_repo(repo)?
+            .args([
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--base",
+                base_branch,
+                "--state",
+                "open",
+                "--limit",
+                "1",
+                "--json",
+                "url",
+                "--jq",
+                ".[0].url",
+            ])
+            .current_dir(repo)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )?;
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Could not check for an existing pull request: {}",
+            stderr.trim()
+        );
     }
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!url.is_empty() && url != "null").then_some(url)
+    Ok((!url.is_empty() && url != "null").then_some(url))
 }
 
 pub(crate) fn create_pull_request_with_gh(
@@ -144,27 +154,28 @@ pub(crate) fn create_pull_request_with_gh(
     if base_branch.is_empty() {
         anyhow::bail!("Choose a base branch for the pull request");
     }
-    if let Some(url) = existing_pull_request_url_for_base(repo, branch, base_branch) {
+    if let Some(url) = existing_pull_request_url_for_base(repo, branch, base_branch)? {
         return Ok(url);
     }
 
-    let output = gh_command_for_repo(repo)?
-        .args([
-            "pr",
-            "create",
-            "--head",
-            branch,
-            "--base",
-            base_branch,
-            "--title",
-            pull_request.title.trim(),
-            "--body",
-            pull_request.body.trim(),
-        ])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    let output = gh_output(
+        gh_command_for_repo(repo)?
+            .args([
+                "pr",
+                "create",
+                "--head",
+                branch,
+                "--base",
+                base_branch,
+                "--title",
+                pull_request.title.trim(),
+                "--body",
+                pull_request.body.trim(),
+            ])
+            .current_dir(repo)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -174,13 +185,13 @@ pub(crate) fn create_pull_request_with_gh(
         {
             return Ok(url.trim().to_string());
         }
-        if let Some(url) = existing_pull_request_url_for_base(repo, branch, base_branch) {
+        if let Some(url) = existing_pull_request_url_for_base(repo, branch, base_branch)? {
             return Ok(url);
         }
         anyhow::bail!("GitHub CLI created the pull request but did not return a URL");
     }
 
-    if let Some(url) = existing_pull_request_url_for_base(repo, branch, base_branch) {
+    if let Some(url) = existing_pull_request_url_for_base(repo, branch, base_branch)? {
         return Ok(url);
     }
 
@@ -341,7 +352,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
         return None;
     }
 
-    let view_output = gh_command_for_repo(repo)
+    let view_output = gh_output(gh_command_for_repo(repo)
         .ok()?
         .args([
             "pr",
@@ -353,7 +364,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
+    )
         .ok()?;
     if view_output.status.success() {
         if let Ok(pr) = serde_json::from_slice::<GithubPullRequest>(&view_output.stdout) {
@@ -361,7 +372,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
         }
     }
 
-    let output = gh_command_for_repo(repo)
+    let output = gh_output(gh_command_for_repo(repo)
         .ok()?
         .args([
             "pr",
@@ -378,7 +389,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
+    )
         .ok()?;
     if !output.status.success() {
         return None;
@@ -392,7 +403,7 @@ pub(crate) fn branch_pull_request(repo: &Path, branch: &str) -> Option<BranchPul
 }
 
 pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRequest>> {
-    let output = gh_command_for_repo(repo)?
+    let output = gh_output(gh_command_for_repo(repo)?
         .args([
             "pr",
             "list",
@@ -406,7 +417,7 @@ pub(super) fn repo_pull_requests(repo: &Path) -> anyhow::Result<Vec<BranchPullRe
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         anyhow::bail!(if stderr.is_empty() {
@@ -497,7 +508,7 @@ fn preferred_merge_method(settings: &GithubRepoMergeSettings) -> Option<GithubMe
 pub(super) fn repository_identity_and_merge_method(
     repo: &Path,
 ) -> anyhow::Result<(String, GithubMergeMethod)> {
-    let settings_output = gh_command_for_repo(repo)?
+    let settings_output = gh_output(gh_command_for_repo(repo)?
         .args([
             "repo",
             "view",
@@ -507,7 +518,7 @@ pub(super) fn repository_identity_and_merge_method(
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    )?;
     if !settings_output.status.success() {
         let stderr = String::from_utf8_lossy(&settings_output.stderr)
             .trim()
@@ -542,7 +553,7 @@ pub(crate) fn merge_pull_request_with_gh(
     expected_base_branch: Option<&str>,
     expected_head_sha: Option<&str>,
 ) -> anyhow::Result<MergePullRequestOutcome> {
-    let output = gh_command_for_repo(repo)?
+    let output = gh_output(gh_command_for_repo(repo)?
         .args([
             "pr",
             "view",
@@ -553,7 +564,7 @@ pub(crate) fn merge_pull_request_with_gh(
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         anyhow::bail!(if stderr.is_empty() {
@@ -610,14 +621,15 @@ pub(crate) fn merge_pull_request_with_gh(
     let endpoint = format!("repos/{name_with_owner}/pulls/{}/merge", pr.number);
     let sha_field = format!("sha={head_oid}");
     let method_field = format!("merge_method={}", method.api_value());
-    let merge_output = gh_command_for_repo(repo)?
-        .args(["api", "--method", "PUT"])
-        .arg(endpoint)
-        .args(["-f", &sha_field, "-f", &method_field])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()?;
+    let merge_output = gh_output(
+        gh_command_for_repo(repo)?
+            .args(["api", "--method", "PUT"])
+            .arg(endpoint)
+            .args(["-f", &sha_field, "-f", &method_field])
+            .current_dir(repo)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )?;
     if !merge_output.status.success() {
         let stderr = String::from_utf8_lossy(&merge_output.stderr)
             .trim()

@@ -35,6 +35,9 @@ pub enum QuickAskEvent {
         question: String,
         attachments: Vec<PathBuf>,
     },
+    /// A view that cannot reach the docked panel directly (e.g. Ask History in
+    /// the center) asks the root layout to reveal it.
+    PanelOpenRequested,
 }
 
 pub struct QuickAskState {
@@ -172,6 +175,11 @@ impl QuickAskState {
         self.error = None;
         cx.notify();
         true
+    }
+
+    /// Ask the root layout to show the docked Quick Ask panel.
+    pub fn request_panel_open(&mut self, cx: &mut Context<Self>) {
+        cx.emit(QuickAskEvent::PanelOpenRequested);
     }
 
     pub fn set_scope(&mut self, scope: QuickAskScope, cx: &mut Context<Self>) {

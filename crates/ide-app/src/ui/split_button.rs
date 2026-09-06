@@ -144,6 +144,16 @@ impl RenderOnce for SplitButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = self.palette;
         let menu_anchor = self.menu_anchor;
+        if self.primary.is_none() {
+            let menu = self.menu;
+            return crate::ui::style::split_menu_button(self.id, self.label, self.icon, p, cx)
+                .disabled(self.disabled)
+                .when_some(self.tooltip, |button, tooltip| button.tooltip(tooltip))
+                .dropdown_menu_with_anchor(menu_anchor, move |menu_state, window, cx| {
+                    menu(menu_state, window, cx)
+                })
+                .into_any_element();
+        }
         // Both zones are transparent — the container carries the fill/border so
         // the divider can be a single hairline between two ghost zones.
         let zone_variant = || {
@@ -222,5 +232,6 @@ impl RenderOnce for SplitButton {
                     .bg(p.divider),
             )
             .child(caret)
+            .into_any_element()
     }
 }

@@ -942,6 +942,33 @@ impl LocalStore {
         })
     }
 
+    /// Load one newest-first search-candidate page for a conversation.
+    ///
+    /// Current assistant payloads are filtered by their pre-folded visible
+    /// text. User rows remain as turn delimiters, and payloads from other index
+    /// versions remain as compatibility candidates for caller-side filtering.
+    pub fn search_timeline_message_candidates_page(
+        &self,
+        agent_id: Uuid,
+        folded_query: &str,
+        search_text_version: u64,
+        before_sequence: Option<i64>,
+        limit: usize,
+    ) -> Result<StoredTimelinePage> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            search_timeline_message_candidates_page_async(
+                &conn,
+                agent_id,
+                folded_query,
+                search_text_version,
+                before_sequence,
+                limit,
+            )
+            .await
+        })
+    }
+
     pub fn materialize_attachment_bytes(
         &self,
         agent_id: Uuid,

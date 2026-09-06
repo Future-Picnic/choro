@@ -77,6 +77,11 @@ pub fn claude_brand() -> Hsla {
     rgb(0xD97757)
 }
 
+/// PocketComet's orange center in the workspace rail.
+pub fn pocketcomet_brand() -> Hsla {
+    rgb(0xF59A55)
+}
+
 /// Doc-label accent hues — feature/research/design plus a hashed fallback set,
 /// so labels stay stable-coloured. Categorical identity, centralized here.
 pub fn doc_label(label: &str) -> Hsla {

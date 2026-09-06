@@ -1336,7 +1336,7 @@ impl CenterArea {
             .min_h(px(0.))
             .bg(crate::ui::design::base(cx))
             .child(
-                crate::ui::design::header::bar(cx)
+                crate::ui::design::header::workspace_bar(cx)
                     .child(back_to_designs)
                     .child(
                         crate::ui::design::header::title_col(cx)
@@ -1469,7 +1469,7 @@ impl CenterArea {
             .min_h(px(0.))
             .bg(crate::ui::design::base(cx))
             .child(
-                crate::ui::design::header::bar(cx)
+                crate::ui::design::header::workspace_bar(cx)
                     .child(
                         crate::ui::design::header::title_col(cx)
                             .child(crate::ui::design::header::title("Designs", cx))
@@ -1618,7 +1618,7 @@ impl CenterArea {
                 .min_h(px(0.))
                 .bg(crate::ui::design::base(cx))
                 .child(
-                    crate::ui::design::header::bar(cx)
+                    crate::ui::design::header::workspace_bar(cx)
                         .children(back_to_designs)
                         .child(
                             crate::ui::design::header::title_col(cx)
@@ -1837,7 +1837,7 @@ impl CenterArea {
             .min_h(px(0.))
             .bg(crate::ui::design::base(cx))
             .child(
-                crate::ui::design::header::bar(cx)
+                crate::ui::design::header::workspace_bar(cx)
                     .child(back_to_designs)
                     .child(
                         crate::ui::design::header::title_col(cx)

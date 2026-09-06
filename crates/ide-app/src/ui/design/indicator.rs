@@ -68,6 +68,28 @@ pub fn pocketcomet_icon(color: Hsla, size: gpui::Pixels) -> Div {
     lucide_icon(lucide_icons::Icon::Orbit, color, size)
 }
 
+/// Neutral orbit with an orange core; the label and selection stay rail-colored.
+pub fn pocketcomet_rail_icon(color: Hsla) -> Div {
+    gpui::div()
+        .relative()
+        .size(scale::icon_lg())
+        .child(pocketcomet_icon(color, scale::icon_lg()))
+        .child(
+            gpui::div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    gpui::div()
+                        .size(px(5.))
+                        .rounded_full()
+                        .bg(super::palette::pocketcomet_brand()),
+                ),
+        )
+}
+
 /// A header-subline indicator with a supplied icon element. This keeps custom
 /// product glyphs (for example the existing pull-request icon) on the same
 /// type, spacing, and text tokens as standard library icons.
@@ -148,7 +170,11 @@ pub fn status_checkbox(
     checked: bool,
     color: Hsla,
     soft_fill: Hsla,
+    idle_border: Hsla,
 ) -> Stateful<Div> {
+    // At rest the box stays neutral — the section header already names the
+    // change kind, so the semantic color appears only on hover and when the
+    // entry is actually staged.
     gpui::div()
         .id(id)
         .size(scale::icon())
@@ -158,9 +184,9 @@ pub fn status_checkbox(
         .justify_center()
         .rounded(scale::r_xs())
         .border_1()
-        .border_color(color)
+        .border_color(if checked { color } else { idle_border })
         .cursor_pointer()
-        .hover(move |control| control.bg(soft_fill))
+        .hover(move |control| control.bg(soft_fill).border_color(color))
         .when(checked, move |control| {
             control.bg(soft_fill).child(
                 Icon::new(IconName::Check)

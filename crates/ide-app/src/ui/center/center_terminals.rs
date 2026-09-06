@@ -93,6 +93,41 @@ impl CenterArea {
         }
     }
 
+    /// Selects an existing preset terminal without changing the visible
+    /// workspace or moving keyboard focus away from the user's current task.
+    pub fn select_terminal_in_background(
+        &mut self,
+        project: ProjectId,
+        id: SessionId,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminals
+            .update(cx, |manager, cx| manager.set_active(project, id, cx));
+        cx.notify();
+    }
+
+    /// Starts a top-header script without navigating to Code/Terminal. The
+    /// terminal remains available and selected if the user opens Code later.
+    pub fn run_preset_in_background(&mut self, name: &str, command: &str, cx: &mut Context<Self>) {
+        let Some((project, cwd)) = self.active_project(cx) else {
+            return;
+        };
+        let spawned = self.terminals.update(cx, |manager, cx| {
+            manager.spawn_preset(project, cwd, name, command, cx)
+        });
+        match spawned {
+            Ok(_) => {
+                crate::ui::onboarding::emit_for_project(
+                    project,
+                    crate::ui::onboarding::OnboardingEvent::ScriptStarted,
+                    cx,
+                );
+                cx.notify();
+            }
+            Err(error) => eprintln!("failed to spawn terminal: {error:#}"),
+        }
+    }
+
     pub(super) fn focus_spawned(
         &mut self,
         spawned: anyhow::Result<SessionId>,

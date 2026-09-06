@@ -15,6 +15,7 @@ mod agent_chat_reveal;
 mod agent_chat_review;
 mod agent_chat_review_checklist;
 mod agent_chat_runtime;
+pub(crate) mod agent_chat_search;
 mod agent_chat_ship;
 mod agent_chat_timeline;
 mod agent_chat_usage;
@@ -136,8 +137,8 @@ use crate::state::{
     AgentChatState, AgentRecords, DesignsState, DocAssistantState, DocSaveStatus, DocsState,
     GitState, GitStates, OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel, OrbitEvent,
     OrbitState, PenpotConnectionStatus, PenpotDesignSource, PenpotEvent, PenpotState,
-    QuickAskState, ServicesScanKind, ServicesState, SessionId, TasksState, TerminalManager,
-    Workspace,
+    QuickAskPhase, QuickAskScope, QuickAskState, ServicesScanKind, ServicesState, SessionId,
+    TasksState, TerminalManager, Workspace,
 };
 use crate::ui::agent_status_style::{status_accent, status_dot, status_icon, status_menu_row};
 use crate::ui::branch_icon::{branch_icon, pr_icon};
@@ -577,16 +578,6 @@ struct ComposerAgentMentionView {
     mention: ComposerAgentMention,
     matches: Vec<ComposerAgentEntry>,
     selected: usize,
-}
-
-#[derive(Clone, Debug)]
-struct PreparedAgentHandoff {
-    target_agent_id: Uuid,
-    target_title: String,
-    original_text: String,
-    prepared_text: String,
-    request_kind: AgentRequestKind,
-    used_fallback: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1735,7 +1726,7 @@ pub enum CenterMode {
     Services,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProjectActivity {
     Code,
     Agents,
@@ -1916,6 +1907,14 @@ pub struct CenterArea {
     quick_ask: Entity<QuickAskState>,
     quick_ask_selected_session: Option<Uuid>,
     quick_ask_history_search: Entity<InputState>,
+    /// Follow-up composer on the Ask History detail. Lazily created because
+    /// building an `InputState` needs a `Window`.
+    quick_ask_history_composer: Option<Entity<InputState>>,
+    /// When a follow-up was sent from Ask History, anchors the thinking
+    /// indicator's elapsed timer.
+    quick_ask_history_pending_started_at: Option<u64>,
+    /// Projects whose weekly digest is expanded beyond its compact preview.
+    weekly_digest_expanded: HashSet<ProjectId>,
     terminals: Entity<TerminalManager>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
@@ -2061,9 +2060,6 @@ pub struct CenterArea {
     /// Optional user correction to the Ask / Delegate intent inferred from the
     /// free-text draft for an agent-targeted composer turn.
     agent_chat_agent_request_kind_overrides: HashMap<Uuid, AgentRequestKind>,
-    /// Contextual teammate briefs prepared from the source conversation and
-    /// awaiting explicit user confirmation in the composer.
-    agent_handoff_previews: HashMap<Uuid, PreparedAgentHandoff>,
     /// Per-source generation identity. Removing or replacing the id makes a
     /// stale background preparation result harmless.
     agent_handoff_preparations_pending: HashMap<Uuid, Uuid>,
@@ -2126,6 +2122,9 @@ pub struct CenterArea {
     /// Per-agent flag: true when the chat list is scrolled up from the bottom,
     /// so a "jump to latest" affordance is shown.
     agent_chat_scrolled_up: HashMap<Uuid, bool>,
+    /// Transient find-in-conversation UI. Historical matches remain as compact
+    /// store results until navigation asks the paged transcript to reveal one.
+    agent_chat_search: Option<agent_chat_search::AgentChatSearchState>,
     /// Per-agent cursor for the paced word-by-word reveal of the streaming
     /// assistant message (see [`agent_chat_reveal`]).
     agent_chat_reveal: HashMap<Uuid, agent_chat_reveal::RevealState>,
@@ -2223,6 +2222,7 @@ pub struct CenterArea {
     agent_record_status_seen: HashMap<Uuid, AgentStatus>,
     /// Inbox rows currently being surfaced and dispatched.
     agent_messages_inflight: HashSet<Uuid>,
+    agent_message_cards_expanded: HashSet<(Uuid, Uuid)>,
     /// Agents with a memory-proposal distillation run in flight — one each.
     memory_distills_inflight: HashSet<Uuid>,
     /// Proposal ids whose accept is currently writing to the DB.
@@ -2286,6 +2286,7 @@ pub struct CenterArea {
     pocketcomet_selected_chat: Option<Uuid>,
     pub view_mode: CenterMode,
     last_code_mode: CenterMode,
+    project_navigation: center_navigation::ProjectNavigation,
     view_history_back: Vec<CenterMode>,
     view_history_forward: Vec<CenterMode>,
     tasks_refresh_epoch: u64,

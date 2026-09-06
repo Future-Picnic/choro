@@ -661,7 +661,6 @@ impl CenterArea {
                                 .remove(&source_agent_id);
                             this.agent_chat_agent_request_kind_overrides
                                 .remove(&source_agent_id);
-                            this.agent_handoff_previews.remove(&source_agent_id);
                             this.agent_handoff_preparations_pending
                                 .remove(&source_agent_id);
                             cx.notify();
@@ -708,7 +707,6 @@ impl CenterArea {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.agent_chat_agent_request_kind_overrides
                             .insert(source_agent_id, request_kind.toggled());
-                        this.agent_handoff_previews.remove(&source_agent_id);
                         this.agent_handoff_preparations_pending
                             .remove(&source_agent_id);
                         cx.notify();

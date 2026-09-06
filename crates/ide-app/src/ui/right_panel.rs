@@ -1,6 +1,6 @@
 use gpui::{
-    div, prelude::FluentBuilder, px, App, AppContext, Context, Entity, IntoElement, ParentElement,
-    Render, Styled, Window,
+    div, prelude::FluentBuilder, px, App, AppContext, Context, Entity, InteractiveElement,
+    IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::{
     avatar::Avatar,
@@ -101,6 +101,7 @@ impl RightPanel {
             // The Agents tab badge tracks the panel's attention count.
             cx.observe(&agents_panel, |_, _, cx| cx.notify()).detach();
             cx.observe(&center, |_, _, cx| cx.notify()).detach();
+            cx.observe(&git_panel, |_, _, cx| cx.notify()).detach();
             Self {
                 center,
                 git_panel,
@@ -122,6 +123,10 @@ impl RightPanel {
                 last_git_diff_open_epoch: 0,
             }
         })
+    }
+
+    pub(crate) fn git_change_count(&self, cx: &App) -> Option<usize> {
+        self.git_panel.read(cx).change_count(cx)
     }
 
     pub fn open_new_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -405,34 +410,51 @@ impl Render for RightPanel {
             .child(
                 crate::ui::design::header::panel_bar(cx)
                     .child(
+                        // Keep the collapse target anchored at the trailing
+                        // edge even at the panel's minimum resize width. All
+                        // existing controls remain available by scrolling.
                         gpui_component::h_flex()
-                            .flex_none()
+                            .id("right-panel-header-controls")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h_full()
                             .items_center()
-                            .gap_1p5()
-                            .when_some(git_account_selector, |identity, selector| {
-                                identity.child(selector)
+                            .overflow_x_scroll()
+                            .child(
+                                gpui_component::h_flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .when_some(git_account_selector, |identity, selector| {
+                                        identity.child(selector)
+                                    })
+                                    .child(crate::ui::design::header::panel_identity(
+                                        cur_icon, cur_label, cx,
+                                    )),
+                            )
+                            .when(selected == RightToolTab::Git, |row| {
+                                row.child(
+                                    div()
+                                        .ml(crate::ui::design::panel_identity_tabs_gap())
+                                        .child(git_view_selector),
+                                )
                             })
-                            .child(crate::ui::design::header::panel_identity(
-                                cur_icon, cur_label, cx,
-                            )),
+                            .child(div().flex_1().min_w(crate::ui::design::panel_action_gap()))
+                            .child(
+                                style::ghost_button_compact(("right-panel-flip", 0u64), flip_label)
+                                    .flex_none()
+                                    .icon(flip_icon)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.selected = flip_to;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
-                    .when(selected == RightToolTab::Git, |row| {
-                        row.child(
-                            div()
-                                .ml(crate::ui::design::panel_identity_tabs_gap())
-                                .child(git_view_selector),
-                        )
-                    })
-                    .child(div().flex_1().min_w(crate::ui::design::panel_action_gap()))
-                    .child(
-                        style::ghost_button_compact(("right-panel-flip", 0u64), flip_label)
-                            .flex_none()
-                            .icon(flip_icon)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.selected = flip_to;
-                                cx.notify();
-                            })),
-                    ),
+                    .child(style::right_sidebar_toggle(
+                        true,
+                        activity == ProjectActivity::Agents,
+                        cx,
+                    )),
             )
             .child(div().flex_1().min_h(px(0.)).child(match selected {
                 RightToolTab::Git => self.git_panel.clone().into_any_element(),
