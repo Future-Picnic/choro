@@ -6,7 +6,7 @@ use ide_core::ProjectActivityId;
 enum RailIcon {
     Component(IconName),
     Lucide(lucide_icons::Icon),
-    PocketComet,
+    Tumble,
 }
 
 #[cfg(target_os = "macos")]
@@ -796,9 +796,8 @@ impl RootView {
                                 crate::ui::design::icon_lg(),
                             )
                             .into_any_element(),
-                            RailIcon::PocketComet => {
-                                crate::ui::design::indicator::pocketcomet_rail_icon(fg)
-                                    .into_any_element()
+                            RailIcon::Tumble => {
+                                crate::ui::design::indicator::tumble_rail_icon().into_any_element()
                             }
                         })
                         .children(design_connection_color.map(|color| {
@@ -985,8 +984,8 @@ impl RootView {
                     .when(self.pocketcomet_connected, |rail| {
                         rail.child(item(
                             "rail-pocketcomet",
-                            RailIcon::PocketComet,
-                            "PComet",
+                            RailIcon::Tumble,
+                            "Tumble",
                             ProjectActivity::PocketComet,
                             cx,
                         ))

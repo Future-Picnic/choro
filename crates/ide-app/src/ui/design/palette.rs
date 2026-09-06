@@ -77,9 +77,9 @@ pub fn claude_brand() -> Hsla {
     rgb(0xD97757)
 }
 
-/// PocketComet's orange center in the workspace rail.
-pub fn pocketcomet_brand() -> Hsla {
-    rgb(0xF59A55)
+/// Tumble's yellow brand mark in the workspace rail.
+pub fn tumble_brand() -> Hsla {
+    rgb(0xFFDE32)
 }
 
 /// Doc-label accent hues — feature/research/design plus a hashed fallback set,

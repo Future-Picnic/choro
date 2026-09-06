@@ -2,6 +2,41 @@ use super::*;
 
 const POCKETCOMET_PROJECT_LIST_W: f32 = 220.0;
 
+fn pocketcomet_response_markdown(text: &str) -> String {
+    text.lines().map(|line| {
+        let trimmed = line.trim();
+        // Final deliverables are often download links rather than image Markdown.
+        if trimmed.starts_with('[') && trimmed.ends_with(')') {
+            if let Some((_, target)) = trimmed.split_once("](") {
+                let target = target[..target.len() - 1].trim().trim_matches(['<', '>']);
+                let path = PathBuf::from(target.strip_prefix("file://").unwrap_or(target));
+                if path.is_absolute() && path.is_file() && image_format_for_path(&path).is_some() {
+                    return format!("![Image]({})", path.display());
+                }
+            }
+        }
+        line.to_string()
+    }).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod image_reply_tests {
+    use super::*;
+
+    #[test]
+    fn final_image_download_link_uses_the_chat_image_preview() {
+        let directory = std::env::temp_dir().join(format!("choro-tumble-preview-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("logo.png");
+        std::fs::write(&path, b"image").unwrap();
+        assert_eq!(pocketcomet_response_markdown(&format!("[Download PNG]({})", path.display())), format!("![Image]({})", path.display()));
+        let remote = "[Requirements](https://example.com/logo.png)";
+        assert_eq!(pocketcomet_response_markdown(remote), remote);
+        let missing = "[Missing](/not-a-real-tumble-result.png)";
+        assert_eq!(pocketcomet_response_markdown(missing), missing);
+    }
+}
+
 fn clipped_text(value: &str, limit: usize) -> String {
     let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= limit {
@@ -38,6 +73,7 @@ fn pocketcomet_runtime_tone(runtime: AgentRuntime, cx: &App) -> gpui::Hsla {
 impl CenterArea {
     pub(super) fn render_pocketcomet_section(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let mut records = self
@@ -62,7 +98,7 @@ impl CenterArea {
                         .as_ref()
                         .is_some_and(AgentOrigin::is_pocketcomet_chat)
             }) {
-                return self.render_pocketcomet_chat_detail(chat, cx);
+                return self.render_pocketcomet_chat_detail(chat, window, cx);
             }
             self.pocketcomet_selected_chat = None;
         }
@@ -656,6 +692,7 @@ impl CenterArea {
     fn render_pocketcomet_chat_detail(
         &self,
         chat: &AgentRecord,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let (thread_title, project_name, conversation_name, teammate_name) =
@@ -767,7 +804,7 @@ impl CenterArea {
                                     "This is a read-only view. Continue the conversation in {conversation_name} and tag Choro when you want another reply."
                                 )),
                         )
-                        .children(responses.into_iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().map(|(text, created_at)| {
+                        .children(responses.into_iter().rev().take(20).collect::<Vec<_>>().into_iter().rev().enumerate().map(|(index, (text, created_at))| {
                             v_flex()
                                 .w_full()
                                 .gap_1()
@@ -802,7 +839,7 @@ impl CenterArea {
                                         .line_height(gpui::relative(1.5))
                                         .text_color(crate::ui::design::t1(cx))
                                         .whitespace_normal()
-                                        .child(text),
+                                        .child(render_chat_message_markdown(&pocketcomet_response_markdown(&text), (chat.id.as_u128() as u64).wrapping_add((index as u64) << 20), window, cx)),
                                 )
                         })),
                 )

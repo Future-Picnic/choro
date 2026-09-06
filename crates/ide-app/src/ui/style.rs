@@ -2046,22 +2046,13 @@ pub fn companion_agent_assistant_button(
 /// Translucent notification surface for the floating desktop companion.
 /// Keep the tint neutral so status is conveyed by the content, and retain
 /// enough fill to keep text legible over a busy desktop.
-pub fn companion_notification_card(
-    id: impl Into<ElementId>,
-    needs_attention: bool,
-    cx: &App,
-) -> Stateful<Div> {
-    let fill = design::focus(cx);
-    let border = if needs_attention {
-        design::amber(cx).opacity(0.60)
-    } else {
-        design::t1(cx).opacity(0.12)
-    };
-    let hover_border = if needs_attention {
-        design::amber(cx).opacity(0.85)
-    } else {
-        design::t1(cx).opacity(0.20)
-    };
+pub fn companion_notification_card(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    let mut fill = design::focus(cx);
+    // Let the desktop supply the glass tint instead of casting the whole pill
+    // in the theme accent. All statuses share this quiet surface.
+    fill.s *= 0.25;
+    let border = design::t1(cx).opacity(0.08);
+    let hover_border = design::t1(cx).opacity(0.14);
     h_flex()
         .id(id)
         .w_full()
@@ -2073,21 +2064,21 @@ pub fn companion_notification_card(
         .border_color(border)
         .bg(gpui::linear_gradient(
             180.,
-            gpui::linear_color_stop(fill.opacity(0.94), 0.),
-            gpui::linear_color_stop(fill.opacity(0.86), 1.),
+            gpui::linear_color_stop(fill.opacity(0.80), 0.),
+            gpui::linear_color_stop(fill.opacity(0.78), 1.),
         ))
         .shadow(vec![gpui::BoxShadow {
-            color: gpui::black().opacity(0.20),
+            color: gpui::black().opacity(0.16),
             offset: gpui::point(px(0.), px(3.)),
-            blur_radius: px(8.),
+            blur_radius: px(10.),
             spread_radius: px(-2.),
         }])
         .cursor_pointer()
         .hover(move |card| {
-            card.bg(design::control_on(fill, cx).opacity(0.97))
+            card.bg(design::control_on(fill, cx).opacity(0.84))
                 .border_color(hover_border)
         })
-        .active(move |card| card.bg(fill))
+        .active(move |card| card.bg(fill.opacity(0.88)))
 }
 
 /// Compact disclosure below the companion's three-item attention preview.
