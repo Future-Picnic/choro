@@ -250,6 +250,10 @@ impl StoredTimelinePayload {
                     text,
                     display_text,
                     tags,
+                    search_text_version: TIMELINE_SEARCH_TEXT_VERSION,
+                    search_text: searchable_message_text(message)
+                        .map(|text| fold_search_text(&text))
+                        .unwrap_or_default(),
                     created_at,
                     backend_message_id,
                 })
@@ -445,6 +449,8 @@ impl StoredTimelinePayload {
                 text,
                 display_text,
                 tags,
+                search_text_version: _,
+                search_text: _,
                 created_at,
                 backend_message_id,
             } => {
@@ -867,6 +873,20 @@ pub(super) fn work_log_kind_label(kind: WorkLogEntryKind) -> &'static str {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn message_payload_persists_folded_visible_search_text() {
+        let item = AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+            message_id: Some("turn-1".to_string()),
+            text: "The **Maße**.\n\n<code_review>Hidden finding</code_review>".to_string(),
+            created_at: 42,
+        });
+
+        let (_, _, payload, _) = stored_timeline_event_parts(&item).expect("message event");
+        let payload = serde_json::from_str::<serde_json::Value>(&payload).expect("JSON payload");
+        assert_eq!(payload["search_text_version"], TIMELINE_SEARCH_TEXT_VERSION);
+        assert_eq!(payload["search_text"], "the masse.");
+    }
 
     #[test]
     fn attributed_file_receipt_round_trips_with_observed_changes_separate() {

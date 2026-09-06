@@ -171,17 +171,26 @@ pub(super) fn render_chat_message_markdown(
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
-    render_chat_blocks(text, None, None, element_seed, window, cx)
+    render_chat_blocks(text, None, None, element_seed, None, window, cx)
 }
 
 pub(super) fn render_agent_chat_message_markdown(
     text: &str,
     visualization: &agent_chat_visualization::ChatVisualizationRenderContext,
     element_seed: u64,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
-    render_chat_blocks(text, None, Some(visualization), element_seed, window, cx)
+    render_chat_blocks(
+        text,
+        None,
+        Some(visualization),
+        element_seed,
+        search_query,
+        window,
+        cx,
+    )
 }
 
 /// Like [`render_chat_message_markdown`], but for the message currently
@@ -197,7 +206,7 @@ pub(super) fn render_streaming_chat_message_markdown(
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
     let warm = (warm_chars > 0 && warmth > 0.0).then_some((warm_chars, warmth));
-    render_chat_blocks(text, warm, None, element_seed, window, cx)
+    render_chat_blocks(text, warm, None, element_seed, None, window, cx)
 }
 
 pub(super) fn render_streaming_agent_chat_message_markdown(
@@ -206,11 +215,20 @@ pub(super) fn render_streaming_agent_chat_message_markdown(
     warmth: f32,
     visualization: &agent_chat_visualization::ChatVisualizationRenderContext,
     element_seed: u64,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
     let warm = (warm_chars > 0 && warmth > 0.0).then_some((warm_chars, warmth));
-    render_chat_blocks(text, warm, Some(visualization), element_seed, window, cx)
+    render_chat_blocks(
+        text,
+        warm,
+        Some(visualization),
+        element_seed,
+        search_query,
+        window,
+        cx,
+    )
 }
 
 fn render_chat_blocks(
@@ -218,6 +236,7 @@ fn render_chat_blocks(
     warm: Option<(usize, f32)>,
     visualization: Option<&agent_chat_visualization::ChatVisualizationRenderContext>,
     element_seed: u64,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
@@ -257,6 +276,7 @@ fn render_chat_blocks(
                 language,
                 element_seed,
                 elements.len(),
+                search_query,
                 cx,
             ));
             continue;
@@ -293,6 +313,7 @@ fn render_chat_blocks(
                 &rows,
                 live_table,
                 element_seed.wrapping_add(elements.len() as u64),
+                search_query,
                 window,
                 cx,
             ));
@@ -316,14 +337,19 @@ fn render_chat_blocks(
             ix += 1;
             let markdown = format!("**{}**", strip_inline_markdown(heading));
             match warm.filter(|_| trailing_lines_are_empty(&lines, ix)) {
-                Some((warm_chars, warmth)) => {
-                    elements.push(render_warm_heading_block(markdown, warm_chars, warmth, cx))
-                }
+                Some((warm_chars, warmth)) => elements.push(render_warm_heading_block(
+                    markdown,
+                    warm_chars,
+                    warmth,
+                    search_query,
+                    cx,
+                )),
                 None => elements.push(render_chat_text_block(
                     markdown,
                     ChatTextRole::Heading,
                     element_seed,
                     elements.len(),
+                    search_query,
                     window,
                     cx,
                 )),
@@ -344,6 +370,7 @@ fn render_chat_blocks(
                 live_item,
                 element_seed,
                 elements.len(),
+                search_query,
                 window,
                 cx,
             ));
@@ -376,6 +403,7 @@ fn render_chat_blocks(
                 paragraph.join(" "),
                 warm_chars,
                 warmth,
+                search_query,
                 cx,
             )),
             None => elements.push(render_chat_text_block(
@@ -383,6 +411,7 @@ fn render_chat_blocks(
                 ChatTextRole::Body,
                 element_seed,
                 elements.len(),
+                search_query,
                 window,
                 cx,
             )),
@@ -436,6 +465,7 @@ fn render_chat_text_block(
     role: ChatTextRole,
     element_seed: u64,
     block_index: usize,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
@@ -461,7 +491,13 @@ fn render_chat_text_block(
                 cx,
             )
             .selectable(true)
-            .style(chat_message_text_style()),
+            .style(chat_message_text_style())
+            .when_some(search_query, |view, query| {
+                view.highlight_matches(
+                    query.to_string(),
+                    super::agent_chat_search::chat_search_highlight_style(cx),
+                )
+            }),
         )
         .into_any_element()
 }
@@ -475,6 +511,7 @@ fn render_warm_text_block(
     markdown: String,
     warm_chars: usize,
     warmth: f32,
+    search_query: Option<&str>,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
     let text_color = crate::ui::design::chat_body(cx);
@@ -485,7 +522,13 @@ fn render_warm_text_block(
         .text_size(crate::ui::design::text_body())
         .line_height(gpui::relative(crate::ui::design::CHAT_PROSE_LINE_HEIGHT))
         .text_color(text_color)
-        .child(warm_styled_text(&markdown, warm_chars, warmth, cx))
+        .child(warm_styled_text(
+            &markdown,
+            warm_chars,
+            warmth,
+            search_query,
+            cx,
+        ))
         .into_any_element()
 }
 
@@ -497,6 +540,7 @@ fn render_warm_heading_block(
     markdown: String,
     warm_chars: usize,
     warmth: f32,
+    search_query: Option<&str>,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
     div()
@@ -506,7 +550,13 @@ fn render_warm_heading_block(
         .line_height(gpui::relative(crate::ui::design::CHAT_PROSE_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(crate::ui::design::t1(cx))
-        .child(warm_styled_text(&markdown, warm_chars, warmth, cx))
+        .child(warm_styled_text(
+            &markdown,
+            warm_chars,
+            warmth,
+            search_query,
+            cx,
+        ))
         .into_any_element()
 }
 
@@ -514,6 +564,7 @@ fn warm_styled_text(
     markdown: &str,
     warm_chars: usize,
     warmth: f32,
+    search_query: Option<&str>,
     cx: &mut Context<CenterArea>,
 ) -> StyledText {
     const WARM_MAX: f32 = 0.9;
@@ -546,6 +597,11 @@ fn warm_styled_text(
         ));
     }
 
+    let highlights = gpui::combine_highlights(
+        highlights,
+        super::agent_chat_search::chat_search_highlights(&plain, search_query, cx),
+    )
+    .collect::<Vec<_>>();
     StyledText::new(plain).with_highlights(highlights)
 }
 
@@ -569,6 +625,7 @@ fn render_chat_list_block(
     live_item: Option<(usize, usize, f32)>,
     element_seed: u64,
     block_index: usize,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
@@ -576,7 +633,8 @@ fn render_chat_list_block(
     for (item_index, item) in items.into_iter().enumerate() {
         let body = match live_item.filter(|live| should_render_live_list_item(item_index, *live)) {
             Some((_, warm_chars, warmth)) => {
-                warm_styled_text(&item.markdown, warm_chars, warmth, cx).into_any_element()
+                warm_styled_text(&item.markdown, warm_chars, warmth, search_query, cx)
+                    .into_any_element()
             }
             None => TextView::markdown(
                 (
@@ -591,6 +649,12 @@ fn render_chat_list_block(
             )
             .selectable(true)
             .style(chat_message_text_style())
+            .when_some(search_query, |view, query| {
+                view.highlight_matches(
+                    query.to_string(),
+                    super::agent_chat_search::chat_search_highlight_style(cx),
+                )
+            })
             .into_any_element(),
         };
         rows.push(
@@ -744,6 +808,7 @@ fn render_chat_code_block(
     language: Option<String>,
     element_seed: u64,
     block_index: usize,
+    search_query: Option<&str>,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
     let copy_code = code.clone();
@@ -759,6 +824,11 @@ fn render_chat_code_block(
         .filter(|language| should_highlight_chat_code(&code, language))
         .map(|language| highlight_chat_code(&code, language, cx))
         .unwrap_or_default();
+    let highlights: Vec<(Range<usize>, HighlightStyle)> = gpui::combine_highlights(
+        highlights,
+        super::agent_chat_search::chat_search_highlights(&code, search_query, cx),
+    )
+    .collect();
     let block_bg: gpui::Hsla = crate::ui::style::surface(cx);
     let header_bg: gpui::Hsla = crate::ui::design::surface(cx);
     let border: gpui::Hsla = crate::ui::design::line(cx);
@@ -1049,6 +1119,7 @@ pub(super) fn render_plan_markdown(
                 &rows,
                 None,
                 element_seed.wrapping_add(elements.len() as u64),
+                None,
                 window,
                 cx,
             ));
@@ -1233,6 +1304,7 @@ fn render_markdown_table_row(
     live_cell: Option<(usize, usize, f32)>,
     seed: u64,
     row_index: usize,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
@@ -1274,9 +1346,16 @@ fn render_markdown_table_row(
         let cell_body = if streaming {
             match live_cell.filter(|(cell_index, _, _)| *cell_index == index) {
                 Some((_, warm_chars, warmth)) => {
-                    warm_styled_text(cell, warm_chars, warmth, cx).into_any_element()
+                    warm_styled_text(cell, warm_chars, warmth, search_query, cx).into_any_element()
                 }
-                None => StyledText::new(strip_inline_markdown(cell)).into_any_element(),
+                None => {
+                    let plain = strip_inline_markdown(cell);
+                    let highlights =
+                        super::agent_chat_search::chat_search_highlights(&plain, search_query, cx);
+                    StyledText::new(plain)
+                        .with_highlights(highlights)
+                        .into_any_element()
+                }
             }
         } else {
             TextView::markdown(
@@ -1295,6 +1374,12 @@ fn render_markdown_table_row(
                 cx,
             )
             .selectable(true)
+            .when_some(search_query, |view, query| {
+                view.highlight_matches(
+                    query.to_string(),
+                    super::agent_chat_search::chat_search_highlight_style(cx),
+                )
+            })
             .into_any_element()
         };
 
@@ -1331,6 +1416,7 @@ pub(super) fn render_markdown_table(
     rows: &[Vec<String>],
     live: Option<(usize, f32)>,
     seed: u64,
+    search_query: Option<&str>,
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
@@ -1366,6 +1452,7 @@ pub(super) fn render_markdown_table(
             (live_row == 0).then_some(live_cell).flatten(),
             seed,
             0,
+            search_query,
             window,
             cx,
         ));
@@ -1379,6 +1466,7 @@ pub(super) fn render_markdown_table(
             (live_row == index + 1).then_some(live_cell).flatten(),
             seed,
             index + 1,
+            search_query,
             window,
             cx,
         ));

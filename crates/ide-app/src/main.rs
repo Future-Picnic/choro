@@ -5,6 +5,8 @@ mod app_update;
 mod chromium;
 mod companion_music;
 mod demo;
+#[cfg(target_os = "macos")]
+mod dock;
 mod keymap;
 mod notifications;
 mod onboarding;
@@ -61,6 +63,7 @@ fn main() {
         cx.bind_keys(ui::project_search::bindings());
         cx.bind_keys(ui::command_palette::bindings());
         cx.bind_keys(ui::content_search::bindings());
+        cx.bind_keys(ui::center::agent_chat_search::bindings());
         cx.bind_keys(ui::quick_ask::bindings());
         cx.bind_keys(ui::quick_task::bindings());
         cx.bind_keys(vec![
@@ -144,6 +147,10 @@ fn main() {
         cx.spawn(async move |cx| {
             let mut companion_context = None;
             let main_window = cx.open_window(options, |window, cx| {
+                #[cfg(target_os = "macos")]
+                if let Err(error) = dock::install(window) {
+                    eprintln!("Could not install Dock window activation: {error:#}");
+                }
                 let view = RootView::view(window, cx);
                 companion_context = Some(view.read(cx).companion_context());
                 let root_view = view.downgrade();

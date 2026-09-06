@@ -14,7 +14,8 @@ pub struct Shortcut {
     pub category: ShortcutCategory,
     pub in_commands: bool,
     context: Option<&'static str>,
-    binding: fn(&str) -> KeyBinding,
+    additional_contexts: &'static [&'static str],
+    binding: fn(&str, Option<&str>) -> KeyBinding,
     action: fn() -> Box<dyn Action>,
 }
 
@@ -79,7 +80,8 @@ macro_rules! shortcut {
             category: $category,
             in_commands: $commands,
             context: None,
-            binding: |keys| KeyBinding::new(keys, <$action>::default(), None),
+            additional_contexts: &[],
+            binding: |keys, context| KeyBinding::new(keys, <$action>::default(), context),
             action: || Box::new(<$action>::default()),
         }
     };
@@ -95,7 +97,25 @@ macro_rules! shortcut_in {
             category: $category,
             in_commands: $commands,
             context: Some($context),
-            binding: |keys| KeyBinding::new(keys, <$action>::default(), Some($context)),
+            additional_contexts: &[],
+            binding: |keys, context| KeyBinding::new(keys, <$action>::default(), context),
+            action: || Box::new(<$action>::default()),
+        }
+    };
+}
+
+macro_rules! shortcut_in_additional {
+    ($id:literal, $keys:expr, $action:ty, $title:literal, $desc:literal, $category:expr, $commands:expr, $context:literal, [$($additional_context:literal),+ $(,)?]) => {
+        Shortcut {
+            id: $id,
+            default_keystroke: $keys,
+            title: $title,
+            description: $desc,
+            category: $category,
+            in_commands: $commands,
+            context: Some($context),
+            additional_contexts: &[$($additional_context),+],
+            binding: |keys, context| KeyBinding::new(keys, <$action>::default(), context),
             action: || Box::new(<$action>::default()),
         }
     };
@@ -310,6 +330,17 @@ pub fn shortcuts() -> Vec<Shortcut> {
             ShortcutCategory::SearchCode,
             true
         ),
+        shortcut_in_additional!(
+            "agent_chat_search",
+            Some("cmd-f"),
+            OpenAgentChatSearch,
+            "Find in conversation",
+            "Search messages in the selected agent conversation",
+            ShortcutCategory::Agents,
+            true,
+            "AgentChat",
+            ["AgentChat > Input", "AgentChatWorkspace"]
+        ),
         shortcut!(
             "save_file",
             Some("cmd-s"),
@@ -421,9 +452,14 @@ pub fn shortcuts() -> Vec<Shortcut> {
 pub fn bindings(overrides: &HashMap<String, String>) -> Vec<KeyBinding> {
     shortcuts()
         .into_iter()
-        .filter_map(|s| {
-            let keys = s.keystroke(overrides)?.to_string();
-            Some((s.binding)(&keys))
+        .flat_map(|shortcut| {
+            let Some(keys) = shortcut.keystroke(overrides).map(str::to_string) else {
+                return Vec::new();
+            };
+            std::iter::once(shortcut.context)
+                .chain(shortcut.additional_contexts.iter().copied().map(Some))
+                .map(|context| (shortcut.binding)(&keys, context))
+                .collect()
         })
         .collect()
 }
@@ -437,10 +473,14 @@ pub fn apply_bindings(
 ) {
     let masks: Vec<KeyBinding> = shortcuts()
         .into_iter()
-        .filter_map(|shortcut| {
-            shortcut
-                .keystroke(previous)
-                .map(|keys| KeyBinding::new(keys, NoAction {}, shortcut.context))
+        .flat_map(|shortcut| {
+            let Some(keys) = shortcut.keystroke(previous) else {
+                return Vec::new();
+            };
+            std::iter::once(shortcut.context)
+                .chain(shortcut.additional_contexts.iter().copied().map(Some))
+                .map(|context| KeyBinding::new(keys, NoAction {}, context))
+                .collect()
         })
         .collect();
     cx.bind_keys(masks);
@@ -525,6 +565,59 @@ mod tests {
             .find(|shortcut| shortcut.id == "save_file")
             .unwrap();
         assert_eq!(save.keystroke(&overrides), None);
+    }
+
+    #[test]
+    fn agent_chat_find_resolves_after_palette_close_and_inside_chat_inputs() {
+        let mut keymap = gpui::Keymap::new(vec![KeyBinding::new(
+            "cmd-f",
+            gpui_component::input::Search,
+            Some("Input"),
+        )]);
+        keymap.add_bindings(bindings(&HashMap::new()));
+        let keys = [Keystroke::parse("cmd-f").unwrap()];
+        let workspace_context = crate::ui::center::agent_chat_search::WORKSPACE_CONTEXT;
+        for path in [
+            vec!["Root", workspace_context],
+            vec!["Root", workspace_context, "AgentChat", "TextView"],
+            vec!["Root", workspace_context, "AgentChat", "Input"],
+            vec![
+                "Root",
+                workspace_context,
+                "AgentChat",
+                "AgentChatSearch",
+                "Input",
+            ],
+        ] {
+            let contexts = path
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect::<Vec<_>>();
+            let (resolved, _) = keymap.bindings_for_input(&keys, &contexts);
+            assert!(
+                resolved
+                    .first()
+                    .is_some_and(|binding| binding.action().as_any().is::<OpenAgentChatSearch>()),
+                "Find must resolve for focus path {path:?}: {resolved:?}"
+            );
+        }
+
+        // The workspace fallback must not take over Find in other activities
+        // or in a palette/sidebar input outside the conversation.
+        for path in [
+            vec!["Root"],
+            vec!["Root", "Input"],
+            vec!["Root", workspace_context, "Input"],
+        ] {
+            let contexts = path
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect::<Vec<_>>();
+            let (resolved, _) = keymap.bindings_for_input(&keys, &contexts);
+            assert!(!resolved
+                .first()
+                .is_some_and(|binding| binding.action().as_any().is::<OpenAgentChatSearch>()));
+        }
     }
 
     #[test]

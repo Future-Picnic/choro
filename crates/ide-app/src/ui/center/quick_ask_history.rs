@@ -1,7 +1,10 @@
 use super::*;
 
 use crate::state::quick_ask::{quick_ask_question_for_agent_chat, quick_ask_question_text};
-use crate::ui::quick_ask::QuickAskModal;
+use crate::ui::quick_ask::QuickAskSubmit;
+
+/// Width of the conversations column inside the bounded history frame.
+const QUICK_ASK_HISTORY_LIST_W: f32 = 304.0;
 
 #[derive(Clone)]
 struct QuickAskHistorySession {
@@ -75,7 +78,13 @@ impl CenterArea {
                 pluralize(exchange_count, "answer", "answers")
             )
         };
+        // The page header shares the bounded frame below it (list + content),
+        // so the title and actions sit on the frame's edges rather than the
+        // narrower default header measure.
+        let frame_max_w =
+            px(QUICK_ASK_HISTORY_LIST_W) + crate::ui::design::center_content_frame_max_w();
         let header = crate::ui::design::header::bar(cx)
+            .max_w(frame_max_w)
             .child(
                 crate::ui::design::header::title_col(cx)
                     .child(crate::ui::design::header::title("Ask History", cx))
@@ -103,13 +112,31 @@ impl CenterArea {
                 .into_any_element()
         };
 
+        // The master-detail area lives in a bounded, centered frame instead of
+        // stretching to the window edges: the conversation list would
+        // otherwise hug the far-left of a fullscreen window with an ocean of
+        // dead space before the centered transcript. The frame width is the
+        // list column plus the agent-chat content frame, so transcript rows
+        // land exactly on their usual measure inside it.
         v_flex()
             .size_full()
             .overflow_hidden()
             .bg(crate::ui::design::base(cx))
             .child(header)
             .child(div().w_full().h(px(1.)).bg(crate::ui::design::line(cx)))
-            .child(div().flex_1().min_h(px(0.)).child(body))
+            .child(
+                div().flex_1().min_h(px(0.)).w_full().p_4().child(
+                    div()
+                        .size_full()
+                        .max_w(frame_max_w)
+                        .mx_auto()
+                        .rounded(crate::ui::design::r_lg())
+                        .border_1()
+                        .border_color(crate::ui::design::line(cx))
+                        .overflow_hidden()
+                        .child(body),
+                ),
+            )
             .into_any_element()
     }
 
@@ -210,7 +237,7 @@ impl CenterArea {
             format!("{count} of {total}")
         };
         v_flex()
-            .w(px(304.))
+            .w(px(QUICK_ASK_HISTORY_LIST_W))
             .h_full()
             .flex_none()
             .min_h(px(0.))
@@ -333,7 +360,7 @@ impl CenterArea {
     }
 
     fn render_quick_ask_history_detail(
-        &self,
+        &mut self,
         session: &QuickAskHistorySession,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -351,15 +378,99 @@ impl CenterArea {
             })
             .unwrap_or_else(|| "General".to_string());
         let start_agent = self.quick_ask_start_agent_button(session, cx);
-        let continue_button = self.quick_ask_continue_button(session.id, cx);
-        let transcript = session
-            .exchanges
+
+        // When this session is the one loaded in the shared Quick Ask state,
+        // the detail is a live conversation: it shows the in-flight question,
+        // the thinking indicator, and errors, and its transcript comes from
+        // the state so a just-completed answer appears immediately.
+        let (live_session, pending_question, phase, error, live_scope, live_agent) = {
+            let state = self.quick_ask.read(cx);
+            let is_live = state.session_id() == session.id;
+            (
+                is_live.then(|| state.session().to_vec()),
+                is_live
+                    .then(|| state.pending_question().map(str::to_string))
+                    .flatten(),
+                state.phase(),
+                is_live.then(|| state.error().map(str::to_string)).flatten(),
+                is_live.then(|| state.scope()),
+                state.agent().clone(),
+            )
+        };
+        let is_live = live_session.is_some();
+        let thinking_here = is_live && phase == QuickAskPhase::Thinking;
+        if !thinking_here {
+            self.quick_ask_history_pending_started_at = None;
+        } else if self.quick_ask_history_pending_started_at.is_none() {
+            // A submission from another surface (the floating panel) still
+            // needs a stable anchor for the elapsed timer.
+            self.quick_ask_history_pending_started_at = Some(unix_now_secs());
+        }
+        let pending_started_at = self
+            .quick_ask_history_pending_started_at
+            .unwrap_or_else(unix_now_secs);
+
+        let exchanges = live_session.unwrap_or_else(|| session.exchanges.clone());
+        let exchange_count = exchanges.len();
+        let transcript = exchanges
             .iter()
             .enumerate()
             .map(|(turn_index, exchange)| {
                 self.render_quick_ask_exchange_as_agent(exchange, turn_index, window, cx)
             })
             .collect::<Vec<_>>();
+        let pending_message = pending_question.map(|question| {
+            let (project_id, provider, model_label) = {
+                let scope_project = match live_scope {
+                    Some(QuickAskScope::Project(project_id)) => Some(project_id),
+                    _ => None,
+                };
+                (
+                    scope_project,
+                    live_agent.provider,
+                    live_agent.model_label().to_string(),
+                )
+            };
+            self.render_quick_ask_pending_as_agent(
+                session.id,
+                project_id,
+                provider,
+                &model_label,
+                question,
+                exchange_count.saturating_mul(2),
+                pending_started_at,
+                window,
+                cx,
+            )
+        });
+        let thinking = thinking_here
+            .then(|| self.render_quick_ask_thinking_as_agent(session.id, pending_started_at, cx));
+        let error_notice = error.map(|error| {
+            div()
+                .w_full()
+                .px(crate::ui::design::agent_chat_gutter_x())
+                .pb_2()
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(crate::ui::design::agent_chat_content_max_w())
+                        .mx_auto()
+                        .child(style::agent_attention_strip(
+                            "copy-quick-ask-history-error",
+                            error,
+                            cx,
+                        )),
+                )
+                .into_any_element()
+        });
+        let composer = self.render_quick_ask_history_composer(
+            session,
+            phase,
+            live_scope,
+            &live_agent,
+            window,
+            cx,
+        );
 
         v_flex()
             .flex_1()
@@ -368,41 +479,52 @@ impl CenterArea {
             .min_h(px(0.))
             .bg(crate::ui::design::base(cx))
             .child(
-                h_flex()
+                // The bar spans the pane, but its content sits on the same
+                // measure as the transcript rows below (gutter + max_w +
+                // mx_auto), so title and actions stay attached to the
+                // conversation column instead of drifting to the pane edges
+                // when the sidebar is closed and the pane runs wide.
+                div()
                     .w_full()
-                    .min_h(px(58.))
                     .flex_none()
-                    .px_5()
-                    .py_2()
-                    .gap_3()
-                    .items_center()
+                    .px(crate::ui::design::agent_chat_gutter_x())
                     .border_b_1()
                     .border_color(crate::ui::design::line(cx))
                     .child(
-                        v_flex()
-                            .flex_1()
+                        h_flex()
+                            .w_full()
                             .min_w(px(0.))
-                            .gap_1()
+                            .max_w(crate::ui::design::agent_chat_content_max_w())
+                            .mx_auto()
+                            .min_h(px(58.))
+                            .py_2()
+                            .gap_3()
+                            .items_center()
                             .child(
-                                div()
-                                    .w_full()
-                                    .truncate()
-                                    .text_size(crate::ui::design::text_body())
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(crate::ui::design::t1(cx))
-                                    .child(title),
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .truncate()
+                                            .text_size(crate::ui::design::text_body())
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(crate::ui::design::t1(cx))
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .truncate()
+                                            .text_size(crate::ui::design::text_label())
+                                            .text_color(crate::ui::design::t4(cx))
+                                            .child(detail_meta),
+                                    ),
                             )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .truncate()
-                                    .text_size(crate::ui::design::text_label())
-                                    .text_color(crate::ui::design::t4(cx))
-                                    .child(detail_meta),
-                            ),
-                    )
-                    .child(start_agent)
-                    .child(continue_button),
+                            .child(start_agent),
+                    ),
             )
             .child(
                 v_flex()
@@ -414,7 +536,171 @@ impl CenterArea {
                         v_flex()
                             .w_full()
                             .py(crate::ui::design::center_column_pad_y())
-                            .children(transcript),
+                            .children(transcript)
+                            .children(pending_message)
+                            .children(thinking)
+                            .children(error_notice),
+                    ),
+            )
+            .child(composer)
+            .into_any_element()
+    }
+
+    fn quick_ask_history_composer_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if let Some(input) = &self.quick_ask_history_composer {
+            return input.clone();
+        }
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(1, 5)
+                .placeholder("Continue this conversation…")
+        });
+        cx.subscribe(&input, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        self.quick_ask_history_composer = Some(input.clone());
+        input
+    }
+
+    fn submit_quick_ask_history_followup(
+        &mut self,
+        session_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.quick_ask_history_composer.clone() else {
+            return;
+        };
+        let question = input.read(cx).value().trim().to_string();
+        if question.is_empty() || self.quick_ask.read(cx).phase() == QuickAskPhase::Thinking {
+            return;
+        }
+        input.update(cx, |input, cx| input.set_value("", window, cx));
+        self.quick_ask_history_pending_started_at = Some(unix_now_secs());
+        self.quick_ask.update(cx, |state, cx| {
+            if state.session_id() != session_id {
+                state.continue_conversation(session_id, cx);
+            }
+            state.submit(question, Vec::new(), cx);
+        });
+        cx.notify();
+    }
+
+    /// The follow-up composer under a history transcript: the same shared
+    /// composer components the panel uses, minus per-question controls —
+    /// scope and model are inherited from the conversation and shown as
+    /// quiet meta instead.
+    fn render_quick_ask_history_composer(
+        &mut self,
+        session: &QuickAskHistorySession,
+        phase: QuickAskPhase,
+        live_scope: Option<QuickAskScope>,
+        live_agent: &ide_core::config::GenerationAgent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let session_id = session.id;
+        let input = self.quick_ask_history_composer_input(window, cx);
+        let has_draft = !input.read(cx).value().trim().is_empty();
+        let can_send = has_draft && phase != QuickAskPhase::Thinking;
+        let scope_label = match live_scope {
+            Some(QuickAskScope::Project(project_id)) => self
+                .workspace
+                .read(cx)
+                .projects
+                .iter()
+                .find(|project| project.id == project_id)
+                .map(|project| project.name.clone())
+                .unwrap_or_else(|| "General".to_string()),
+            Some(QuickAskScope::General) => "General".to_string(),
+            None => session.scope_label().to_string(),
+        };
+        let composer_meta = format!("{scope_label} · {}", live_agent.model_label());
+        let view = cx.entity().clone();
+
+        div()
+            .w_full()
+            .flex_none()
+            .px(crate::ui::design::agent_chat_gutter_x())
+            .pb_4()
+            .pt_1()
+            .child(
+                v_flex()
+                    .w_full()
+                    .min_w(px(0.))
+                    .max_w(crate::ui::design::agent_chat_content_max_w())
+                    .mx_auto()
+                    .key_context("QuickAsk")
+                    .on_action(cx.listener(move |this, _: &QuickAskSubmit, window, cx| {
+                        this.submit_quick_ask_history_followup(session_id, window, cx);
+                    }))
+                    .child(
+                        style::composer_frame(cx)
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .min_h(crate::ui::design::composer_input_min_h())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .child(style::composer_text_input(&input).h_full()),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(crate::ui::design::text_ui())
+                                            .text_color(crate::ui::design::t4(cx))
+                                            .child(composer_meta),
+                                    )
+                                    .child(div().flex_1())
+                                    .child({
+                                        let button =
+                                            style::composer_send("quick-ask-history-send", cx)
+                                                .tooltip(move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        if phase == QuickAskPhase::Thinking {
+                                                            "Quick Ask is thinking…"
+                                                        } else {
+                                                            "Ask"
+                                                        },
+                                                    )
+                                                    .build(window, cx)
+                                                });
+                                        if can_send {
+                                            button
+                                                .cursor_pointer()
+                                                .hover(|button| {
+                                                    button.bg(crate::ui::design::accent_2(cx))
+                                                })
+                                                .on_click(move |_, window, cx| {
+                                                    view.update(cx, |this, cx| {
+                                                        this.submit_quick_ask_history_followup(
+                                                            session_id, window, cx,
+                                                        );
+                                                    });
+                                                })
+                                        } else {
+                                            button.opacity(0.55)
+                                        }
+                                    }),
+                            ),
                     ),
             )
             .into_any_element()
@@ -426,44 +712,16 @@ impl CenterArea {
         label: &'static str,
         cx: &mut Context<Self>,
     ) -> Button {
-        let workspace = self.workspace.clone();
         let quick_ask = self.quick_ask.clone();
-        let center = cx.entity().clone();
         style::primary_button_compact(id, label, cx)
             .icon(IconName::Plus)
-            .tooltip("Open a fresh, disposable Quick Ask")
-            .on_click(move |_, window, cx| {
-                QuickAskModal::open(
-                    workspace.clone(),
-                    quick_ask.clone(),
-                    center.clone(),
-                    window,
-                    cx,
-                );
+            .tooltip("Open a fresh Quick Ask")
+            .on_click(move |_, _, cx| {
+                quick_ask.update(cx, |state, cx| {
+                    state.begin_session(cx);
+                    state.request_panel_open(cx);
+                });
             })
-    }
-
-    fn quick_ask_continue_button(&self, session_id: Uuid, cx: &mut Context<Self>) -> Button {
-        let workspace = self.workspace.clone();
-        let quick_ask = self.quick_ask.clone();
-        let center = cx.entity().clone();
-        style::primary_button_compact(
-            ("quick-ask-history-continue", session_id.as_u128() as u64),
-            "Continue Conversation",
-            cx,
-        )
-        .icon(IconName::ArrowRight)
-        .tooltip("Restore only this conversation into a disposable Quick Ask")
-        .on_click(move |_, window, cx| {
-            QuickAskModal::open_continuation(
-                session_id,
-                workspace.clone(),
-                quick_ask.clone(),
-                center.clone(),
-                window,
-                cx,
-            );
-        })
     }
 
     fn quick_ask_start_agent_button(

@@ -83,7 +83,9 @@ impl CenterArea {
             .map(|agent| (agent.id, agent.status))
             .collect();
         let center = cx.new(move |cx| {
+            let project_navigation = center_navigation::ProjectNavigation::new(workspace.read(cx).active);
             cx.observe(&workspace, |this: &mut Self, _, cx| {
+                this.sync_project_navigation(cx);
                 this.refresh_open_code_models(false, cx);
                 this.reconcile_verification_mode(cx);
                 cx.notify();
@@ -145,6 +147,7 @@ impl CenterArea {
                 this.maybe_auto_verify(cx);
                 this.maybe_finish_summary_maintenance(cx);
                 this.maybe_start_pending_pocketcomet_handoffs(cx);
+                this.schedule_agent_chat_search_live_refresh(cx);
                 cx.notify();
             })
             .detach();
@@ -679,6 +682,9 @@ impl CenterArea {
                 quick_ask,
                 quick_ask_selected_session: None,
                 quick_ask_history_search,
+                quick_ask_history_composer: None,
+                quick_ask_history_pending_started_at: None,
+                weekly_digest_expanded: HashSet::new(),
                 terminals,
                 agents,
                 agent_chats,
@@ -759,7 +765,6 @@ impl CenterArea {
                 agent_chat_file_dismissed_query: HashMap::new(),
                 agent_chat_selected_agent_targets: HashMap::new(),
                 agent_chat_agent_request_kind_overrides: HashMap::new(),
-                agent_handoff_previews: HashMap::new(),
                 agent_handoff_preparations_pending: HashMap::new(),
                 agent_handoff_sends_pending: HashMap::new(),
                 agent_chat_agent_selection: HashMap::new(),
@@ -785,6 +790,7 @@ impl CenterArea {
                 agent_chat_history: HashMap::new(),
                 agent_chat_prepended_rows: HashMap::new(),
                 agent_chat_scrolled_up: HashMap::new(),
+                agent_chat_search: None,
                 agent_chat_reveal: HashMap::new(),
                 agent_chat_reveal_pending: HashSet::new(),
                 agent_chat_active_reveal: None,
@@ -836,6 +842,7 @@ impl CenterArea {
                 pocketcomet_handoffs_pending: HashSet::new(),
                 agent_record_status_seen,
                 agent_messages_inflight: HashSet::new(),
+                agent_message_cards_expanded: HashSet::new(),
                 memory_distills_inflight: HashSet::new(),
                 memory_proposal_accepts_pending: HashSet::new(),
                 memory_proposal_errors: HashMap::new(),
@@ -875,6 +882,7 @@ impl CenterArea {
                 pocketcomet_selected_chat: None,
                 view_mode: CenterMode::Agents,
                 last_code_mode: CenterMode::Split,
+                project_navigation,
                 view_history_back: Vec::new(),
                 view_history_forward: Vec::new(),
                 tasks_refresh_epoch: 0,

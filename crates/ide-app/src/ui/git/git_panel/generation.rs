@@ -67,20 +67,36 @@ fn codex_output_path() -> PathBuf {
     ))
 }
 
+const CODEX_QUICK_ASK_PERMISSION_CONFIG: [&str; 3] = [
+    "default_permissions=\"quick-ask\"",
+    "permissions.quick-ask.extends=\":read-only\"",
+    "permissions.quick-ask.network.enabled=true",
+];
+
 fn codex_exec_command(
     working_directory: &Path,
     output_path: &Path,
     model: &str,
     images: &[PathBuf],
+    access: GenerationAccess,
 ) -> anyhow::Result<Command> {
     let mut command = Command::new(codex_cli_path()?);
     command
         .arg("exec")
         .arg("--ignore-user-config")
         .arg("--ignore-rules")
-        .arg("--skip-git-repo-check")
-        .arg("--sandbox")
-        .arg("read-only")
+        .arg("--skip-git-repo-check");
+    match access {
+        GenerationAccess::ToolFree => {
+            command.arg("--sandbox").arg("read-only");
+        }
+        GenerationAccess::QuickAsk => {
+            for config in CODEX_QUICK_ASK_PERMISSION_CONFIG {
+                command.arg("--config").arg(config);
+            }
+        }
+    }
+    command
         .arg("--model")
         .arg(model)
         .arg("--config")
@@ -112,9 +128,10 @@ fn run_codex_generation(
     prompt: String,
     images: &[PathBuf],
     timeout: Duration,
+    access: GenerationAccess,
 ) -> anyhow::Result<String> {
     let output_path = codex_output_path();
-    let mut child = codex_exec_command(repo, &output_path, model, images)?
+    let mut child = codex_exec_command(repo, &output_path, model, images, access)?
         .spawn()
         .map_err(|error| anyhow::anyhow!("Failed to start Codex CLI: {error}"))?;
 
@@ -321,16 +338,33 @@ fn run_streamed_generation_with_images(
     })?;
     let images = validate_generation_images(images)?;
     if generation_agent.provider == AgentKind::Codex {
-        return run_codex_generation(working_directory, model, prompt, &images, timeout);
+        return run_codex_generation(
+            working_directory,
+            model,
+            prompt,
+            &images,
+            timeout,
+            GenerationAccess::ToolFree,
+        );
     }
 
     match generation_agent.provider {
-        AgentKind::Claude => {
-            run_claude_generation(working_directory, model, prompt, &images, timeout)
-        }
-        AgentKind::OpenCode => {
-            run_open_code_generation(working_directory, model, prompt, &images, timeout)
-        }
+        AgentKind::Claude => run_claude_generation(
+            working_directory,
+            model,
+            prompt,
+            &images,
+            timeout,
+            GenerationAccess::ToolFree,
+        ),
+        AgentKind::OpenCode => run_open_code_generation(
+            working_directory,
+            model,
+            prompt,
+            &images,
+            timeout,
+            GenerationAccess::ToolFree,
+        ),
         AgentKind::Codex => unreachable!(),
     }
 }
@@ -346,16 +380,67 @@ pub(crate) fn run_safe_text_generation(
     run_streamed_generation(generation_agent, Path::new("."), prompt, timeout)
 }
 
-/// Multimodal variant of [`run_safe_text_generation`]. Images use each
-/// provider's native request format while generation remains tool-free in the
-/// same empty disposable directory.
-pub(crate) fn run_safe_text_generation_with_images(
+/// Run Quick Ask with inspection and network tools inside the selected project,
+/// while provider permissions prevent file edits and Git mutations. General
+/// questions use the same tool policy from an empty disposable directory.
+pub(crate) fn run_quick_ask_generation_with_images(
     generation_agent: &GenerationAgent,
+    project_root: Option<&Path>,
     prompt: String,
     images: &[PathBuf],
     timeout: Duration,
 ) -> anyhow::Result<String> {
-    run_streamed_generation_with_images(generation_agent, Path::new("."), prompt, images, timeout)
+    let sandbox = project_root
+        .is_none()
+        .then(|| {
+            tempfile::Builder::new()
+                .prefix("choro-quick-ask-")
+                .tempdir()
+        })
+        .transpose()
+        .map_err(|error| {
+            anyhow::anyhow!("failed to create an isolated Quick Ask directory: {error}")
+        })?;
+    let working_directory = project_root.unwrap_or_else(|| {
+        sandbox
+            .as_ref()
+            .expect("general Quick Ask sandbox must exist")
+            .path()
+    });
+    let model = generation_agent.model_cli_value().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No model is configured for Quick Ask with {}",
+            generation_agent.provider.label()
+        )
+    })?;
+    let images = validate_generation_images(images)?;
+
+    match generation_agent.provider {
+        AgentKind::Codex => run_codex_generation(
+            working_directory,
+            model,
+            prompt,
+            &images,
+            timeout,
+            GenerationAccess::QuickAsk,
+        ),
+        AgentKind::Claude => run_claude_generation(
+            working_directory,
+            model,
+            prompt,
+            &images,
+            timeout,
+            GenerationAccess::QuickAsk,
+        ),
+        AgentKind::OpenCode => run_open_code_generation(
+            working_directory,
+            model,
+            prompt,
+            &images,
+            timeout,
+            GenerationAccess::QuickAsk,
+        ),
+    }
 }
 
 /// Run the configured small-writing model in the same isolated, no-tools path
@@ -375,13 +460,15 @@ fn run_claude_generation(
     prompt: String,
     images: &[PathBuf],
     timeout: Duration,
+    access: GenerationAccess,
 ) -> anyhow::Result<String> {
     let input_body = if images.is_empty() {
         prompt
     } else {
         claude_stream_json_input(&prompt, images)?
     };
-    let mut command = Command::new(generation_cli_path(AgentKind::Claude)?);
+    let executable = generation_cli_path(AgentKind::Claude)?;
+    let mut command = provider_generation_command(&executable, working_directory, access);
     command.args([
         "--print",
         "--safe-mode",
@@ -390,13 +477,22 @@ fn run_claude_generation(
         "--strict-mcp-config",
         "--permission-mode",
         "dontAsk",
-        "--tools",
-        "",
-        "--output-format",
-        "text",
-        "--model",
-        model,
     ]);
+    match access {
+        GenerationAccess::ToolFree => {
+            command.args(["--tools", ""]);
+        }
+        GenerationAccess::QuickAsk => {
+            command.args([
+                "--restricted",
+                "--tools",
+                "Bash,Read,Glob,Grep,WebFetch,WebSearch",
+                "--disallowed-tools",
+                "Write,Edit,NotebookEdit",
+            ]);
+        }
+    }
+    command.args(["--output-format", "text", "--model", model]);
     if !images.is_empty() {
         command.args(["--input-format", "stream-json"]);
     }
@@ -434,13 +530,105 @@ const OPENCODE_TEXT_GENERATION_CONFIG: &str = r#"{
     "formatter": false
 }"#;
 
-fn configure_open_code_text_generation(command: &mut Command, working_directory: &Path) {
+const OPENCODE_QUICK_ASK_CONFIG: &str = r#"{
+    "permission": { "*": "deny" },
+    "agent": {
+        "choro-quick-ask": {
+            "description": "Investigate and answer without changing files or Git state",
+            "mode": "primary",
+            "permission": {
+                "*": "deny",
+                "read": "allow",
+                "glob": "allow",
+                "grep": "allow",
+                "webfetch": "allow",
+                "websearch": "allow",
+                "bash": {
+                    "*": "deny",
+                    "pwd": "allow",
+                    "ls": "allow",
+                    "ls *": "allow",
+                    "rg *": "allow",
+                    "grep *": "allow",
+                    "find *": "allow",
+                    "fd *": "allow",
+                    "head *": "allow",
+                    "tail *": "allow",
+                    "wc *": "allow",
+                    "file *": "allow",
+                    "stat *": "allow",
+                    "du *": "allow",
+                    "tree *": "allow",
+                    "which *": "allow",
+                    "command -v *": "allow",
+                    "git status*": "allow",
+                    "git diff*": "allow",
+                    "git log*": "allow",
+                    "git show*": "allow",
+                    "git rev-parse*": "allow",
+                    "git ls-files*": "allow",
+                    "git branch --show-current": "allow",
+                    "git branch --list*": "allow",
+                    "git remote -v": "allow",
+                    "ps *": "allow",
+                    "lsof *": "allow",
+                    "uname *": "allow",
+                    "sw_vers*": "allow",
+                    "date": "allow"
+                }
+            }
+        }
+    },
+    "share": "disabled",
+    "autoupdate": false,
+    "snapshot": false,
+    "lsp": false,
+    "formatter": false
+}"#;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GenerationAccess {
+    ToolFree,
+    QuickAsk,
+}
+
+fn provider_generation_command(
+    executable: &Path,
+    working_directory: &Path,
+    access: GenerationAccess,
+) -> Command {
+    #[cfg(target_os = "macos")]
+    if access == GenerationAccess::QuickAsk {
+        let protected_path = working_directory
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let profile = format!(
+            "(version 1)\n(allow default)\n(deny file-write* (subpath \"{protected_path}\"))"
+        );
+        let mut command = Command::new("/usr/bin/sandbox-exec");
+        command.arg("-p").arg(profile).arg(executable);
+        return command;
+    }
+
+    Command::new(executable)
+}
+
+fn configure_open_code_generation(
+    command: &mut Command,
+    working_directory: &Path,
+    access: GenerationAccess,
+) {
+    let config = match access {
+        GenerationAccess::ToolFree => OPENCODE_TEXT_GENERATION_CONFIG,
+        GenerationAccess::QuickAsk => OPENCODE_QUICK_ASK_CONFIG,
+    };
     command
         .env(
             "PATH",
             crate::state::agent_chat::protocol::agent_command_path_env(),
         )
-        .env("OPENCODE_CONFIG_CONTENT", OPENCODE_TEXT_GENERATION_CONFIG)
+        .env("OPENCODE_CONFIG_CONTENT", config)
         .env("OPENCODE_DISABLE_CLAUDE_CODE", "1")
         .current_dir(working_directory);
 }
@@ -451,10 +639,15 @@ fn run_open_code_generation(
     prompt: String,
     images: &[PathBuf],
     timeout: Duration,
+    access: GenerationAccess,
 ) -> anyhow::Result<String> {
     let executable = generation_cli_path(AgentKind::OpenCode)?;
     let temporary_title = format!("choro-generation-{}", uuid::Uuid::new_v4().simple());
-    let mut command = Command::new(&executable);
+    let agent_name = match access {
+        GenerationAccess::ToolFree => "choro-text-generation",
+        GenerationAccess::QuickAsk => "choro-quick-ask",
+    };
+    let mut command = provider_generation_command(&executable, working_directory, access);
     command.args([
         "--pure",
         "run",
@@ -463,7 +656,7 @@ fn run_open_code_generation(
         "--model",
         model,
         "--agent",
-        "choro-text-generation",
+        agent_name,
         "--title",
         &temporary_title,
     ]);
@@ -474,7 +667,7 @@ fn run_open_code_generation(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    configure_open_code_text_generation(&mut command, working_directory);
+    configure_open_code_generation(&mut command, working_directory, access);
     let mut child = command
         .spawn()
         .map_err(|error| anyhow::anyhow!("Failed to start OpenCode CLI: {error}"))?;
@@ -622,7 +815,7 @@ fn find_open_code_session_by_title(
     command
         .args(["--pure", "session", "list", "--format", "json"])
         .stdin(Stdio::null());
-    configure_open_code_text_generation(&mut command, working_directory);
+    configure_open_code_generation(&mut command, working_directory, GenerationAccess::ToolFree);
     let output = command
         .output()
         .map_err(|error| anyhow::anyhow!("Failed to list OpenCode sessions: {error}"))?;
@@ -660,7 +853,7 @@ fn delete_open_code_generation_session(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    configure_open_code_text_generation(&mut command, working_directory);
+    configure_open_code_generation(&mut command, working_directory, GenerationAccess::ToolFree);
     let output = command
         .output()
         .map_err(|error| anyhow::anyhow!("Failed to clean up OpenCode session: {error}"))?;
@@ -1535,6 +1728,33 @@ mod tests {
         );
         assert_eq!(config.get("share"), Some(&serde_json::json!("disabled")));
         assert_eq!(config.get("snapshot"), Some(&serde_json::json!(false)));
+    }
+
+    #[test]
+    fn quick_ask_provider_permissions_allow_investigation_without_mutation() {
+        assert!(CODEX_QUICK_ASK_PERMISSION_CONFIG
+            .contains(&"permissions.quick-ask.extends=\":read-only\""));
+        assert!(CODEX_QUICK_ASK_PERMISSION_CONFIG
+            .contains(&"permissions.quick-ask.network.enabled=true"));
+
+        let config: serde_json::Value = serde_json::from_str(OPENCODE_QUICK_ASK_CONFIG).unwrap();
+        let permissions = config.pointer("/agent/choro-quick-ask/permission").unwrap();
+        assert_eq!(permissions.get("*"), Some(&serde_json::json!("deny")));
+        assert_eq!(permissions.get("read"), Some(&serde_json::json!("allow")));
+        assert_eq!(
+            permissions.get("webfetch"),
+            Some(&serde_json::json!("allow"))
+        );
+        assert_eq!(
+            permissions.pointer("/bash/*"),
+            Some(&serde_json::json!("deny"))
+        );
+        assert_eq!(
+            permissions.pointer("/bash/git status*"),
+            Some(&serde_json::json!("allow"))
+        );
+        assert_eq!(permissions.pointer("/bash/git push*"), None);
+        assert_eq!(permissions.get("edit"), None);
     }
 
     #[test]

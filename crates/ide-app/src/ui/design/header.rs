@@ -108,15 +108,16 @@ pub fn actions() -> Div {
 
 /// A single-row contextual-panel header (Git, Board, Files). The panel title,
 /// optional tabs, and one view-flip action share this fixed-height band.
-pub fn panel_bar(cx: &gpui::App) -> Div {
+/// Deliberately borderless: the fixed height and title typography carry the
+/// separation, so the panel surface (and its gradient) flows uninterrupted
+/// under the header.
+pub fn panel_bar(_cx: &gpui::App) -> Div {
     h_flex()
         .w_full()
         .h(scale::header_h())
         .flex_none()
         .items_center()
         .px_3p5()
-        .border_b_1()
-        .border_color(token::line(cx))
 }
 
 /// The leading identity in a contextual-panel header. It is deliberately one

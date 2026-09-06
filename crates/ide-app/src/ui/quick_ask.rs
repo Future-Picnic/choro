@@ -1,7 +1,8 @@
 use gpui::{
-    actions, div, img, prelude::FluentBuilder, px, App, AppContext, Context, Entity, ExternalPaths,
-    Focusable, FontWeight, ImageFormat, InteractiveElement, IntoElement, KeyBinding, ObjectFit,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window,
+    actions, div, img, prelude::FluentBuilder, px, App, AppContext, Context, Entity, EventEmitter,
+    ExternalPaths, FocusHandle, Focusable, FontWeight, ImageFormat, InteractiveElement,
+    IntoElement, KeyBinding, ObjectFit, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, StyledImage, Window,
 };
 use gpui_component::{
     h_flex,
@@ -9,14 +10,13 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     spinner::Spinner,
     tooltip::Tooltip,
-    v_flex, Disableable, Icon, IconName, Sizable, WindowExt,
+    v_flex, Disableable, Icon, IconName, Sizable,
 };
 use ide_core::config::GenerationAgent;
 use ide_core::local_store::StoredQuickAskExchange;
 use ide_core::{AgentKind, AgentModel};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
 
 use crate::state::{QuickAskEvent, QuickAskPhase, QuickAskScope, QuickAskState, Workspace};
 use crate::ui::center::attachment_helpers::{
@@ -24,7 +24,7 @@ use crate::ui::center::attachment_helpers::{
 };
 use crate::ui::center::{provider_brand_icon, CenterArea};
 
-actions!(quick_ask, [QuickAskSubmit]);
+actions!(quick_ask, [QuickAskSubmit, QuickAskDismiss]);
 
 const CONTEXT: &str = "QuickAsk";
 
@@ -36,10 +36,22 @@ pub fn bindings() -> Vec<KeyBinding> {
             Enter { secondary: false },
             Some("QuickAsk > Input"),
         ),
+        KeyBinding::new("escape", QuickAskDismiss, Some(CONTEXT)),
     ]
 }
 
-pub struct QuickAskModal {
+/// The panel cannot close itself — the root layout owns its visibility — so it
+/// announces dismissal (close button, Escape, agent hand-off) instead.
+#[derive(Clone, Copy, Debug)]
+pub enum QuickAskPanelEvent {
+    Dismissed,
+}
+
+/// Quick Ask as a floating side chat: a card anchored over the workspace
+/// (Intercom-style) rather than a blocking dialog or a docked column, so
+/// answers stay visible while the user acts on them and the layout of other
+/// panels is never disturbed.
+pub struct QuickAskPanel {
     workspace: Entity<Workspace>,
     quick_ask: Entity<QuickAskState>,
     center: Entity<CenterArea>,
@@ -52,49 +64,24 @@ pub struct QuickAskModal {
     failed_submission: Option<(String, Vec<PathBuf>)>,
 }
 
-impl QuickAskModal {
-    pub fn open(
-        workspace: Entity<Workspace>,
-        quick_ask: Entity<QuickAskState>,
-        center: Entity<CenterArea>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        quick_ask.update(cx, |state, cx| state.begin_session(cx));
-        Self::open_prepared(workspace, quick_ask, center, window, cx);
-    }
+impl EventEmitter<QuickAskPanelEvent> for QuickAskPanel {}
 
-    pub fn open_continuation(
-        session_id: Uuid,
+impl QuickAskPanel {
+    pub fn view(
         workspace: Entity<Workspace>,
         quick_ask: Entity<QuickAskState>,
         center: Entity<CenterArea>,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        let restored =
-            quick_ask.update(cx, |state, cx| state.continue_conversation(session_id, cx));
-        if !restored {
-            return;
-        }
-        Self::open_prepared(workspace, quick_ask, center, window, cx);
-    }
-
-    fn open_prepared(
-        workspace: Entity<Workspace>,
-        quick_ask: Entity<QuickAskState>,
-        center: Entity<CenterArea>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    ) -> Entity<Self> {
         let question = cx.new(|cx| {
             InputState::new(window, cx)
                 .auto_grow(2, 5)
-                .placeholder("Ask anything about this project…")
+                .placeholder("Ask anything…")
         });
         let observed_center = center.clone();
-        let modal = cx.new(|cx| {
-            let modal = Self {
+        cx.new(|cx| {
+            let panel = Self {
                 workspace,
                 quick_ask: quick_ask.clone(),
                 center,
@@ -108,7 +95,7 @@ impl QuickAskModal {
             };
             cx.observe(&quick_ask, |_, _, cx| cx.notify()).detach();
             // Message hover/copy state belongs to the canonical agent renderer
-            // hosted by CenterArea. Mirror its notifications into the dialog.
+            // hosted by CenterArea. Mirror its notifications into the panel.
             cx.observe(&observed_center, |_, _, cx| cx.notify())
                 .detach();
             // This is the behavior the working agent composers rely on: the
@@ -151,30 +138,32 @@ impl QuickAskModal {
                         this.question.focus_handle(cx).focus(window);
                         cx.notify();
                     }
+                    // The root layout owns panel visibility; nothing to sync
+                    // here beyond the state observation above.
+                    QuickAskEvent::PanelOpenRequested => {}
                 },
             )
             .detach();
-            modal
-        });
-        let dialog_modal = modal.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .w(px(700.))
-                .margin_top(px(64.))
-                .overlay(true)
-                .close_button(false)
-                .keyboard(true)
-                .p_0()
-                .child(dialog_modal.clone())
-        });
-        // Focus after the dialog and its platform input handler have mounted.
-        // This is especially important when opening from a mouse click in the
-        // history workspace: the originating button must not reclaim focus at
-        // the end of the same event cycle.
-        let question_focus = question.focus_handle(cx);
-        window.on_next_frame(move |window, _| {
-            question_focus.focus(window);
-        });
+            panel
+        })
+    }
+
+    pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
+        self.question.focus_handle(cx)
+    }
+
+    fn start_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.attached_images.clear();
+        self.composer_error = None;
+        self.pending_started_at = None;
+        self.error_details_expanded = false;
+        self.failed_submission = None;
+        self.question
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.quick_ask
+            .update(cx, |state, cx| state.begin_session(cx));
+        self.question.focus_handle(cx).focus(window);
+        cx.notify();
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -301,7 +290,9 @@ impl QuickAskModal {
             "Continue from this Quick Ask discussion and help with the project.\n\nQuestion:\n{}\n\nQuick Ask answer:\n{}\n\nTreat the answer as context, verify its claims against the repository, and ask before making a materially different change.",
             exchange.question, exchange.answer
         );
-        window.close_dialog(cx);
+        // The conversation moves into a real agent draft; the side chat has
+        // done its job and yields the space back.
+        cx.emit(QuickAskPanelEvent::Dismissed);
         self.center.update(cx, |center, cx| {
             center.open_new_agent_with_prompt(project, prompt, window, cx)
         });
@@ -315,7 +306,7 @@ impl QuickAskModal {
     ) -> gpui::AnyElement {
         let view = cx.entity().clone();
         if let Some(project) = self.agent_project_for(&exchange, cx) {
-            return crate::ui::style::dialog_neutral_button(id, "Start agent", cx)
+            return crate::ui::style::ghost_button_compact(id, "Start agent")
                 .icon(IconName::Bot)
                 .tooltip("Open an unsent agent draft with this conversation")
                 .on_click(move |_, window, cx| {
@@ -328,14 +319,14 @@ impl QuickAskModal {
 
         let projects = self.workspace.read(cx).projects.clone();
         if projects.is_empty() {
-            return crate::ui::style::dialog_neutral_button(id, "Start agent", cx)
+            return crate::ui::style::ghost_button_compact(id, "Start agent")
                 .icon(IconName::Bot)
                 .disabled(true)
                 .tooltip("Add a project before starting an agent")
                 .into_any_element();
         }
 
-        crate::ui::style::dialog_neutral_button(id, "Start agent", cx)
+        crate::ui::style::ghost_button_compact(id, "Start agent")
             .icon(IconName::Bot)
             .dropdown_caret(true)
             .tooltip("Choose which project should receive this Quick Ask context")
@@ -379,66 +370,57 @@ impl QuickAskModal {
             .last()
             .cloned()
             .map(|exchange| self.render_start_agent_action("quick-ask-start-agent", exchange, cx));
-        h_flex()
-            .h(px(60.))
-            .w_full()
-            .px_4()
-            .gap_3()
-            .items_center()
-            .border_b_1()
-            .border_color(crate::ui::design::line(cx).opacity(0.6))
+        crate::ui::design::header::panel_bar(cx)
             .child(
-                div()
-                    .size(px(32.))
+                h_flex()
                     .flex_none()
-                    .flex()
                     .items_center()
-                    .justify_center()
-                    .rounded(crate::ui::design::r_md())
-                    .bg(crate::ui::design::accent_soft(cx))
+                    .gap_1p5()
                     .child(
                         Icon::new(IconName::Asterisk)
-                            .size(crate::ui::design::icon_md())
+                            .size(crate::ui::design::icon_sm())
                             .text_color(crate::ui::design::accent(cx)),
-                    ),
+                    )
+                    .child(crate::ui::design::header::panel_identity(
+                        None,
+                        "Quick Ask",
+                        cx,
+                    )),
             )
+            .child(div().flex_1().min_w(crate::ui::design::panel_action_gap()))
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .gap_0p5()
+                crate::ui::design::header::actions()
+                    .children(start_agent)
                     .child(
-                        div()
-                            .text_size(crate::ui::design::text_head())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t1(cx))
-                            .child("Quick Ask"),
+                        crate::ui::style::header_icon_button("quick-ask-new", IconName::Plus, cx)
+                            .tooltip("New ask")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.start_new_session(window, cx);
+                            })),
                     )
                     .child(
-                        div()
-                            .text_size(crate::ui::design::text_label())
-                            .text_color(crate::ui::design::t3(cx))
-                            .child("Fast answers without starting an agent"),
+                        crate::ui::style::header_icon_button(
+                            "quick-ask-open-history",
+                            IconName::BookOpen,
+                            cx,
+                        )
+                        .tooltip("Open Ask History")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.center
+                                .update(cx, |center, cx| center.show_quick_ask_history(cx));
+                        })),
+                    )
+                    .child(
+                        crate::ui::style::header_icon_button(
+                            "quick-ask-close",
+                            IconName::Close,
+                            cx,
+                        )
+                        .tooltip("Close Quick Ask")
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(QuickAskPanelEvent::Dismissed);
+                        })),
                     ),
-            )
-            .children(start_agent)
-            .child(
-                crate::ui::style::header_icon_button(
-                    "quick-ask-open-history",
-                    IconName::BookOpen,
-                    cx,
-                )
-                .tooltip("Open Ask History")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    window.close_dialog(cx);
-                    this.center
-                        .update(cx, |center, cx| center.show_quick_ask_history(cx));
-                })),
-            )
-            .child(
-                crate::ui::style::header_icon_button("quick-ask-close", IconName::Close, cx)
-                    .tooltip("Close Quick Ask")
-                    .on_click(|_, window, cx| window.close_dialog(cx)),
             )
     }
 
@@ -654,7 +636,8 @@ impl QuickAskModal {
             let view = view.clone();
             move |_, window, cx| {
                 view.update(cx, |this, cx| {
-                    window.close_dialog(cx);
+                    // The panel stays open: the error card asks the user to
+                    // return here and retry after signing in.
                     this.center
                         .update(cx, |center, cx| center.spawn_shell(window, cx));
                 });
@@ -839,7 +822,53 @@ impl QuickAskModal {
             .into_any_element()
     }
 
-    fn render_ask(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        v_flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .px_5()
+            .text_color(crate::ui::design::t3(cx))
+            .child(
+                div()
+                    .size(px(48.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(crate::ui::design::r_lg())
+                    .bg(crate::ui::design::accent_soft(cx))
+                    .child(
+                        Icon::new(IconName::Asterisk)
+                            .size(crate::ui::design::icon_lg())
+                            .text_color(crate::ui::design::accent(cx)),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_body())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child("Ask without starting an agent"),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(300.))
+                            .text_center()
+                            .line_height(gpui::relative(1.45))
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child("Use project scope for repository-grounded answers, or switch to General for anything else."),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_body(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let state = self.quick_ask.read(cx);
         let session = state.session().to_vec();
         let pending_question = state.pending_question().map(str::to_string);
@@ -873,140 +902,105 @@ impl QuickAskModal {
         let thinking = (phase == QuickAskPhase::Thinking)
             .then(|| self.render_thinking(pending_created_at, cx));
         let error_notice = error.map(|error| self.render_error(error, cx));
+        let show_empty_state =
+            session_empty && phase == QuickAskPhase::Idle && pending_message.is_none();
+
+        // The empty state centers in the free space; a conversation scrolls.
+        let conversation: gpui::AnyElement = if show_empty_state {
+            v_flex()
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .child(self.render_empty_state(cx))
+                .children(error_notice)
+                .into_any_element()
+        } else {
+            v_flex()
+                .id("quick-ask-session-scroll")
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .overflow_y_scroll()
+                .py_4()
+                .children(transcript)
+                .children(pending_message)
+                .children(thinking)
+                .children(error_notice)
+                .into_any_element()
+        };
+
         v_flex()
+            .flex_1()
+            .min_h(px(0.))
             .w_full()
+            .child(conversation)
             .child(
-                v_flex()
-                    .id("quick-ask-session-scroll")
-                    .w_full()
-                    .h(px(360.))
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .py_5()
-                    .when(session_empty && phase == QuickAskPhase::Idle, |body| {
-                        body.child(
+                v_flex().w_full().flex_none().px_3().pb_3().child(
+                    crate::ui::style::compact_composer_frame(cx)
+                        .capture_action(cx.listener(|this, _: &Paste, _, cx| {
+                            if this.paste_image(cx) {
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .can_drop(|dragged, _, _| dragged.is::<ExternalPaths>())
+                        .on_drop::<ExternalPaths>(cx.listener(
+                            |this, paths: &ExternalPaths, _, cx| {
+                                this.attach_dropped_images(paths.paths(), cx);
+                            },
+                        ))
+                        .child(
                             v_flex()
                                 .flex_1()
-                                .items_center()
-                                .justify_center()
-                                .gap_3()
-                                .px_5()
-                                .text_color(crate::ui::design::t3(cx))
-                                .child(
-                                    div()
-                                        .size(px(58.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(crate::ui::design::r_lg())
-                                        .bg(crate::ui::design::accent_soft(cx))
-                                        .child(
-                                            Icon::new(IconName::Asterisk)
-                                                .size(crate::ui::design::icon_xl())
-                                                .text_color(crate::ui::design::accent(cx)),
-                                        ),
+                                .w_full()
+                                .min_w(px(0.))
+                                .min_h(crate::ui::design::compact_composer_input_min_h())
+                                .gap_2()
+                                .when(
+                                    !attached_images.is_empty() || attachment_pastes_pending > 0,
+                                    |column| {
+                                        column.child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .flex_wrap()
+                                                .children(attached_images.iter().enumerate().map(
+                                                    |(index, path)| {
+                                                        self.render_attachment_preview(
+                                                            index,
+                                                            path.clone(),
+                                                            cx,
+                                                        )
+                                                    },
+                                                ))
+                                                .children((0..attachment_pastes_pending).map(
+                                                    |index| {
+                                                        self.render_attachment_pending(index, cx)
+                                                    },
+                                                )),
+                                        )
+                                    },
                                 )
-                                .child(
-                                    v_flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_size(crate::ui::design::text_title())
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(crate::ui::design::t1(cx))
-                                                .child("Ask without starting an agent"),
-                                        )
-                                        .child(
-                                            div()
-                                                .max_w(px(430.))
-                                                .text_center()
-                                                .line_height(gpui::relative(1.45))
-                                                .text_size(crate::ui::design::text_ui())
-                                                .text_color(crate::ui::design::t3(cx))
-                                                .child("Use project scope for repository-grounded answers, or switch to General for anything else."),
-                                        ),
-                                ),
+                                .child(div().flex_1().min_h(px(0.)).child(
+                                    crate::ui::style::composer_text_input(&self.question).h_full(),
+                                )),
                         )
-                    })
-                    .children(transcript)
-                    .children(pending_message)
-                    .children(thinking)
-                    .children(error_notice),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .px_4()
-                    .pb_4()
-                    .child(
-                        crate::ui::style::composer_frame(cx)
-                            .capture_action(cx.listener(|this, _: &Paste, _, cx| {
-                                if this.paste_image(cx) {
-                                    cx.stop_propagation();
-                                }
-                            }))
-                            .can_drop(|dragged, _, _| dragged.is::<ExternalPaths>())
-                            .on_drop::<ExternalPaths>(cx.listener(
-                                |this, paths: &ExternalPaths, _, cx| {
-                                    this.attach_dropped_images(paths.paths(), cx);
-                                },
-                            ))
-                            .child(
-                                v_flex()
-                                    .w_full()
-                                    .min_w(px(0.))
-                                    .min_h(crate::ui::design::composer_input_min_h())
-                                    .gap_2()
-                                    .when(
-                                        !attached_images.is_empty()
-                                            || attachment_pastes_pending > 0,
-                                        |column| {
-                                            column.child(
-                                                h_flex()
-                                                    .w_full()
-                                                    .gap_2()
-                                                    .flex_wrap()
-                                                    .children(attached_images.iter().enumerate().map(
-                                                        |(index, path)| {
-                                                            self.render_attachment_preview(
-                                                                index,
-                                                                path.clone(),
-                                                                cx,
-                                                            )
-                                                        },
-                                                    ))
-                                                    .children(
-                                                        (0..attachment_pastes_pending).map(|index| {
-                                                            self.render_attachment_pending(index, cx)
-                                                        }),
-                                                    ),
-                                            )
-                                        },
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .min_w(px(0.))
+                                .gap_1()
+                                .items_center()
+                                .child(self.render_scope_control(cx))
+                                .child(crate::ui::style::composer_control_divider(cx))
+                                .child(self.render_model_control(cx))
+                                .child(div().flex_1())
+                                .child({
+                                    let button = crate::ui::style::composer_send(
+                                        "quick-ask-submit-button",
+                                        cx,
                                     )
-                                    .child(
-                                        div().flex_1().min_h(px(0.)).child(
-                                            crate::ui::style::composer_text_input(&self.question)
-                                                .h_full(),
-                                        ),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .min_w(px(0.))
-                                    .gap_1()
-                                    .items_center()
-                                    .child(self.render_scope_control(cx))
-                                    .child(crate::ui::style::composer_control_divider(cx))
-                                    .child(self.render_model_control(cx))
-                                    .child(div().flex_1())
-                                    .child({
-                                        let button = crate::ui::style::composer_send(
-                                            "quick-ask-submit-button",
-                                            cx,
-                                        )
-                                        .tooltip(move |window, cx| {
+                                    .tooltip(
+                                        move |window, cx| {
                                             Tooltip::new(if phase == QuickAskPhase::Thinking {
                                                 "Quick Ask is thinking…"
                                             } else if attachment_pastes_pending > 0 {
@@ -1015,51 +1009,60 @@ impl QuickAskModal {
                                                 "Ask"
                                             })
                                             .build(window, cx)
-                                        });
-                                        if can_send {
-                                            button
-                                                .cursor_pointer()
-                                                .hover(|button| {
-                                                    button.bg(crate::ui::design::accent_2(cx))
-                                                })
-                                                .on_click(move |_, window, cx| {
-                                                    view.update(cx, |this, cx| {
-                                                        this.submit(window, cx)
-                                                    });
-                                                })
-                                        } else {
-                                            button.opacity(0.55)
-                                        }
-                                    }),
+                                        },
+                                    );
+                                    if can_send {
+                                        button
+                                            .cursor_pointer()
+                                            .hover(|button| {
+                                                button.bg(crate::ui::design::accent_2(cx))
+                                            })
+                                            .on_click(move |_, window, cx| {
+                                                view.update(cx, |this, cx| this.submit(window, cx));
+                                            })
+                                    } else {
+                                        button.opacity(0.55)
+                                    }
+                                }),
+                        )
+                        .when_some(composer_error, |composer, error| {
+                            composer.child(
+                                div()
+                                    .pt_1()
+                                    .text_size(crate::ui::design::text_ui())
+                                    .text_color(crate::ui::design::rose(cx))
+                                    .child(error),
                             )
-                            .when_some(composer_error, |composer, error| {
-                                composer.child(
-                                    div()
-                                        .pt_1()
-                                        .text_size(crate::ui::design::text_ui())
-                                        .text_color(crate::ui::design::rose(cx))
-                                        .child(error),
-                                )
-                            }),
-                    ),
+                        }),
+                ),
             )
             .into_any_element()
     }
 }
 
-impl Render for QuickAskModal {
+impl Render for QuickAskPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(|this, _: &QuickAskSubmit, window, cx| this.submit(window, cx)))
-            .w_full()
+            .on_action(cx.listener(|_, _: &QuickAskDismiss, _, cx| {
+                cx.emit(QuickAskPanelEvent::Dismissed);
+            }))
+            // The panel floats above independently scrollable workspace panes.
+            // Always consume wheel events inside its bounds so scrolling the
+            // conversation (including at either edge) cannot move the pane
+            // beneath the card.
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .size_full()
             .overflow_hidden()
             .rounded(crate::ui::design::r_lg())
+            .border_1()
+            .border_color(crate::ui::design::line_2(cx))
             .bg(crate::ui::design::focus(cx))
             .text_color(crate::ui::design::t1(cx))
             .shadow_lg()
             .child(self.render_header(cx))
-            .child(self.render_ask(window, cx))
+            .child(self.render_body(window, cx))
     }
 }
 

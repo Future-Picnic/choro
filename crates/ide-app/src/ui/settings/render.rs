@@ -204,6 +204,9 @@ impl Render for SettingsView {
                                     && section != SettingsSection::Process,
                                 |page| page.max_w(px(1200.)).gap_5().px_8().py_7(),
                             )
+                            .when(section == SettingsSection::Companion, |page| {
+                                page.max_w(px(960.))
+                            })
                             .child(Self::page_header(section, cx))
                             .child(match section {
                                 SettingsSection::Design => self.render_design_section(cx),

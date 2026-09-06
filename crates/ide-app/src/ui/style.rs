@@ -9,7 +9,8 @@
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, AnyElement, App, ClipboardItem, Div, ElementId, Entity, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, SharedString, Stateful, Styled,
+    InteractiveElement, IntoElement, ParentElement, SharedString, Stateful,
+    StatefulInteractiveElement, Styled,
 };
 use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
@@ -45,6 +46,95 @@ pub fn border(cx: &App) -> Hsla {
 /// The faint structural divider (region edges, chrome). → [`design::line`].
 pub fn hairline(cx: &App) -> Hsla {
     design::line(cx)
+}
+
+/// How far a soft rule fades at each end.
+const SOFT_LINE_FADE: f32 = 64.;
+
+/// A 1px vertical chrome divider honoring the user's separator preference:
+/// a [`soft_vline`] fade or a classic solid hairline.
+pub fn separator_vline(style: ide_core::config::SeparatorStyle, cx: &App) -> Div {
+    match style {
+        ide_core::config::SeparatorStyle::Soft => soft_vline(cx),
+        ide_core::config::SeparatorStyle::Solid => div().w(px(1.)).h_full().bg(hairline(cx)),
+    }
+}
+
+/// Horizontal companion to [`separator_vline`].
+pub fn separator_hline(style: ide_core::config::SeparatorStyle, cx: &App) -> Div {
+    match style {
+        ide_core::config::SeparatorStyle::Soft => soft_hline(cx),
+        ide_core::config::SeparatorStyle::Solid => div().h(px(1.)).w_full().bg(hairline(cx)),
+    }
+}
+
+/// A 1px vertical rule that fades out at both ends — separation as light
+/// rather than a hard edge-to-edge stroke. GPUI borders are solid-only and
+/// gradients carry exactly two stops, so the fade is three stacked segments:
+/// fade-in, solid run, fade-out (axis-aligned gradients render exactly).
+pub fn soft_vline(cx: &App) -> Div {
+    let line = hairline(cx);
+    let clear = line.opacity(0.0);
+    v_flex()
+        .w(px(1.))
+        .h_full()
+        .child(
+            div()
+                .flex_none()
+                .w_full()
+                .h(px(SOFT_LINE_FADE))
+                .bg(gpui::linear_gradient(
+                    180.0,
+                    gpui::linear_color_stop(clear, 0.0),
+                    gpui::linear_color_stop(line, 1.0),
+                )),
+        )
+        .child(div().flex_1().w_full().min_h(px(0.)).bg(line))
+        .child(
+            div()
+                .flex_none()
+                .w_full()
+                .h(px(SOFT_LINE_FADE))
+                .bg(gpui::linear_gradient(
+                    180.0,
+                    gpui::linear_color_stop(line, 0.0),
+                    gpui::linear_color_stop(clear, 1.0),
+                )),
+        )
+}
+
+/// Horizontal companion to [`soft_vline`].
+pub fn soft_hline(cx: &App) -> Div {
+    let line = hairline(cx);
+    let clear = line.opacity(0.0);
+    // Explicit heights on every segment: `h_flex` centers its items, so a
+    // height-less child would collapse to zero and the rule would vanish.
+    h_flex()
+        .h(px(1.))
+        .w_full()
+        .child(
+            div()
+                .flex_none()
+                .h_full()
+                .w(px(SOFT_LINE_FADE))
+                .bg(gpui::linear_gradient(
+                    90.0,
+                    gpui::linear_color_stop(clear, 0.0),
+                    gpui::linear_color_stop(line, 1.0),
+                )),
+        )
+        .child(div().flex_1().h_full().min_w(px(0.)).bg(line))
+        .child(
+            div()
+                .flex_none()
+                .h_full()
+                .w(px(SOFT_LINE_FADE))
+                .bg(gpui::linear_gradient(
+                    90.0,
+                    gpui::linear_color_stop(line, 0.0),
+                    gpui::linear_color_stop(clear, 1.0),
+                )),
+        )
 }
 
 /// The Choro Pulse mark used exclusively for first-party Riffs. Two open arcs
@@ -247,7 +337,8 @@ pub fn agent_status_dropdown_button(id: impl Into<ElementId>, cx: &App) -> Butto
         .xsmall()
         .compact()
         .h(design::control_h())
-        .p_0()
+        .px_2()
+        .py_0()
         .rounded(design::r_sm())
         .custom(
             ButtonCustomVariant::new(cx)
@@ -256,6 +347,63 @@ pub fn agent_status_dropdown_button(id: impl Into<ElementId>, cx: &App) -> Butto
                 .border(transparent)
                 .hover(design::hover(cx).opacity(0.5))
                 .active(design::hover(cx)),
+        )
+}
+
+/// A split-shaped control with one menu action. One button owns the complete
+/// hover, focus, and open-menu highlight, including the divider and caret.
+pub fn split_menu_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    icon: Option<Icon>,
+    palette: crate::ui::split_button::SplitPalette,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .h(design::control_h_sm())
+        .px_0()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(palette.bg)
+                .foreground(palette.fg)
+                .border(palette.border)
+                .hover(palette.hover)
+                .active(palette.hover),
+        )
+        .child(
+            h_flex()
+                .h(design::control_h_sm() - px(2.))
+                .items_center()
+                .child(
+                    h_flex()
+                        .h_full()
+                        .items_center()
+                        .gap_1()
+                        .px(design::split_primary_pad_x())
+                        .text_size(design::text_ui())
+                        .font_weight(FontWeight::MEDIUM)
+                        .children(icon.map(|icon| icon.size(design::icon_sm())))
+                        .child(label.into()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .w(design::split_divider_w())
+                        .h_full()
+                        .bg(palette.divider),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .w(design::split_caret_w())
+                        .h_full()
+                        .items_center()
+                        .justify_center()
+                        .child(Icon::new(IconName::ChevronDown).size(design::icon_sm())),
+                ),
         )
 }
 
@@ -863,42 +1011,34 @@ pub fn rail_footer_button(
     label: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
-    let transparent = design::base(cx).opacity(0.0);
-    let muted = design::t3(cx);
-    let label = label.into();
-
-    Button::new(id)
-        .xsmall()
-        .compact()
-        .w_full()
-        .h(px(52.))
-        .p_0()
-        .rounded(px(0.))
-        .custom(
-            ButtonCustomVariant::new(cx)
-                .color(transparent)
-                .foreground(muted)
-                .border(transparent)
-                .hover(design::hover(cx).opacity(0.28))
-                .active(design::hover(cx).opacity(0.42)),
-        )
-        .child(
-            v_flex()
-                .w_full()
-                .gap_1()
-                .items_center()
-                .justify_center()
-                .child(Icon::new(icon).size(design::icon_lg()).text_color(muted))
-                .child(div().text_size(design::text_label()).child(label)),
-        )
+    rail_action_button(
+        id,
+        Icon::new(icon)
+            .size(design::icon_lg())
+            .text_color(design::t3(cx)),
+        label,
+        cx,
+    )
 }
 
-/// Menu trigger placed directly after project activities in the right rail.
-/// A horizontal hairline separates it from the destination list; otherwise it
-/// keeps the same neutral color and icon-tile hover treatment as those items.
+/// Manage uses the same cell geometry as Help, Settings, and destinations.
 pub fn rail_activity_menu_button(
     id: impl Into<ElementId>,
     icon: lucide_icons::Icon,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    rail_action_button(
+        id,
+        design::indicator::lucide_icon(icon, design::t3(cx), design::icon_lg()),
+        label,
+        cx,
+    )
+}
+
+fn rail_action_button(
+    id: impl Into<ElementId>,
+    icon: impl IntoElement,
     label: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
@@ -909,10 +1049,11 @@ pub fn rail_activity_menu_button(
         .xsmall()
         .compact()
         .w_full()
-        .h(px(64.))
+        .flex_none()
+        .h(design::rail_footer_cell_h())
         .p_0()
         .rounded(px(0.))
-        .group("rail-activity-menu")
+        .group("rail-action")
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(transparent)
@@ -928,9 +1069,6 @@ pub fn rail_activity_menu_button(
                 .gap_1()
                 .items_center()
                 .justify_center()
-                .border_l_1()
-                .border_t_1()
-                .border_color(hairline(cx))
                 .child(
                     div()
                         .size(px(30.))
@@ -938,12 +1076,8 @@ pub fn rail_activity_menu_button(
                         .items_center()
                         .justify_center()
                         .rounded(design::r_sm())
-                        .group_hover("rail-activity-menu", |tile| tile.bg(design::surface(cx)))
-                        .child(design::indicator::lucide_icon(
-                            icon,
-                            muted,
-                            design::icon_lg(),
-                        )),
+                        .group_hover("rail-action", |tile| tile.bg(design::surface(cx)))
+                        .child(icon),
                 )
                 .child(div().text_size(design::text_label()).child(label.into())),
         )
@@ -1038,6 +1172,16 @@ pub fn composer_frame(cx: &App) -> Div {
         .px_3p5()
         .pt_3p5()
         .pb_3()
+}
+
+/// A shorter composer for lightweight assistants with a single control row.
+/// The input region claims any spare height so the controls stay pinned to the
+/// lower edge, while attachments and validation messages can still grow it.
+pub fn compact_composer_frame(cx: &App) -> Div {
+    composer_frame(cx)
+        .min_h(design::compact_composer_frame_h())
+        .pt_2p5()
+        .pb_2()
 }
 
 /// A "loose" composer control: an optional leading glyph, the value label, and
@@ -1461,6 +1605,175 @@ pub fn header_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &App) ->
         )
 }
 
+/// Icon-only action in the left sidebar's header row and footer bar: a 28px
+/// ghost square, so several sit beside a text control at one height.
+pub fn sidebar_bar_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &App) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(px(CONTROL_H))
+        .w(px(CONTROL_H))
+        .icon(
+            Icon::new(icon)
+                .size(crate::ui::design::icon())
+                .text_color(crate::ui::design::t3(cx)),
+        )
+}
+
+/// Footer-bar action in the left sidebar: a 30px square with the sidebar's
+/// standard 16px glyph, so the icons match the list rows above. The squares sit
+/// with no gap, and that proximity alone groups them — no track, no rule. The
+/// glyph is a child, not the button's icon slot: that slot re-sizes icons to
+/// the button's size.
+pub fn sidebar_footer_icon_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(px(SIDEBAR_FOOTER_CONTROL_H))
+        .w(px(SIDEBAR_FOOTER_CONTROL_H))
+        .child(
+            Icon::new(icon)
+                .size(crate::ui::design::icon())
+                .text_color(crate::ui::design::t3(cx)),
+        )
+}
+
+/// Square size of the left sidebar footer's controls.
+pub const SIDEBAR_FOOTER_CONTROL_H: f32 = 30.0;
+
+/// The one filled action in the left sidebar header (New Agent). Same geometry
+/// as `sidebar_bar_icon_button`, lifted to surface-2 so it reads as the row's
+/// primary without borrowing the accent channel.
+pub fn sidebar_bar_primary_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .h(px(CONTROL_H))
+        .w(px(CONTROL_H))
+        .icon(
+            Icon::new(icon)
+                .size(crate::ui::design::icon())
+                .text_color(crate::ui::design::t1(cx)),
+        )
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(design::surface_2(cx))
+                .foreground(design::t1(cx))
+                .border(design::surface_2(cx))
+                .hover(design::line_2(cx))
+                .active(design::line_2(cx)),
+        )
+}
+
+/// The left sidebar's search affordance. It looks like a search field but only
+/// launches Quick Open (⌘P), so there is one search to learn. Quiet at rest,
+/// lifts on hover like the sidebar rows around it.
+pub fn sidebar_search_pill(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .flex_1()
+        .min_w(px(0.))
+        .h(px(CONTROL_H))
+        .px_2()
+        .gap_2()
+        .items_center()
+        .rounded(design::r_sm())
+        .cursor_pointer()
+        .hover(|row| row.bg(design::surface(cx)))
+        .child(
+            Icon::new(IconName::Search)
+                .size(design::icon())
+                .text_color(design::t3(cx)),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .text_size(design::text_ui())
+                .text_color(design::t3(cx))
+                .truncate()
+                .child("Search"),
+        )
+}
+
+/// Only the closed Agents panel uses a labelled Git opener. Open panels share
+/// the same compact icon button regardless of activity.
+pub fn right_sidebar_toggle(open: bool, agents: bool, cx: &App) -> Button {
+    let button = if agents && !open {
+        accent_button_compact("toggle-right-sidebar", "Git", cx)
+            .icon(Icon::empty().path("icons/branch.svg").size(design::icon()))
+    } else {
+        header_icon_button("toggle-right-sidebar", IconName::PanelRight, cx)
+    };
+    button
+        .flex_none()
+        .tooltip(if open {
+            "Collapse sidebar (⌘⇧B)"
+        } else if agents {
+            "Show Git (⌘⇧B)"
+        } else {
+            "Show sidebar (⌘⇧B)"
+        })
+        .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(crate::actions::ToggleRightPanel), cx);
+        })
+}
+
+pub fn git_sidebar_open_button(changes: Option<usize>, cx: &App) -> Button {
+    right_sidebar_toggle(false, true, cx).when_some(changes, |button, count| {
+        button.child(
+            div()
+                .text_size(design::text_ui())
+                .text_color(design::t2(cx))
+                .child(count.to_string()),
+        )
+    })
+}
+
+pub fn left_sidebar_toggle(open: bool, cx: &App) -> Button {
+    header_icon_button("toggle-left-sidebar", IconName::PanelLeft, cx)
+        .flex_none()
+        .tooltip(if open {
+            "Collapse projects (⌘B)"
+        } else {
+            "Show projects (⌘B)"
+        })
+        .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(crate::actions::ToggleLeftPanel), cx);
+        })
+}
+
+/// Even an empty contextual panel keeps its collapse action available.
+pub fn empty_context_panel(title: &'static str, message: &'static str, cx: &App) -> Div {
+    v_flex()
+        .size_full()
+        .child(
+            design::header::panel_bar(cx)
+                .child(design::header::panel_identity(None, title, cx))
+                .child(div().flex_1())
+                .child(right_sidebar_toggle(true, false, cx)),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .w_full()
+                .items_center()
+                .justify_center()
+                .text_size(design::text_body())
+                .text_color(design::t3(cx))
+                .child(message),
+        )
+}
+
 /// A compact header action backed by the Lucide icon font. Use this when the
 /// requested Lucide glyph is not represented by gpui-component's SVG enum.
 pub fn header_lucide_icon_button(
@@ -1728,6 +2041,53 @@ pub fn companion_agent_assistant_button(
                     design::t1(cx)
                 }),
         )
+}
+
+/// Translucent notification surface for the floating desktop companion.
+/// Keep the tint neutral so status is conveyed by the content, and retain
+/// enough fill to keep text legible over a busy desktop.
+pub fn companion_notification_card(
+    id: impl Into<ElementId>,
+    needs_attention: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    let fill = design::focus(cx);
+    let border = if needs_attention {
+        design::amber(cx).opacity(0.60)
+    } else {
+        design::t1(cx).opacity(0.12)
+    };
+    let hover_border = if needs_attention {
+        design::amber(cx).opacity(0.85)
+    } else {
+        design::t1(cx).opacity(0.20)
+    };
+    h_flex()
+        .id(id)
+        .w_full()
+        .flex_none()
+        .px_4()
+        .items_center()
+        .rounded(design::r_pill())
+        .border_1()
+        .border_color(border)
+        .bg(gpui::linear_gradient(
+            180.,
+            gpui::linear_color_stop(fill.opacity(0.94), 0.),
+            gpui::linear_color_stop(fill.opacity(0.86), 1.),
+        ))
+        .shadow(vec![gpui::BoxShadow {
+            color: gpui::black().opacity(0.20),
+            offset: gpui::point(px(0.), px(3.)),
+            blur_radius: px(8.),
+            spread_radius: px(-2.),
+        }])
+        .cursor_pointer()
+        .hover(move |card| {
+            card.bg(design::control_on(fill, cx).opacity(0.97))
+                .border_color(hover_border)
+        })
+        .active(move |card| card.bg(fill))
 }
 
 /// Compact disclosure below the companion's three-item attention preview.
@@ -2020,6 +2380,41 @@ pub fn segmented_container_quiet(cx: &App) -> Div {
         .border_1()
         .border_color(design::line(cx))
         .bg(design::base(cx))
+}
+
+/// Equal-width, keyboard-focusable text segments for a quiet toggle track.
+pub fn segment_text_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    cx: &App,
+) -> Button {
+    base_button_compact(id, label)
+        .flex_1()
+        .min_w(px(0.))
+        .h(px(26.))
+        .rounded(design::r_xs())
+        .selected(selected)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if selected {
+                    design::surface_2(cx)
+                } else {
+                    design::base(cx)
+                })
+                .foreground(if selected {
+                    design::t1(cx)
+                } else {
+                    design::t3(cx)
+                })
+                .border(design::base(cx).opacity(0.))
+                .hover(if selected {
+                    design::surface_2(cx)
+                } else {
+                    design::hover(cx)
+                })
+                .active(design::surface_2(cx)),
+        )
 }
 
 /// Compact text-only tabs for narrow tool sidebars. This mirrors embedded
@@ -2375,6 +2770,63 @@ pub fn toolbar_divider(cx: &App) -> Div {
 }
 
 // ---- script chip ----
+
+const SIDEBAR_SCRIPT_CHIP_FIXED_W: f32 = 21.0;
+const SIDEBAR_SCRIPT_GLYPH_ESTIMATE_W: f32 = 5.5;
+const SIDEBAR_SCRIPT_CHIP_MAX_W: f32 = 96.0;
+const SIDEBAR_SCRIPT_OVERFLOW_FIXED_W: f32 = 12.0;
+
+/// Deterministic width shared by the sidebar's layout budget and rendered chip.
+/// Labels keep their natural rhythm until the cap, where they ellipsize.
+pub fn sidebar_script_chip_width(name: &str) -> f32 {
+    (SIDEBAR_SCRIPT_CHIP_FIXED_W + name.chars().count() as f32 * SIDEBAR_SCRIPT_GLYPH_ESTIMATE_W)
+        .min(SIDEBAR_SCRIPT_CHIP_MAX_W)
+}
+
+pub fn sidebar_script_overflow_width(count: usize) -> f32 {
+    SIDEBAR_SCRIPT_OVERFLOW_FIXED_W
+        + (count.to_string().len() + 1) as f32 * SIDEBAR_SCRIPT_GLYPH_ESTIMATE_W
+}
+
+/// Compact, naturally sized script indicator for the project sidebar. Keep
+/// the preset toolbar's larger, clickable chips independent of this treatment.
+pub fn sidebar_script_chip(name: impl Into<SharedString>, solo: bool, cx: &App) -> Div {
+    let name = name.into();
+    let dot = if solo {
+        design::sky(cx)
+    } else {
+        design::sage(cx)
+    };
+    h_flex()
+        .flex_none()
+        .min_w(px(0.))
+        .w(px(sidebar_script_chip_width(name.as_ref())))
+        .h(px(20.))
+        .px_1p5()
+        .gap(px(4.))
+        .items_center()
+        .rounded(px(RADIUS_SM))
+        .bg(design::surface(cx))
+        .text_size(design::text_label())
+        .text_color(if solo { dot } else { design::t1(cx) })
+        .child(div().size(px(5.)).flex_none().rounded_full().bg(dot))
+        .child(div().flex_1().min_w(px(0.)).truncate().child(name))
+}
+
+/// Overflow count alongside a single line of sidebar script indicators.
+pub fn sidebar_script_overflow(count: usize, cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .w(px(sidebar_script_overflow_width(count)))
+        .h(px(20.))
+        .items_center()
+        .justify_center()
+        .rounded(px(RADIUS_SM))
+        .bg(design::surface(cx))
+        .text_size(design::text_label())
+        .text_color(design::t2(cx))
+        .child(format!("+{count}"))
+}
 
 /// A script-run chip: a status dot + the script name in a neutral pill. The
 /// `dot` color carries the run state (success = running, danger = failed,

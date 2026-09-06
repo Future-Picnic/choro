@@ -13,6 +13,7 @@ use gpui::{
 };
 use markdown::mdast;
 use ropey::Rope;
+use unicase::UniCase;
 
 use crate::{
     ActiveTheme as _, Icon, IconName, StyledExt, h_flex,
@@ -372,6 +373,10 @@ impl CodeBlock {
         cx: &mut App,
     ) -> AnyElement {
         let style = &node_cx.style;
+        let text = self.state.lock().unwrap().text.clone();
+        let highlights =
+            gpui::combine_highlights(self.styles.clone(), matching_highlights(&text, node_cx))
+                .collect();
 
         div()
             .when(!options.is_last, |this| this.pb(style.paragraph_gap))
@@ -385,12 +390,7 @@ impl CodeBlock {
                     .text_size(cx.theme().mono_font_size)
                     .relative()
                     .refine_style(&style.code_block)
-                    .child(Inline::new(
-                        "code",
-                        self.state.clone(),
-                        vec![],
-                        self.styles.clone(),
-                    ))
+                    .child(Inline::new("code", self.state.clone(), vec![], highlights))
                     .when_some(node_cx.code_block_actions.clone(), |this, actions| {
                         this.child(
                             div()
@@ -413,6 +413,7 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) match_highlight: Option<(SharedString, HighlightStyle)>,
 }
 
 impl NodeContext {
@@ -423,9 +424,88 @@ impl NodeContext {
 
 impl PartialEq for NodeContext {
     fn eq(&self, other: &Self) -> bool {
-        self.link_refs == other.link_refs && self.style == other.style
+        self.link_refs == other.link_refs
+            && self.style == other.style
+            && self.match_highlight == other.match_highlight
         // Note: code_block_buttons is intentionally not compared (closures can't be compared)
     }
+}
+
+fn case_insensitive_match_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
+    let query = query.trim();
+    if query.is_empty() || text.is_empty() {
+        return Vec::new();
+    }
+
+    if text.is_ascii() && query.is_ascii() {
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        while start + query.len() <= text.len() {
+            let Some(relative) = text[start..]
+                .as_bytes()
+                .windows(query.len())
+                .position(|candidate| candidate.eq_ignore_ascii_case(query.as_bytes()))
+            else {
+                break;
+            };
+            let match_start = start + relative;
+            let match_end = match_start + query.len();
+            ranges.push(match_start..match_end);
+            start = match_end;
+        }
+        return ranges;
+    }
+
+    // Full Unicode folding can expand a character (for example, ß -> ss).
+    // Keep a span for every folded character so matches can still be painted
+    // against the original UTF-8 byte range GPUI expects.
+    let folded_query = UniCase::new(query).to_folded_case();
+    if folded_query.is_empty() {
+        return Vec::new();
+    }
+    let mut folded_text = String::new();
+    let mut source_spans = Vec::new();
+    for (source_start, ch) in text.char_indices() {
+        let source_end = source_start + ch.len_utf8();
+        let folded_char = UniCase::new(ch.to_string()).to_folded_case();
+        for folded_ch in folded_char.chars() {
+            let folded_start = folded_text.len();
+            folded_text.push(folded_ch);
+            source_spans.push((folded_start..folded_text.len(), source_start..source_end));
+        }
+    }
+
+    let mut ranges = Vec::new();
+    let mut folded_offset = 0;
+    while folded_offset < folded_text.len() {
+        let Some(relative) = folded_text[folded_offset..].find(&folded_query) else {
+            break;
+        };
+        let match_start = folded_offset + relative;
+        let match_end = match_start + folded_query.len();
+        let start_span = source_spans.partition_point(|(folded, _)| folded.end <= match_start);
+        let end_span = source_spans.partition_point(|(folded, _)| folded.end < match_end);
+        let source_start = source_spans.get(start_span).map(|(_, source)| source.start);
+        let source_end = source_spans.get(end_span).map(|(_, source)| source.end);
+        if let (Some(source_start), Some(source_end)) = (source_start, source_end) {
+            let range = source_start..source_end;
+            if ranges.last() != Some(&range) {
+                ranges.push(range);
+            }
+        }
+        folded_offset = match_end;
+    }
+    ranges
+}
+
+fn matching_highlights(text: &str, node_cx: &NodeContext) -> Vec<(Range<usize>, HighlightStyle)> {
+    let Some((query, style)) = node_cx.match_highlight.as_ref() else {
+        return Vec::new();
+    };
+    case_insensitive_match_ranges(text, query)
+        .into_iter()
+        .map(|range| (range, *style))
+        .collect()
 }
 
 /// The AST Node of the rich text.
@@ -567,6 +647,28 @@ impl Node {
     }
 }
 
+#[cfg(test)]
+mod match_highlight_tests {
+    use super::case_insensitive_match_ranges;
+
+    #[test]
+    fn finds_ascii_matches_without_overlapping_ranges() {
+        assert_eq!(
+            case_insensitive_match_ranges("Find FIND finder", "find"),
+            vec![0..4, 5..9, 10..14]
+        );
+    }
+
+    #[test]
+    fn preserves_original_byte_ranges_for_unicode_case_folding() {
+        assert_eq!(
+            case_insensitive_match_ranges("Élan élan", "élan"),
+            vec![0..5, 6..11]
+        );
+        assert_eq!(case_insensitive_match_ranges("Maße", "MASSE"), vec![0..5]);
+    }
+}
+
 impl Paragraph {
     fn render(
         &self,
@@ -591,6 +693,9 @@ impl Paragraph {
 
             if let Some(image) = &inline_node.image {
                 if text.len() > 0 {
+                    highlights =
+                        gpui::combine_highlights(highlights, matching_highlights(&text, node_cx))
+                            .collect();
                     inline_node
                         .state
                         .lock()
@@ -680,6 +785,8 @@ impl Paragraph {
 
         // Add the last text node
         if text.len() > 0 {
+            highlights =
+                gpui::combine_highlights(highlights, matching_highlights(&text, node_cx)).collect();
             self.state.lock().unwrap().set_text(text.into());
             child_nodes
                 .push(Inline::new(ix, self.state.clone(), links, highlights).into_any_element());

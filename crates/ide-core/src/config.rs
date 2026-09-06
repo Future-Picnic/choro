@@ -142,6 +142,31 @@ pub enum ConversationLayout {
     TopDown,
 }
 
+/// Surface treatment of the two side panels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebarStyle {
+    /// The theme-accent cast at the top of each panel.
+    #[default]
+    Colorful,
+    /// The plain sidebar plane — no gradient at all. Also the landing spot for
+    /// retired values (a colorless "subtle" lift once existed, but GPUI 0.2
+    /// renders such shallow fades as visible 8-bit bands).
+    #[serde(other)]
+    Flat,
+}
+
+/// How the chrome's structural divider lines are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeparatorStyle {
+    /// 1px rules that fade out toward their ends ("light instead of lines").
+    #[default]
+    Soft,
+    /// Classic solid hairlines, edge to edge.
+    Solid,
+}
+
 /// When a completed agent turn should create an operating-system notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -203,13 +228,33 @@ pub fn companion_music_mood_label(index: usize) -> &'static str {
         .unwrap_or("Music")
 }
 
-/// The Spotify playlist configured for one fixed companion music mood.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The Spotify playlists configured for one fixed companion music mood.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CompanionPlaylist {
-    #[serde(default)]
     pub label: String,
-    #[serde(default)]
-    pub url: String,
+    pub urls: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for CompanionPlaylist {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct StoredPlaylist {
+            #[serde(default)]
+            label: String,
+            urls: Option<Vec<String>>,
+            url: Option<String>,
+        }
+
+        let stored = StoredPlaylist::deserialize(deserializer)?;
+        Ok(Self {
+            label: stored.label,
+            // An explicitly empty list stays empty; the old single-link setting
+            // becomes the first entry without changing the user's link.
+            urls: stored
+                .urls
+                .unwrap_or_else(|| stored.url.into_iter().collect()),
+        })
+    }
 }
 
 impl CompanionPlaylist {
@@ -217,8 +262,16 @@ impl CompanionPlaylist {
         companion_music_mood_label(index).to_string()
     }
 
-    pub fn spotify_uri(&self) -> Option<String> {
-        spotify_playlist_uri(&self.url)
+    pub fn spotify_uris(&self) -> Vec<String> {
+        let mut uris = Vec::new();
+        for url in &self.urls {
+            if let Some(uri) = spotify_playlist_uri(url) {
+                if !uris.contains(&uri) {
+                    uris.push(uri);
+                }
+            }
+        }
+        uris
     }
 }
 
@@ -233,7 +286,7 @@ pub struct CompanionMusicSettings {
 fn default_companion_playlists() -> [CompanionPlaylist; COMPANION_PLAYLIST_SLOT_COUNT] {
     std::array::from_fn(|index| CompanionPlaylist {
         label: companion_music_mood_label(index).to_string(),
-        url: COMPANION_MUSIC_DEFAULT_URLS[index].to_string(),
+        urls: vec![COMPANION_MUSIC_DEFAULT_URLS[index].to_string()],
     })
 }
 
@@ -249,9 +302,6 @@ impl CompanionMusicSettings {
     fn migrated(mut self) -> Self {
         for (index, playlist) in self.playlists.iter_mut().enumerate() {
             playlist.label = companion_music_mood_label(index).to_string();
-            if playlist.url.trim().is_empty() {
-                playlist.url = COMPANION_MUSIC_DEFAULT_URLS[index].to_string();
-            }
         }
         self
     }
@@ -372,6 +422,10 @@ pub const DEFAULT_THEME: &str = "Choro Dark";
 
 fn default_theme_name() -> Option<String> {
     Some(DEFAULT_THEME.to_string())
+}
+
+fn default_sidebar_active_work() -> bool {
+    true
 }
 
 pub const DEFAULT_OPENCODE_GENERATION_MODEL_ID: &str = "opencode/big-pickle";
@@ -543,6 +597,10 @@ pub struct AppConfig {
     /// Whether the built-in Pinned sidebar group is collapsed.
     #[serde(default)]
     pub pinned_agents_collapsed: bool,
+    /// Whether the sidebar project list shows only active work (agents that
+    /// are working or waiting) instead of every in-progress agent.
+    #[serde(default = "default_sidebar_active_work")]
+    pub sidebar_active_work: bool,
     /// Legacy persisted layout. The application now always renders RailRight;
     /// this field remains so older config files continue to deserialize.
     #[serde(default)]
@@ -563,6 +621,12 @@ pub struct AppConfig {
     /// Placement and reading direction of agent conversations.
     #[serde(default)]
     pub conversation_layout: ConversationLayout,
+    /// Surface treatment of the two side panels.
+    #[serde(default)]
+    pub sidebar_style: SidebarStyle,
+    /// How the chrome's structural divider lines are drawn.
+    #[serde(default)]
+    pub separator_style: SeparatorStyle,
     /// Operating-system notification preferences.
     #[serde(default)]
     pub notifications: NotificationSettings,
@@ -631,12 +695,15 @@ impl Default for AppConfig {
             attention_collapsed: false,
             pinned_agents: Vec::new(),
             pinned_agents_collapsed: false,
+            sidebar_active_work: true,
             nav_style: NavStyle::default(),
             default_project_activities: default_pinned_project_activities(),
             project_activity_overrides: HashMap::new(),
             git_status_view: GitStatusViewMode::default(),
             git_status_group: GitStatusGroupMode::default(),
             conversation_layout: ConversationLayout::default(),
+            sidebar_style: SidebarStyle::default(),
+            separator_style: SeparatorStyle::default(),
             notifications: NotificationSettings::default(),
             companion_enabled: true,
             companion_music: CompanionMusicSettings::default(),
@@ -795,6 +862,7 @@ mod tests {
             attention_collapsed: true,
             pinned_agents: Vec::new(),
             pinned_agents_collapsed: true,
+            sidebar_active_work: false,
             projects: vec![project],
             panels: PanelSizes {
                 left: 200.0,
@@ -820,6 +888,8 @@ mod tests {
             git_status_view: GitStatusViewMode::Tree,
             git_status_group: GitStatusGroupMode::None,
             conversation_layout: ConversationLayout::TopDown,
+            sidebar_style: SidebarStyle::Flat,
+            separator_style: SeparatorStyle::Solid,
             notifications: NotificationSettings {
                 completion: CompletionNotifications::Always,
                 questions_and_approvals: false,
@@ -880,7 +950,7 @@ mod tests {
         let urls = settings
             .playlists
             .iter()
-            .map(|playlist| playlist.url.clone())
+            .map(|playlist| playlist.urls[0].clone())
             .collect::<Vec<_>>();
         assert_eq!(
             urls,
@@ -889,28 +959,66 @@ mod tests {
         assert!(settings
             .playlists
             .iter()
-            .all(|playlist| playlist.spotify_uri().is_some()));
+            .all(|playlist| !playlist.spotify_uris().is_empty()));
     }
 
     #[test]
-    fn companion_music_migration_fills_only_empty_playlist_urls() {
+    fn companion_music_migrates_legacy_links_and_keeps_fixed_labels() {
         let custom = "https://open.spotify.com/playlist/37i9dQZF1DX8Uebhn9wzrS";
-        let mut config = AppConfig::default();
-        config.companion_music.playlists[0].url = custom.to_string();
-        config.companion_music.playlists[0].label = "Custom focus".to_string();
-        config.companion_music.playlists[1].url.clear();
-
-        let migrated = config.migrated();
-
-        assert_eq!(migrated.companion_music.playlists[0].url, custom);
+        let mut stored = serde_json::to_value(CompanionMusicSettings::default()).unwrap();
+        stored["playlists"][0] = serde_json::json!({"label": "Custom focus", "url": custom});
+        let settings: CompanionMusicSettings = serde_json::from_value(stored).unwrap();
+        let migrated = settings.migrated();
+        assert_eq!(migrated.playlists[0].urls, vec![custom]);
+        assert_eq!(migrated.playlists[0].label, COMPANION_MUSIC_MOOD_LABELS[0]);
         assert_eq!(
-            migrated.companion_music.playlists[1].url,
-            COMPANION_MUSIC_DEFAULT_URLS[1]
+            migrated.playlists[1].urls,
+            vec![COMPANION_MUSIC_DEFAULT_URLS[1]]
         );
+    }
+
+    #[test]
+    fn companion_music_round_trips_multiple_links_and_empty_moods() {
+        let mut settings = CompanionMusicSettings::default();
+        settings.playlists[0]
+            .urls
+            .push(COMPANION_MUSIC_DEFAULT_URLS[1].to_string());
+        settings.playlists[1].urls.clear();
+        settings.playlists[2].urls = vec![String::new()];
+        let serialized = serde_json::to_string(&settings).unwrap();
+        let loaded: CompanionMusicSettings = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(loaded.migrated(), settings);
+    }
+
+    #[test]
+    fn companion_music_ignores_invalid_and_duplicate_playlist_links() {
+        let id = "37i9dQZF1DX8Uebhn9wzrS";
+        let playlist = CompanionPlaylist {
+            label: String::new(),
+            urls: vec![
+                String::new(),
+                "https://example.com/not-a-playlist".to_string(),
+                format!("https://open.spotify.com/playlist/{id}?si=first"),
+                format!("spotify:playlist:{id}"),
+                COMPANION_MUSIC_DEFAULT_URLS[1].to_string(),
+            ],
+        };
         assert_eq!(
-            migrated.companion_music.playlists[0].label,
-            COMPANION_MUSIC_MOOD_LABELS[0]
+            playlist.spotify_uris(),
+            vec![
+                format!("spotify:playlist:{id}"),
+                spotify_playlist_uri(COMPANION_MUSIC_DEFAULT_URLS[1]).unwrap(),
+            ]
         );
+    }
+
+    #[test]
+    fn companion_music_empty_list_takes_precedence_over_legacy_link() {
+        let playlist: CompanionPlaylist = serde_json::from_value(serde_json::json!({
+            "url": COMPANION_MUSIC_DEFAULT_URLS[0], "urls": []
+        }))
+        .unwrap();
+        assert!(playlist.urls.is_empty());
     }
 
     #[test]
@@ -975,6 +1083,29 @@ mod tests {
         let config = serde_json::from_value::<AppConfig>(json).unwrap();
 
         assert_eq!(config.quick_ask_agent, GenerationAgent::default());
+    }
+
+    #[test]
+    fn older_configs_default_the_sidebar_to_active_work() {
+        let mut json = serde_json::to_value(sample_config()).unwrap();
+        json.as_object_mut().unwrap().remove("sidebar_active_work");
+
+        let config = serde_json::from_value::<AppConfig>(json).unwrap();
+
+        assert!(config.sidebar_active_work);
+    }
+
+    #[test]
+    fn sidebar_view_choice_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let config = AppConfig {
+            sidebar_active_work: false,
+            ..AppConfig::default()
+        };
+        config.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path);
+        assert!(!loaded.sidebar_active_work);
     }
 
     #[test]

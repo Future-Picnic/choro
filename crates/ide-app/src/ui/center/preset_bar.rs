@@ -87,10 +87,10 @@ impl Render for PresetBar {
             .collect();
 
         // Compact (header) mode renders a single "Run" dropdown instead of a row
-        // of chips: the presets live in the menu (click to run or, if already
-        // running, jump to its terminal), alongside a New terminal action and an
-        // "Edit scripts" entry that opens the preset editor. The live run state
-        // still shows on the project in the sidebar.
+        // of chips: the presets live in the menu and run in the background,
+        // preserving the current workspace. An already-running preset becomes
+        // the selected terminal without navigating to it. New terminal and
+        // script editing remain explicit actions in the same menu.
         if self.compact {
             let success = crate::ui::design::sage(cx);
             let items: Vec<(SharedString, String, Option<SessionId>, gpui::Hsla)> = presets
@@ -160,14 +160,17 @@ impl Render for PresetBar {
                                 PopupMenuItem::new(name.clone())
                                     .icon(Icon::empty().path("icons/play.svg").text_color(color))
                                     .checked(single_script || running_id.is_some())
-                                    .on_click(move |_, window, cx| {
+                                    .on_click(move |_, _window, cx| {
                                         center
                                             .update(cx, |center, cx| {
                                                 if let Some(id) = running_id {
-                                                    center
-                                                        .focus_terminal(project_id, id, window, cx);
+                                                    center.select_terminal_in_background(
+                                                        project_id, id, cx,
+                                                    );
                                                 } else {
-                                                    center.run_preset(&name, &command, window, cx);
+                                                    center.run_preset_in_background(
+                                                        &name, &command, cx,
+                                                    );
                                                 }
                                             })
                                             .ok();
@@ -205,13 +208,13 @@ impl Render for PresetBar {
             .menu_anchor(Corner::TopRight)
             .tooltip("Run scripts");
             if let Some((name, command, running_id, _)) = onboarding_primary {
-                button = button.on_primary(move |window, cx| {
+                button = button.on_primary(move |_window, cx| {
                     primary_center
                         .update(cx, |center, cx| {
                             if let Some(id) = running_id {
-                                center.focus_terminal(project_id, id, window, cx);
+                                center.select_terminal_in_background(project_id, id, cx);
                             } else {
-                                center.run_preset(&name, &command, window, cx);
+                                center.run_preset_in_background(&name, &command, cx);
                             }
                         })
                         .ok();

@@ -150,7 +150,7 @@ impl CodexRuntime {
         );
         let design_assistant = is_design_assistant(&self.agent);
         let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
-        let sandbox_policy = if read_only {
+        let mut sandbox_policy = if read_only {
             json!({ "type": "readOnly" })
         } else if design_assistant && !design_preview_review {
             json!({ "type": "readOnly" })
@@ -161,6 +161,11 @@ impl CodexRuntime {
         } else {
             codex_turn_sandbox_policy(self.access_mode, self.visualization_dir.as_deref())
         };
+        // PocketComet's per-turn history/memory CLI uses a loopback HTTP bridge.
+        // Match its other teammates' network-enabled sandbox without changing
+        // filesystem confinement or the user's approval policy. The bridge
+        // authorizes each call against this run's conversation and memory scope.
+        allow_pocketcomet_chat_network(&mut sandbox_policy, self.agent.origin.as_ref());
         let approval_policy = if design_assistant && !design_preview_review {
             "never"
         } else if design_assistant {
@@ -832,6 +837,29 @@ mod usage_tests {
     use super::*;
 
     #[test]
+    fn pocketcomet_chat_network_keeps_filesystem_confinement() {
+        let origin: ide_core::agents::AgentOrigin = serde_json::from_value(json!({
+            "kind": "pocket_comet_chat", "workspace_id": "workspace", "workspace_name": "Workspace",
+            "project_id": "project", "project_name": "Project", "teammate_id": "choro", "teammate_name": "Choro",
+            "conversation_id": "conversation", "conversation_name": "Chat", "thread_id": "thread", "thread_title": "Question"
+        })).unwrap();
+        for mut policy in [
+            codex_turn_sandbox_policy(AgentAccessMode::AskForApproval, Some(Path::new("/tmp/visualizations"))),
+            json!({ "type": "readOnly" }),
+        ] {
+            let original = policy.clone();
+            allow_pocketcomet_chat_network(&mut policy, Some(&origin));
+            assert_eq!(policy["networkAccess"], true);
+            policy.as_object_mut().unwrap().remove("networkAccess");
+            assert_eq!(policy, original);
+        }
+        let mut ordinary = codex_turn_sandbox_policy(AgentAccessMode::AskForApproval, None);
+        let original = ordinary.clone();
+        allow_pocketcomet_chat_network(&mut ordinary, None);
+        assert_eq!(ordinary, original);
+    }
+
+    #[test]
     fn parses_codex_thread_token_usage_notification() {
         let usage = codex_conversation_usage(
             &json!({
@@ -912,6 +940,14 @@ fn codex_turn_workspace_sandbox_policy(visualization_dir: Option<&Path>) -> Valu
         "type": "workspaceWrite",
         "writableRoots": writable_roots
     })
+}
+
+fn allow_pocketcomet_chat_network(policy: &mut Value, origin: Option<&ide_core::agents::AgentOrigin>) {
+    if origin.is_some_and(ide_core::agents::AgentOrigin::is_pocketcomet_chat)
+        && matches!(policy["type"].as_str(), Some("workspaceWrite" | "readOnly"))
+    {
+        policy["networkAccess"] = json!(true);
+    }
 }
 
 fn codex_developer_instructions(

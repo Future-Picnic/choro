@@ -1,5 +1,7 @@
 use super::*;
 
+const POCKETCOMET_PROJECT_LIST_W: f32 = 220.0;
+
 fn clipped_text(value: &str, limit: usize) -> String {
     let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= limit {
@@ -22,6 +24,14 @@ fn pocketcomet_runtime_label(runtime: AgentRuntime) -> &'static str {
         AgentRuntime::Idle => "Idle",
         AgentRuntime::Ended => "Ended",
         AgentRuntime::NotStarted => "Ready",
+    }
+}
+
+fn pocketcomet_runtime_tone(runtime: AgentRuntime, cx: &App) -> gpui::Hsla {
+    match runtime {
+        AgentRuntime::Working | AgentRuntime::Open => crate::ui::design::sky(cx),
+        AgentRuntime::Waiting => crate::ui::design::amber(cx),
+        _ => crate::ui::design::t3(cx),
     }
 }
 
@@ -91,7 +101,12 @@ impl CenterArea {
             Some(project) => format!("PocketComet activity mapped to {project}"),
             None => "Activity from every mapped PocketComet project".to_string(),
         };
-        let header = crate::ui::design::header::bar(cx).child(
+        // Keep the page title, project list, and activity pane in one frame,
+        // as in Ask History. Centering only the activity left the sidebar
+        // stranded at the window edge on wide displays.
+        let frame_max_w =
+            px(POCKETCOMET_PROJECT_LIST_W) + crate::ui::design::center_content_frame_max_w();
+        let header = crate::ui::design::header::bar(cx).max_w(frame_max_w).child(
             crate::ui::design::header::title_col(cx)
                 .child(crate::ui::design::header::title("PocketComet", cx))
                 .child(crate::ui::design::header::subtitle(subtitle, cx)),
@@ -100,25 +115,27 @@ impl CenterArea {
         if records.is_empty() {
             return v_flex()
                 .size_full()
+                .bg(crate::ui::design::base(cx))
                 .child(header)
                 .child(
                     v_flex()
                         .flex_1()
                         .items_center()
                         .justify_center()
-                        .gap_4()
+                        .px_6()
+                        .gap_3()
                         .child(
                             div()
-                                .size(px(64.))
+                                .size(px(48.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded_full()
-                                .bg(crate::ui::design::surface(cx))
+                                .rounded(crate::ui::design::r_lg())
+                                .bg(crate::ui::design::accent_soft(cx))
                                 .child(crate::ui::design::indicator::lucide_icon(
                                     lucide_icons::Icon::Orbit,
-                                    crate::ui::design::t3(cx),
-                                    px(28.),
+                                    crate::ui::design::accent(cx),
+                                    crate::ui::design::icon_xl(),
                                 )),
                         )
                         .child(
@@ -137,6 +154,7 @@ impl CenterArea {
                                         .max_w(px(480.))
                                         .text_center()
                                         .text_size(crate::ui::design::text_body())
+                                        .line_height(gpui::relative(1.5))
                                         .text_color(crate::ui::design::t3(cx))
                                         .child("Tag Choro in a mapped PocketComet chat, or send a task to Choro, and it will appear here."),
                                 ),
@@ -167,11 +185,10 @@ impl CenterArea {
 
         let content = v_flex()
             .w_full()
-            .max_w(crate::ui::design::center_content_frame_max_w())
-            .mx_auto()
-            .px(crate::ui::design::agent_chat_gutter_x())
+            .min_w(px(0.))
+            .px_4()
             .py(crate::ui::design::center_column_pad_y())
-            .gap_7()
+            .gap_6()
             .children(
                 (!waiting.is_empty())
                     .then(|| self.render_pocketcomet_agent_group("Needs attention", &waiting, cx)),
@@ -189,22 +206,32 @@ impl CenterArea {
         v_flex()
             .size_full()
             .overflow_hidden()
+            .bg(crate::ui::design::base(cx))
             .child(header)
+            .child(div().w_full().h(px(1.)).bg(crate::ui::design::line(cx)))
             .child(
-                h_flex()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .items_start()
-                    .child(self.render_pocketcomet_project_filter(&projects, records.len(), cx))
-                    .child(
-                        v_flex()
-                            .id("pocketcomet-home-scroll")
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h_full()
-                            .overflow_y_scrollbar()
-                            .child(content),
-                    ),
+                div().flex_1().min_h(px(0.)).w_full().p_4().child(
+                    h_flex()
+                        .size_full()
+                        .min_w(px(0.))
+                        .max_w(frame_max_w)
+                        .mx_auto()
+                        .items_start()
+                        .rounded(crate::ui::design::r_lg())
+                        .border_1()
+                        .border_color(crate::ui::design::line(cx))
+                        .overflow_hidden()
+                        .child(self.render_pocketcomet_project_filter(&projects, records.len(), cx))
+                        .child(
+                            v_flex()
+                                .id("pocketcomet-home-scroll")
+                                .flex_1()
+                                .min_w(px(0.))
+                                .h_full()
+                                .overflow_y_scrollbar()
+                                .child(content),
+                        ),
+                ),
             )
             .into_any_element()
     }
@@ -225,14 +252,27 @@ impl CenterArea {
             cx,
         );
         v_flex()
-            .w(px(220.))
+            .id("pocketcomet-project-list")
+            .w(px(POCKETCOMET_PROJECT_LIST_W))
             .h_full()
+            .min_h(px(0.))
             .flex_none()
+            .overflow_y_scrollbar()
+            .bg(crate::ui::design::nav(cx))
             .px_2()
-            .py_3()
+            .py_4()
             .gap_1()
             .border_r_1()
             .border_color(crate::ui::design::line(cx))
+            .child(
+                div()
+                    .px_2()
+                    .pb_2()
+                    .text_size(crate::ui::design::text_head())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(crate::ui::design::t2(cx))
+                    .child("Projects"),
+            )
             .child(all_row)
             .children(projects.iter().map(|(project, name, count)| {
                 self.pocketcomet_project_filter_row(
@@ -256,24 +296,30 @@ impl CenterArea {
         project: Option<ProjectId>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        h_flex()
-            .id(id)
-            .w_full()
+        style::master_list_row(id, selected, cx)
+            .min_h(px(34.))
             .px_2()
             .py_1p5()
             .gap_2()
             .items_center()
-            .rounded(crate::ui::design::r_sm())
-            .cursor_pointer()
-            .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
-            .when(!selected, |row| {
-                row.hover(|row| row.bg(crate::ui::design::surface(cx)))
-            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.pocketcomet_project_filter = project;
                 this.pocketcomet_selected_chat = None;
                 cx.notify();
             }))
+            .child(
+                Icon::new(if project.is_some() {
+                    IconName::Folder
+                } else {
+                    IconName::LayoutDashboard
+                })
+                .size(crate::ui::design::icon_sm())
+                .text_color(if selected {
+                    crate::ui::design::accent(cx)
+                } else {
+                    crate::ui::design::t3(cx)
+                }),
+            )
             .child(
                 div()
                     .flex_1()
@@ -294,8 +340,9 @@ impl CenterArea {
             )
             .child(
                 div()
+                    .flex_none()
                     .text_size(crate::ui::design::text_label())
-                    .text_color(crate::ui::design::t4(cx))
+                    .text_color(crate::ui::design::t3(cx))
                     .child(count.to_string()),
             )
             .into_any_element()
@@ -312,15 +359,11 @@ impl CenterArea {
             .gap_2()
             .child(self.pocketcomet_section_heading(title, agents.len(), cx))
             .child(
-                v_flex()
-                    .w_full()
-                    .border_t_1()
-                    .border_color(crate::ui::design::line(cx))
-                    .children(
-                        agents
-                            .iter()
-                            .map(|agent| self.render_pocketcomet_agent_row(agent, cx)),
-                    ),
+                v_flex().w_full().gap_0p5().children(
+                    agents
+                        .iter()
+                        .map(|agent| self.render_pocketcomet_agent_row(agent, cx)),
+                ),
             )
             .into_any_element()
     }
@@ -334,12 +377,7 @@ impl CenterArea {
         let project_id = agent.project_id;
         let runtime = self.agent_runtime(agent, project_id, cx);
         let status = pocketcomet_runtime_label(runtime);
-        let tone = match runtime {
-            AgentRuntime::Working => crate::ui::design::sky(cx),
-            AgentRuntime::Waiting => crate::ui::design::amber(cx),
-            AgentRuntime::Ended => crate::ui::design::rose(cx),
-            _ => status_accent(agent.status, cx),
-        };
+        let tone = pocketcomet_runtime_tone(runtime, cx);
         let project_name = self
             .workspace
             .read(cx)
@@ -363,29 +401,22 @@ impl CenterArea {
             })
             .map(|text| clipped_text(text, 220));
         let workspace = self.workspace.clone();
-        h_flex()
-            .id(("pocketcomet-agent", agent.id.as_u128() as u64))
-            .w_full()
-            .min_h(px(72.))
-            .px_1()
-            .py_2p5()
+        style::master_list_row(("pocketcomet-agent", agent.id.as_u128() as u64), false, cx)
+            .px_3()
+            .py_2()
             .gap_3()
             .items_start()
-            .border_b_1()
-            .border_color(crate::ui::design::line(cx))
-            .cursor_pointer()
-            .hover(|row| row.bg(crate::ui::design::surface(cx)))
             .on_click(cx.listener(move |this, _, window, cx| {
                 workspace.update(cx, |workspace, cx| workspace.set_active(project_id, cx));
                 this.open_agent(agent_id, window, cx);
             }))
             .child(
-                div()
-                    .mt(px(7.))
-                    .size(px(8.))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(tone),
+                crate::ui::design::indicator::lucide_icon(
+                    lucide_icons::Icon::ListTodo,
+                    crate::ui::design::t3(cx),
+                    crate::ui::design::icon_md(),
+                )
+                .mt(px(3.)),
             )
             .child(
                 v_flex()
@@ -408,15 +439,12 @@ impl CenterArea {
                                     .child(task_title),
                             )
                             .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .text_color(tone)
-                                    .child(status),
+                                crate::ui::design::indicator::status(status, tone, cx).flex_none(),
                             ),
                     )
                     .child(
                         div()
+                            .truncate()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::t3(cx))
                             .child(format!(
@@ -426,9 +454,10 @@ impl CenterArea {
                     )
                     .children(outcome.map(|outcome| {
                         div()
+                            .w_full()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::t2(cx))
-                            .whitespace_normal()
+                            .truncate()
                             .child(outcome)
                     })),
             )
@@ -453,6 +482,7 @@ impl CenterArea {
             .when(chats.is_empty(), |section| {
                 section.child(
                     div()
+                        .px_3()
                         .py_4()
                         .text_size(crate::ui::design::text_body())
                         .text_color(crate::ui::design::t3(cx))
@@ -461,15 +491,11 @@ impl CenterArea {
             })
             .when(!chats.is_empty(), |section| {
                 section.child(
-                    v_flex()
-                        .w_full()
-                        .border_t_1()
-                        .border_color(crate::ui::design::line(cx))
-                        .children(
-                            chats
-                                .iter()
-                                .map(|chat| self.render_pocketcomet_chat_row(chat, cx)),
-                        ),
+                    v_flex().w_full().gap_0p5().children(
+                        chats
+                            .iter()
+                            .map(|chat| self.render_pocketcomet_chat_row(chat, cx)),
+                    ),
                 )
             })
             .into_any_element()
@@ -482,12 +508,7 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         let chat_id = chat.id;
         let runtime = self.agent_runtime(chat, chat.project_id, cx);
-        let tone = match runtime {
-            AgentRuntime::Working => crate::ui::design::sky(cx),
-            AgentRuntime::Waiting => crate::ui::design::amber(cx),
-            AgentRuntime::Ended => crate::ui::design::rose(cx),
-            _ => crate::ui::design::t4(cx),
-        };
+        let tone = pocketcomet_runtime_tone(runtime, cx);
         let (title, meta) = match chat.origin.as_ref() {
             Some(AgentOrigin::PocketCometChat {
                 project_name,
@@ -513,37 +534,22 @@ impl CenterArea {
             ),
         };
         let latest = self.pocketcomet_chat_responses(chat, cx).pop();
-        h_flex()
-            .id(("pocketcomet-chat", chat.id.as_u128() as u64))
-            .w_full()
-            .min_h(px(72.))
-            .px_1()
-            .py_2p5()
+        style::master_list_row(("pocketcomet-chat", chat.id.as_u128() as u64), false, cx)
+            .px_3()
+            .py_2()
             .gap_3()
             .items_start()
-            .border_b_1()
-            .border_color(crate::ui::design::line(cx))
-            .cursor_pointer()
-            .hover(|row| row.bg(crate::ui::design::surface(cx)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.pocketcomet_selected_chat = Some(chat_id);
                 cx.notify();
             }))
             .child(
-                div()
-                    .mt(px(2.))
-                    .size(px(28.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(crate::ui::design::r_sm())
-                    .bg(crate::ui::design::surface_2(cx))
-                    .child(crate::ui::design::indicator::lucide_icon(
-                        lucide_icons::Icon::MessageCircleMore,
-                        tone,
-                        crate::ui::design::icon_sm(),
-                    )),
+                crate::ui::design::indicator::lucide_icon(
+                    lucide_icons::Icon::MessageCircleMore,
+                    crate::ui::design::t3(cx),
+                    crate::ui::design::icon_md(),
+                )
+                .mt(px(3.)),
             )
             .child(
                 v_flex()
@@ -554,6 +560,7 @@ impl CenterArea {
                         h_flex()
                             .w_full()
                             .gap_2()
+                            .items_center()
                             .child(
                                 div()
                                     .flex_1()
@@ -565,23 +572,27 @@ impl CenterArea {
                                     .child(title),
                             )
                             .child(
-                                div()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .text_color(tone)
-                                    .child(pocketcomet_runtime_label(runtime)),
+                                crate::ui::design::indicator::status(
+                                    pocketcomet_runtime_label(runtime),
+                                    tone,
+                                    cx,
+                                )
+                                .flex_none(),
                             ),
                     )
                     .child(
                         div()
+                            .truncate()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::t3(cx))
                             .child(meta),
                     )
                     .children(latest.map(|(text, _)| {
                         div()
+                            .w_full()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::t2(cx))
-                            .whitespace_normal()
+                            .truncate()
                             .child(clipped_text(&text, 220))
                     })),
             )
@@ -602,6 +613,7 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         h_flex()
             .w_full()
+            .px_3()
             .items_center()
             .gap_2()
             .child(
@@ -614,7 +626,7 @@ impl CenterArea {
             .child(
                 div()
                     .text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t4(cx))
+                    .text_color(crate::ui::design::t3(cx))
                     .child(count.to_string()),
             )
             .into_any_element()
@@ -671,6 +683,43 @@ impl CenterArea {
             .then(|| format!(" · {teammate_name}"))
             .unwrap_or_default();
         let responses = self.pocketcomet_chat_responses(chat, cx);
+        let runtime = self.agent_runtime(chat, chat.project_id, cx);
+        let session = self.agent_chats.read(cx).session(chat.id);
+        let (status, detail) = if let Some(approval) = session.and_then(|s| s.pending_approval.as_ref()) {
+            ("Waiting for your approval", approval.title.clone())
+        } else if let Some(input) = session.and_then(|s| s.pending_user_input.as_ref()) {
+            ("Waiting for your answer", input.questions.get(input.question_index)
+                .map(|question| question.question.clone()).unwrap_or_else(|| "Open the work session to respond.".into()))
+        } else {
+            (pocketcomet_runtime_label(runtime), match runtime {
+                AgentRuntime::Working => "The reply will appear in PocketComet when Choro finishes.",
+                AgentRuntime::Waiting => "Open the work session to review what Choro needs.",
+                AgentRuntime::Ended => "Open the work session to check why Choro stopped.",
+                _ => "Open the work session to see activity and results.",
+            }.to_string())
+        };
+        let chat_id = chat.id;
+        let project_id = chat.project_id;
+        let open_work = style::secondary_button_compact("pocketcomet-chat-open-work", "Open work session")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.workspace.update(cx, |workspace, cx| workspace.set_active(project_id, cx));
+                this.open_agent(chat_id, window, cx);
+            }));
+        let activity = h_flex()
+            .w_full()
+            .max_w(crate::ui::design::center_content_frame_max_w())
+            .mx_auto()
+            .px(crate::ui::design::agent_chat_gutter_x())
+            .py_3()
+            .gap_3()
+            .items_start()
+            .child(v_flex().flex_1().min_w(px(0.)).gap_1()
+                .child(div().text_size(crate::ui::design::text_ui())
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(pocketcomet_runtime_tone(runtime, cx)).child(status))
+                .child(div().text_size(crate::ui::design::text_ui())
+                    .text_color(crate::ui::design::t2(cx)).whitespace_normal().child(detail)))
+            .child(open_work);
         let back = style::secondary_button_compact("pocketcomet-chat-back", "Back")
             .icon(IconName::ArrowLeft)
             .on_click(cx.listener(|this, _, _, cx| {
@@ -762,6 +811,7 @@ impl CenterArea {
         v_flex()
             .size_full()
             .child(header)
+            .child(activity)
             .child(body)
             .into_any_element()
     }

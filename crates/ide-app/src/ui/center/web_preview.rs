@@ -1213,6 +1213,10 @@ mod imp {
 
     struct ChromiumSurfaceState {
         browser: Option<Browser>,
+        // Keep the native parent alive until CEF confirms that its child view
+        // has finished closing. Detaching it earlier can leave AppKit tooltip
+        // tracking areas pointing at an already-destroyed Chromium view.
+        container: Option<Retained<NSView>>,
         pending_url: Option<String>,
         pending_scripts: VecDeque<String>,
         initialization_script: String,
@@ -1254,6 +1258,7 @@ mod imp {
 
             let state = Arc::new(Mutex::new(ChromiumSurfaceState {
                 browser: None,
+                container: Some(container.clone()),
                 pending_url: None,
                 pending_scripts: VecDeque::new(),
                 initialization_script,
@@ -1374,7 +1379,7 @@ mod imp {
     impl Drop for ChromiumSurface {
         fn drop(&mut self) {
             self.container.setHidden(true);
-            self.container.removeFromSuperview();
+            clear_native_tooltips(&self.container);
             let browser = self.state.lock().ok().and_then(|mut state| {
                 state.closing = true;
                 state.browser.clone()
@@ -1382,6 +1387,13 @@ mod imp {
             if let Some(host) = browser.and_then(|browser| browser.host()) {
                 host.close_browser(1);
             }
+        }
+    }
+
+    fn clear_native_tooltips(view: &NSView) {
+        view.removeAllToolTips();
+        for subview in view.subviews().iter() {
+            clear_native_tooltips(&subview);
         }
     }
 
@@ -1545,8 +1557,15 @@ mod imp {
                     return;
                 };
                 crate::chromium::unregister_browser(browser);
-                if let Ok(mut state) = self.state.lock() {
+                let container = if let Ok(mut state) = self.state.lock() {
                     state.browser = None;
+                    state.container.take()
+                } else {
+                    None
+                };
+                if let Some(container) = container {
+                    clear_native_tooltips(&container);
+                    container.removeFromSuperview();
                 }
             }
         }

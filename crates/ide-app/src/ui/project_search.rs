@@ -131,6 +131,7 @@ struct SearchItem {
     kind: SearchItemKind,
     title: SharedString,
     subtitle: SharedString,
+    created_date: Option<SharedString>,
     score: i32,
     rank_key: String,
 }
@@ -278,6 +279,7 @@ impl ProjectSearch {
                 kind: SearchItemKind::Doc(doc.path),
                 title: doc.title.into(),
                 subtitle: doc.relative_path.display().to_string().into(),
+                created_date: None,
                 score,
                 rank_key: searchable.to_lowercase(),
             });
@@ -294,6 +296,7 @@ impl ProjectSearch {
                 kind: SearchItemKind::Project(project.id),
                 title: project.name.clone().into(),
                 subtitle: SharedString::default(),
+                created_date: None,
                 score,
                 rank_key: project.name.to_lowercase(),
             });
@@ -315,6 +318,7 @@ impl ProjectSearch {
                 kind: SearchItemKind::Task(task.project, reference.clone()),
                 title: reference.title.into(),
                 subtitle: format!("{} · {}", reference.issue_key, task.project_name).into(),
+                created_date: None,
                 score,
                 rank_key: searchable.to_lowercase(),
             });
@@ -503,6 +507,20 @@ impl ProjectSearch {
                         .truncate()
                         .text_color(design::t3(cx))
                         .child(item.subtitle),
+                )
+            })
+            .when_some(item.created_date, |row, date| {
+                let tooltip = SharedString::from(format!("Created {date}"));
+                row.child(
+                    div()
+                        .id(("project-search-created", ix))
+                        .flex_none()
+                        .text_size(design::text_ui())
+                        .text_color(design::t3(cx))
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                        })
+                        .child(date),
                 )
             })
     }
@@ -697,6 +715,7 @@ fn file_item(file: &ProjectFile, query: &str) -> Option<SearchItem> {
         kind: SearchItemKind::File(file.path.clone()),
         title: file.name.clone(),
         subtitle: file.parent.clone(),
+        created_date: None,
         score,
         rank_key: file.rel_path.to_lowercase(),
     })
@@ -721,9 +740,23 @@ fn agent_item(agent: &AgentRecord, short_outcome: Option<&str>, query: &str) -> 
         kind: SearchItemKind::Agent(agent.id),
         title: SharedString::from(agent.title.clone()),
         subtitle: SharedString::from(subtitle),
+        created_date: agent_created_date(agent.created_at),
         score,
         rank_key: format!("chat/{}", agent.title.to_lowercase()),
     })
+}
+
+fn agent_created_date(created_at: u64) -> Option<SharedString> {
+    let seconds = i64::try_from(created_at)
+        .ok()
+        .filter(|seconds| *seconds > 0)?;
+    let date = chrono::DateTime::from_timestamp(seconds, 0)?;
+    Some(
+        date.with_timezone(&chrono::Local)
+            .format("%b %-d, %Y")
+            .to_string()
+            .into(),
+    )
 }
 
 fn fuzzy_score(haystack: &str, needle: &str) -> Option<i32> {
@@ -798,5 +831,19 @@ mod tests {
         )
         .is_some());
         assert!(agent_item(&agent, None, "reliable").is_none());
+    }
+
+    #[test]
+    fn chat_search_dates_use_creation_and_omit_unavailable_timestamps() {
+        let mut record = agent("Date check", "");
+        for timestamp in [0, u64::MAX, i64::MAX as u64] {
+            record.created_at = timestamp;
+            assert!(agent_item(&record, None, "").unwrap().created_date.is_none());
+        }
+        record.created_at = 1_700_000_000;
+        let date = agent_item(&record, None, "").unwrap().created_date.unwrap();
+        assert!(date.starts_with("Nov ") && date.ends_with(", 2023"));
+        record.updated_at = 1_800_000_000;
+        assert_eq!(agent_item(&record, None, "").unwrap().created_date, Some(date));
     }
 }

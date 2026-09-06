@@ -93,7 +93,7 @@ impl DocsPanel {
             } else {
                 ("doc-row", index)
             })
-            .mx_1()
+            .min_w(px(0.))
             .min_h(px(36.))
             .px_2()
             .gap_2()
@@ -205,16 +205,24 @@ impl DocsPanel {
 
         v_flex()
             .w_full()
+            .min_w(px(0.))
             .gap_3()
             .child(
                 v_flex()
                     .w_full()
+                    .min_w(px(0.))
                     .gap_1()
-                    .child(section_label("Documents", docs_count, cx))
+                    .child(
+                        h_flex()
+                            .px_2()
+                            .min_h(px(28.))
+                            .items_center()
+                            .child(section_label("Documents", docs_count, cx)),
+                    )
                     .when(docs.is_empty(), |section| {
                         section.child(
                             div()
-                                .mx_3()
+                                .mx_2()
                                 .py_2()
                                 .text_size(crate::ui::design::text_ui())
                                 .text_color(crate::ui::design::t4(cx))
@@ -228,11 +236,12 @@ impl DocsPanel {
             .child(
                 v_flex()
                     .w_full()
+                    .min_w(px(0.))
                     .gap_1()
                     .child(
                         h_flex()
                             .id("templates-section-toggle")
-                            .mx_1()
+                            .min_w(px(0.))
                             .px_2()
                             .min_h(px(28.))
                             .gap_1p5()
@@ -258,7 +267,7 @@ impl DocsPanel {
                     .when(self.templates_expanded && templates.is_empty(), |section| {
                         section.child(
                             div()
-                                .mx_3()
+                                .mx_2()
                                 .py_2()
                                 .text_size(crate::ui::design::text_ui())
                                 .text_color(crate::ui::design::t4(cx))
@@ -310,15 +319,19 @@ impl Render for DocsPanel {
                                 )
                             }),
                         )
-                    }),
+                    })
+                    .child(style::right_sidebar_toggle(true, false, cx)),
             )
             .child(
                 v_flex()
                     .id("docs-panel-scroll")
                     .flex_1()
                     .min_h(px(0.))
+                    .min_w(px(0.))
                     .overflow_y_scroll()
-                    .px_1()
+                    // 6px outer gutter + 8px row padding align content with
+                    // the header's 14px inset, including section headings.
+                    .px_1p5()
                     .pt(crate::ui::design::context_panel_title_pad_top())
                     .pb_3()
                     .when_some(active_project, |list, project| {

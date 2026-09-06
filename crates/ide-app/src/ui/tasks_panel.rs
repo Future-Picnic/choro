@@ -124,13 +124,7 @@ impl Render for TasksPanel {
         }
 
         let Some(project) = self.workspace.read(cx).active_project().cloned() else {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .text_size(crate::ui::design::text_body())
-                .text_color(crate::ui::design::t3(cx))
-                .child("Open a project to see tasks")
+            return crate::ui::style::empty_context_panel("Tasks", "Open a project to see tasks", cx)
                 .into_any_element();
         };
         let connections = self.tasks.read(cx).connections_for_project(project.id, cx);
@@ -180,7 +174,8 @@ impl Render for TasksPanel {
                 .on_click(cx.listener(|this, _, window, cx| {
                     TaskTrackerConnectionsEditor::open(this.workspace.clone(), window, cx);
                 })),
-            );
+            )
+            .child(crate::ui::style::right_sidebar_toggle(true, false, cx));
 
         // --- Source switcher: brand pills + add ---
         let switcher = h_flex()
@@ -303,7 +298,8 @@ impl TasksPanel {
                         this.tasks
                             .update(cx, |tasks, cx| tasks.refresh_my_tasks(cx));
                     })),
-            );
+            )
+            .child(crate::ui::style::right_sidebar_toggle(true, false, cx));
 
         let mut body = v_flex()
             .id("my-tasks-nav-body")

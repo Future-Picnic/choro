@@ -10,6 +10,10 @@ input, table, theme, and integration changes. Relative to the published 0.5.1
 crate, 92 Rust source files are modified. Every modified source file carries a
 prominent notice pointing to this record.
 
+The local `TextView` also supports transient, full-Unicode case-insensitive match
+highlights. Find-in-conversation uses this render-only layer so Markdown is not
+reparsed and off-screen virtualized messages do not create highlight elements.
+
 To review the patch against a local Cargo registry checkout:
 
 ```sh

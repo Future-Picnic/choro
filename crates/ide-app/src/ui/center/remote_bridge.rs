@@ -1547,7 +1547,7 @@ impl CenterArea {
                 None,
                 Vec::new(),
                 None,
-                AgentStatus::Todo,
+                AgentStatus::InProgress,
                 cx,
             );
             if let Some(model) = external_model.clone() {

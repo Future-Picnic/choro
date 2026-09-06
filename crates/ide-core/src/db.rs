@@ -272,6 +272,29 @@ impl MongoHandle {
         );
         Ok(())
     }
+
+    /// Deletes one document matched by its canonical extended-JSON `_id`.
+    pub fn delete_doc(&self, db: &str, collection: &str, id_canonical_json: &str) -> Result<()> {
+        if self.is_read_only() {
+            anyhow::bail!("connection is read-only");
+        }
+        let id_value: serde_json::Value =
+            serde_json::from_str(id_canonical_json).context("bad document id")?;
+        let id: Bson = id_value.try_into().context("bad document id")?;
+
+        let result = self
+            .client
+            .database(db)
+            .collection::<Document>(collection)
+            .delete_one(mongodb::bson::doc! { "_id": id })
+            .run()
+            .context("delete failed")?;
+        anyhow::ensure!(
+            result.deleted_count == 1,
+            "document no longer exists (was it already deleted?)"
+        );
+        Ok(())
+    }
 }
 
 fn parse_filter(filter_json: &str) -> Result<Document> {
@@ -342,6 +365,15 @@ mod tests {
                 r#"{"$oid":"000000000000000000000000"}"#,
                 "{}",
             )
+            .unwrap_err();
+        assert_eq!(error.to_string(), "connection is read-only");
+    }
+
+    #[test]
+    fn read_only_mongo_handle_rejects_deletes_before_network_access() {
+        let handle = MongoHandle::connect_with_access("mongodb://localhost:27017", true).unwrap();
+        let error = handle
+            .delete_doc("db", "collection", r#"{"$oid":"000000000000000000000000"}"#)
             .unwrap_err();
         assert_eq!(error.to_string(), "connection is read-only");
     }

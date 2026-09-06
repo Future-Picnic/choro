@@ -1,4 +1,5 @@
 mod chrome;
+mod left_sidebar;
 mod settings;
 
 mod shutdown;
@@ -23,20 +24,20 @@ use ide_core::config::ThemeMode as ConfigTheme;
 use ide_core::git::BranchInfo;
 
 use crate::actions::{
-    CloseTab, NavigateBack, NavigateForward, NewAgentChat, NewTerminal, NextOpenItem, OpenCommands,
-    OpenContentSearch, OpenFolder, OpenOrbitSettings, OpenProjectSearch, OpenQuickAsk,
-    OpenSettings, PreviousOpenItem, QuickAddTask, QuitApplication, SaveFile, StopCurrentAgent,
-    ToggleAgentPlanMode, ToggleFocusMode, ToggleHandsFreeDictation, ToggleLeftPanel, TogglePreview,
-    ToggleRightPanel, ToggleTerminalArea, ToggleVoiceDictation, ToggleVoiceDirector, ViewAgents,
-    ViewCode, ViewDb, ViewDesign, ViewDesigns, ViewDocs, ViewFiles, ViewServices, ViewSplit,
-    ViewTasks, ViewTerminal,
+    CloseTab, NavigateBack, NavigateForward, NewAgentChat, NewTerminal, NextOpenItem,
+    OpenAgentChatSearch, OpenCommands, OpenContentSearch, OpenFolder, OpenOrbitSettings,
+    OpenProjectSearch, OpenQuickAsk, OpenSettings, PreviousOpenItem, QuickAddTask, QuitApplication,
+    SaveFile, StopCurrentAgent, ToggleAgentPlanMode, ToggleFocusMode, ToggleHandsFreeDictation,
+    ToggleLeftPanel, TogglePreview, ToggleRightPanel, ToggleTerminalArea, ToggleVoiceDictation,
+    ToggleVoiceDirector, ViewAgents, ViewCode, ViewDb, ViewDesign, ViewDesigns, ViewDocs,
+    ViewFiles, ViewServices, ViewSplit, ViewTasks, ViewTerminal,
 };
 use crate::app_update::{AppUpdateController, AppUpdatePhase};
 use crate::remote::dto::RemoteEvent;
 use crate::state::{
     AgentActivityCache, AgentCapabilityCacheFile, AgentChatState, AgentRecords, DesignsState,
-    DocAssistantState, DocsState, GitStates, OrbitState, PenpotState, QuickAskState, ServicesState,
-    TasksState, TerminalManager, Workspace,
+    DocAssistantState, DocsState, GitStates, OrbitState, PenpotState, QuickAskEvent, QuickAskPhase,
+    QuickAskState, ServicesState, TasksState, TerminalManager, Workspace,
 };
 use crate::ui::agents_panel::AgentsPanel;
 use crate::ui::branch_icon::branch_icon;
@@ -54,7 +55,7 @@ use crate::ui::onboarding::OnboardingTour;
 use crate::ui::project_list::ProjectList;
 use crate::ui::project_search::ProjectSearch;
 use crate::ui::project_visuals::project_icon_element;
-use crate::ui::quick_ask::QuickAskModal;
+use crate::ui::quick_ask::{QuickAskPanel, QuickAskPanelEvent};
 use crate::ui::right_panel::RightPanel;
 use crate::ui::settings::{SettingsSection, SettingsView};
 use crate::ui::style;
@@ -139,6 +140,26 @@ struct SidebarVisibility {
     right: bool,
 }
 
+/// Deliberately session-only: a fresh launch starts Agents with Git hidden.
+#[derive(Default)]
+struct RightSidebarState {
+    choices: std::collections::HashMap<(Option<ide_core::ProjectId>, ProjectActivity), bool>,
+}
+
+impl RightSidebarState {
+    fn visible(&self, project: Option<ide_core::ProjectId>, activity: ProjectActivity) -> bool {
+        self.choices
+            .get(&(project, activity))
+            .copied()
+            .unwrap_or(activity != ProjectActivity::Agents)
+    }
+
+    fn toggle(&mut self, project: Option<ide_core::ProjectId>, activity: ProjectActivity) {
+        let visible = self.visible(project, activity);
+        self.choices.insert((project, activity), !visible);
+    }
+}
+
 #[derive(Default)]
 struct FocusModeState {
     restore: Option<SidebarVisibility>,
@@ -190,6 +211,8 @@ pub struct RootView {
     agent_chats: Entity<AgentChatState>,
     voice: Entity<VoiceState>,
     quick_ask: Entity<QuickAskState>,
+    quick_ask_panel: Entity<QuickAskPanel>,
+    quick_ask_open: bool,
     app_update: Entity<AppUpdateController>,
     project_list: Entity<ProjectList>,
     center: Entity<CenterArea>,
@@ -198,6 +221,7 @@ pub struct RootView {
     root_focus: FocusHandle,
     show_left: bool,
     show_right: bool,
+    right_sidebar_state: RightSidebarState,
     focus_mode: FocusModeState,
     sidebar_resize: Option<SidebarResizeState>,
     title_branch_hovered: bool,
@@ -214,6 +238,7 @@ pub struct RootView {
     remote_relay_identity: crate::remote::RelayIdentity,
     remote_relay_control: crate::remote::RelayControl,
     remote_connected_devices: usize,
+    pocketcomet_connected: bool,
     shutdown_state: ShutdownState,
     shutdown_purpose: ShutdownPurpose,
     deferred_normal_quit: bool,
@@ -239,6 +264,43 @@ impl RootView {
             self.voice.clone(),
             self.center.clone(),
         )
+    }
+
+    fn open_quick_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.quick_ask_open {
+            // A fresh open follows the active project, like the old modal
+            // launch did. An in-flight or restored conversation is kept: the
+            // side chat is persistent, and New in its header starts over.
+            let start_fresh = {
+                let state = self.quick_ask.read(cx);
+                state.session().is_empty()
+                    && state.pending_question().is_none()
+                    && state.phase() == QuickAskPhase::Idle
+                    && state.error().is_none()
+            };
+            if start_fresh {
+                self.quick_ask
+                    .update(cx, |state, cx| state.begin_session(cx));
+            }
+            self.quick_ask_open = true;
+        }
+        // Focus after the panel has mounted; an originating button must not
+        // reclaim focus at the end of the same event cycle.
+        let question_focus = self.quick_ask_panel.read(cx).input_focus_handle(cx);
+        window.on_next_frame(move |window, _| {
+            question_focus.focus(window);
+        });
+        cx.notify();
+    }
+
+    fn toggle_quick_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_ask_open {
+            self.quick_ask_open = false;
+            self.root_focus.focus(window);
+            cx.notify();
+        } else {
+            self.open_quick_ask(window, cx);
+        }
     }
 
     pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
@@ -438,6 +500,13 @@ impl RootView {
         root_focus.focus(window);
         let title_branch_query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search branches"));
+        let quick_ask_panel = QuickAskPanel::view(
+            workspace.clone(),
+            quick_ask.clone(),
+            center.clone(),
+            window,
+            cx,
+        );
 
         let view = cx.new(|cx| {
             let workspace_remote_events = remote_events.clone();
@@ -523,6 +592,8 @@ impl RootView {
             .detach();
             cx.observe(&git_states, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            cx.observe(&right_panel, |_: &mut Self, _, cx| cx.notify())
+                .detach();
             let chat_remote_events = remote_events.clone();
             cx.observe(&agent_chats, move |this: &mut Self, _, cx| {
                 let _ = chat_remote_events.send(RemoteEvent::HostSnapshotChanged);
@@ -544,6 +615,30 @@ impl RootView {
                 }
             })
             .detach();
+            // The docked Quick Ask panel cannot close itself; the root layout
+            // owns its visibility and returns keyboard focus to the workspace.
+            cx.subscribe_in(
+                &quick_ask_panel,
+                window,
+                |this: &mut Self, _, _: &QuickAskPanelEvent, window, cx| {
+                    this.quick_ask_open = false;
+                    this.root_focus.focus(window);
+                    cx.notify();
+                },
+            )
+            .detach();
+            // Views that cannot reach the panel directly (Ask History in the
+            // center) request it through the shared Quick Ask state.
+            cx.subscribe_in(
+                &quick_ask,
+                window,
+                |this: &mut Self, _, event: &QuickAskEvent, window, cx| {
+                    if matches!(event, QuickAskEvent::PanelOpenRequested) {
+                        this.open_quick_ask(window, cx);
+                    }
+                },
+            )
+            .detach();
             Self {
                 workspace,
                 terminals,
@@ -556,6 +651,8 @@ impl RootView {
                 agent_chats,
                 voice,
                 quick_ask,
+                quick_ask_panel,
+                quick_ask_open: false,
                 app_update: app_update.clone(),
                 project_list,
                 center,
@@ -563,7 +660,8 @@ impl RootView {
                 right_panel,
                 root_focus,
                 show_left: true,
-                show_right: true,
+                show_right: false,
+                right_sidebar_state: RightSidebarState::default(),
                 focus_mode: FocusModeState::default(),
                 sidebar_resize: None,
                 title_branch_hovered: false,
@@ -579,6 +677,7 @@ impl RootView {
                 remote_relay_identity,
                 remote_relay_control,
                 remote_connected_devices: 0,
+                pocketcomet_connected: false,
                 shutdown_state: ShutdownState::Idle,
                 shutdown_purpose: ShutdownPurpose::Quit,
                 deferred_normal_quit: false,
@@ -587,6 +686,27 @@ impl RootView {
         });
         app_update.update(cx, |updates, cx| updates.start(cx));
         view.update(cx, |this, cx| this.update_dock_badge(cx));
+
+        let pocketcomet_root = view.downgrade();
+        cx.spawn(async move |cx| loop {
+            if pocketcomet_root
+                .update(cx, |this, cx| {
+                    let connected = this.remote_auth.pocketcomet_connected()
+                        && chrome::pocketcomet_is_running();
+                    if this.pocketcomet_connected != connected {
+                        this.pocketcomet_connected = connected;
+                        cx.notify();
+                    }
+                })
+                .is_err()
+            {
+                break;
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+        })
+        .detach();
 
         let remote_presence_root = view.downgrade();
         cx.spawn(async move |cx| {
@@ -912,6 +1032,8 @@ fn modifiers_include(actual: Modifiers, required: Modifiers) -> bool {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sidebar_style = self.workspace.read(cx).sidebar_style;
+        let separator_style = self.workspace.read(cx).separator_style;
         let (left_size, right_size) = {
             let panels = &self.workspace.read(cx).panels;
             (
@@ -986,10 +1108,14 @@ impl Render for RootView {
             .map(|view| self.render_settings_screen(view, cx));
         let activity = self.center.read(cx).activity();
         let quick_ask_history_open = self.center.read(cx).is_quick_ask_history_view();
-        let show_context_panel = self.show_right
-            && !quick_ask_history_open
-            && activity != crate::ui::center::ProjectActivity::Design
-            && activity != crate::ui::center::ProjectActivity::PocketComet;
+        self.show_right = !self.focus_mode.is_active()
+            && self
+                .right_sidebar_state
+                .visible(self.workspace.read(cx).active, activity);
+        let has_context_panel = !quick_ask_history_open
+            && activity != ProjectActivity::Design
+            && activity != ProjectActivity::PocketComet;
+        let show_context_panel = self.show_right && has_context_panel;
 
         // Project activity navigation is a single product treatment: a
         // full-height rail to the right of the Git panel. Keeping it fixed
@@ -1012,9 +1138,6 @@ impl Render for RootView {
             .relative()
             .flex_none()
             .h_full()
-            .when(show_context_panel, |g| {
-                g.child(self.resize_handle(SidebarResizeSide::Right, cx))
-            })
             .child(
                 div()
                     .relative()
@@ -1023,7 +1146,9 @@ impl Render for RootView {
                             .w(right_size)
                             .h_full()
                             .flex_none()
-                            .bg(crate::ui::design::nav(cx))
+                            // Same surface treatment as the left sidebar so
+                            // both panels share one lighting story.
+                            .bg(crate::ui::design::sidebar_background(sidebar_style, cx))
                             .child(
                                 v_flex()
                                     .size_full()
@@ -1039,6 +1164,7 @@ impl Render for RootView {
                                         col.child(self.settings_footer(cx))
                                     }),
                             )
+                            .child(self.resize_handle(SidebarResizeSide::Right, cx))
                     })
                     .child(crate::ui::onboarding::target_marker(
                         crate::ui::onboarding::SpotlightTarget::GitPanel,
@@ -1058,6 +1184,22 @@ impl Render for RootView {
             (Some(right_group), None)
         };
 
+        // Quick Ask floats as an anchored card over the workspace
+        // (Intercom-style): it never reflows the layout or competes with the
+        // contextual side panels, and clears the right nav rail when visible.
+        let quick_ask_overlay = self.quick_ask_open.then(|| {
+            let rail_clearance = if focus_mode_active { 16. } else { 66. + 12. };
+            div()
+                .absolute()
+                .right(px(rail_clearance))
+                .bottom(px(16.))
+                .w(px(400.))
+                .h(px(600.))
+                .max_h(gpui::relative(0.85))
+                .child(self.quick_ask_panel.clone())
+                .into_any_element()
+        });
+
         // The header spans only the center column now — the sidebar runs
         // full-height beside it. When the sidebar is open the macOS traffic
         // lights sit over the sidebar's top zone, so the header drops its
@@ -1074,22 +1216,23 @@ impl Render for RootView {
             .flex_none()
             .items_center()
             .px(crate::ui::design::header_edge_inset_x())
-            // Same fill as the middle/center screen (not the sidebars), with just
-            // the hairline divider underneath.
+            // Same fill as the middle/center screen (not the sidebars). The
+            // divider underneath honors the user's separator preference.
             .bg(crate::ui::design::base(cx))
-            .border_b_1()
-            .border_color(style::hairline(cx))
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.))
+                    .right(px(0.))
+                    .bottom(px(0.))
+                    .h(px(1.))
+                    .child(style::separator_hline(separator_style, cx)),
+            )
             .window_control_area(gpui::WindowControlArea::Drag)
             .when(!show_left, |bar| bar.pl(px(76.)))
             .when(!show_left && !focus_mode_active, |bar| {
-                bar.child(
-                    style::header_icon_button("reopen-left-sidebar", IconName::PanelLeftOpen, cx)
-                        .tooltip("Show sidebar")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_left = true;
-                            cx.notify();
-                        })),
-                )
+                bar.child(style::left_sidebar_toggle(false, cx))
             })
             .child(
                 h_flex()
@@ -1120,11 +1263,12 @@ impl Render for RootView {
                                 h_flex()
                                     .h_full()
                                     .items_center()
-                                    .gap_1()
+                                    .gap_2()
                                     .child(self.title_preset_bar.clone())
                                     .child(
                                         div()
                                             .id("voice-control-anchor")
+                                            .flex_none()
                                             .relative()
                                             .on_hover(cx.listener(move |this, hovered, _, cx| {
                                                 if voice_active {
@@ -1265,11 +1409,25 @@ impl Render for RootView {
                             ),
                     ),
             )
+            .when(!show_context_panel && has_context_panel && !focus_mode_active, |bar| {
+                bar.pr(px(14.))
+                    .child(
+                        div().flex_none().mx(px(12.)).w(px(1.)).h(px(16.))
+                            .bg(crate::ui::design::line(cx)),
+                    )
+                    .child(if activity == ProjectActivity::Agents {
+                        style::git_sidebar_open_button(
+                            self.right_panel.read(cx).git_change_count(cx), cx,
+                        )
+                    } else {
+                        style::right_sidebar_toggle(false, false, cx)
+                    })
+            })
             .when(focus_mode_active, |bar| {
                 bar.child(
                     style::header_icon_button("toggle-focus-mode", IconName::WindowMaximize, cx)
                         .selected(true)
-                        .tooltip("Exit Focus Mode (⌘F)")
+                        .tooltip("Exit Focus Mode (⌘I)")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.focus_mode
                                 .toggle(&mut this.show_left, &mut this.show_right);
@@ -1311,6 +1469,10 @@ impl Render for RootView {
                     .size_full()
                     .bg(crate::ui::design::base(cx))
                     .track_focus(&self.root_focus)
+                    .when(
+                        self.center.read(cx).visible_agent_chat_search_target(cx).is_some(),
+                        |workspace| workspace.key_context(crate::ui::center::agent_chat_search::WORKSPACE_CONTEXT),
+                    )
                     .on_action(cx.listener(|this, _: &NewTerminal, window, cx| {
                         this.center
                             .update(cx, |center, cx| center.spawn_shell(window, cx));
@@ -1344,6 +1506,15 @@ impl Render for RootView {
                     .on_action(cx.listener(|this, _: &OpenCommands, window, cx| {
                         CommandPalette::open(this.root_focus.clone(), window, cx);
                     }))
+                    // The command palette restores root_focus before dispatch,
+                    // so the chat body's listener is not on that action path.
+                    .on_action(cx.listener(|this, _: &OpenAgentChatSearch, window, cx| {
+                        if !this.center.update(cx, |center, cx| {
+                            center.open_selected_agent_chat_search(window, cx)
+                        }) {
+                            cx.propagate();
+                        }
+                    }))
                     .on_action(cx.listener(|this, _: &OpenContentSearch, window, cx| {
                         ContentSearch::open(this.workspace.clone(), this.center.clone(), window, cx);
                     }))
@@ -1356,13 +1527,7 @@ impl Render for RootView {
                         );
                     }))
                     .on_action(cx.listener(|this, _: &OpenQuickAsk, window, cx| {
-                        QuickAskModal::open(
-                            this.workspace.clone(),
-                            this.quick_ask.clone(),
-                            this.center.clone(),
-                            window,
-                            cx,
-                        );
+                        this.toggle_quick_ask(window, cx);
                     }))
                     .on_action(cx.listener(|this, _: &ToggleLeftPanel, _, cx| {
                         this.focus_mode
@@ -1373,7 +1538,13 @@ impl Render for RootView {
                     .on_action(cx.listener(|this, _: &ToggleRightPanel, _, cx| {
                         this.focus_mode
                             .exit(&mut this.show_left, &mut this.show_right);
-                        this.show_right = !this.show_right;
+                        let project = this.workspace.read(cx).active;
+                        let activity = this.center.read(cx).activity();
+                        let opening = !this.right_sidebar_state.visible(project, activity);
+                        this.right_sidebar_state.toggle(project, activity);
+                        if opening && activity == ProjectActivity::Agents {
+                            this.right_panel.update(cx, |panel, cx| panel.show_git(cx));
+                        }
                         cx.notify();
                     }))
                     .on_action(cx.listener(|this, _: &ToggleFocusMode, _, cx| {
@@ -1500,32 +1671,21 @@ impl Render for RootView {
                                             .w(left_size)
                                             .h_full()
                                             .flex_none()
-                                            // A single static GPU gradient: the
-                                            // theme's accent gently colors the
-                                            // upper-left edge, then resolves to
-                                            // the ordinary sidebar plane.
-                                            .bg(
-                                                gpui::linear_gradient(
-                                                    135.0,
-                                                    gpui::linear_color_stop(
-                                                        crate::ui::design::nav_glow(cx),
-                                                        0.0,
-                                                    ),
-                                                    gpui::linear_color_stop(
-                                                        crate::ui::design::nav(cx),
-                                                        1.0,
-                                                    ),
-                                                )
-                                                .color_space(gpui::ColorSpace::Oklab),
-                                            )
+                                            // Surface honoring the user's
+                                            // sidebar-style preference: flat,
+                                            // a colorless lift, or the theme
+                                            // cast (see design::sidebar_background).
+                                            .bg(crate::ui::design::sidebar_background(
+                                                sidebar_style,
+                                                cx,
+                                            ))
                                             .child(
                                                 v_flex()
                                                     .size_full()
                                                     // Top zone: clears the macOS traffic lights
                                                     // (window top-left) and carries the center's
                                                     // back/forward, since the header no longer sits
-                                                    // above the sidebar. Toggle the sidebar with the
-                                                    // keyboard shortcut.
+                                                    // above the sidebar.
                                                     .child(
                                                         h_flex()
                                                             .h(px(36.))
@@ -1533,273 +1693,30 @@ impl Render for RootView {
                                                             .px_2()
                                                             .items_center()
                                                             .justify_end()
-                                                            .child(self.nav_history_buttons(cx)),
+                                                            .child(self.nav_history_buttons(cx))
+                                                            .child(style::left_sidebar_toggle(true, cx)),
                                                     )
-                                                    .child({
-                                                        let right_panel = self.right_panel.clone();
-                                                        let section_workspace =
-                                                            self.workspace.clone();
-                                                        let project_workspace =
-                                                            self.workspace.clone();
-                                                        let center_for_my_tasks =
-                                                            self.center.clone();
-                                                        let ask_history_center = self.center.clone();
-                                                        v_flex()
-                                                            .w_full()
-                                                            .px_2()
-                                                            .pt_2()
-                                                            .pb_1()
-                                                            .gap_1()
-                                                            .child(
-                                                                h_flex()
-                                                                    .w_full()
-                                                                    .gap_1()
-                                                                    .items_center()
-                                                                    .child(
-                                                                        h_flex()
-                                                                            .id(
-                                                                                "left-sidebar-new-agent",
-                                                                            )
-                                                                            .flex_1()
-                                                                            .min_w(px(0.))
-                                                                            .relative()
-                                                                            .h(px(32.))
-                                                                            .px_3()
-                                                                            .gap_2()
-                                                                            .items_center()
-                                                                            .rounded(crate::ui::design::r_sm())
-                                                                            .cursor_pointer()
-                                                                            .hover(|row| {
-                                                                                row.bg(
-                                                                                    crate::ui::design::surface(cx),
-                                                                                )
-                                                                            })
-                                                                            .tooltip(|window, cx| {
-                                                                                gpui_component::tooltip::Tooltip::new(
-                                                                                    "New agent",
-                                                                                )
-                                                                                .build(window, cx)
-                                                                            })
-                                                                            .child(
-                                                                                Icon::new(IconName::Bot)
-                                                                                    .size(crate::ui::design::icon())
-                                                                                    .text_color(
-                                                                                        crate::ui::design::t3(cx),
-                                                                                    ),
-                                                                            )
-                                                                            .child(
-                                                                                div()
-                                                                                    .min_w(px(0.))
-                                                                                    .text_size(crate::ui::design::text_body())
-                                                                                    .font_weight(
-                                                                                        gpui::FontWeight::NORMAL,
-                                                                                    )
-                                                                                    .text_color(
-                                                                                        crate::ui::design::t2(cx),
-                                                                                    )
-                                                                                    .truncate()
-                                                                                    .child("New Agent"),
-                                                                            )
-                                                                            .child(
-                                                                                crate::ui::onboarding::target_marker(
-                                                                                    crate::ui::onboarding::SpotlightTarget::NewAgent,
-                                                                                    cx,
-                                                                                ),
-                                                                            )
-                                                                            .on_click(
-                                                                                move |_, window, cx| {
-                                                                                    right_panel.update(
-                                                                                        cx,
-                                                                                        |panel, cx| {
-                                                                                            panel
-                                                                                                .open_new_agent(
-                                                                                                    window, cx,
-                                                                                                );
-                                                                                        },
-                                                                                    );
-                                                                                },
-                                                                            ),
-                                                                    )
-                                                                    .child(
-                                                                        Button::new(
-                                                                            "left-sidebar-add-section",
-                                                                        )
-                                                                        .ghost()
-                                                                        .xsmall()
-                                                                        .h(crate::ui::design::control_h())
-                                                                        .child(
-                                                                            svg()
-                                                                                .path(
-                                                                                    "icons/add-row.svg",
-                                                                                )
-                                                                                .size(px(15.))
-                                                                                .text_color(
-                                                                                    crate::ui::design::t3(cx),
-                                                                                ),
-                                                                        )
-                                                                        .tooltip("Add section")
-                                                                        .on_click(
-                                                                            move |_, window, cx| {
-                                                                                ProjectList::open_section_name_dialog(
-                                                                                    section_workspace.clone(),
-                                                                                    None,
-                                                                                    "".into(),
-                                                                                    window,
-                                                                                    cx,
-                                                                                );
-                                                                            },
-                                                                        ),
-                                                                    )
-                                                            )
-                                                            .child(
-                                                                h_flex()
-                                                                    .id("left-sidebar-my-tasks")
-                                                                    .w_full()
-                                                                    .h(px(32.))
-                                                                    .px_3()
-                                                                    .gap_2()
-                                                                    .items_center()
-                                                                    .rounded(crate::ui::design::r_sm())
-                                                                    .cursor_pointer()
-                                                                    .hover(|row| {
-                                                                        row.bg(
-                                                                            crate::ui::design::surface(cx),
-                                                                        )
-                                                                    })
-                                                                    .tooltip(|window, cx| {
-                                                                        gpui_component::tooltip::Tooltip::new(
-                                                                            "My tasks across all projects",
-                                                                        )
-                                                                        .build(window, cx)
-                                                                    })
-                                                                    .child(
-                                                                        Icon::new(IconName::CircleCheck)
-                                                                            .size(crate::ui::design::icon())
-                                                                            .text_color(
-                                                                                crate::ui::design::t3(cx),
-                                                                            ),
-                                                                    )
-                                                                    .child(
-                                                                        div()
-                                                                            .min_w(px(0.))
-                                                                            .text_size(crate::ui::design::text_body())
-                                                                            .font_weight(
-                                                                                gpui::FontWeight::NORMAL,
-                                                                            )
-                                                                            .text_color(
-                                                                                crate::ui::design::t2(cx),
-                                                                            )
-                                                                            .truncate()
-                                                                            .child("My Tasks"),
-                                                                    )
-                                                                    .on_click(move |_, _, cx| {
-                                                                        center_for_my_tasks.update(
-                                                                            cx,
-                                                                            |center, cx| {
-                                                                                center.show_my_tasks(cx)
-                                                                            },
-                                                                        );
-                                                                    }),
-                                                            )
-                                                            .child(
-                                                                h_flex()
-                                                                    .id("left-sidebar-add-project")
-                                                                    .w_full()
-                                                                    .h(px(32.))
-                                                                    .px_3()
-                                                                    .gap_2()
-                                                                    .items_center()
-                                                                    .rounded(crate::ui::design::r_sm())
-                                                                    .cursor_pointer()
-                                                                    .hover(|row| {
-                                                                        row.bg(
-                                                                            crate::ui::design::surface(cx),
-                                                                        )
-                                                                    })
-                                                                    .tooltip(|window, cx| {
-                                                                        gpui_component::tooltip::Tooltip::new(
-                                                                            "Add project",
-                                                                        )
-                                                                        .build(window, cx)
-                                                                    })
-                                                                .child(
-                                                                    Icon::new(IconName::FolderOpen)
-                                                                        .size(crate::ui::design::icon())
-                                                                        .text_color(
-                                                                            crate::ui::design::t3(cx),
-                                                                        ),
-                                                                )
-                                                                .child(
-                                                                    div()
-                                                                        .min_w(px(0.))
-                                                                        .text_size(crate::ui::design::text_body())
-                                                                        .font_weight(
-                                                                            gpui::FontWeight::NORMAL,
-                                                                        )
-                                                                        .text_color(
-                                                                            crate::ui::design::t2(cx),
-                                                                        )
-                                                                        .truncate()
-                                                                        .child("Add Project"),
-                                                                )
-                                                                // The tour's final pointer targets this row; the
-                                                                // marker reports its bounds so it can be framed.
-                                                                .child(crate::ui::onboarding::target_marker(
-                                                                    crate::ui::onboarding::SpotlightTarget::AddProject,
-                                                                    cx,
-                                                                ))
-                                                                .on_click(move |_, _, cx| {
-                                                                    // Clicking Add Project is how the tour ends —
-                                                                    // one click both dismisses the pointer and opens
-                                                                    // the real add-project flow.
-                                                                    if crate::ui::onboarding::finishing_at_add_project(cx) {
-                                                                        crate::ui::onboarding::emit(
-                                                                            crate::ui::onboarding::OnboardingEvent::Exit,
-                                                                            cx,
-                                                                        );
-                                                                    }
-                                                                    project_workspace.update(cx, |workspace, cx| {
-                                                                        workspace.open_folder_dialog(cx)
-                                                                    });
-                                                                }),
-                                                            )
-                                                            .child(
-                                                                crate::ui::style::sidebar_navigation_row(
-                                                                    "left-sidebar-ask-history",
-                                                                    IconName::BookOpen,
-                                                                    "Ask History",
-                                                                    cx,
-                                                                )
-                                                                .tooltip(|window, cx| {
-                                                                    gpui_component::tooltip::Tooltip::new(
-                                                                        "Quick questions across all projects",
-                                                                    )
-                                                                    .build(window, cx)
-                                                                })
-                                                                .on_click(move |_, _, cx| {
-                                                                    ask_history_center.update(cx, |center, cx| {
-                                                                        center.show_quick_ask_history(cx)
-                                                                    });
-                                                                }),
-                                                            )
-                                                    })
+                                                    .child(self.left_sidebar_header(cx))
                                                     .child(
                                                         div()
                                                             .flex_1()
                                                             .min_h(px(0.))
                                                             .child(self.project_list.clone()),
-                                                    ),
+                                                    )
+                                                    .child(self.left_sidebar_footer(cx)),
                                             )
                                     })
                                     .child(crate::ui::onboarding::target_marker(
                                         crate::ui::onboarding::SpotlightTarget::ProjectSidebar,
                                         cx,
                                     ))
+                                    .when(self.show_left, |layout| {
+                                        layout.child(
+                                            self.resize_handle(SidebarResizeSide::Left, cx),
+                                        )
+                                    })
                                     .when(!self.show_left, |layout| layout.hidden()),
                             )
-                            .when(self.show_left, |layout| {
-                                layout.child(self.resize_handle(SidebarResizeSide::Left, cx))
-                            })
                             .child(
                                 v_flex()
                                     .relative()
@@ -1825,6 +1742,7 @@ impl Render for RootView {
                             .children(right_column)
                     ),
             )
+            .children(quick_ask_overlay)
             .when_some(self.render_title_branch_overlay(cx), |root, overlay| {
                 root.child(overlay)
             })
@@ -1848,6 +1766,38 @@ impl Render for RootView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_choices_are_independent_per_project_and_activity_and_reset_on_launch() {
+        let a = Some(ide_core::ProjectId::new());
+        let b = Some(ide_core::ProjectId::new());
+        let mut state = RightSidebarState::default();
+        assert!(!state.visible(a, ProjectActivity::Agents));
+        for activity in [
+            ProjectActivity::Code,
+            ProjectActivity::Tasks,
+            ProjectActivity::Docs,
+            ProjectActivity::Db,
+            ProjectActivity::Designs,
+            ProjectActivity::Services,
+        ] {
+            assert!(state.visible(a, activity));
+        }
+
+        state.toggle(a, ProjectActivity::Agents);
+        state.toggle(b, ProjectActivity::Code);
+        assert!(state.visible(a, ProjectActivity::Agents));
+        assert!(!state.visible(b, ProjectActivity::Agents));
+        assert!(state.visible(a, ProjectActivity::Code));
+        assert!(!state.visible(b, ProjectActivity::Code));
+        assert!(state.visible(b, ProjectActivity::Tasks));
+
+        state.toggle(a, ProjectActivity::Agents);
+        assert!(!state.visible(a, ProjectActivity::Agents));
+        state.toggle(a, ProjectActivity::Agents);
+        assert!(!RightSidebarState::default().visible(a, ProjectActivity::Agents));
+        assert!(RightSidebarState::default().visible(b, ProjectActivity::Code));
+    }
 
     #[test]
     fn focus_mode_hides_both_sidebars_and_restores_the_exact_layout() {

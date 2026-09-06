@@ -153,6 +153,12 @@ fn prepared_handoff_text(output: &str, original_text: &str) -> Option<String> {
     ))
 }
 
+fn resolved_handoff_text(generated: Option<&str>, original_text: &str) -> String {
+    generated
+        .and_then(|output| prepared_handoff_text(output, original_text))
+        .unwrap_or_else(|| original_text.to_string())
+}
+
 fn teammate_result_prompt(
     reply: &StoredAgentMessage,
     original: Option<&AgentMessageCard>,
@@ -739,6 +745,7 @@ impl CenterArea {
         original_text: String,
         request_kind: AgentRequestKind,
         input: Entity<InputState>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -783,12 +790,11 @@ impl CenterArea {
         );
         let generation_agent = self.workspace.read(cx).generation_agent.clone();
         let preparation_id = Uuid::new_v4();
-        self.agent_handoff_previews.remove(&source.id);
+        let window_handle = window.window_handle();
         self.agent_handoff_preparations_pending
             .insert(source.id, preparation_id);
         self.agent_start_errors.remove(&source.id);
         let source_agent_id = source.id;
-        let target_title = target.title.clone();
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -801,92 +807,53 @@ impl CenterArea {
                     )
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                let still_current = this
-                    .agent_handoff_preparations_pending
-                    .remove(&source_agent_id)
-                    .is_some_and(|pending| pending == preparation_id);
-                if !still_current
-                    || this
-                        .agent_chat_selected_agent_targets
-                        .get(&source_agent_id)
-                        .copied()
-                        != Some(target_agent_id)
-                    || this.current_composer_handoff_text(source_agent_id, &input, cx)
-                        != original_text
-                {
-                    return;
-                }
-                let (prepared_text, used_fallback) = match result {
-                    Ok(output) => prepared_handoff_text(&output, &original_text)
-                        .map(|prepared| (prepared, false))
-                        .unwrap_or_else(|| (original_text.clone(), true)),
-                    Err(error) => {
-                        eprintln!("could not prepare teammate handoff: {error:#}");
-                        (original_text.clone(), true)
-                    }
-                };
-                this.agent_handoff_previews.insert(
-                    source_agent_id,
-                    PreparedAgentHandoff {
-                        target_agent_id,
-                        target_title,
-                        original_text,
-                        prepared_text,
-                        request_kind,
-                        used_fallback,
-                    },
-                );
-                cx.notify();
-            })
-            .ok();
+            window_handle
+                .update(cx, |_, window, cx| {
+                    this.update(cx, |this, cx| {
+                        let still_current = this
+                            .agent_handoff_preparations_pending
+                            .get(&source_agent_id)
+                            .is_some_and(|pending| *pending == preparation_id);
+                        if !still_current {
+                            return;
+                        }
+                        this.agent_handoff_preparations_pending
+                            .remove(&source_agent_id);
+                        cx.notify();
+                        if this
+                            .agent_chat_selected_agent_targets
+                            .get(&source_agent_id)
+                            .copied()
+                            != Some(target_agent_id)
+                            || this.current_composer_handoff_text(source_agent_id, &input, cx)
+                                != original_text
+                        {
+                            return;
+                        }
+                        let prepared_text = match result {
+                            Ok(output) => resolved_handoff_text(Some(&output), &original_text),
+                            Err(error) => {
+                                eprintln!("could not prepare teammate handoff: {error:#}");
+                                resolved_handoff_text(None, &original_text)
+                            }
+                        };
+                        this.queue_composer_agent_message(
+                            source_agent_id,
+                            target_agent_id,
+                            prepared_text,
+                            original_text,
+                            explicit_references,
+                            request_kind,
+                            input,
+                            window,
+                            cx,
+                        );
+                    })
+                    .ok();
+                })
+                .ok();
         })
         .detach();
-    }
-
-    pub(super) fn send_prepared_agent_handoff(
-        &mut self,
-        source: &AgentRecord,
-        input: Entity<InputState>,
-        send_original: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(preview) = self.agent_handoff_previews.get(&source.id).cloned() else {
-            return;
-        };
-        if self.current_composer_handoff_text(source.id, &input, cx) != preview.original_text
-            || self
-                .agent_chat_selected_agent_targets
-                .get(&source.id)
-                .copied()
-                != Some(preview.target_agent_id)
-        {
-            self.agent_handoff_previews.remove(&source.id);
-            self.agent_start_errors.insert(
-                source.id,
-                "The request changed while its teammate brief was open. Review it and prepare again."
-                    .to_string(),
-            );
-            cx.notify();
-            return;
-        }
-        let composer_text = preview.original_text.clone();
-        let text = if send_original {
-            composer_text.clone()
-        } else {
-            preview.prepared_text
-        };
-        self.queue_composer_agent_message(
-            source.id,
-            preview.target_agent_id,
-            text,
-            composer_text,
-            preview.request_kind,
-            input,
-            window,
-            cx,
-        );
     }
 
     pub(super) fn queue_composer_agent_message(
@@ -895,6 +862,7 @@ impl CenterArea {
         target_agent_id: Uuid,
         text: String,
         composer_text: String,
+        composer_references: String,
         request_kind: AgentRequestKind,
         input: Entity<InputState>,
         window: &mut Window,
@@ -954,18 +922,23 @@ impl CenterArea {
                             Ok(message) => {
                                 this.agent_start_errors.remove(&source_agent_id);
                                 let composer_is_unchanged = this
-                                    .agent_handoff_previews
+                                    .agent_chat_selected_agent_targets
                                     .get(&source_agent_id)
-                                    .is_some_and(|preview| {
-                                        preview.target_agent_id == target_agent_id
-                                            && preview.original_text == composer_text
-                                            && preview.request_kind == request_kind
-                                    })
+                                    .copied()
+                                    == Some(target_agent_id)
                                     && this.current_composer_handoff_text(
                                         source_agent_id,
                                         &input,
                                         cx,
-                                    ) == composer_text;
+                                    ) == composer_text
+                                    && this.explicit_handoff_references(source_agent_id)
+                                        == composer_references
+                                    && this
+                                        .agent_chat_agent_request_kind_overrides
+                                        .get(&source_agent_id)
+                                        .copied()
+                                        .unwrap_or_else(|| classify_agent_request(&composer_text))
+                                        == request_kind;
                                 if composer_is_unchanged {
                                     input.update(cx, |input, cx| {
                                         input.set_value("", window, cx)
@@ -979,7 +952,6 @@ impl CenterArea {
                                     this.agent_chat_agent_request_kind_overrides
                                         .remove(&source_agent_id);
                                     this.agent_chat_preview_armed.remove(&source_agent_id);
-                                    this.agent_handoff_previews.remove(&source_agent_id);
                                 }
                                 this.agents.update(cx, |agents, cx| {
                                     agents.update_status(
@@ -1037,140 +1009,10 @@ impl CenterArea {
         .detach();
     }
 
-    pub(super) fn render_agent_handoff_preview(
-        &self,
-        source: &AgentRecord,
-        input: Entity<InputState>,
-        preview: &PreparedAgentHandoff,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let source_for_send = source.clone();
-        let input_for_send = input.clone();
-        let source_for_original = source.clone();
-        let input_for_original = input.clone();
-        let source_agent_id = source.id;
-        let target_title = preview.target_title.clone();
-        v_flex()
-            .w_full()
-            .min_w(px(0.))
-            .gap_2()
-            .pt_2()
-            .border_t_1()
-            .border_color(crate::ui::design::line(cx).opacity(0.42))
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w(px(0.))
-                    .gap_1p5()
-                    .items_center()
-                    .child(crate::ui::design::indicator::lucide_icon(
-                        lucide_icons::Icon::Sparkles,
-                        crate::ui::design::sky(cx),
-                        crate::ui::design::icon_sm(),
-                    ))
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_size(crate::ui::design::text_ui())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t1(cx))
-                            .child(if preview.used_fallback {
-                                format!("Send original note to {target_title}")
-                            } else {
-                                format!("Prepared for {target_title}")
-                            }),
-                    )
-                    .child(div().flex_1())
-                    .when(preview.used_fallback, |row| {
-                        row.child(
-                            div()
-                                .text_size(crate::ui::design::text_label())
-                                .text_color(crate::ui::design::amber(cx))
-                                .child("Context preparation unavailable"),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .min_w(px(0.))
-                    .max_h(px(180.))
-                    .overflow_y_scrollbar()
-                    .pr_1()
-                    .child(
-                        TextView::markdown(
-                            ("agent-handoff-preview", source.id.as_u128() as u64),
-                            preview.prepared_text.clone(),
-                            window,
-                            cx,
-                        )
-                        .selectable(true)
-                        .style(chat_message_text_style()),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        crate::ui::style::ghost_button_compact(
-                            ("agent-handoff-edit", source.id.as_u128() as u64),
-                            "Edit request",
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.agent_handoff_previews.remove(&source_agent_id);
-                                input.update(cx, |input, cx| input.focus(window, cx));
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .when(!preview.used_fallback, |row| {
-                        row.child(
-                            crate::ui::style::secondary_button_compact(
-                                ("agent-handoff-send-original", source.id.as_u128() as u64),
-                                "Send original",
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.send_prepared_agent_handoff(
-                                        &source_for_original,
-                                        input_for_original.clone(),
-                                        true,
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            )),
-                        )
-                    })
-                    .child(
-                        crate::ui::style::primary_button_compact(
-                            ("agent-handoff-confirm", source.id.as_u128() as u64),
-                            if preview.used_fallback {
-                                format!("Send to {target_title}")
-                            } else {
-                                format!("Send handoff to {target_title}")
-                            },
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.send_prepared_agent_handoff(
-                                    &source_for_send,
-                                    input_for_send.clone(),
-                                    false,
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    ),
-            )
-            .into_any_element()
+    pub(super) fn agent_handoff_busy(&self, agent_id: Uuid) -> bool {
+        self.agent_handoff_preparations_pending
+            .contains_key(&agent_id)
+            || self.agent_handoff_sends_pending.contains_key(&agent_id)
     }
 
     pub(super) fn render_agent_handoff_status(
@@ -1181,24 +1023,18 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         h_flex()
             .w_full()
+            .min_w(px(0.))
+            .min_h(crate::ui::design::composer_input_min_h())
             .gap_1p5()
             .items_center()
             .text_size(crate::ui::design::text_ui())
             .text_color(crate::ui::design::t3(cx))
-            .child(crate::ui::design::indicator::lucide_icon(
-                if sending {
-                    lucide_icons::Icon::Send
-                } else {
-                    lucide_icons::Icon::Sparkles
-                },
-                crate::ui::design::sky(cx),
-                crate::ui::design::icon_sm(),
-            ))
-            .child(if sending {
-                format!("Sending the approved handoff to {target_title}…")
+            .child(gpui_component::spinner::Spinner::new().xsmall())
+            .child(div().min_w(px(0.)).truncate().child(if sending {
+                format!("Sending to {target_title}…")
             } else {
-                format!("Preparing relevant context for {target_title}…")
-            })
+                format!("Preparing for {target_title}…")
+            }))
             .into_any_element()
     }
 
@@ -1484,6 +1320,7 @@ impl CenterArea {
 
     pub(super) fn render_agent_message_card(
         &self,
+        agent_id: Uuid,
         card: &AgentMessageCard,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1496,6 +1333,18 @@ impl CenterArea {
         let heading = agent_message_heading(&card.kind, outgoing);
         let tooltip = SharedString::from(format!("Open {participant_title}"));
         let copy_text = card.text.clone();
+        let expansion_key = (agent_id, card.id);
+        let expanded = self.agent_message_cards_expanded.contains(&expansion_key);
+        let preview = card
+            .text
+            .rsplit_once("**Original note from the user**")
+            .map(|(_, note)| note)
+            .unwrap_or(&card.text)
+            .lines()
+            .map(|line| line.trim().trim_start_matches('>').trim())
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .unwrap_or("View message")
+            .to_string();
         crate::ui::style::chat_card(cx)
             .child(
                 crate::ui::style::chat_card_head(cx)
@@ -1520,6 +1369,19 @@ impl CenterArea {
                     )
                     .child(div().flex_1())
                     .child(
+                        crate::ui::style::ghost_button_compact(
+                            ("expand-brain-agent-message", card.id.as_u128() as u64),
+                            if expanded { "Collapse" } else { "Expand" },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.agent_message_cards_expanded.remove(&expansion_key) {
+                                this.agent_message_cards_expanded.insert(expansion_key);
+                            }
+                            this.remeasure_agent_chat_list(agent_id);
+                            cx.notify();
+                        })),
+                    )
+                    .child(
                         crate::ui::style::header_icon_button(
                             ("copy-brain-agent-message", card.id.as_u128() as u64),
                             IconName::Copy,
@@ -1531,26 +1393,41 @@ impl CenterArea {
                         }),
                     ),
             )
-            .child(
-                div()
-                    .w_full()
-                    .min_w(px(0.))
-                    .px_3()
-                    .py_2()
-                    .text_size(crate::ui::design::text_ui())
-                    .line_height(gpui::relative(1.4))
-                    .text_color(crate::ui::design::t2(cx))
-                    .child(
-                        TextView::markdown(
-                            ("brain-agent-message-text", card.id.as_u128() as u64),
-                            card.text.clone(),
-                            window,
-                            cx,
-                        )
-                        .selectable(true)
-                        .style(chat_message_text_style()),
-                    ),
-            )
+            .when(!expanded, |view| {
+                view.child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.))
+                        .px_3()
+                        .py_2()
+                        .text_size(crate::ui::design::text_ui())
+                        .text_color(crate::ui::design::t2(cx))
+                        .truncate()
+                        .child(preview),
+                )
+            })
+            .when(expanded, |view| {
+                view.child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.))
+                        .px_3()
+                        .py_2()
+                        .text_size(crate::ui::design::text_ui())
+                        .line_height(gpui::relative(1.4))
+                        .text_color(crate::ui::design::t2(cx))
+                        .child(
+                            TextView::markdown(
+                                ("brain-agent-message-text", card.id.as_u128() as u64),
+                                card.text.clone(),
+                                window,
+                                cx,
+                            )
+                            .selectable(true)
+                            .style(chat_message_text_style()),
+                        ),
+                )
+            })
             .into_any_element()
     }
 }
@@ -1786,6 +1663,14 @@ mod tests {
         assert!(prepared.contains("> ask him if auth is safe"));
         assert!(prepared.chars().count() <= MAX_AGENT_MESSAGE_CHARS);
         assert_eq!(prepared_handoff_text("```\n```", "anything"), None);
+        assert_eq!(
+            resolved_handoff_text(None, "send this exactly"),
+            "send this exactly"
+        );
+        assert_eq!(
+            resolved_handoff_text(Some("```\n```"), "fallback note"),
+            "fallback note"
+        );
     }
 
     #[test]

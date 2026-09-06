@@ -26,6 +26,7 @@ impl CenterArea {
         let _slow_operation = crate::ui::performance::UiOperationTimer::start("agent_chat.render");
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
+        let searchable = matches!(&surface, AgentChatSurface::Standard);
         let compact_design_surface = surface.is_design();
         let compact_assistant_controls = surface.is_document();
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
@@ -126,11 +127,11 @@ impl CenterArea {
             .agent_chat_selected_agent_targets
             .get(&agent.id)
             .and_then(|target_id| self.agents.read(cx).agent(*target_id).cloned());
-        let handoff_preview = self.agent_handoff_previews.get(&agent.id).cloned();
         let handoff_preparing = self
             .agent_handoff_preparations_pending
             .contains_key(&agent.id);
         let handoff_sending = self.agent_handoff_sends_pending.contains_key(&agent.id);
+        let handoff_busy = handoff_preparing || handoff_sending;
         let pending_attachment_count = self
             .agent_chat_attachment_pastes_pending
             .get(&agent.id)
@@ -280,6 +281,20 @@ impl CenterArea {
             &row_fingerprints,
             cx,
         );
+        if searchable {
+            self.reconcile_agent_chat_search_navigation(
+                agent,
+                &session,
+                &rows,
+                &display_order,
+                &list_state,
+                top_down,
+                cx,
+            );
+        }
+        let search_bar = searchable
+            .then(|| self.render_agent_chat_search(agent.id, cx))
+            .flatten();
         let list_agent = agent.clone();
         let list_session = session.clone();
         let scrolled_up = !is_hydrating
@@ -299,7 +314,7 @@ impl CenterArea {
             )
         });
 
-        v_flex()
+        let chat = v_flex()
             .size_full()
             .min_w(px(0.))
             .bg(crate::ui::design::base(cx))
@@ -319,38 +334,47 @@ impl CenterArea {
             }))
             .when(top_down, |layout| layout.flex_col_reverse())
             .child(
-                div()
-                    .relative()
+                v_flex()
                     .flex_1()
                     .w_full()
                     .min_w(px(0.))
                     .min_h(px(0.))
                     .overflow_hidden()
-                    .child(if is_hydrating {
-                        self.render_agent_chat_resume_loader(agent, cx)
-                    } else if is_resume_only {
-                        self.render_agent_resume_saved_session(agent, cx)
-                    } else {
-                        list(
-                            list_state,
-                            cx.processor(move |this, index: usize, window, cx| {
-                                let source_index =
-                                    display_order.get(index).copied().unwrap_or(index);
-                                this.render_agent_chat_list_row(
-                                    &list_agent,
-                                    &list_session,
-                                    index,
-                                    rows.get(source_index).copied(),
-                                    window,
-                                    cx,
+                    .when_some(search_bar, |area, search_bar| area.child(search_bar))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .w_full()
+                            .min_w(px(0.))
+                            .min_h(px(0.))
+                            .overflow_hidden()
+                            .child(if is_hydrating {
+                                self.render_agent_chat_resume_loader(agent, cx)
+                            } else if is_resume_only {
+                                self.render_agent_resume_saved_session(agent, cx)
+                            } else {
+                                list(
+                                    list_state,
+                                    cx.processor(move |this, index: usize, window, cx| {
+                                        let source_index =
+                                            display_order.get(index).copied().unwrap_or(index);
+                                        this.render_agent_chat_list_row(
+                                            &list_agent,
+                                            &list_session,
+                                            index,
+                                            rows.get(source_index).copied(),
+                                            window,
+                                            cx,
+                                        )
+                                    }),
                                 )
-                            }),
+                                .size_full()
+                                .py_5()
+                                .into_any_element()
+                            })
+                            .when_some(scroll_button, |area, button| area.child(button)),
                         )
-                        .size_full()
-                        .py_5()
-                        .into_any_element()
-                    })
-                    .when_some(scroll_button, |area, button| area.child(button)),
             )
             .child(
                 v_flex()
@@ -421,6 +445,10 @@ impl CenterArea {
                             .capture_action(cx.listener({
                                 let agent = agent.clone();
                                 move |this, _: &MoveDown, _window, cx| {
+                                    if this.agent_handoff_busy(agent.id) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if this.move_agent_chat_context_picker(&agent, 1, cx) {
                                         cx.stop_propagation();
                                     }
@@ -429,6 +457,10 @@ impl CenterArea {
                             .capture_action(cx.listener({
                                 let agent = agent.clone();
                                 move |this, _: &MoveUp, _window, cx| {
+                                    if this.agent_handoff_busy(agent.id) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if this.move_agent_chat_context_picker(&agent, -1, cx) {
                                         cx.stop_propagation();
                                     }
@@ -437,6 +469,10 @@ impl CenterArea {
                             .capture_action(cx.listener({
                                 let agent = agent.clone();
                                 move |this, _: &Escape, _window, cx| {
+                                    if this.agent_handoff_busy(agent.id) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if this.dismiss_agent_chat_context_picker(&agent, cx) {
                                         cx.stop_propagation();
                                         return;
@@ -466,6 +502,10 @@ impl CenterArea {
                                 let agent = agent.clone();
                                 let input = input.clone();
                                 move |this, _: &IndentInline, window, cx| {
+                                    if this.agent_handoff_busy(agent.id) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if this.accept_agent_chat_context_picker(
                                         &agent,
                                         input.clone(),
@@ -481,6 +521,10 @@ impl CenterArea {
                                 let input = input.clone();
                                 let surface = surface.clone();
                                 move |this, action: &Enter, window, cx| {
+                                    if this.agent_handoff_busy(agent.id) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if window.modifiers().shift {
                                         cx.stop_propagation();
                                         input.update(cx, |input, cx| {
@@ -582,6 +626,10 @@ impl CenterArea {
                             .capture_action(cx.listener({
                                 let agent = agent.clone();
                                 move |this, _: &Paste, _window, cx| {
+                                    if this.agent_handoff_busy(agent.id) {
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if this.paste_image_into_agent_chat(&agent, false, cx)
                                         || this.paste_long_text_into_agent_chat(agent.id, cx)
                                     {
@@ -633,7 +681,15 @@ impl CenterArea {
                                     ))
                                 },
                             )
-                            .when(!has_composer_decision, |card| {
+                            .when(handoff_busy, |card| {
+                                card.child(self.render_agent_handoff_status(
+                                    selected_agent_target.as_ref().map(|target| target.title.as_str())
+                                        .unwrap_or("teammate"),
+                                    handoff_sending,
+                                    cx,
+                                ))
+                            })
+                            .when(!has_composer_decision && !handoff_busy, |card| {
                                 let picker =
                                     self.render_agent_chat_context_picker(agent, input.clone(), window, cx);
                                 card.when_some(picker, |card, picker| {
@@ -656,37 +712,13 @@ impl CenterArea {
                                     )
                                 })
                             })
-                            .when(!has_composer_decision, |card| {
+                            .when(!has_composer_decision && !handoff_busy, |card| {
                                 card.child(
                                     v_flex()
                                         .w_full()
                                         .min_w(px(0.))
                                         .min_h(crate::ui::design::composer_input_min_h())
                                         .gap_2()
-                                        .when_some(handoff_preview.as_ref(), |col, preview| {
-                                            col.child(self.render_agent_handoff_preview(
-                                                agent,
-                                                input.clone(),
-                                                preview,
-                                                window,
-                                                cx,
-                                            ))
-                                        })
-                                        .when(
-                                            handoff_preparing || handoff_sending,
-                                            |col| {
-                                                col.when_some(
-                                                    selected_agent_target.as_ref(),
-                                                    |col, target| {
-                                                        col.child(self.render_agent_handoff_status(
-                                                            &target.title,
-                                                            handoff_sending,
-                                                            cx,
-                                                        ))
-                                                    },
-                                                )
-                                            },
-                                        )
                                         .when(has_pasted_text_blocks, |col| {
                                             col.child(
                                                 v_flex()
@@ -765,12 +797,15 @@ impl CenterArea {
                                         .child(
                                             div().flex_1().min_h(px(0.)).child(
                                                 crate::ui::style::composer_text_input(&input)
+                                                    .disabled(
+                                                        handoff_preparing || handoff_sending,
+                                                    )
                                                     .h_full(),
                                             ),
                                         ),
                                 )
                             })
-                            .when(!has_composer_decision, |card| card.child(
+                            .when(!has_composer_decision && !handoff_busy, |card| card.child(
                                 h_flex()
                                     .w_full()
                                     .min_w(px(0.))
@@ -1311,8 +1346,14 @@ impl CenterArea {
                                     ),
                             )),
                     ),
-            )
-            .into_any_element()
+            );
+
+        if searchable {
+            self.bind_agent_chat_search_actions(chat, agent.id, cx)
+                .into_any_element()
+        } else {
+            chat.into_any_element()
+        }
     }
 }
 

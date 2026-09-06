@@ -291,7 +291,9 @@ fn render_section_header(
     h_flex()
         .h(crate::ui::design::git_status_row_h())
         .w_full()
-        .px_2()
+        // List container carries an 8px inset; +6px here lands the label on
+        // the panel header's 14px identity line.
+        .px(px(6.))
         .items_center()
         .child(
             div()
@@ -328,8 +330,10 @@ fn render_folder_row(
         .id(row_id)
         .h(crate::ui::design::git_status_row_h())
         .w_full()
-        .mx_1()
-        .pl(px(8. + depth as f32 * 14.))
+        // The list container carries the 8px pill inset (margins on w_full
+        // rows are not honored inside the list); +6px lead lands the content
+        // on the panel header's 14px identity line.
+        .pl(px(6. + depth as f32 * 14.))
         .pr_2()
         .gap_1()
         .items_center()
@@ -415,8 +419,10 @@ fn render_file_row(
         .group("git-status-file-row")
         .h(crate::ui::design::git_status_row_h())
         .w_full()
-        .mx_1()
-        .pl(px(8. + depth as f32 * 14.))
+        // The list container carries the 8px pill inset (margins on w_full
+        // rows are not honored inside the list); +6px lead lands the content
+        // on the panel header's 14px identity line.
+        .pl(px(6. + depth as f32 * 14.))
         .pr_2()
         .gap_2()
         .items_center()
@@ -445,18 +451,24 @@ fn render_file_row(
         .child({
             let toggle_git = git.clone();
             let toggle_path = entry.path.clone();
-            crate::ui::design::indicator::status_checkbox(checkbox_id, staged, color, soft_color)
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    let path = toggle_path.clone();
-                    toggle_git.update(cx, |git, cx| {
-                        if staged {
-                            git.unstage(path, cx);
-                        } else {
-                            git.stage(path, cx);
-                        }
-                    });
-                })
+            crate::ui::design::indicator::status_checkbox(
+                checkbox_id,
+                staged,
+                color,
+                soft_color,
+                crate::ui::design::t4(cx),
+            )
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let path = toggle_path.clone();
+                toggle_git.update(cx, |git, cx| {
+                    if staged {
+                        git.unstage(path, cx);
+                    } else {
+                        git.stage(path, cx);
+                    }
+                });
+            })
         })
         .child(
             div()

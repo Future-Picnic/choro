@@ -452,7 +452,8 @@ impl Render for DesignsPanel {
                                 )
                             }),
                         )
-                    }),
+                    })
+                    .child(style::right_sidebar_toggle(true, false, cx)),
             )
             .when_some(self.error.clone(), |panel, error| {
                 panel.child(
