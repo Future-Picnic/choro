@@ -24,8 +24,13 @@ mod agent_chat_visualization;
 mod agent_chat_work_log;
 mod agent_composer_picker;
 mod agent_helpers;
+mod agent_hover_card;
 mod agent_lane;
 mod agent_launcher;
+mod experts;
+mod experts_cards;
+mod experts_dialogs;
+use ide_core::local_store::LocalStore;
 mod agent_naming;
 mod agent_panel;
 pub(crate) mod attachment_helpers;
@@ -303,6 +308,7 @@ struct PastedTextBlock {
 }
 
 struct NewAgentComposer {
+    expert_snapshot: Option<ide_core::experts::ExpertSnapshot>,
     id: Uuid,
     project: ProjectId,
     /// `None` means the whole opened workspace. A Solo always resolves this to
@@ -431,6 +437,10 @@ fn should_defer_agent_chat_submission_for_resume(
 #[derive(Clone, Debug)]
 enum AgentChatSurface {
     Standard,
+    Delegated {
+        parent: Uuid,
+        task: Uuid,
+    },
     Document {
         project: ProjectId,
         relative_doc_path: PathBuf,
@@ -483,8 +493,12 @@ impl AgentChatSurface {
         matches!(self, Self::Design { .. })
     }
 
-    fn allows_plan_mode(&self) -> bool {
+    fn allows_plan_mode(&self, agent: &AgentRecord) -> bool {
         matches!(self, Self::Standard)
+            && agent
+                .delegation
+                .as_ref()
+                .is_none_or(|binding| binding.task_id.is_none())
     }
 
     fn allows_project_actions(&self) -> bool {
@@ -492,11 +506,12 @@ impl AgentChatSurface {
     }
 
     fn shows_changed_files(&self) -> bool {
-        matches!(self, Self::Standard)
+        matches!(self, Self::Standard | Self::Delegated { .. })
     }
 
     fn input_placeholder(&self) -> &'static str {
         match self {
+            Self::Delegated { .. } => "Correct this bandmate’s assignment — messages are queued",
             Self::Standard => {
                 "Ask your agent — / commands, @ files & folders, @@ docs, # agents, ## projects"
             }
@@ -799,7 +814,9 @@ fn composer_message_tags(
             AgentCapabilitySource::ChoroRiff => AgentChatMessageTagKind::Riff,
             AgentCapabilitySource::Skill => AgentChatMessageTagKind::Skill,
             AgentCapabilitySource::Command => AgentChatMessageTagKind::Command,
-            AgentCapabilitySource::Legacy => AgentChatMessageTagKind::Command,
+            AgentCapabilitySource::Legacy
+            | AgentCapabilitySource::Expert
+            | AgentCapabilitySource::Delegate => AgentChatMessageTagKind::Command,
         };
         tags.push(AgentChatMessageTag {
             kind,
@@ -865,6 +882,8 @@ enum ChoroPreviewIntent {
 
 fn choro_preview_capability(provider: AgentKind) -> AgentCapability {
     AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider,
         source: AgentCapabilitySource::Preview,
         name: "preview".to_string(),
@@ -879,6 +898,8 @@ fn choro_preview_capability(provider: AgentKind) -> AgentCapability {
 
 fn orbit_module_capability(provider: AgentKind, module: &OrbitModuleDefinition) -> AgentCapability {
     AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider,
         source: AgentCapabilitySource::Orbit,
         name: module.name.clone(),
@@ -1903,6 +1924,12 @@ struct ProjectPreviewNavigationBarrier {
 /// Center panel: preset run buttons on top, then an editors section (open
 /// files) and a separate terminals section below it.
 pub struct CenterArea {
+    delegation_selection: HashMap<Uuid, Option<Uuid>>,
+    delegated_panel: Option<Uuid>,
+    delegated_overview: Option<Uuid>,
+    delegated_preview: bool,
+    /// Assignments whose full brief is disclosed in the Expert panel.
+    delegated_brief_expanded: HashSet<Uuid>,
     workspace: Entity<Workspace>,
     quick_ask: Entity<QuickAskState>,
     quick_ask_selected_session: Option<Uuid>,
@@ -2275,6 +2302,7 @@ pub struct CenterArea {
     composer_model_expanded: bool,
     /// Provider rail filter inside the model picker; `None` lists every provider.
     composer_model_provider: Option<AgentKind>,
+    composer_model_favorites_only: bool,
     open_code_catalog: OpenCodeCatalog,
     // When the new-agent control rail is too narrow to fit every labeled
     // button, it collapses the icon-bearing controls to icon-only (Codex-style)

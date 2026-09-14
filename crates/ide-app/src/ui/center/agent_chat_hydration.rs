@@ -374,6 +374,7 @@ impl CenterArea {
             chat_session_id: agent.chat_session_id.clone(),
             cli_session_id: agent.cli_session_id.clone(),
             hidden_from_notifications: agent.hidden_doc_assistant,
+            is_compacting: false,
             status: AgentChatStatus::Idle,
             interaction_mode: AgentInteractionMode::Default,
             composer_text: String::new(),
@@ -789,46 +790,7 @@ impl CenterArea {
         _agent: &AgentRecord,
         timeline: Vec<AgentChatTimelineItem>,
     ) {
-        let mut messages = Vec::new();
-        let mut work_log = Vec::new();
-        let mut pending_user_input = None;
-        // The chat ledger is rebuilt exclusively from persisted per-turn
-        // receipts. `agent.changed_files` is a project/worktree cache and can
-        // contain paths produced by another concurrent chat.
-        let mut changed_files = crate::state::agent_chat::ChangedFilesSummary::default();
-        for item in &timeline {
-            match item {
-                AgentChatTimelineItem::Message(message) => messages.push(message.clone()),
-                AgentChatTimelineItem::WorkLog(entry) => work_log.push(entry.clone()),
-                AgentChatTimelineItem::FileChangeActivity(_) => {}
-                AgentChatTimelineItem::PendingUserInput(pending) => {
-                    pending_user_input = Some(pending.clone());
-                }
-                AgentChatTimelineItem::ProposedPlan(_) => {}
-                AgentChatTimelineItem::ChangedFiles(summary) => changed_files.merge_turn(summary),
-                AgentChatTimelineItem::CodeReview(_) => {}
-                AgentChatTimelineItem::Verification(_) => {}
-                AgentChatTimelineItem::ReviewChecklist(_) => {}
-                AgentChatTimelineItem::ShipResult(_) => {}
-                AgentChatTimelineItem::Rejoined(_) => {}
-                AgentChatTimelineItem::RejoinConflict(_) => {}
-                AgentChatTimelineItem::Memorized(_) => {}
-                AgentChatTimelineItem::MemoryProposal(_) => {}
-                AgentChatTimelineItem::OrbitUpdate(_) => {}
-                AgentChatTimelineItem::AgentSummary(_) => {}
-                AgentChatTimelineItem::AgentMessage(_) => {}
-            }
-        }
-        changed_files = prefer_newest_hydrated_file_ledger(
-            changed_files,
-            crate::state::agent_chat::load_persisted_file_ledger(session.agent_id),
-        );
-        session.messages = messages;
-        session.work_log = work_log;
-        session.pending_user_input = pending_user_input;
-        session.proposed_plan = None;
-        session.changed_files = changed_files;
-        session.timeline = timeline;
+        crate::state::chat_dispatch::hydrate(session, timeline);
     }
 
     pub(super) fn start_chat_agent_in_mode(
@@ -862,7 +824,7 @@ impl CenterArea {
                     created_at: unix_now_secs(),
                 });
             }
-            session.status = AgentChatStatus::Idle;
+            session.set_status(AgentChatStatus::Idle);
             needs_hydration
         });
         self.agent_chat_selected_commands.remove(&agent_id);

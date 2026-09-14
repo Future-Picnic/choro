@@ -1,5 +1,19 @@
 use super::*;
 
+/// Native WebKit children sit above GPUI's popovers. Preserve the live editor
+/// but hide its native view for the menu's lifetime, including dismissal by
+/// Escape, outside click, or navigation away from the document.
+fn suspend_doc_webview_for_menu(
+    host: Entity<web_preview::WebPreviewHost>,
+    cx: &mut Context<gpui_component::menu::PopupMenu>,
+) {
+    host.update(cx, |host, _| host.set_overlay_suspended(true));
+    cx.on_release(move |_, cx| {
+        host.update(cx, |host, _| host.set_overlay_suspended(false));
+    })
+    .detach();
+}
+
 impl CenterArea {
     pub(super) fn render_docs_section(
         &mut self,
@@ -156,7 +170,9 @@ impl CenterArea {
                 let relative = doc.relative_path.clone();
                 let current_label = current_label.clone();
                 let label_options = label_options.clone();
+                let web_host = self.web_host.clone();
                 move |mut menu, window, cx| {
+                    suspend_doc_webview_for_menu(web_host.clone(), cx);
                     let query = input.read(cx).value().to_string();
                     let clean_query = clean_doc_label(&query);
                     menu = menu.item(PopupMenuItem::element({
@@ -270,7 +286,9 @@ impl CenterArea {
             .dropdown_menu({
                 let center = cx.entity().clone();
                 let relative = doc.relative_path.clone();
-                move |mut menu, window, _| {
+                let web_host = self.web_host.clone();
+                move |mut menu, window, cx| {
+                    suspend_doc_webview_for_menu(web_host.clone(), cx);
                     for status in AgentStatus::ALL {
                         let relative = relative.clone();
                         menu = menu.item(
@@ -279,11 +297,18 @@ impl CenterArea {
                                 .on_click(window.listener_for(
                                     &center,
                                     move |this: &mut Self, _, _, cx| {
-                                        if let Err(error) = this.docs.update(cx, |docs, cx| {
-                                            docs.set_doc_status(project, &relative, status, cx)
-                                        }) {
-                                            eprintln!("failed to set doc status: {error:#}");
-                                        }
+                                        this.doc_action_error = this
+                                            .docs
+                                            .update(cx, |docs, cx| {
+                                                docs.set_doc_status(project, &relative, status, cx)
+                                            })
+                                            .err()
+                                            .map(|error| {
+                                                format!(
+                                                    "Could not change document status: {error:#}"
+                                                )
+                                            });
+                                        cx.notify();
                                     },
                                 )),
                         );
@@ -332,13 +357,7 @@ impl CenterArea {
                 ))
                 .tooltip("Implementation agents")
                 .dropdown_menu(move |mut menu, window, menu_cx| {
-                    web_host.update(menu_cx, |host, _| host.set_overlay_suspended(true));
-                    let host_after_menu = web_host.clone();
-                    menu_cx
-                        .on_release(move |_, cx| {
-                            host_after_menu.update(cx, |host, _| host.set_overlay_suspended(false));
-                        })
-                        .detach();
+                    suspend_doc_webview_for_menu(web_host.clone(), menu_cx);
                     for (index, implementation) in history.iter().cloned().enumerate() {
                         let implementation_id = implementation.id;
                         menu = menu.item(

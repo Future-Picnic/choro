@@ -683,7 +683,16 @@ impl CenterArea {
         let agent_id = command.request.agent_id;
         let action = command.request.action.clone();
         let payload_json = command.request.payload_json.clone();
-        if !self.is_project_preview_open(project_id) {
+        let expert_owner = self
+            .delegated_panel
+            .filter(|_| self.delegated_preview)
+            .filter(|id| {
+                self.agents
+                    .read(cx)
+                    .agent(*id)
+                    .is_some_and(|a| a.project_id == project_id)
+            });
+        if !self.is_project_preview_open(project_id) && expert_owner.is_none() {
             self.fail_project_preview_control_command(
                 command_id,
                 project_id,
@@ -692,7 +701,9 @@ impl CenterArea {
             );
             return;
         }
-        let selected_agent = self.agents.read(cx).selected_agent(project_id);
+        let selected_agent = expert_owner
+            .and_then(|id| self.agents.read(cx).agent(id).cloned())
+            .or_else(|| self.agents.read(cx).selected_agent(project_id));
         if selected_agent.as_ref().map(|agent| agent.id) != Some(agent_id) {
             self.fail_project_preview_control_command(
                 command_id,
@@ -702,7 +713,25 @@ impl CenterArea {
             );
             return;
         }
-        let Some(choice) = self.active_project_preview_choice(project_id, cx) else {
+        let expert_choice = expert_owner.and_then(|id| {
+            let a = self.agents.read(cx).agent(id)?;
+            let b = a.delegation.as_ref()?;
+            let run = self
+                .delegation_runs(b.parent_agent_id, cx)
+                .into_iter()
+                .find(|r| r.id == b.run_id)?;
+            let p = run.task(b.task_id?).ok()?.preview.as_ref()?;
+            Some(PreviewChoice {
+                label: p.title.clone(),
+                url: p.url.clone(),
+                revision: p.revision,
+                running: true,
+                scope: PreviewScope::Project,
+            })
+        });
+        let Some(choice) =
+            expert_choice.or_else(|| self.active_project_preview_choice(project_id, cx))
+        else {
             self.fail_project_preview_control_command(
                 command_id,
                 project_id,
@@ -737,7 +766,12 @@ impl CenterArea {
             );
             return;
         };
-        let control_root = if choice.solo_owner().is_some() {
+        let control_root = if let Some(agent) = selected_agent
+            .as_ref()
+            .filter(|a| a.delegation.as_ref().is_some_and(|b| b.task_id.is_some()))
+        {
+            agent.runtime_path().to_path_buf()
+        } else if choice.solo_owner().is_some() {
             let Some(lane_path) = selected_agent
                 .as_ref()
                 .and_then(|agent| agent.lane_path.clone())

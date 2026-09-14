@@ -93,6 +93,12 @@ impl AgentRecords {
         agents::agents_for_project(&self.records, project)
             .into_iter()
             .filter(|agent| {
+                agent
+                    .delegation
+                    .as_ref()
+                    .is_none_or(|b| b.task_id.is_none())
+            })
+            .filter(|agent| {
                 !agent
                     .origin
                     .as_ref()
@@ -131,10 +137,14 @@ impl AgentRecords {
                 agents::agents_for_project(&self.records, project)
                     .into_iter()
                     .find(|agent| {
-                        !agent
-                            .origin
+                        agent
+                            .delegation
                             .as_ref()
-                            .is_some_and(ide_core::AgentOrigin::is_pocketcomet_chat)
+                            .is_none_or(|b| b.task_id.is_none())
+                            && !agent
+                                .origin
+                                .as_ref()
+                                .is_some_and(ide_core::AgentOrigin::is_pocketcomet_chat)
                     })
                     .map(|agent| agent.id)
             })
@@ -168,6 +178,18 @@ impl AgentRecords {
 
     pub fn agent(&self, id: Uuid) -> Option<&AgentRecord> {
         self.records.iter().find(|agent| agent.id == id)
+    }
+
+    /// The authoritative record owner adopts managed chats without selecting them.
+    pub(crate) fn adopt_managed(&mut self, agent: AgentRecord, cx: &mut Context<Self>) {
+        if let Some(current) = self.records.iter_mut().find(|a| a.id == agent.id) {
+            apply_managed_configuration(current, agent);
+        } else {
+            self.records.push(agent);
+        }
+        self.schedule_save(cx);
+        cx.emit(AgentRecordsEvent::Changed);
+        cx.notify();
     }
 
     pub fn active_doc_implementor(
@@ -924,6 +946,20 @@ fn move_doc_mentions(prompt: &str, previous: &std::path::Path, next: &std::path:
     prompt.replace(&previous, &next)
 }
 
+/// Background preparation owns assignment configuration, not a user's live
+/// title, links, session IDs, access choice, or change attribution.
+fn apply_managed_configuration(current: &mut AgentRecord, prepared: AgentRecord) {
+    if prepared
+        .delegation
+        .as_ref()
+        .is_some_and(|binding| binding.task_id.is_some())
+    {
+        current.expert_snapshot = prepared.expert_snapshot;
+        current.doc = prepared.doc;
+    }
+    current.delegation = prepared.delegation;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,6 +974,50 @@ mod tests {
             issue_url: format!("{}/browse/{}", site_url.trim_end_matches('/'), issue_key),
             title: "Add task board".to_string(),
         }
+    }
+
+    #[test]
+    fn background_assignment_adoption_preserves_live_user_edits_and_session_ids() {
+        let mut current = AgentRecord::new(
+            ProjectId(Uuid::new_v4()),
+            PathBuf::from("/tmp/app"),
+            "Original",
+            "User instructions",
+            AgentKind::Codex,
+            AgentModel::CodexDefault,
+            AgentEffort::Medium,
+            AgentAccessMode::FullAccess,
+        );
+        let mut prepared = current.clone();
+        let run_id = Uuid::new_v4();
+        prepared.delegation = Some(ide_core::delegation::DelegationBinding {
+            run_id,
+            parent_agent_id: current.id,
+            task_id: None,
+            attempt_id: None,
+            workspace: None,
+            task_kind: None,
+        });
+        current.title = "Renamed while preparing".into();
+        current.chat_session_id = Some("newly-persisted-session".into());
+        current.doc = "New user instructions".into();
+        apply_managed_configuration(&mut current, prepared.clone());
+        assert_eq!(current.title, "Renamed while preparing");
+        assert_eq!(
+            current.chat_session_id.as_deref(),
+            Some("newly-persisted-session")
+        );
+        assert_eq!(current.doc, "New user instructions");
+        assert_eq!(current.delegation.as_ref().unwrap().run_id, run_id);
+        prepared.delegation.as_mut().unwrap().task_id = Some(Uuid::new_v4());
+        prepared.doc = "New child assignment revision".into();
+        apply_managed_configuration(&mut current, prepared);
+        assert_eq!(current.doc, "New child assignment revision");
+        assert_eq!(current.title, "Renamed while preparing");
+        assert_eq!(
+            current.chat_session_id.as_deref(),
+            Some("newly-persisted-session")
+        );
     }
 
     #[test]

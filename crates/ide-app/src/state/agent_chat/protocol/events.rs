@@ -258,6 +258,88 @@ pub(super) fn item_id_from_params(params: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+pub(super) fn codex_compaction_activity(method: &str, params: &Value) -> Option<bool> {
+    // Older app servers also send this completion-only notification.
+    if method == "thread/compacted" {
+        return Some(false);
+    }
+    if item_type_from_params(params) != Some("contextCompaction") {
+        return None;
+    }
+    match method {
+        "item/started" => Some(true),
+        "item/completed" => Some(false),
+        _ => None,
+    }
+}
+
+pub(super) fn codex_notification_for_thread(params: &Value, active_thread: Option<&str>) -> bool {
+    let source_thread = params
+        .get("threadId")
+        .or_else(|| params.get("thread_id"))
+        .or_else(|| params.get("thread").and_then(|thread| thread.get("id")))
+        .and_then(Value::as_str);
+    match (active_thread, source_thread) {
+        (Some(active), Some(source)) => active == source,
+        // Connection-wide notifications and the initial handshake have no
+        // thread scope. Do not reject those as if they were child output.
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod stream_routing_tests {
+    use super::*;
+
+    #[test]
+    fn delegated_text_and_lifecycle_notifications_are_filtered_by_thread() {
+        for method in [
+            "item/agentMessage/delta",
+            "item/completed",
+            "turn/completed",
+            "thread/tokenUsage/updated",
+            "error",
+        ] {
+            let child = json!({"method": method, "params": {"threadId": "reviewer", "itemId": "reply", "delta": "review text"}});
+            assert!(
+                !codex_notification_for_thread(&child["params"], Some("parent")),
+                "{method}"
+            );
+            assert!(
+                codex_notification_for_thread(&child["params"], Some("reviewer")),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_objects_and_legacy_ids_also_preserve_conversation_scope() {
+        for params in [
+            json!({"thread": {"id": "child"}}),
+            json!({"thread_id": "child"}),
+        ] {
+            assert!(!codex_notification_for_thread(&params, Some("parent")));
+            assert!(codex_notification_for_thread(&params, Some("child")));
+        }
+    }
+
+    #[test]
+    fn unscoped_connection_events_and_initial_handshake_still_pass() {
+        assert!(codex_notification_for_thread(
+            &json!({"message": "connection event"}),
+            Some("parent")
+        ));
+        assert!(codex_notification_for_thread(
+            &json!({"threadId": "parent"}),
+            None
+        ));
+        assert!(codex_notification_for_thread(
+            &json!({"item": {"id": "tool"}}),
+            Some("parent")
+        ));
+    }
+}
+
 pub(super) fn work_log_from_item(params: &Value, status: WorkLogStatus) -> Option<WorkLogEntry> {
     let item = params.get("item")?;
     let id = item
@@ -515,34 +597,40 @@ pub(super) fn upsert_file_change_stats(
 }
 
 pub(super) fn changed_files_from_unified_diff(diff: &str) -> Vec<FileChangeStat> {
-    let mut result = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current = String::new();
-    for line in diff.lines() {
-        if let Some(path) = line.strip_prefix("+++ b/") {
-            if let Some(path) = current_path.take() {
-                let (additions, deletions) = count_unified_diff_lines(&current);
-                result.push(FileChangeStat::new(path, additions, deletions));
-                current.clear();
-            }
-            current_path = Some(PathBuf::from(path));
-        } else {
-            current.push_str(line);
-            current.push('\n');
+    match ide_core::git::diff::parse_unified_diff(diff) {
+        Ok(files) => files
+            .into_iter()
+            .map(|file| {
+                let mut additions = 0;
+                let mut deletions = 0;
+                for line in file.hunks.iter().flat_map(|hunk| &hunk.lines) {
+                    match line.origin {
+                        ide_core::git::LineOrigin::Add => additions += 1,
+                        ide_core::git::LineOrigin::Remove => deletions += 1,
+                        ide_core::git::LineOrigin::Context => {}
+                    }
+                }
+                FileChangeStat::new(file.path, additions, deletions)
+            })
+            .collect(),
+        Err(error) => {
+            eprintln!("failed to parse provider file diff: {error:#}");
+            Vec::new()
         }
     }
-    if let Some(path) = current_path {
-        let (additions, deletions) = count_unified_diff_lines(&current);
-        result.push(FileChangeStat::new(path, additions, deletions));
-    }
-    result
 }
 
 pub(super) fn count_unified_diff_lines(diff: &str) -> (usize, usize) {
     let mut additions = 0;
     let mut deletions = 0;
+    let mut in_hunk = false;
     for line in diff.lines() {
-        if line.starts_with("+++") || line.starts_with("---") {
+        if line.starts_with("diff --git ") {
+            in_hunk = false;
+        } else if line.starts_with("@@ ") {
+            in_hunk = true;
+        }
+        if !in_hunk && (line.starts_with("+++ ") || line.starts_with("--- ")) {
             continue;
         }
         if line.starts_with('+') {
@@ -715,6 +803,30 @@ Do not implement while in Plan Mode.
 #[cfg(test)]
 mod work_log_tests {
     use super::*;
+
+    #[test]
+    fn codex_compaction_uses_item_lifecycle_and_legacy_completion() {
+        let params = json!({"item": {"id": "compact-1", "type": "contextCompaction"}});
+        assert_eq!(
+            codex_compaction_activity("item/started", &params),
+            Some(true)
+        );
+        assert_eq!(
+            codex_compaction_activity("item/completed", &params),
+            Some(false)
+        );
+        assert_eq!(
+            codex_compaction_activity("thread/compacted", &json!({})),
+            Some(false)
+        );
+        assert_eq!(codex_compaction_activity("unrelated", &params), None);
+        for item_type in ["commandExecution", "reasoning", "agentMessage"] {
+            let params = json!({"item": {"type": item_type}});
+            assert_eq!(codex_compaction_activity("item/started", &params), None);
+            assert_eq!(codex_compaction_activity("item/completed", &params), None);
+        }
+        assert_eq!(codex_compaction_activity("item/started", &json!({})), None);
+    }
 
     #[test]
     fn completed_file_change_item_reports_a_new_file_without_streaming_events() {

@@ -99,6 +99,7 @@ impl LocalStore {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         let store = Self::open(root)?;
+        store.ensure_default_experts()?;
         Ok(SHARED.get_or_init(|| store).clone())
     }
 

@@ -622,7 +622,7 @@ impl AgentChatState {
             return;
         };
         session.proposed_plan = None;
-        session.status = AgentChatStatus::Idle;
+        session.set_status(AgentChatStatus::Idle);
         session.interaction_mode = AgentInteractionMode::Default;
         session.started_running_at = None;
         session.last_activity_at = unix_now();
@@ -646,11 +646,11 @@ impl AgentChatState {
                     cx,
                 );
             }
-            session.status = if session.pending_user_input.is_some() {
+            session.set_status(if session.pending_user_input.is_some() {
                 AgentChatStatus::WaitingForUser
             } else {
                 AgentChatStatus::Idle
-            };
+            });
             session.last_activity_at = unix_now();
             if session.status != AgentChatStatus::Running {
                 session.started_running_at = None;
@@ -674,7 +674,7 @@ impl AgentChatState {
                 cx,
             );
             session.proposed_plan = Some(plan);
-            session.status = AgentChatStatus::PlanReady;
+            session.set_status(AgentChatStatus::PlanReady);
             session.started_running_at = None;
             session.last_activity_at = unix_now();
             cx.emit(AgentChatEvent::Changed);

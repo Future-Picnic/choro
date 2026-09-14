@@ -35,20 +35,24 @@ impl RootView {
                     }),
             )
             .child(
-                style::sidebar_bar_icon_button("left-sidebar-add-project", IconName::FolderOpen, cx)
-                    .relative()
-                    .tooltip("Add project (⌘O)")
-                    // The tour's final pointer targets this button; the marker
-                    // reports its bounds so it can be framed.
-                    .child(onboarding::target_marker(SpotlightTarget::AddProject, cx))
-                    .on_click(move |_, _, cx| {
-                        // Clicking Add Project is how the tour ends: one click
-                        // both dismisses the pointer and opens the real flow.
-                        if onboarding::finishing_at_add_project(cx) {
-                            onboarding::emit(OnboardingEvent::Exit, cx);
-                        }
-                        workspace.update(cx, |workspace, cx| workspace.open_folder_dialog(cx));
-                    }),
+                style::sidebar_bar_icon_button(
+                    "left-sidebar-add-project",
+                    IconName::FolderOpen,
+                    cx,
+                )
+                .relative()
+                .tooltip("Add project (⌘O)")
+                // The tour's final pointer targets this button; the marker
+                // reports its bounds so it can be framed.
+                .child(onboarding::target_marker(SpotlightTarget::AddProject, cx))
+                .on_click(move |_, _, cx| {
+                    // Clicking Add Project is how the tour ends: one click
+                    // both dismisses the pointer and opens the real flow.
+                    if onboarding::finishing_at_add_project(cx) {
+                        onboarding::emit(OnboardingEvent::Exit, cx);
+                    }
+                    workspace.update(cx, |workspace, cx| workspace.open_folder_dialog(cx));
+                }),
             )
             .child(
                 style::sidebar_bar_primary_button("left-sidebar-new-agent", IconName::Plus, cx)
@@ -77,18 +81,26 @@ impl RootView {
             .px_2()
             .items_center()
             .child(
-                style::sidebar_footer_icon_button("left-sidebar-my-tasks", IconName::CircleCheck, cx)
-                    .tooltip("My tasks across all projects")
-                    .on_click(move |_, _, cx| {
-                        my_tasks_center.update(cx, |center, cx| center.show_my_tasks(cx));
-                    }),
+                style::sidebar_footer_icon_button(
+                    "left-sidebar-my-tasks",
+                    IconName::CircleCheck,
+                    cx,
+                )
+                .tooltip("My tasks across all projects")
+                .on_click(move |_, _, cx| {
+                    my_tasks_center.update(cx, |center, cx| center.show_my_tasks(cx));
+                }),
             )
             .child(
-                style::sidebar_footer_icon_button("left-sidebar-ask-history", IconName::BookOpen, cx)
-                    .tooltip("Quick questions across all projects")
-                    .on_click(move |_, _, cx| {
-                        ask_history_center.update(cx, |center, cx| center.show_quick_ask_history(cx));
-                    }),
+                style::sidebar_footer_icon_button(
+                    "left-sidebar-ask-history",
+                    IconName::BookOpen,
+                    cx,
+                )
+                .tooltip("Quick questions across all projects")
+                .on_click(move |_, _, cx| {
+                    ask_history_center.update(cx, |center, cx| center.show_quick_ask_history(cx));
+                }),
             )
             .child(
                 Button::new("left-sidebar-add-section")
@@ -160,24 +172,20 @@ impl RootView {
                 let workspace_all = workspace.clone();
                 let workspace_active = workspace.clone();
                 menu.min_w(px(200.))
-                    .item(
-                        PopupMenuItem::new("All")
-                            .checked(!active_work)
-                            .on_click(move |_, _, cx| {
-                                workspace_all.update(cx, |workspace, cx| {
-                                    workspace.set_sidebar_active_work(false, cx)
-                                });
-                            }),
-                    )
-                    .item(
-                        PopupMenuItem::new("Active")
-                            .checked(active_work)
-                            .on_click(move |_, _, cx| {
-                                workspace_active.update(cx, |workspace, cx| {
-                                    workspace.set_sidebar_active_work(true, cx)
-                                });
-                            }),
-                    )
+                    .item(PopupMenuItem::new("All").checked(!active_work).on_click(
+                        move |_, _, cx| {
+                            workspace_all.update(cx, |workspace, cx| {
+                                workspace.set_sidebar_active_work(false, cx)
+                            });
+                        },
+                    ))
+                    .item(PopupMenuItem::new("Active").checked(active_work).on_click(
+                        move |_, _, cx| {
+                            workspace_active.update(cx, |workspace, cx| {
+                                workspace.set_sidebar_active_work(true, cx)
+                            });
+                        },
+                    ))
             })
     }
 }

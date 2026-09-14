@@ -32,6 +32,15 @@ pub struct FileDiff {
     pub is_binary: bool,
 }
 
+/// Parse provider-supplied Git patches using the same path and hunk semantics
+/// as repository diffs (including deletions, renames, and quoted paths).
+pub fn parse_unified_diff(patch: &str) -> Result<Vec<FileDiff>> {
+    if patch.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    diffs_from(&Diff::from_buffer(patch.as_bytes())?)
+}
+
 pub(crate) fn is_internal_untracked_delta(delta: &DiffDelta<'_>) -> bool {
     delta.status() == Delta::Untracked
         && delta.new_file().path().is_some_and(|path| {

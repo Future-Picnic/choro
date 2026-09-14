@@ -887,6 +887,25 @@ impl CenterArea {
         };
         let source_title = source.title.clone();
         let target_title = target.title.clone();
+        if self.agent_chats.read(cx).handoff_must_wait(source_agent_id) {
+            self.agent_chats.update(cx, |chats, cx| {
+                chats.queue_agent_handoff(
+                    source_agent_id,
+                    text,
+                    crate::state::agent_chat::QueuedAgentHandoff {
+                        target_agent_id,
+                        target_title,
+                        kind: request_kind.storage_label().to_string(),
+                        original_text: composer_text,
+                        references: composer_references,
+                    },
+                    cx,
+                );
+            });
+            self.clear_sent_handoff_composer(source_agent_id, &input, window, cx);
+            cx.notify();
+            return;
+        }
         let send_id = Uuid::new_v4();
         let window_handle = window.window_handle();
         self.agent_handoff_sends_pending
@@ -940,18 +959,7 @@ impl CenterArea {
                                         .unwrap_or_else(|| classify_agent_request(&composer_text))
                                         == request_kind;
                                 if composer_is_unchanged {
-                                    input.update(cx, |input, cx| {
-                                        input.set_value("", window, cx)
-                                    });
-                                    this.agent_chat_attached_files.remove(&source_agent_id);
-                                    this.agent_chat_pasted_text_blocks.remove(&source_agent_id);
-                                    this.agent_chat_selected_commands.remove(&source_agent_id);
-                                    this.agent_chat_selected_mentions.remove(&source_agent_id);
-                                    this.agent_chat_selected_agent_targets
-                                        .remove(&source_agent_id);
-                                    this.agent_chat_agent_request_kind_overrides
-                                        .remove(&source_agent_id);
-                                    this.agent_chat_preview_armed.remove(&source_agent_id);
+                                    this.clear_sent_handoff_composer(source_agent_id, &input, window, cx);
                                 }
                                 this.agents.update(cx, |agents, cx| {
                                     agents.update_status(
@@ -1007,6 +1015,24 @@ impl CenterArea {
                 .ok();
         })
         .detach();
+    }
+
+    fn clear_sent_handoff_composer(
+        &mut self,
+        agent_id: Uuid,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        input.update(cx, |input, cx| input.set_value("", window, cx));
+        self.agent_chat_attached_files.remove(&agent_id);
+        self.agent_chat_pasted_text_blocks.remove(&agent_id);
+        self.agent_chat_selected_commands.remove(&agent_id);
+        self.agent_chat_selected_mentions.remove(&agent_id);
+        self.agent_chat_selected_agent_targets.remove(&agent_id);
+        self.agent_chat_agent_request_kind_overrides
+            .remove(&agent_id);
+        self.agent_chat_preview_armed.remove(&agent_id);
     }
 
     pub(super) fn agent_handoff_busy(&self, agent_id: Uuid) -> bool {
@@ -1126,7 +1152,12 @@ impl CenterArea {
                     .read(cx)
                     .session(message.target_agent_id)
                     .is_none_or(|session| teammate_result_can_dispatch(session.status));
-                if !source_ready {
+                if !source_ready
+                    || self
+                        .agent_chats
+                        .read(cx)
+                        .has_queued_work(message.target_agent_id)
+                {
                     // Never let a background teammate result answer a pending
                     // approval/question or interleave with an active source
                     // turn. The durable row remains pending and is retried

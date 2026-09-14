@@ -17,6 +17,9 @@ use anyhow::{anyhow, Context as _, Result};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
+#[path = "delegation.rs"]
+mod delegation_tools;
+
 use ide_core::local_store::{LocalStore, OrbitRecordInput};
 use ide_core::{
     AppConfig, Project, ProjectReferenceKind, TaskComment, TaskContentBlock, TaskDetail,
@@ -31,6 +34,7 @@ const MAX_STORED_PREVIEW_SNAPSHOTS_PER_AGENT: usize = 20;
 /// Shared state handed to every tool call. Holds the project scope and an open
 /// handle to the local store; credentials read from it never leave this process.
 pub struct ServerContext {
+    pub(crate) delegation_scope: Option<ide_core::delegation::DelegationBinding>,
     pub(crate) project_id: Option<uuid::Uuid>,
     pub(crate) agent_id: Option<uuid::Uuid>,
     pub(crate) store: Option<LocalStore>,
@@ -61,7 +65,17 @@ impl ServerContext {
                 None
             }
         };
+        let delegation_scope = agent_id.and_then(|id| {
+            store
+                .as_ref()?
+                .load_agents()
+                .ok()?
+                .into_iter()
+                .find(|a| a.id == id)?
+                .delegation
+        });
         Self {
+            delegation_scope,
             project_id,
             agent_id,
             store,
@@ -108,6 +122,9 @@ impl ServerContext {
         let agent_id = self.agent_id?;
         let agents = self.store.as_ref()?.load_agents().ok()?;
         let agent = agents.into_iter().find(|agent| agent.id == agent_id)?;
+        if let Some(workspace) = agent.delegation.as_ref().and_then(|b| b.workspace.clone()) {
+            return workspace.is_dir().then_some(workspace);
+        }
         agent
             .is_active_solo()
             .then_some(())
@@ -203,33 +220,35 @@ pub struct ToolRegistry {
 
 impl Default for ToolRegistry {
     fn default() -> Self {
-        Self {
-            tools: vec![
-                Box::new(TaskReadTool),
-                Box::new(TaskListTool),
-                Box::new(TaskImageTool),
-                Box::new(SaveAssetTool),
-                Box::new(CreateChoroDocTool),
-                Box::new(CreateChoroScriptTool),
-                Box::new(ProjectPreviewOpenTool),
-                Box::new(ProjectPreviewSnapshotTool),
-                Box::new(ProjectPreviewClickTool),
-                Box::new(ProjectPreviewTypeTool),
-                Box::new(ProjectPreviewScrollTool),
-                Box::new(ProjectPreviewKeyTool),
-                Box::new(ProjectPreviewWaitTool),
-                Box::new(ProjectPreviewStopTool),
-                Box::new(MemorySaveTool),
-                Box::new(OrbitReadTool),
-                Box::new(OrbitApplyChangesTool),
-                Box::new(SummarySaveTool),
-                Box::new(SummaryReadTool),
-                // Cross-agent discovery and requests stay user-directed. The
-                // composer owns explicit agent selection; only a reply to an
-                // already-authorized request is available to the target agent.
-                Box::new(AgentReplyTool),
-            ],
+        let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(TaskReadTool),
+            Box::new(TaskListTool),
+            Box::new(TaskImageTool),
+            Box::new(SaveAssetTool),
+            Box::new(CreateChoroDocTool),
+            Box::new(CreateChoroScriptTool),
+            Box::new(ProjectPreviewOpenTool),
+            Box::new(ProjectPreviewSnapshotTool),
+            Box::new(ProjectPreviewClickTool),
+            Box::new(ProjectPreviewTypeTool),
+            Box::new(ProjectPreviewScrollTool),
+            Box::new(ProjectPreviewKeyTool),
+            Box::new(ProjectPreviewWaitTool),
+            Box::new(ProjectPreviewStopTool),
+            Box::new(MemorySaveTool),
+            Box::new(OrbitReadTool),
+            Box::new(OrbitApplyChangesTool),
+            Box::new(SummarySaveTool),
+            Box::new(SummaryReadTool),
+            // Cross-agent discovery and requests stay user-directed. The
+            // composer owns explicit agent selection; only a reply to an
+            // already-authorized request is available to the target agent.
+            Box::new(AgentReplyTool),
+        ];
+        if ide_core::delegation::enabled() {
+            tools.extend(delegation_tools::tools());
         }
+        Self { tools }
     }
 }
 
@@ -407,7 +426,12 @@ impl ToolRegistry {
             Some(tool) => match tool.call(ctx, &args) {
                 Ok(content) => json!({ "content": content, "isError": false }),
                 Err(error) => {
-                    json!({ "content": [text_content(format!("Error: {error:#}"))], "isError": true })
+                    if name.starts_with("delegation_") || name == "experts_list" {
+                        let detail = json!({"code":"delegation_rejected","message":format!("{error:#}"),"retry":"Read the current run and correct the request. Resume and permission decisions require the user."});
+                        json!({"content":[text_content(detail.to_string())],"structuredContent":{"error":detail},"isError":true})
+                    } else {
+                        json!({ "content": [text_content(format!("Error: {error:#}"))], "isError": true })
+                    }
                 }
             },
             None => json!({
@@ -804,6 +828,12 @@ impl Tool for AgentReplyTool {
         })
     }
     fn call(&self, ctx: &ServerContext, args: &Value) -> Result<Vec<Value>> {
+        anyhow::ensure!(
+            ctx.delegation_scope
+                .as_ref()
+                .is_none_or(|b| b.task_id.is_none()),
+            "Managed Bandmates use delegation_message and delegation_complete, not agent_reply."
+        );
         let request_id = args
             .get("request_id")
             .and_then(Value::as_str)
@@ -1373,6 +1403,31 @@ impl Tool for ProjectPreviewOpenTool {
         let project = ctx.project()?;
         let lane_root = ctx.agent_lane_root();
         let url = resolve_project_preview_target(&project, lane_root.as_deref(), target)?;
+        if let Some(binding) = ctx
+            .agent_id
+            .and_then(|id| {
+                ctx.store()
+                    .ok()?
+                    .load_agents()
+                    .ok()?
+                    .into_iter()
+                    .find(|a| a.id == id)?
+                    .delegation
+            })
+            .filter(|b| b.task_id.is_some())
+        {
+            ctx.store()?.update_delegation(binding.run_id, None, |r| {
+                anyhow::ensure!(r.status.dispatchable(), "This managed task is paused.");
+                let task = r.task_mut(binding.task_id.unwrap())?;
+                task.preview = Some(ide_core::delegation::DelegationPreview {
+                    url: url.clone(),
+                    title: title.into(),
+                    revision: task.preview.as_ref().map_or(1, |p| p.revision + 1),
+                });
+                Ok(())
+            })?;
+            return Ok(vec![text_content("Bandmate Preview is ready. The user can open it from this task's detail panel; their current Preview has not changed.")]);
+        }
         let preview = ctx
             .store()?
             .upsert_project_preview(project.id, &url, title, ctx.agent_id)?;
@@ -2636,6 +2691,7 @@ mod tests {
     #[test]
     fn coordinate_preview_clicks_require_the_matching_snapshot_token() {
         let ctx = ServerContext {
+            delegation_scope: None,
             project_id: None,
             agent_id: None,
             store: None,
@@ -2651,6 +2707,7 @@ mod tests {
         let schema = MemorySaveTool.input_schema();
         assert!(schema["properties"].get("scope").is_none());
         let ctx = ServerContext {
+            delegation_scope: None,
             project_id: None,
             agent_id: None,
             store: None,
@@ -2761,6 +2818,7 @@ mod tests {
     #[test]
     fn unknown_tool_reports_error() {
         let ctx = ServerContext {
+            delegation_scope: None,
             project_id: None,
             agent_id: None,
             store: None,

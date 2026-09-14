@@ -368,7 +368,7 @@ impl CenterArea {
                 .timeline
                 .retain(|item| !matches!(item, AgentChatTimelineItem::ProposedPlan(_)));
             if session.status == AgentChatStatus::PlanReady {
-                session.status = AgentChatStatus::Idle;
+                session.set_status(AgentChatStatus::Idle);
             }
             if session.chat_session_id.is_none() {
                 session.chat_session_id = effective_chat_session_id.clone();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  compactionEventForSdkMessage,
   countTextLines,
   directEditCounts,
   fileChangeActivityEvent,
@@ -15,6 +16,33 @@ import {
   resumeSessionIdForCommand,
   setTurnProjection,
 } from "./claude_bridge.mjs";
+
+test("Claude compaction starts on SDK status and ends on status or boundary", () => {
+  const status = (value, extra = {}) => ({
+    type: "system", subtype: "status", status: value, ...extra,
+  });
+  assert.deepEqual(compactionEventForSdkMessage(status("compacting")), {
+    type: "compaction", active: true,
+  });
+  for (const message of [
+    status(null),
+    status("requesting"),
+    status(null, { compact_result: "failed", compact_error: "Could not compact" }),
+    { type: "system", subtype: "compact_boundary" },
+  ]) {
+    assert.deepEqual(compactionEventForSdkMessage(message), {
+      type: "compaction", active: false,
+    });
+  }
+  for (const message of [
+    { type: "system", subtype: "init" },
+    { type: "assistant" },
+    { type: "stream_event", event: { type: "content_block_delta" } },
+    { type: "result", subtype: "success" },
+  ]) {
+    assert.equal(compactionEventForSdkMessage(message), null);
+  }
+});
 
 test("plan-to-build boundary resumes the live Claude session", () => {
   assert.equal(

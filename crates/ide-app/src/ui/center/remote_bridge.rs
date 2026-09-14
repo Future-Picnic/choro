@@ -244,6 +244,8 @@ impl CenterArea {
                         chats.ensure_session(agent_id, title, cx).interaction_mode = mode;
                     });
                     if self.dispatch_agent_chat_submission(agent_id, text.to_string(), mode, cx) {
+                        self.agent_chats
+                            .update(cx, |chats, cx| chats.resume_queue(agent_id, cx));
                         self.agents.update(cx, |agents, cx| {
                             agents.update_status(agent_id, AgentStatus::InProgress, cx)
                         });
@@ -410,6 +412,8 @@ impl CenterArea {
                             RemoteError::conflict("agent has no plan awaiting a decision")
                         })?;
                     if self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx) {
+                        self.agent_chats
+                            .update(cx, |chats, cx| chats.resume_queue(agent_id, cx));
                         self.agents.update(cx, |agents, cx| {
                             agents.update_status(agent_id, AgentStatus::InProgress, cx)
                         });
@@ -2091,6 +2095,7 @@ fn timeline_item_dto(
     rejoin_cleanup_pending: bool,
 ) -> Option<TimelineItemDto> {
     match item {
+        AgentChatTimelineItem::DelegationGroup { .. } => None,
         AgentChatTimelineItem::Message(AgentChatMessage::User {
             text, created_at, ..
         }) => Some(TimelineItemDto::Message {

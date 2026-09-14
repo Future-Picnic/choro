@@ -1128,10 +1128,11 @@ impl CenterArea {
             .or_else(|| manager.sessions_for(project).into_iter().nth(selected_ix));
         let view = active_session.map(|s| s.view.clone());
         let exited_id = active_session.filter(|s| s.exited).map(|s| s.id);
-        let close_id = active_session.map(|s| s.id);
-        let ids: Vec<SessionId> = sessions.iter().map(|(id, _, _)| *id).collect();
         let code_mode_switch = (has_files && self.view_mode == CenterMode::Terminal)
             .then(|| self.render_code_mode_switch(cx));
+        let show_tab_menu = sessions.len() > 1;
+        let tab_menu_items = sessions.clone();
+        let tab_menu_center = cx.entity().clone();
 
         v_flex()
             .size_full()
@@ -1140,34 +1141,73 @@ impl CenterArea {
             }))
             .child(
                 h_flex()
+                    .flex_none()
                     .w_full()
-                    .px_2()
-                    .gap_1()
+                    .h(crate::ui::design::editor_tab_bar_h())
+                    .pl_1()
+                    .pr_1()
+                    .gap_0p5()
                     .items_center()
+                    .border_b_1()
+                    .border_color(crate::ui::design::line(cx))
                     .bg(crate::ui::design::nav(cx))
                     .child(
-                        div().flex_1().min_w(px(0.)).child(
-                            TabBar::new("terminal-tabs")
-                                .menu(true)
-                                .w_full()
-                                .selected_index(selected_ix)
-                                .on_click(cx.listener(move |this, ix: &usize, _, cx| {
-                                    if let Some(id) = ids.get(*ix).copied() {
-                                        this.terminals.update(cx, |manager, cx| {
-                                            manager.set_active(project, id, cx);
-                                        });
-                                    }
-                                }))
-                                .children(sessions.iter().map(|(_, title, exited)| {
-                                    let label: SharedString = if *exited {
-                                        format!("{title} (exited)").into()
-                                    } else {
-                                        format!("⌁ {title}").into()
-                                    };
-                                    Tab::new().label(label)
-                                })),
-                        ),
+                        h_flex()
+                            .id("terminal-tabs")
+                            .flex_1()
+                            .min_w(px(0.))
+                            .h_full()
+                            .items_center()
+                            .gap_0p5()
+                            .overflow_x_scroll()
+                            .children(sessions.iter().enumerate().map(
+                                |(ix, (id, title, exited))| {
+                                    let id = *id;
+                                    let selected = selected_ix == ix;
+                                    self.render_terminal_tab(
+                                        project, ix, id, title, *exited, selected, cx,
+                                    )
+                                },
+                            )),
                     )
+                    .child(style::toolbar_divider(cx))
+                    .when(show_tab_menu, |bar| {
+                        bar.child(
+                            style::header_icon_button(
+                                "terminal-tab-list",
+                                IconName::ChevronDown,
+                                cx,
+                            )
+                            .tooltip("Open terminals")
+                            .dropdown_menu(
+                                move |mut menu, window, _| {
+                                    for (ix, (id, title, exited)) in
+                                        tab_menu_items.iter().cloned().enumerate()
+                                    {
+                                        let center = tab_menu_center.clone();
+                                        let menu_label: SharedString = if exited {
+                                            format!("{title} (exited)").into()
+                                        } else {
+                                            title
+                                        };
+                                        menu = menu.item(
+                                            PopupMenuItem::new(menu_label)
+                                                .checked(selected_ix == ix)
+                                                .on_click(window.listener_for(
+                                                    &center,
+                                                    move |this: &mut Self, _, _, cx| {
+                                                        this.terminals.update(cx, |manager, cx| {
+                                                            manager.set_active(project, id, cx);
+                                                        });
+                                                    },
+                                                )),
+                                        );
+                                    }
+                                    menu
+                                },
+                            ),
+                        )
+                    })
                     .when_some(exited_id, |bar, id| {
                         bar.child(
                             style::header_icon_button("restart-terminal", IconName::Redo2, cx)
@@ -1178,16 +1218,6 @@ impl CenterArea {
                                             eprintln!("restart failed: {error:#}");
                                         }
                                     });
-                                })),
-                        )
-                    })
-                    .when_some(close_id, |bar, id| {
-                        bar.child(
-                            style::header_icon_button("close-terminal", IconName::Close, cx)
-                                .tooltip("Close terminal")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.terminals
-                                        .update(cx, |manager, cx| manager.close(id, cx));
                                 })),
                         )
                     })
@@ -1207,6 +1237,51 @@ impl CenterArea {
                     .when_some(view, |area, view| area.child(view)),
             )
             .into_any_element()
+    }
+
+    /// One terminal session tab. The close control lives on the tab itself
+    /// and is revealed on hover (always shown on the active tab), so closing a
+    /// session never requires travelling to the far end of the strip.
+    #[allow(clippy::too_many_arguments)]
+    fn render_terminal_tab(
+        &self,
+        project: ProjectId,
+        ix: usize,
+        id: SessionId,
+        title: &SharedString,
+        exited: bool,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let group_name: SharedString = format!("terminal-tab-{ix}").into();
+        let label: SharedString = if exited {
+            format!("{title} (exited)").into()
+        } else {
+            format!("⌁ {title}").into()
+        };
+
+        style::editor_file_tab(("terminal-tab", ix), label, selected, false, cx)
+            .group(group_name.clone())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.terminals.update(cx, |manager, cx| {
+                    manager.set_active(project, id, cx);
+                });
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .invisible()
+                    .when(selected, |slot| slot.visible())
+                    .group_hover(group_name, |slot| slot.visible())
+                    .child(
+                        style::strip_tab_close_button(("terminal-tab-close", ix), cx)
+                            .tooltip("Close terminal")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.terminals
+                                    .update(cx, |manager, cx| manager.close(id, cx));
+                            })),
+                    ),
+            )
     }
 
     pub(super) fn render_db_section(

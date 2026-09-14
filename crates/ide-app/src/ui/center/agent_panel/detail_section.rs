@@ -117,6 +117,8 @@ impl CenterArea {
             || !linked_docs.is_empty()
             || !linked_design_indicators.is_empty();
         let agent_status_accent = status_accent(agent.status, cx);
+        let expert_status = self.render_expert_chat_status(&agent, cx);
+        let bandmate_index = self.expert_bandmate_index(&agent, cx);
         let title_edit_input = self
             .agent_title_edit
             .as_ref()
@@ -262,6 +264,13 @@ impl CenterArea {
                                             crate::ui::design::icon_sm(),
                                         ))
                                     })
+                                    .when_some(bandmate_index, |row, index| {
+                                        row.child(crate::ui::design::indicator::bandmate_icon(
+                                            index,
+                                            crate::ui::design::amber(cx),
+                                            crate::ui::design::icon_sm(),
+                                        ))
+                                    })
                                     .child(
                                         crate::ui::design::header::title(
                                             SharedString::from(agent.title.clone()),
@@ -399,7 +408,11 @@ impl CenterArea {
                                 )
                             }),
                     )
-                    .child(crate::ui::design::header::actions().child(
+                    .child(crate::ui::design::header::actions().map(|actions| {
+                        if let Some(status) = expert_status {
+                            return actions.child(status);
+                        }
+                        actions.child(
                                 crate::ui::style::agent_status_dropdown_button(
                                     ("agent-status", agent.id.as_u128() as u64),
                                     cx,
@@ -455,7 +468,8 @@ impl CenterArea {
                                         menu
                                     },
                                 ),
-                            ),
+                            )
+                        }),
                     ),
                 ),
             )

@@ -34,6 +34,10 @@ fn main() {
     if let Some(exit_code) = ide_core::git::handle_git_credential() {
         std::process::exit(exit_code);
     }
+    // Seed an isolated demo before Chromium opens files in its data directory.
+    if let Err(error) = demo::prepare() {
+        eprintln!("failed to prepare Choro Demo: {error:#}");
+    }
     #[cfg(target_os = "macos")]
     let _chromium_runtime = match chromium::Runtime::prepare() {
         Ok(runtime) => runtime,
@@ -42,9 +46,6 @@ fn main() {
             None
         }
     };
-    if let Err(error) = demo::prepare() {
-        eprintln!("failed to prepare Choro Demo: {error:#}");
-    }
     if let Err(error) = onboarding::prepare() {
         eprintln!("failed to prepare Choro onboarding: {error:#}");
     }

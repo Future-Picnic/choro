@@ -17,6 +17,7 @@ pub mod folder_picker;
 pub mod git;
 pub mod illustrations;
 pub mod logo_spinner;
+pub(crate) mod model_favorites;
 pub mod onboarding;
 pub mod palette_ui;
 pub mod penpot_panel;

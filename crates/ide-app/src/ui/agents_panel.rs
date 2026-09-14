@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::notifications;
 use crate::state::agent_chat::{AgentChatMessage, AgentChatStatus};
+use crate::state::delegation::display::DelegationActivity;
 use crate::state::{AgentActivityCache, AgentChatState, AgentRecords, TerminalManager, Workspace};
 use crate::ui::agent_status_style::{status_accent, status_icon};
 use crate::ui::center::{CenterArea, ProjectActivity};
@@ -111,6 +112,12 @@ impl AgentsPanel {
                 cx.notify();
             })
             .detach();
+            if let Some(handle) = cx
+                .try_global::<crate::state::delegation::DelegationHandle>()
+                .cloned()
+            {
+                cx.observe(&handle.0, |_, _, cx| cx.notify()).detach();
+            }
 
             // Poll CLI transcript stores only to adopt session ids and keep
             // runtime attention markers fresh for app-owned agents.
@@ -249,7 +256,19 @@ impl AgentsPanel {
                 let Some(session) = chats.session(agent.id) else {
                     continue;
                 };
-                if session.hidden_from_notifications {
+                let delegated = agent.delegation.as_ref().filter(|b| b.task_id.is_some());
+                if session.hidden_from_notifications
+                    && !(delegated.is_some()
+                        && matches!(
+                            session.status,
+                            AgentChatStatus::WaitingForUser
+                                | AgentChatStatus::PlanReady
+                                | AgentChatStatus::Failed
+                        ))
+                {
+                    continue;
+                }
+                if agent.delegation.is_some() && session.status == AgentChatStatus::Idle {
                     continue;
                 }
                 let (category, revision, created_at) = match session.status {
@@ -309,9 +328,13 @@ impl AgentsPanel {
                 };
                 events.push(notifications::AttentionEvent::new(
                     agent.project_id,
-                    agent.id,
+                    delegated.map_or(agent.id, |b| b.parent_agent_id),
                     category,
-                    revision,
+                    if delegated.is_some() {
+                        format!("expert:{}:{revision}", agent.id)
+                    } else {
+                        revision
+                    },
                     created_at,
                     agent.title,
                     project_name,
@@ -365,7 +388,46 @@ impl AgentsPanel {
         }
     }
 
+    /// Provider runtime overlaid with delegation: a lead stays in progress while
+    /// its Experts work, and an Expert waiting on a person is real attention.
     fn runtime_for(&self, agent: &AgentRecord, project: ProjectId, cx: &App) -> AgentRunStatus {
+        let provider = self.provider_runtime_for(agent, project, cx);
+        if agent.status.is_finished() || provider == AgentRunStatus::Waiting {
+            return provider;
+        }
+        match self.delegation_activity_for(agent.id, cx) {
+            DelegationActivity::Attention => AgentRunStatus::Waiting,
+            DelegationActivity::Working => AgentRunStatus::Working,
+            DelegationActivity::Paused | DelegationActivity::Idle => provider,
+        }
+    }
+
+    fn delegation_activity_for(&self, agent_id: Uuid, cx: &App) -> DelegationActivity {
+        let Some(handle) = cx.try_global::<crate::state::delegation::DelegationHandle>() else {
+            return DelegationActivity::Idle;
+        };
+        let chats = self.agent_chats.read(cx);
+        let needs_user = |child: Uuid| {
+            chats.session(child).is_some_and(|session| {
+                session.pending_approval.is_some()
+                    || session.pending_user_input.is_some()
+                    || session.status == AgentChatStatus::PlanReady
+            })
+        };
+        crate::state::delegation::display::parent_delegation_state(
+            &handle.0.read(cx).runs,
+            agent_id,
+            &needs_user,
+        )
+        .activity
+    }
+
+    fn provider_runtime_for(
+        &self,
+        agent: &AgentRecord,
+        project: ProjectId,
+        cx: &App,
+    ) -> AgentRunStatus {
         if agent.status.is_finished() {
             return AgentRunStatus::Idle;
         }
@@ -514,7 +576,20 @@ impl AgentsPanel {
         }
     }
 
-    fn render_runtime_spinner(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_runtime_spinner(
+        &self,
+        ix: usize,
+        agent_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if self.delegation_activity_for(agent_id, cx) == DelegationActivity::Working {
+            return crate::ui::logo_spinner::delegation_spinner(
+                16.,
+                "agent-panel-delegation",
+                ix,
+                crate::ui::design::amber(cx),
+            );
+        }
         logo_spinner(16., "agent-panel-logo", ix, crate::ui::design::t3(cx))
     }
 
@@ -586,7 +661,7 @@ impl AgentsPanel {
                         .w(px(34.))
                         .flex()
                         .justify_end()
-                        .child(self.render_runtime_spinner(ix, cx)),
+                        .child(self.render_runtime_spinner(ix, agent_id, cx)),
                 )
             })
             .when(runtime != AgentRunStatus::Working, |row| {

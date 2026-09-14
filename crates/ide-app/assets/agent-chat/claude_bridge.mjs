@@ -24,10 +24,24 @@ let turnDirectChanges = new Map();
 let turnObservedChanges = new Map();
 let toolMutationBaselines = new Map();
 let commandDiffBaselines = new Map();
+let turnFileBaseline = null;
 let turnDiffEmitted = false;
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
 let currentDesignAssistant = false;
+let currentManagedDelegation = false;
+let currentManagedChild = false;
+let currentManagedConsultation = false;
+const MANAGED_SPAWN_TOOLS = new Set(["Agent", "Task", "TeamCreate", "TeamDelete", "SendMessage"]);
+const PLAN_TOOLS = new Set(["EnterPlanMode", "ExitPlanMode"]);
+export function managedDelegationOptions(managed, child = false, consultation = false) {
+  if (!managed) return {};
+  return { disallowedTools: [
+    ...MANAGED_SPAWN_TOOLS,
+    ...(child ? PLAN_TOOLS : []),
+    ...(consultation ? ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"] : []),
+  ] };
+}
 let currentDesignPreviewReview = false;
 let currentReadOnly = false;
 let usageSessionId = null;
@@ -186,11 +200,12 @@ function emitUsage(message) {
   void refreshFullSessionUsage(runtime, sessionId, revision, latestTurn);
 }
 
-function execGit(args) {
-  return new Promise((resolve) => {
-    execFile("git", ["-C", currentCwd, ...args], (error, stdout) => {
+function execGit(args, cwd = currentCwd, allowFailure = false) {
+  return new Promise((resolve, reject) => {
+    execFile("git", ["-C", cwd, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
       if (error) {
-        resolve("");
+        if (allowFailure) resolve(null);
+        else reject(error);
       } else {
         resolve(stdout || "");
       }
@@ -248,6 +263,17 @@ function createPromptController() {
 async function ensureRuntime(command) {
   currentAccessMode = command.accessMode || "bypassPermissions";
   currentDesignAssistant = Boolean(command.designAssistant);
+  const requestedManagedDelegation = Boolean(command.managedDelegation);
+  const requestedManagedChild = requestedManagedDelegation && Boolean(command.managedChild);
+  const requestedManagedConsultation = requestedManagedChild && Boolean(command.managedConsultation);
+  if (runtime && (currentManagedDelegation !== requestedManagedDelegation
+    || currentManagedChild !== requestedManagedChild
+    || currentManagedConsultation !== requestedManagedConsultation)) {
+    throw new Error("Managed delegation policy changed. Reconnect this session at a safe turn boundary.");
+  }
+  currentManagedDelegation = requestedManagedDelegation;
+  currentManagedChild = requestedManagedChild;
+  currentManagedConsultation = requestedManagedConsultation;
   currentDesignPreviewReview = Boolean(command.designPreviewReview);
   currentReadOnly = Boolean(command.readOnly);
   currentVisualizationDir = command.visualizationDir || currentVisualizationDir;
@@ -258,7 +284,7 @@ async function ensureRuntime(command) {
   );
   if (runtime) {
     if (typeof runtime.setPermissionMode === "function") {
-      await runtime.setPermissionMode(permissionModeFor(command.mode, command.accessMode));
+      await runtime.setPermissionMode(permissionModeFor(command.mode, command.accessMode, currentManagedChild));
     }
     if (typeof runtime.setModel === "function") {
       await runtime.setModel(command.model || undefined);
@@ -278,7 +304,8 @@ async function ensureRuntime(command) {
       pathToClaudeCodeExecutable: command.claudePath,
       model: command.model || undefined,
       effort: command.effort || undefined,
-      permissionMode: permissionModeFor(command.mode, command.accessMode),
+      ...managedDelegationOptions(currentManagedDelegation, currentManagedChild, currentManagedConsultation),
+      permissionMode: permissionModeFor(command.mode, command.accessMode, currentManagedChild),
       allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
       canUseTool,
@@ -313,23 +340,22 @@ function resumeSessionIdForCommand(requestedSessionId, activeSessionId) {
   return requestedSessionId || activeSessionId || null;
 }
 
-function permissionModeFor(mode, accessMode) {
-  if (mode === "plan") {
+export function permissionModeFor(mode, accessMode, managedChild = false) {
+  if (mode === "plan" && !managedChild) {
     return "plan";
   }
   return accessMode || "bypassPermissions";
 }
 
+export function isChoroCoordinationTool(toolName) {
+  // These commands only enter Choro's scoped durable protocol. The server
+  // enforces the user-named team, revisions, Stop and integration permissions.
+  return typeof toolName === "string" && /^mcp__(?:choro|ide)__(?:experts_list|delegation_(?:plan|read|message|control|complete|integrate|wait|finish))$/.test(toolName);
+}
+
 async function canUseTool(toolName, input, options) {
-  if (
-    currentReadOnly &&
-    !["Read", "Glob", "Grep"].includes(toolName)
-  ) {
-    return {
-      behavior: "deny",
-      message: "This Choro checklist pass is read-only. Inspect the project without running commands or changing files.",
-    };
-  }
+  const denial = toolPolicyDenial(toolName, currentToolPolicy());
+  if (denial) return { behavior: "deny", message: denial };
   if (
     currentDesignAssistant &&
     typeof toolName === "string" &&
@@ -407,6 +433,9 @@ async function canUseTool(toolName, input, options) {
     return { behavior: "allow", updatedInput: input };
   }
 
+  if (isChoroCoordinationTool(toolName)) {
+    return { behavior: "allow", updatedInput: input };
+  }
   return handleToolPermission(toolName, input, options);
 }
 
@@ -626,6 +655,7 @@ async function completeDirectMutationBaseline(id, baseline) {
 
 async function completeCommandMutationBaseline(id, baseline, next) {
   const current = next || (await readChangedFileSnapshot());
+  if (!current) return;
   for (const [path, file] of current) {
     if (baseline.get(path)?.patch !== file.patch) {
       // Git reports the current worktree projection, not a delta for this
@@ -669,10 +699,45 @@ async function finishCancelledTurn(capturePending, flushChanges, finish) {
   return finishTurnAfterFileReceipt(flushChanges, finish);
 }
 
+function currentToolPolicy() {
+  return { managed: currentManagedDelegation, child: currentManagedChild,
+    consultation: currentManagedConsultation, readOnly: currentReadOnly };
+}
+
+export function toolPolicyDenial(toolName, policy) {
+  if (policy.managed && MANAGED_SPAWN_TOOLS.has(toolName)) {
+    return "Use Choro delegation tools to coordinate this managed task.";
+  }
+  if (policy.child && PLAN_TOOLS.has(toolName)) {
+    return "Plan mode belongs to the lead. Complete your assignment and report through delegation_complete. If an approach needs review, send a blocking delegation_message to the lead and end the turn.";
+  }
+  const reads = ["Read", "Glob", "Grep"];
+  if (policy.readOnly && !reads.includes(toolName)) {
+    return "This Choro checklist pass is read-only. Inspect the project without running commands or changing files.";
+  }
+  if (policy.consultation && !reads.includes(toolName)
+    && !["WebSearch", "WebFetch", "AskUserQuestion"].includes(toolName)
+    && !isChoroCoordinationTool(toolName)) {
+    return "This is a read-only consultation. Return your answer through delegation_complete, or ask the lead through delegation_message. File changes, shell commands and unrelated tools are unavailable.";
+  }
+  return null;
+}
+
+export function toolPolicyHook(toolName, policy) {
+  const reason = toolPolicyDenial(toolName, policy);
+  return reason ? { hookSpecificOutput: {
+    hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason,
+  } } : {};
+}
+
 function fileAttributionHooks() {
   const completed = [{ hooks: [captureCompletedToolMutation] }];
   return {
-    PreToolUse: [{ hooks: [captureToolMutationBaseline] }],
+    // Hooks enforce scope even when provider permissions auto-allow tools.
+    PreToolUse: [{ hooks: [
+      async (input) => toolPolicyHook(input.tool_name, currentToolPolicy()),
+      captureToolMutationBaseline,
+    ] }],
     PostToolUse: completed,
     // Tools can mutate the filesystem before reporting failure (for example,
     // `touch generated.txt && false`). Complete the same baseline in that path.
@@ -889,11 +954,30 @@ async function cancelActiveTurn() {
   }
 }
 
+export function compactionEventForSdkMessage(message) {
+  if (message.type !== "system") {
+    return null;
+  }
+  if (message.subtype === "status") {
+    return { type: "compaction", active: message.status === "compacting" };
+  }
+  if (message.subtype === "compact_boundary") {
+    return { type: "compaction", active: false };
+  }
+  return null;
+}
+
 async function handleSdkMessage(message) {
   const sessionId = message.session_id || message.sessionId;
   if (sessionId && sessionId !== currentSessionId) {
     currentSessionId = sessionId;
     emit({ type: "session_ready", session_id: sessionId });
+  }
+
+  const compaction = compactionEventForSdkMessage(message);
+  if (compaction) {
+    emit(compaction);
+    return;
   }
 
   if (message.type === "stream_event") {
@@ -996,6 +1080,7 @@ function handleStreamEvent(message) {
 }
 
 function emitProposedPlan(id, markdown) {
+  if (currentManagedChild) return;
   const plan = typeof markdown === "string" ? markdown.trim() : "";
   if (!plan) {
     return;
@@ -1042,59 +1127,46 @@ function summarizeToolInput(input) {
 }
 
 async function readChangedFileSnapshot() {
-  const stdout = await execGit(["diff", "--numstat"]);
-  const rows = stdout.trim()
-    ? stdout
-    .trim()
-    .split("\n")
-    .map((line) => {
-      const [additions, deletions, ...pathParts] = line.split(/\t/);
-      const path = pathParts.join("\t");
-      return {
-        path,
-        additions: additions === "-" ? 0 : Number(additions) || 0,
-        deletions: deletions === "-" ? 0 : Number(deletions) || 0,
-      };
-    })
-        .filter((file) => file.path.length > 0)
-    : [];
+  try {
+    return await readGitChangedFileSnapshot(currentCwd);
+  } catch (error) {
+    // A failed snapshot is unknown, never an empty/clean baseline.
+    process.stderr.write(`Failed to track changed files: ${error.message}\n`);
+    return null;
+  }
+}
 
+async function readGitChangedFileSnapshot(cwd) {
+  const head = await execGit(["rev-parse", "--verify", "HEAD"], cwd, true);
+  const bases = head ? [["HEAD"]] : [["--cached"], []];
   const snapshot = new Map();
-  await Promise.all(
-    rows.map(async (file) => {
-      const patch = await execGit(["diff", "--", file.path]);
-      snapshot.set(file.path, { ...file, patch });
-    }),
-  );
-
-  const untrackedStdout = await execGit(["ls-files", "--others", "--exclude-standard"]);
-  const untrackedPaths = untrackedStdout
-    .split("\n")
-    .map((path) => path.trim())
-    .filter(Boolean);
-
-  await Promise.all(
-    untrackedPaths.map(async (path) => {
-      if (snapshot.has(path)) {
-        return;
-      }
-      try {
-        const contents = await readFile(join(currentCwd, path), "utf8");
-        const additions = contents.length
-          ? contents.replace(/\r?\n$/, "").split(/\r\n|\r|\n/).length
-          : 0;
-        snapshot.set(path, {
-          path,
-          additions,
-          deletions: 0,
-          patch: `untracked:${path}\n${contents}`,
-        });
-      } catch {
-        // Ignore unreadable or binary untracked files for chat summaries.
-      }
-    }),
-  );
-
+  for (const base of bases) {
+    const stdout = await execGit(["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", ...base, "--"], cwd);
+    for (const row of stdout.split("\0").filter(Boolean)) {
+      const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(row);
+      if (!match) throw new Error("Invalid Git numstat record");
+      const [, added, removed, path] = match;
+      const previous = snapshot.get(path);
+      const patch = await execGit(["diff", "--no-ext-diff", "--no-renames", ...base, "--", path], cwd);
+      snapshot.set(path, {
+        path,
+        additions: (previous?.additions || 0) + (Number(added) || 0),
+        deletions: (previous?.deletions || 0) + (Number(removed) || 0),
+        patch: (previous?.patch || "") + patch,
+      });
+    }
+  }
+  const untracked = await execGit(["ls-files", "--others", "--exclude-standard", "-z"], cwd);
+  for (const path of untracked.split("\0").filter(Boolean)) {
+    const contents = await readFile(join(cwd, path));
+    const binary = contents.includes(0);
+    snapshot.set(path, {
+      path,
+      additions: binary ? 0 : countTextLines(contents.toString("utf8")),
+      deletions: 0,
+      patch: `untracked:${createHash("sha256").update(contents).digest("hex")}`,
+    });
+  }
   return snapshot;
 }
 
@@ -1103,6 +1175,11 @@ async function emitChangedFiles() {
     return;
   }
   turnDiffEmitted = true;
+  // Include shell/delegated edits even if the SDK supplied no mutation hook.
+  if (turnFileBaseline) {
+    await completeCommandMutationBaseline(`turn:${activeTurnId}`, turnFileBaseline);
+    turnFileBaseline = null;
+  }
   const files = Array.from(turnDirectChanges.values());
   const exactPaths = new Set(files.map((file) => file.path));
   const observed_files = Array.from(turnObservedChanges.values()).filter(
@@ -1134,6 +1211,7 @@ async function handleCommand(command) {
     commandDiffBaselines = new Map();
     turnDiffEmitted = false;
     await ensureRuntime(command);
+    turnFileBaseline = await readChangedFileSnapshot();
     emit({ type: "status", status: "running" });
     promptController?.enqueue(command.text || "");
   } else if (command.type === "submit_user_input") {
@@ -1184,6 +1262,7 @@ export {
   mergeTurnChange,
   mutationStateForContents,
   mutationStateUnchanged,
+  readGitChangedFileSnapshot,
   resumeSessionIdForCommand,
   setTurnProjection,
 };

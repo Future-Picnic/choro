@@ -33,6 +33,8 @@ pub enum WorkspaceEvent {
 
 /// Root application state: the list of managed projects and which one is active.
 pub struct Workspace {
+    /// Persisted independently in the local store, never enabled by an import.
+    pub beta_features: ide_core::config::BetaFeatures,
     pub projects: Vec<Project>,
     pub project_sections: Vec<ProjectSection>,
     pub active: Option<ProjectId>,
@@ -53,6 +55,7 @@ pub struct Workspace {
     /// `None` = config predates the composer/generation split; readers fall
     /// back to the generation agent via [`Self::new_agent_defaults`].
     stored_new_agent_defaults: Option<NewAgentDefaults>,
+    pub favorite_models: Vec<ide_core::model_favorites::ModelFavorite>,
     pub code_review_prompt: String,
     pub code_review_output_instructions: String,
     pub memory_proposals_enabled: bool,
@@ -77,6 +80,9 @@ impl EventEmitter<WorkspaceEvent> for Workspace {}
 
 impl Workspace {
     pub fn load() -> Self {
+        let beta_features = LocalStore::open_default()
+            .and_then(|store| store.beta_features())
+            .unwrap_or_default();
         let legacy_config = AppConfig::load();
         let config = match LocalStore::open_default()
             .and_then(|store| store.load_workspace_config(legacy_config.clone()))
@@ -135,6 +141,7 @@ impl Workspace {
             })
             .collect();
         let mut workspace = Self {
+            beta_features,
             projects,
             project_sections,
             active,
@@ -153,6 +160,7 @@ impl Workspace {
             generation_agent: config.generation_agent.normalized(),
             quick_ask_agent: config.quick_ask_agent.normalized(),
             stored_new_agent_defaults: config.new_agent_defaults.map(NewAgentDefaults::normalized),
+            favorite_models: config.favorite_models,
             code_review_prompt: user_code_review_prompt(config.code_review_prompt),
             code_review_output_instructions: config.code_review_output_instructions,
             memory_proposals_enabled: config.memory_proposals_enabled,
@@ -319,6 +327,17 @@ impl Workspace {
         }
     }
 
+    pub fn set_beta_features(
+        &mut self,
+        features: ide_core::config::BetaFeatures,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        LocalStore::open_default()?.save_beta_features(features)?;
+        self.beta_features = features;
+        cx.notify();
+        Ok(())
+    }
+
     pub fn set_notification_settings(
         &mut self,
         notifications: NotificationSettings,
@@ -400,6 +419,20 @@ impl Workspace {
             return;
         }
         self.generation_agent = generation_agent;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn toggle_model_favorite(
+        &mut self,
+        model: ide_core::model_favorites::ModelFavorite,
+        cx: &mut Context<Self>,
+    ) {
+        if self.favorite_models.contains(&model) {
+            self.favorite_models.retain(|favorite| favorite != &model);
+        } else {
+            self.favorite_models.push(model);
+        }
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1197,6 +1230,7 @@ impl Workspace {
             generation_agent: self.generation_agent.clone(),
             quick_ask_agent: self.quick_ask_agent.clone(),
             new_agent_defaults: self.stored_new_agent_defaults.clone(),
+            favorite_models: self.favorite_models.clone(),
             code_review_prompt: self.code_review_prompt.clone(),
             code_review_output_instructions: self.code_review_output_instructions.clone(),
             memory_proposals_enabled: self.memory_proposals_enabled,

@@ -1,4 +1,5 @@
 use super::*;
+use ide_core::model_favorites::{favorites_first, ModelFavorite};
 
 /// Every provider the composer can start an agent with. Ordered as the rail
 /// lists them.
@@ -60,6 +61,13 @@ impl ComposerModelPickerTarget {
 }
 
 impl ComposerModelRow {
+    fn favorite_key(&self) -> ModelFavorite {
+        match self {
+            Self::BuiltIn(_, model) => ModelFavorite::new(*model, None),
+            Self::OpenCode(model) => ModelFavorite::new(AgentModel::OpenCode, Some(&model.id)),
+        }
+    }
+
     fn label(&self) -> &str {
         match self {
             Self::BuiltIn(_, model) => model.label(),
@@ -213,6 +221,8 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let filter = self.composer_model_provider;
+        let favorites_only = self.composer_model_favorites_only;
+        let favorites = self.workspace.read(cx).favorite_models.clone();
         let query = self
             .composer_model_query
             .read(cx)
@@ -245,6 +255,11 @@ impl CenterArea {
                         .map(|model| ComposerModelRow::BuiltIn(kind, model)),
                 );
             }
+        }
+        if favorites_only {
+            rows.retain(|row| favorites.contains(&row.favorite_key()));
+        } else {
+            favorites_first(&mut rows, &favorites, ComposerModelRow::favorite_key);
         }
         if !query.is_empty() {
             rows.retain(|row| {
@@ -293,6 +308,20 @@ impl CenterArea {
                     .p_1p5()
                     .bg(crate::ui::design::base(cx).opacity(0.32))
                     .child(
+                        crate::ui::style::model_picker_filter_button(
+                            "composer-model-rail-favorites",
+                            Icon::new(IconName::Star).text_color(crate::ui::design::amber(cx)),
+                            favorites_only, cx,
+                        )
+                        .tooltip("Favorites")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.composer_model_favorites_only = true;
+                            this.composer_model_provider = None;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
                         div()
                             .id("composer-model-rail-all")
                             .size(px(30.))
@@ -301,15 +330,15 @@ impl CenterArea {
                             .justify_center()
                             .rounded(crate::ui::design::r_sm())
                             .cursor_pointer()
-                            .when(filter.is_none(), |rail| {
+                            .when(filter.is_none() && !favorites_only, |rail| {
                                 rail.bg(crate::ui::design::surface_2(cx))
                             })
-                            .when(filter.is_some(), |rail| {
+                            .when(filter.is_some() || favorites_only, |rail| {
                                 rail.hover(|rail| rail.bg(crate::ui::design::hover(cx)))
                             })
                             .child(crate::ui::design::indicator::lucide_icon(
                                 lucide_icons::Icon::LayoutGrid,
-                                if filter.is_none() {
+                                if filter.is_none() && !favorites_only {
                                     crate::ui::design::t1(cx)
                                 } else {
                                     crate::ui::design::t3(cx)
@@ -321,6 +350,7 @@ impl CenterArea {
                                 // backdrop underneath — the picker stays open.
                                 cx.stop_propagation();
                                 this.composer_model_provider = None;
+                                this.composer_model_favorites_only = false;
                                 cx.notify();
                             })),
                     )
@@ -352,6 +382,7 @@ impl CenterArea {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
                                         this.composer_model_provider = Some(kind);
+                                        this.composer_model_favorites_only = false;
                                         cx.notify();
                                     }))
                             }),
@@ -395,7 +426,13 @@ impl CenterArea {
                             .overflow_y_scrollbar()
                             .gap_0p5()
                             .when(rows.is_empty(), |list| {
-                                let message = if filter == Some(AgentKind::OpenCode) {
+                                let message = if favorites_only {
+                                    if query.is_empty() {
+                                        "No favorite models available here. Choose a provider to browse models.".to_string()
+                                    } else {
+                                        "No matching favorites".to_string()
+                                    }
+                                } else if filter == Some(AgentKind::OpenCode) {
                                     open_code_empty_message.clone()
                                 } else if query.is_empty() {
                                     "No models are available".to_string()
@@ -411,10 +448,14 @@ impl CenterArea {
                                         .child(message),
                                 )
                             })
-                            .children(rows.into_iter().enumerate().scan(
+                            .children(rows.into_iter().scan(
                                 None::<String>,
-                                |previous_provider, (ix, row)| {
-                                    let provider_label = row.provider_label();
+                                |previous_provider, row| {
+                                    let provider_label = if favorites.contains(&row.favorite_key()) {
+                                        "Favorites".to_string()
+                                    } else {
+                                        row.provider_label()
+                                    };
                                     let show_provider = previous_provider.as_deref()
                                         != Some(provider_label.as_str());
                                     *previous_provider = Some(provider_label.clone());
@@ -456,7 +497,7 @@ impl CenterArea {
                                             })
                                             .child(
                                                 h_flex()
-                                                    .id(("composer-model-row", ix))
+                                                    .id(SharedString::from(format!("composer-model-row-{:?}", row.favorite_key())))
                                                     .w_full()
                                                     .min_w(px(0.))
                                                     .gap_2()
@@ -516,6 +557,9 @@ impl CenterArea {
                                                             ),
                                                         )
                                                     })
+                                                    .child(crate::ui::model_favorites::favorite_toggle(
+                                                        self.workspace.clone(), row.favorite_key(), cx,
+                                                    ))
                                                     .on_click(cx.listener(
                                                         move |this, _, _, cx| {
                                                             if disabled {
@@ -531,6 +575,7 @@ impl CenterArea {
                                                                                 kind,
                                                                                 model,
                                                                             ) => {
+                                                                                if composer.expert_snapshot.as_ref().is_some_and(|e|e.profile.provider!=*kind){composer.expert_snapshot=None;}
                                                                                 composer.provider =
                                                                                     *kind;
                                                                                 composer.model =
@@ -550,6 +595,7 @@ impl CenterArea {
                                                                             ComposerModelRow::OpenCode(
                                                                                 model,
                                                                             ) => {
+                                                                                composer.expert_snapshot=None;
                                                                                 composer.provider =
                                                                                     AgentKind::OpenCode;
                                                                                 composer.model =
@@ -949,6 +995,14 @@ impl CenterArea {
         }
         let commands =
             self.cached_agent_chat_slash_capabilities(composer.provider, composer.project, cx);
+        let mut commands = (*commands).clone();
+        if ide_core::delegation::enabled() {
+            commands.extend(
+                experts::capabilities(composer.provider)
+                    .into_iter()
+                    .filter(|c| c.expert_id.is_some()),
+            );
+        }
         let matches = agent_chat_slash_matches(&commands, &query.query);
         let selected = composer
             .slash_selection

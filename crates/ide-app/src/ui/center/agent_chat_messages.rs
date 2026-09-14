@@ -317,20 +317,26 @@ impl CenterArea {
                     .invisible()
                     .group_hover(group_name.clone(), |actions| actions.visible())
                     .child(
-                        Button::new(("agent-chat-steer-queued", turn_key))
-                            .ghost()
-                            .xsmall()
-                            .compact()
-                            .h(action_size)
-                            .icon(IconName::Redo2)
-                            .label("Steer")
-                            .tooltip("Send this into the current run now")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.agent_chats.update(cx, |chats, cx| {
-                                    chats.steer_queued_turn(agent_id, turn_id, cx);
-                                });
-                                cx.notify();
-                            })),
+                        crate::ui::style::ghost_button_compact(
+                            ("agent-chat-steer-queued", turn_key),
+                            if turn.handoff.is_some() {
+                                "Send now"
+                            } else {
+                                "Steer"
+                            },
+                        )
+                        .icon(IconName::Redo2)
+                        .tooltip(if turn.handoff.is_some() {
+                            "Send this to the teammate now"
+                        } else {
+                            "Send this into the current run now"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.agent_chats.update(cx, |chats, cx| {
+                                chats.steer_queued_turn(agent_id, turn_id, cx);
+                            });
+                            cx.notify();
+                        })),
                     )
                     .child(
                         div()
@@ -404,6 +410,13 @@ impl CenterArea {
                 tags,
                 created_at,
             } => {
+                if let Some((label, icon)) = chat_submission_action_chip(text) {
+                    return h_flex()
+                        .w_full()
+                        .justify_end()
+                        .child(crate::ui::style::chat_action_chip(label, icon, cx))
+                        .into_any_element();
+                }
                 // Incoming agent requests already have a dedicated timeline
                 // card. The provider still needs this hidden user turn, but a
                 // second "Question from …" bubble only repeats the card.
@@ -414,34 +427,6 @@ impl CenterArea {
                 }
                 if let Some(label) = super::agent_chat_brain::summary_request_action_label(text) {
                     return self.render_brain_summary_request_action(render_key, label, cx);
-                }
-                if let Some((label, icon)) = code_review_request_chip(text) {
-                    let _ = created_at;
-                    return h_flex()
-                        .w_full()
-                        .justify_end()
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .gap_1p5()
-                                .rounded_full()
-                                .bg(crate::ui::style::surface(cx))
-                                .px_3()
-                                .py_1p5()
-                                .child(
-                                    gpui_component::Icon::new(icon)
-                                        .size(crate::ui::design::icon_sm())
-                                        .text_color(crate::ui::design::t3(cx)),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(crate::ui::design::text_ui())
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(crate::ui::design::t3(cx))
-                                        .child(label),
-                                ),
-                        )
-                        .into_any_element();
                 }
                 let raw_visible_text = visible_agent_chat_submission_text(text);
                 let (_, attached_files) = split_prompt_attached_files(raw_visible_text);
@@ -1141,6 +1126,12 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match item {
+            AgentChatTimelineItem::DelegationGroup { run_id, .. } => self
+                .delegation_runs(agent.id, cx)
+                .into_iter()
+                .find(|r| r.id == *run_id)
+                .map(|r| self.render_delegation_group(r, cx))
+                .unwrap_or_else(|| div().child("Delegated work is loading…").into_any_element()),
             AgentChatTimelineItem::Message(message) => {
                 self.render_agent_chat_message(agent, index, message, window, cx)
             }

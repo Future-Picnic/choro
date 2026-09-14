@@ -5,6 +5,7 @@ use super::*;
 
 #[derive(Clone, Copy)]
 enum AgentActivityKind {
+    Compacting,
     Working,
     Planning,
     Reviewing,
@@ -14,6 +15,7 @@ enum AgentActivityKind {
 impl AgentActivityKind {
     fn label(self) -> &'static str {
         match self {
+            Self::Compacting => "Compacting context…",
             Self::Working => "Working",
             Self::Planning => "Planning",
             Self::Reviewing => "Reviewing",
@@ -21,9 +23,17 @@ impl AgentActivityKind {
         }
     }
 
+    fn display_label(self, running_for: u64) -> String {
+        match self {
+            // The turn timer includes work before compaction began.
+            Self::Compacting => self.label().to_string(),
+            _ => format!("{} for {}", self.label(), compact_duration(running_for)),
+        }
+    }
+
     fn center_icon(self) -> Option<lucide_icons::Icon> {
         match self {
-            Self::Working => None,
+            Self::Working | Self::Compacting => None,
             Self::Planning => Some(lucide_icons::Icon::ListChecks),
             Self::Reviewing => Some(lucide_icons::Icon::SearchCode),
             Self::Verifying => Some(lucide_icons::Icon::Check),
@@ -32,6 +42,9 @@ impl AgentActivityKind {
 }
 
 fn agent_activity_kind(session: &crate::state::agent_chat::AgentChatSession) -> AgentActivityKind {
+    if session.is_compacting && session.status == AgentChatStatus::Running {
+        return AgentActivityKind::Compacting;
+    }
     let latest_user_text = session.timeline.iter().rev().find_map(|item| match item {
         AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => Some(text.as_str()),
         _ => None,
@@ -354,11 +367,7 @@ impl CenterArea {
                         .text_size(crate::ui::design::text_body())
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(crate::ui::style::focus_text(cx))
-                        .child(format!(
-                            "{} for {}",
-                            activity.label(),
-                            compact_duration(displayed_running_for)
-                        )),
+                        .child(activity.display_label(displayed_running_for)),
                 ),
             )
             .into_any_element()
@@ -397,6 +406,51 @@ fn activity_step_summary(total: usize, in_progress: bool) -> String {
 #[cfg(test)]
 mod activity_group_tests {
     use super::*;
+
+    #[test]
+    fn compaction_indicator_overrides_activity_then_restores_it() {
+        let agent = AgentRecord::new(
+            ide_core::ProjectId(Uuid::nil()),
+            std::path::PathBuf::from("/tmp/choro-compaction-test"),
+            "Chat",
+            "",
+            AgentKind::Codex,
+            AgentModel::default_for(AgentKind::Codex),
+            AgentEffort::default(),
+            AgentAccessMode::default(),
+        );
+        let mut session = CenterArea::transient_hydration_session(&agent);
+        session.set_status(AgentChatStatus::Running);
+        for (mode, text, label) in [
+            (AgentInteractionMode::Default, "hello", "Working"),
+            (AgentInteractionMode::Plan, "plan", "Planning"),
+            (
+                AgentInteractionMode::Default,
+                AGENT_CODE_REVIEW_PROMPT,
+                "Reviewing",
+            ),
+            (
+                AgentInteractionMode::Default,
+                AGENT_VERIFY_REQUEST_MARKER,
+                "Verifying",
+            ),
+        ] {
+            session.interaction_mode = mode;
+            session.timeline = vec![AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: text.to_string(),
+                display_text: None,
+                tags: Vec::new(),
+                created_at: 0,
+            })];
+            session.is_compacting = true;
+            assert_eq!(
+                agent_activity_kind(&session).display_label(900),
+                "Compacting context…"
+            );
+            session.is_compacting = false;
+            assert_eq!(agent_activity_kind(&session).label(), label);
+        }
+    }
 
     #[test]
     fn activity_summary_uses_clear_singular_and_progress_copy() {

@@ -4,6 +4,8 @@ use crate::ui::center::agent_composer_picker::collect_composer_file_entries;
 
 fn command(provider: AgentKind, name: &str, invocation: &str) -> AgentCapability {
     AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider,
         source: AgentCapabilitySource::Skill,
         name: name.to_string(),
@@ -18,6 +20,8 @@ fn command(provider: AgentKind, name: &str, invocation: &str) -> AgentCapability
 
 fn riff(name: &str, instructions: &str) -> AgentCapability {
     AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider: AgentKind::Codex,
         source: AgentCapabilitySource::ChoroRiff,
         name: name.to_string(),
@@ -32,6 +36,8 @@ fn riff(name: &str, instructions: &str) -> AgentCapability {
 
 fn orbit(name: &str, module_id: Uuid) -> AgentCapability {
     AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider: AgentKind::Codex,
         source: AgentCapabilitySource::Orbit,
         name: name.to_string(),
@@ -523,6 +529,7 @@ fn editing_a_queued_turn_restores_its_image_attachment() {
     let turn = QueuedChatTurn {
         id: Uuid::new_v4(),
         text: prompt_with_attached_files("Describe this image", std::slice::from_ref(&image)),
+        handoff: None,
         display_text: Some("Describe this image".to_string()),
         tags: Vec::new(),
         mode: AgentInteractionMode::Default,
@@ -541,6 +548,7 @@ fn editing_a_legacy_queued_turn_keeps_attachment_metadata_out_of_the_input() {
     let turn = QueuedChatTurn {
         id: Uuid::new_v4(),
         text: prompt_with_attached_files("Review", std::slice::from_ref(&image)),
+        handoff: None,
         display_text: None,
         tags: Vec::new(),
         mode: AgentInteractionMode::Default,
@@ -551,6 +559,32 @@ fn editing_a_legacy_queued_turn_keeps_attachment_metadata_out_of_the_input() {
 
     assert_eq!(text, "Review");
     assert_eq!(attached_files, vec![image]);
+}
+
+#[test]
+fn editing_a_queued_handoff_restores_the_note_and_explicit_references() {
+    let turn = QueuedChatTurn {
+        id: Uuid::new_v4(),
+        text: "Generated context, not the editable note".to_string(),
+        display_text: Some("Task for SDK agent: Check this".to_string()),
+        tags: Vec::new(),
+        mode: AgentInteractionMode::Default,
+        created_at: 1,
+        handoff: Some(crate::state::agent_chat::QueuedAgentHandoff {
+            target_agent_id: Uuid::new_v4(),
+            target_title: "SDK agent".to_string(),
+            kind: "delegate".to_string(),
+            original_text: "Check this".to_string(),
+            references: "- Attached file: /tmp/sdk.png".to_string(),
+        }),
+    };
+    let (text, _) = queued_turn_composer_draft(&turn);
+    assert_eq!(
+        text,
+        "Check this\n\nReferences:\n- Attached file: /tmp/sdk.png"
+    );
+    assert!(!text.contains("Generated context"));
+    assert!(!text.contains("Task for"));
 }
 
 #[test]

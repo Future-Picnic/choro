@@ -13,7 +13,17 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        self.render_agent_chat_body_for_surface(agent, AgentChatSurface::Standard, window, cx)
+        let surface = agent
+            .delegation
+            .as_ref()
+            .and_then(|b| {
+                b.task_id.map(|task| AgentChatSurface::Delegated {
+                    parent: b.parent_agent_id,
+                    task,
+                })
+            })
+            .unwrap_or(AgentChatSurface::Standard);
+        self.render_agent_chat_body_for_surface(agent, surface, window, cx)
     }
 
     pub(super) fn render_agent_chat_body_for_surface(
@@ -49,6 +59,7 @@ impl CenterArea {
                     chat_session_id: agent.chat_session_id.clone(),
                     cli_session_id: None,
                     hidden_from_notifications: false,
+                    is_compacting: false,
                     status: AgentChatStatus::Idle,
                     interaction_mode: AgentInteractionMode::Default,
                     composer_text: String::new(),
@@ -97,8 +108,8 @@ impl CenterArea {
             session
         };
         self.sync_agent_chat_visualizations(agent, &session);
-        let is_plan_mode =
-            surface.allows_plan_mode() && session.interaction_mode == AgentInteractionMode::Plan;
+        let is_plan_mode = surface.allows_plan_mode(agent)
+            && session.interaction_mode == AgentInteractionMode::Plan;
         let attached_files = self
             .agent_chat_attached_files
             .get(&agent.id)
@@ -149,7 +160,7 @@ impl CenterArea {
         let memory_armed = memory_save_intent(&input.read(cx).value());
         let has_pending_user_input = session.pending_user_input.is_some();
         let has_pending_approval = session.pending_approval.is_some();
-        let has_actionable_plan = surface.allows_plan_mode()
+        let has_actionable_plan = surface.allows_plan_mode(agent)
             && session
                 .proposed_plan
                 .as_ref()
@@ -548,7 +559,7 @@ impl CenterArea {
                                                 window,
                                                 cx,
                                             );
-                                        } else if surface.allows_plan_mode()
+                                        } else if surface.allows_plan_mode(&agent)
                                             && this
                                                 .agent_chats
                                                 .read(cx)
@@ -597,7 +608,7 @@ impl CenterArea {
                                             window,
                                             cx,
                                         );
-                                    } else if surface.allows_plan_mode()
+                                    } else if surface.allows_plan_mode(&agent)
                                         && this
                                             .agent_chats
                                             .read(cx)
@@ -670,7 +681,7 @@ impl CenterArea {
                                 session
                                     .proposed_plan
                                     .as_ref()
-                                    .filter(|plan| surface.allows_plan_mode() && !has_pending_approval && !has_pending_user_input && plan.implemented_at.is_none()),
+                                    .filter(|plan| surface.allows_plan_mode(agent) && !has_pending_approval && !has_pending_user_input && plan.implemented_at.is_none()),
                                 |card, plan| {
                                     card.child(self.render_proposed_plan_decision_panel(
                                         agent.id,
@@ -689,6 +700,7 @@ impl CenterArea {
                                     cx,
                                 ))
                             })
+                            .when(ide_core::delegation::enabled(), |card|card.child(self.render_expert_composer(agent,cx)))
                             .when(!has_composer_decision && !handoff_busy, |card| {
                                 let picker =
                                     self.render_agent_chat_context_picker(agent, input.clone(), window, cx);
@@ -824,11 +836,16 @@ impl CenterArea {
                                             .open(self.composer_model_expanded)
                                             .on_open_change({
                                                 let model_view = chat_view.clone();
-                                                move |open, _, cx| {
+                                                move |open, window, cx| {
                                                     model_view.update(cx, |this, cx| {
                                                         this.composer_model_expanded = *open;
                                                         if *open {
                                                             this.composer_model_provider = None;
+                                                            this.composer_model_query.update(cx, |query, cx| {
+                                                                query.set_value("", window, cx)
+                                                            });
+                                                            this.composer_model_favorites_only =
+                                                                !this.workspace.read(cx).favorite_models.is_empty();
                                                             this.refresh_open_code_models(false, cx);
                                                         }
                                                         cx.notify();
@@ -891,30 +908,26 @@ impl CenterArea {
                                                 let agent_id = agent.id;
                                                 let provider = agent.provider;
                                                 let current_model = agent.model;
+                                                let current_external_id = agent.external_model_id.clone();
                                                 let current_effort = agent.effort;
                                                 let model_view = chat_view.clone();
                                                 let surface = surface.clone();
-                                                move |mut menu, window, _| {
-                                                    let provider_label =
-                                                        if provider == AgentKind::Codex {
-                                                            "GPT-5.6"
-                                                        } else {
-                                                            provider.label()
-                                                        };
-                                                    menu = menu
-                                                        .item(PopupMenuItem::label(provider_label));
-                                                    for candidate in AgentModel::models_for(provider)
-                                                        .iter()
-                                                        .copied()
-                                                    {
+                                                move |mut menu, window, cx| {
+                                                    let workspace = model_view.read(cx).workspace.clone();
+                                                    let favorites = workspace.read(cx).favorite_models.clone();
+                                                    let choices = crate::ui::model_favorites::grouped_choices(
+                                                        AgentModel::models_for(provider).to_vec(), &favorites,
+                                                        |model| ide_core::model_favorites::ModelFavorite::new(*model, current_external_id.as_deref()),
+                                                    );
+                                                    for (heading, candidate, key) in choices {
+                                                        if let Some(heading) = heading { menu = menu.item(PopupMenuItem::label(heading)); }
                                                         let surface = surface.clone();
                                                         let next_effort = candidate
                                                             .normalize_effort(current_effort);
                                                         menu = menu.item(
-                                                            PopupMenuItem::new(
-                                                                candidate.menu_label(),
+                                                            crate::ui::model_favorites::model_menu_item(
+                                                                candidate.menu_label(), key, candidate == current_model, workspace.clone(), cx,
                                                             )
-                                                            .checked(candidate == current_model)
                                                             .on_click(window.listener_for(
                                                                 &model_view,
                                                                 move |this: &mut CenterArea,
@@ -1082,6 +1095,7 @@ impl CenterArea {
                                                     if crate::ui::onboarding::locks_onboarding_plan_mode(cx) {
                                                         return;
                                                     }
+                                                    if !this.set_expert_plan_mode(agent_id,AgentInteractionMode::Default,cx){return;}
                                                     this.agent_chats.update(cx, |chats, cx| {
                                                         let session = chats.ensure_session(
                                                             agent_id,

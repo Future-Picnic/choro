@@ -100,11 +100,12 @@ fn is_legacy_code_review_request(text: &str) -> bool {
         == Some(ide_core::config::DEFAULT_CODE_REVIEW_OUTPUT_INSTRUCTIONS)
 }
 
-/// Recognise current and historical canned code-review and verification turns
-/// so the composer's giant instruction prompt renders as a compact chip
-/// instead of a wall of text.
-pub(super) fn code_review_request_chip(text: &str) -> Option<(&'static str, IconName)> {
-    if text == super::agent_chat_runtime::AGENT_CODE_REVIEW_PROMPT
+/// App-generated submissions share one action treatment, both for composer
+/// commands and automatic Bandmate coordination. Ordinary user prose stays prose.
+pub(super) fn chat_submission_action_chip(text: &str) -> Option<(&'static str, IconName)> {
+    if let Some(label) = crate::state::agent_chat::delegation_delivery_action_label(text) {
+        Some((label, IconName::Bot))
+    } else if text == super::agent_chat_runtime::AGENT_CODE_REVIEW_PROMPT
         || text.starts_with(super::agent_chat_runtime::AGENT_CODE_REVIEW_REQUEST_MARKER)
         || is_legacy_code_review_request(text)
     {
@@ -325,25 +326,40 @@ mod tests {
             ide_core::config::DEFAULT_CODE_REVIEW_OUTPUT_INSTRUCTIONS,
         );
         assert_eq!(
-            code_review_request_chip(&legacy).map(|(label, _)| label),
+            chat_submission_action_chip(&legacy).map(|(label, _)| label),
             Some("Sent for code review")
         );
     }
 
     #[test]
     fn ordinary_user_message_is_not_mistaken_for_a_review_request() {
-        assert!(code_review_request_chip("Please review this code").is_none());
+        assert!(chat_submission_action_chip("Please review this code").is_none());
+        assert!(chat_submission_action_chip("Delegation coordination").is_none());
+        assert!(chat_submission_action_chip("Delegate design to UI Designer").is_none());
+    }
+
+    #[test]
+    fn coordinator_delivery_uses_an_expert_action_chip() {
+        let action = chat_submission_action_chip(
+            "[Choro delivery 925562e6-de98-42f4-a07f-cbd8c3450916]\nManaged Experts are ready.",
+        );
+        assert!(matches!(
+            action,
+            Some(("Delegation coordination", IconName::Bot))
+        ));
     }
 
     #[test]
     fn declined_verification_renders_as_a_compact_chip() {
         assert_eq!(
-            code_review_request_chip(super::super::agent_chat_runtime::AGENT_VERIFY_DISMISS_MARKER)
-                .map(|(label, _)| label),
+            chat_submission_action_chip(
+                super::super::agent_chat_runtime::AGENT_VERIFY_DISMISS_MARKER
+            )
+            .map(|(label, _)| label),
             Some("Verification skipped")
         );
         assert_eq!(
-            code_review_request_chip(
+            chat_submission_action_chip(
                 super::super::agent_chat_runtime::AGENT_REVERIFY_DISMISS_MARKER
             )
             .map(|(label, _)| label),
@@ -354,7 +370,7 @@ mod tests {
     #[test]
     fn pocketcomet_handoff_renders_as_a_compact_chip() {
         assert_eq!(
-            code_review_request_chip(&format!(
+            chat_submission_action_chip(&format!(
                 "{}\nPrepare the update.",
                 super::super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER
             ))

@@ -2,6 +2,8 @@ pub mod agent_activity;
 pub mod agent_capabilities;
 pub mod agent_chat;
 pub mod agents;
+pub mod chat_dispatch;
+pub mod delegation;
 pub mod designs;
 pub mod doc_assistant;
 pub mod docs;

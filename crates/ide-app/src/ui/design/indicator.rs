@@ -62,6 +62,28 @@ pub fn solo_icon(color: Hsla, size: gpui::Pixels) -> Div {
     lucide_icon(lucide_icons::Icon::Shuffle, color, size)
 }
 
+/// The lead's role mark. Kept in contextual details so sidebar task names
+/// stay quiet; activity and child disclosure retain their own indicators.
+pub fn lead_icon(color: Hsla, size: gpui::Pixels) -> Div {
+    lucide_icon(lucide_icons::Icon::Blend, color, size)
+}
+
+/// A bandmate's identity, separate from its activity glyph. Callers pass the
+/// durable assignment position, never the row's position in a filtered list.
+/// Larger bands reuse the six instruments without changing existing members.
+pub fn bandmate_icon(index: usize, color: Hsla, size: gpui::Pixels) -> Div {
+    use lucide_icons::Icon;
+    const INSTRUMENTS: [Icon; 6] = [
+        Icon::Drum,
+        Icon::Guitar,
+        Icon::Piano,
+        Icon::Mic,
+        Icon::Speaker,
+        Icon::DiscAlbum,
+    ];
+    lucide_icon(INSTRUMENTS[index % INSTRUMENTS.len()], color, size)
+}
+
 /// The PocketComet origin mark. Orbit is a concrete link between a task and
 /// its running Choro agent, and remains distinct from Choro's Solo fork mark.
 pub fn pocketcomet_icon(color: Hsla, size: gpui::Pixels) -> Div {

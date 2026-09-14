@@ -83,7 +83,8 @@ impl CenterArea {
             .map(|agent| (agent.id, agent.status))
             .collect();
         let center = cx.new(move |cx| {
-            let project_navigation = center_navigation::ProjectNavigation::new(workspace.read(cx).active);
+            let project_navigation =
+                center_navigation::ProjectNavigation::new(workspace.read(cx).active);
             cx.observe(&workspace, |this: &mut Self, _, cx| {
                 this.sync_project_navigation(cx);
                 this.refresh_open_code_models(false, cx);
@@ -185,6 +186,12 @@ impl CenterArea {
                 },
             )
             .detach();
+            if let Some(handle) = cx
+                .try_global::<crate::state::delegation::DelegationHandle>()
+                .cloned()
+            {
+                cx.observe(&handle.0, |_, _, cx| cx.notify()).detach();
+            }
             cx.observe(&docs, |_, _, cx| cx.notify()).detach();
             cx.subscribe(&docs, |this: &mut Self, _docs, event: &DocsEvent, cx| {
                 if let DocsEvent::OpenReference { doc_path, target } = event {
@@ -733,6 +740,11 @@ impl CenterArea {
                 agent_chat_attachment_pastes_pending: HashMap::new(),
                 agent_chat_pasted_text_blocks: HashMap::new(),
                 agent_chat_selected_commands: HashMap::new(),
+                delegation_selection: HashMap::new(),
+                delegated_panel: None,
+                delegated_overview: None,
+                delegated_preview: false,
+                delegated_brief_expanded: HashSet::new(),
                 agent_chat_capability_cache: RefCell::new(None),
                 agent_chat_preview_armed: HashSet::new(),
                 agent_chat_preview_suggestion_dismissed: HashSet::new(),
@@ -876,6 +888,7 @@ impl CenterArea {
                 composer_branch_expanded: false,
                 composer_model_expanded: false,
                 composer_model_provider: None,
+                composer_model_favorites_only: false,
                 open_code_catalog: OpenCodeCatalog::default(),
                 agent_chat_rail_compact: false,
                 pocketcomet_project_filter: None,

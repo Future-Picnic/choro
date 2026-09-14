@@ -40,10 +40,12 @@ use ide_core::{
 use uuid::Uuid;
 
 mod appearance_page;
+mod beta_features;
 mod brain;
 mod companion;
 mod data_page;
 mod design;
+mod experts_page;
 mod generation_page;
 mod memory;
 mod notifications;
@@ -69,6 +71,8 @@ pub(crate) enum SettingsSection {
     Notifications,
     Process,
     AgentSkills,
+    Experts,
+    BetaFeatures,
     Orbit,
     Brain,
     Memory,
@@ -88,6 +92,8 @@ impl SettingsSection {
             Self::Notifications => "Notifications",
             Self::Process => "Process monitor",
             Self::AgentSkills => "Skills",
+            Self::Experts => "Band",
+            Self::BetaFeatures => "Beta features",
             Self::Orbit => "Orbit",
             Self::Brain => "Knowledge",
             Self::Memory => "Memories",
@@ -117,6 +123,8 @@ impl SettingsSection {
             Self::AgentSkills => {
                 "Create Choro Riffs for every project and review skills discovered from your coding agents."
             }
+            Self::Experts => "Your bandmates are AI specialists. Start a chat with one or ask your lead to bring them into a task.",
+            Self::BetaFeatures => "Try optional features still in development, including delegation.",
             Self::Orbit => {
                 "Create reusable project modules with structured views and an agent job."
             }
@@ -194,6 +202,11 @@ pub(crate) struct ProjectSource {
 
 /// Settings dialog: editable keyboard shortcuts (persisted to config).
 pub struct SettingsView {
+    experts: Vec<ide_core::experts::ExpertProfile>,
+    expert_editor: Option<experts_page::ExpertEditor>,
+    experts_status: Option<experts_page::ExpertsNotice>,
+    experts_search: Entity<InputState>,
+    beta_features_error: Option<String>,
     workspace: Entity<Workspace>,
     quick_ask: Entity<QuickAskState>,
     voice: Entity<crate::voice::VoiceState>,
@@ -434,6 +447,8 @@ impl SettingsView {
             })
             .collect::<Vec<_>>();
         let skills_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search skills"));
+        let experts_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search bandmates"));
         let design_provider = penpot.read(cx).provider();
         let design_config = penpot.read(cx).config().clone();
         let design_instance_value = if design_provider == DesignProvider::PenpotCloud {
@@ -498,12 +513,23 @@ impl SettingsView {
                 },
             )
             .detach();
+            cx.subscribe(
+                &experts_search,
+                |_: &mut Self, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
             cx.subscribe(&brain_search, |_: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
                 }
             })
             .detach();
+            cx.observe(&workspace, |_: &mut Self, _, cx| cx.notify())
+                .detach();
             cx.observe(&penpot, |_: &mut Self, _, cx| cx.notify())
                 .detach();
             cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
@@ -528,6 +554,13 @@ impl SettingsView {
             })
             .detach();
             Self {
+                experts: LocalStore::open_default()
+                    .and_then(|s| s.load_experts())
+                    .unwrap_or_default(),
+                expert_editor: None,
+                experts_status: None,
+                experts_search,
+                beta_features_error: None,
                 workspace: workspace.clone(),
                 quick_ask: quick_ask.clone(),
                 voice: voice.clone(),

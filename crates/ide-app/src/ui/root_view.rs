@@ -339,6 +339,14 @@ impl RootView {
         let terminals = cx.new(|_| TerminalManager::new());
         let agents = cx.new(|_| AgentRecords::load());
         let agent_chats = cx.new(|_| AgentChatState::new());
+        if ide_core::delegation::enabled() {
+            crate::state::delegation::DelegationCoordinator::start(
+                agents.clone(),
+                agent_chats.clone(),
+                terminals.clone(),
+                cx,
+            );
+        }
         let agent_activity =
             AgentActivityCache::view(agents.clone(), agent_chats.clone(), terminals.clone(), cx);
         let doc_assistants = cx.new(|_| DocAssistantState::load());

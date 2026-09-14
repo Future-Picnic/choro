@@ -5074,6 +5074,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "git2 0.21.0",
  "ide-core",
  "serde",
  "serde_json",

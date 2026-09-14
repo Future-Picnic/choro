@@ -10,11 +10,11 @@ use gpui_component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex, Icon, IconName,
 };
-use ide_core::ProjectId;
+use ide_core::{AgentStatus, ProjectId};
 
 use crate::state::docs::DocEntry;
 use crate::state::{DocsState, Workspace};
-use crate::ui::agent_status_style::status_accent;
+use crate::ui::agent_status_style::{status_accent, status_icon};
 use crate::ui::center::CenterArea;
 use crate::ui::style;
 
@@ -57,7 +57,6 @@ impl DocsPanel {
         &self,
         project: ProjectId,
         entry: DocEntry,
-        index: usize,
         selected: Option<&PathBuf>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -68,31 +67,24 @@ impl DocsPanel {
         let is_selected = selected == Some(&path);
         let is_hovered = self.hovered_entry.as_ref() == Some(&path);
         let show_actions = is_hovered || is_selected;
+        let status = self.docs.read(cx).doc_status(project, &entry.relative_path);
         let accent = if is_template {
             crate::ui::design::accent(cx)
         } else {
-            status_accent(
-                self.docs.read(cx).doc_status(project, &entry.relative_path),
-                cx,
-            )
+            status_accent(status, cx)
         };
         let label = SharedString::from(entry.title.clone());
         let actions_path = path.clone();
         let actions_title = entry.title.clone();
         let actions_docs = self.docs.clone();
         let actions_center = self.center.clone();
-        let action_id = if is_template {
-            ("template-row-actions", index)
-        } else {
-            ("doc-row-actions", index)
-        };
+        // Keep menu/hover identity attached to the document when its status
+        // moves it to another section.
+        let row_id = SharedString::from(format!("doc-row:{}", path.display()));
+        let action_id = SharedString::from(format!("doc-row-actions:{}", path.display()));
 
         h_flex()
-            .id(if is_template {
-                ("template-row", index)
-            } else {
-                ("doc-row", index)
-            })
+            .id(row_id)
             .min_w(px(0.))
             .min_h(px(36.))
             .px_2()
@@ -114,11 +106,14 @@ impl DocsPanel {
                 }
                 cx.notify();
             }))
-            .child(
+            .child(if is_template {
                 Icon::new(crate::ui::design::docs_icon())
                     .size(crate::ui::design::icon())
-                    .text_color(accent),
-            )
+                    .text_color(accent)
+                    .into_any_element()
+            } else {
+                status_icon(status, accent)
+            })
             .child(
                 div()
                     .flex_1()
@@ -229,8 +224,37 @@ impl DocsPanel {
                                 .child("No documents yet"),
                         )
                     })
-                    .children(docs.into_iter().enumerate().map(|(index, entry)| {
-                        self.render_entry_row(project_id, entry, index, selected.as_ref(), cx)
+                    .children(AgentStatus::ALL.into_iter().filter_map(|status| {
+                        let entries = docs
+                            .iter()
+                            .filter(|entry| {
+                                self.docs
+                                    .read(cx)
+                                    .doc_status(project_id, &entry.relative_path)
+                                    == status
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if entries.is_empty() {
+                            return None;
+                        }
+                        Some(
+                            v_flex()
+                                .w_full()
+                                .min_w(px(0.))
+                                .gap_1()
+                                .pt_2()
+                                .child(
+                                    h_flex()
+                                        .px_2()
+                                        .min_h(px(28.))
+                                        .items_center()
+                                        .child(section_label(status.label(), entries.len(), cx)),
+                                )
+                                .children(entries.into_iter().map(|entry| {
+                                    self.render_entry_row(project_id, entry, selected.as_ref(), cx)
+                                })),
+                        )
                     })),
             )
             .child(
@@ -275,8 +299,8 @@ impl DocsPanel {
                         )
                     })
                     .when(self.templates_expanded, |section| {
-                        section.children(templates.into_iter().enumerate().map(|(index, entry)| {
-                            self.render_entry_row(project_id, entry, index, selected.as_ref(), cx)
+                        section.children(templates.into_iter().map(|entry| {
+                            self.render_entry_row(project_id, entry, selected.as_ref(), cx)
                         }))
                     }),
             )

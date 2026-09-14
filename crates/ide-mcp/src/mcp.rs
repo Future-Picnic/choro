@@ -135,6 +135,7 @@ mod tests {
     fn initialize_scopes_choro_native_creation_instructions() {
         let server = Server {
             ctx: ServerContext {
+                delegation_scope: None,
                 project_id: None,
                 agent_id: None,
                 store: None,

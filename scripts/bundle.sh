@@ -162,6 +162,9 @@ cp "$CEF_ROOT/CREDITS.html" \
   "$BUNDLE/Contents/Resources/licenses/chromium/CREDITS.html"
 mkdir -p "$BUNDLE/Contents/Resources/licenses/sparkle"
 cp "$SPARKLE_ROOT/LICENSE" "$BUNDLE/Contents/Resources/licenses/sparkle/LICENSE"
+# Keep the exact adapted sources and notices readable in the distributed app,
+# including the share-alike security-review edition. Runtime copies are embedded.
+cp -R crates/ide-core/assets/experts "$BUNDLE/Contents/Resources/licenses/expert-skills"
 
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -250,6 +253,10 @@ codesign "${SIGN_ARGS[@]}" \
   "$BUNDLE/Contents/Frameworks/Chromium Embedded Framework.framework"
 for HELPER_SUFFIX in "Helper (GPU)" "Helper (Renderer)" "Helper (Plugin)" "Helper (Alerts)" "Helper"; do
   HELPER_BUNDLE="$BUNDLE/Contents/Frameworks/choro $HELPER_SUFFIX.app"
+  if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign "${SIGN_ARGS[@]}" --entitlements scripts/choro-cef-local.entitlements "$HELPER_BUNDLE"
+    continue
+  fi
   case "$HELPER_SUFFIX" in
     "Helper (GPU)"|"Helper (Renderer)")
       codesign "${SIGN_ARGS[@]}" --entitlements "$CEF_JIT_ENTITLEMENTS" "$HELPER_BUNDLE"

@@ -6,7 +6,20 @@ use super::{
     REVIEW_CHECKLIST_REQUEST_MARKER,
 };
 
-pub(crate) const TIMELINE_SEARCH_TEXT_VERSION: u64 = 1;
+pub(crate) const TIMELINE_SEARCH_TEXT_VERSION: u64 = 2;
+
+/// Recognise the coordinator's durable envelope, including restored provider
+/// history that no longer has its display label. This is presentation only;
+/// plain user text mentioning delegation is never enough to classify an action.
+pub(crate) fn delegation_delivery_action_label(text: &str) -> Option<&'static str> {
+    let (header, body) = text.split_once('\n')?;
+    let id = header
+        .trim_end_matches('\r')
+        .strip_prefix("[Choro delivery ")?
+        .strip_suffix(']')?;
+    uuid::Uuid::parse_str(id).ok()?;
+    (!body.trim().is_empty()).then_some("Delegation coordination")
+}
 
 const SUMMARY_REQUEST_MARKER: &str = "[Choro Brain summary checkpoint]";
 const BACKGROUND_SUMMARY_REQUEST_MARKER: &str = "<!-- choro:background-summary-maintenance -->";
@@ -58,6 +71,9 @@ pub(crate) fn searchable_message_text(message: &AgentChatMessage) -> Option<Stri
 }
 
 fn searchable_user_message_text(text: &str, display_text: Option<&str>) -> Option<String> {
+    if let Some(label) = delegation_delivery_action_label(text) {
+        return Some(label.to_owned());
+    }
     if search_turn_is_hidden(text)
         || text.contains(AGENT_REQUEST_MARKER)
         || text.contains(TEAMMATE_RESULT_MARKER)
@@ -180,6 +196,31 @@ fn markdown_visible_text(markdown: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegation_delivery_search_matches_its_chip_after_history_reload() {
+        let text = "[Choro delivery 925562e6-de98-42f4-a07f-cbd8c3450916]\nManaged Bandmates are ready. Continue coordination.";
+        for display_text in [None, Some("Delegation coordination")] {
+            assert_eq!(
+                searchable_user_message_text(text, display_text).as_deref(),
+                Some("Delegation coordination")
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_delegation_text_and_incomplete_envelopes_are_not_actions() {
+        for text in [
+            "Delegation coordination",
+            "Please delegate the design to UI Designer",
+            "[Choro delivery invalid]\nA message",
+            "[Choro delivery 925562e6-de98-42f4-a07f-cbd8c3450916]",
+            "[Choro delivery 925562e6-de98-42f4-a07f-cbd8c3450916]\n",
+            "Explain this: [Choro delivery 925562e6-de98-42f4-a07f-cbd8c3450916]\nA message",
+        ] {
+            assert!(delegation_delivery_action_label(text).is_none(), "{text}");
+        }
+    }
 
     #[test]
     fn searchable_text_matches_rendered_markdown_instead_of_source_syntax() {

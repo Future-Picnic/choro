@@ -16,6 +16,7 @@ use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
     h_flex,
     input::{Input, InputState},
+    scroll::ScrollableElement,
     v_flex, Icon, IconName, Selectable, Sizable,
 };
 
@@ -742,6 +743,90 @@ pub fn ghost_button_compact(id: impl Into<ElementId>, label: impl Into<SharedStr
     base_button_compact(id, label).ghost()
 }
 
+/// Independent star action inside model rows; it never selects the model.
+pub fn model_favorite_button(id: impl Into<ElementId>, favorite: bool, cx: &App) -> Button {
+    header_icon_button(id, IconName::Star, cx)
+        .icon(Icon::new(IconName::Star).text_color(if favorite {
+            design::amber(cx)
+        } else {
+            design::t3(cx)
+        }))
+        .tooltip(if favorite {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        })
+}
+
+/// Provider and favorites rail control in the existing model picker.
+pub fn model_picker_filter_button(
+    id: impl Into<ElementId>,
+    icon: Icon,
+    selected: bool,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .size(px(30.))
+        .p_0()
+        .rounded(design::r_sm())
+        .when(selected, |button| button.bg(design::surface_2(cx)))
+        .child(icon.size(design::icon_sm()))
+}
+
+/// A two-line destination in an interactive hover card. The full row is a
+/// keyboard-focusable button; long names truncate without crowding the arrow.
+pub fn hover_card_link_button(
+    id: impl Into<ElementId>,
+    icon: Icon,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    ghost_button_compact(id, "")
+        .w_full()
+        .h_auto()
+        .px_2()
+        .py_1p5()
+        .justify_start()
+        .child(
+            h_flex()
+                .w_full()
+                .min_w(px(0.))
+                .gap_2()
+                .child(icon.size(design::icon_sm()).flex_none())
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .items_start()
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_color(design::t1(cx))
+                                .child(title.into()),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_size(design::text_label())
+                                .text_color(design::t3(cx))
+                                .child(detail.into()),
+                        ),
+                )
+                .child(
+                    Icon::new(IconName::ChevronRight)
+                        .size(design::icon_sm())
+                        .flex_none()
+                        .text_color(design::t3(cx)),
+                ),
+        )
+}
+
 /// Inline agent identity link used inside Brain request / response cards.
 /// It stays typographic at rest, then gains the shared hover surface so the
 /// navigation affordance is clear without making the agent name look like a
@@ -937,6 +1022,224 @@ pub fn settings_inline_icon_button(id: impl Into<ElementId>, icon: IconName) -> 
 /// The established default action treatment used by Settings data controls.
 pub fn settings_action_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     Button::new(id).label(label)
+}
+
+// ---- Expert settings forms and lists (Settings → Experts) --------------------
+
+/// Single-line text field on the Settings control scale. gpui's default
+/// `Input` is `Size::Medium` (14px text, 32px tall) which sits a step above
+/// every compact button beside it; this pins the field to `control_h` with
+/// `text_ui` editable text. Chain `.w_full()` / `.prefix(..)` as usual.
+pub fn expert_settings_input(state: &Entity<InputState>) -> Input {
+    Input::new(state)
+        .small()
+        .h(design::control_h())
+        .text_size(design::text_ui())
+}
+
+/// Bounded, focus-visible multi-line field on the compact Settings scale.
+/// Set a height on this control; avoid wrapping it in a second input frame.
+pub fn expert_settings_multiline_input(state: &Entity<InputState>) -> Input {
+    Input::new(state)
+        .small()
+        .w_full()
+        .min_w(px(0.))
+        .flex_none()
+        .overflow_hidden()
+        .text_size(design::text_ui())
+}
+
+/// A single bounded scroll owner inside a full-height Settings page.
+pub fn expert_settings_scroll_body(
+    id: impl Into<ElementId>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    let id = id.into();
+    let handle = window
+        .use_keyed_state(id.clone(), cx, |_, _| gpui::ScrollHandle::default())
+        .read(cx)
+        .clone();
+    v_flex()
+        .id(id)
+        .w_full()
+        .min_w(px(0.))
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_x_hidden()
+        .overflow_y_scroll()
+        .relative()
+        .track_scroll(&handle)
+        .vertical_scrollbar(&handle)
+        .pr_2()
+}
+
+/// Stable actions below a scrolling bandmate form or skill editor.
+pub fn expert_settings_editor_footer(cx: &App) -> Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.))
+        .flex_none()
+        .gap_2()
+        .pt_3()
+        .border_t_1()
+        .border_color(design::line(cx))
+        .justify_end()
+}
+
+/// Label above a Settings form field.
+pub fn expert_settings_field_label(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_size(design::text_ui())
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(design::t2(cx))
+        .child(label.into())
+}
+
+/// Quiet trailing hint beside a field label or in a row footer.
+pub fn expert_settings_field_hint(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .min_w(px(0.))
+        .truncate()
+        .text_size(design::text_label())
+        .text_color(design::t4(cx))
+        .child(text.into())
+}
+
+/// Container for a Settings list (Riffs, skills, Experts). Rows inside use
+/// [`expert_settings_list_row`].
+pub fn expert_settings_list_frame(cx: &App) -> Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.))
+        .max_w_full()
+        .flex_none()
+        .rounded(design::r_md())
+        .border_1()
+        .border_color(design::line(cx))
+        .bg(design::surface(cx).opacity(0.32))
+}
+
+/// One row inside a [`expert_settings_list_frame`]: leading badge, flexible text
+/// column, trailing actions. The caller supplies `min_h` so dense and rich
+/// lists share one border and padding treatment.
+pub fn expert_settings_list_row(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_w(px(0.))
+        .gap_3()
+        .items_center()
+        .px_3()
+        .py_2()
+        .border_b_1()
+        .border_color(design::line(cx).opacity(0.18))
+}
+
+/// Square leading badge for a list row. The caller supplies the glyph.
+pub fn expert_settings_row_badge(size: gpui::Pixels, active: bool, cx: &App) -> Div {
+    div()
+        .size(size)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(design::r_sm())
+        .bg(if active {
+            design::amber_soft(cx)
+        } else {
+            design::surface_2(cx)
+        })
+}
+
+/// Warm glyph color for an active Expert badge; muted when inactive.
+pub fn expert_settings_badge_ink(active: bool, cx: &App) -> Hsla {
+    if active {
+        design::amber(cx)
+    } else {
+        design::t3(cx)
+    }
+}
+
+/// Warm hairline for the Expert editor card and panels being edited.
+pub fn expert_settings_edit_line(cx: &App) -> Hsla {
+    design::amber(cx).opacity(0.38)
+}
+
+/// Small neutral chip naming where a row comes from (Choro, Claude, Custom …).
+pub fn expert_settings_source_chip(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .rounded(design::r_sm())
+        .border_1()
+        .border_color(design::line(cx).opacity(0.24))
+        .bg(design::base(cx).opacity(0.55))
+        .px_1p5()
+        .py_0p5()
+        .text_size(design::text_label())
+        .text_color(design::t3(cx))
+        .child(label.into())
+}
+
+/// Inset panel that opens beneath a list or heading (details, pickers, inline
+/// editors). Set `emphasized` for a panel that is currently being edited.
+pub fn expert_settings_inset_panel(emphasized: bool, cx: &App) -> Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.))
+        .gap_2()
+        .p_3()
+        .rounded(design::r_md())
+        .border_1()
+        .border_color(if emphasized {
+            expert_settings_edit_line(cx)
+        } else {
+            design::line(cx)
+        })
+        .bg(design::base(cx).opacity(0.42))
+}
+
+/// Error notice for a Settings page: bordered rose box with readable text.
+pub fn expert_settings_error_notice(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .w_full()
+        .rounded(design::r_sm())
+        .border_1()
+        .border_color(design::rose(cx).opacity(0.35))
+        .bg(design::rose(cx).opacity(0.08))
+        .px_2()
+        .py_1()
+        .whitespace_normal()
+        .text_size(design::text_ui())
+        .text_color(design::rose(cx))
+        .child(text.into())
+}
+
+/// Informational notice for a Settings page.
+pub fn expert_settings_info_notice(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .w_full()
+        .whitespace_normal()
+        .text_size(design::text_ui())
+        .text_color(design::t3(cx))
+        .child(text.into())
+}
+
+/// Square increment / decrement control for a numeric Settings row.
+pub fn expert_settings_stepper_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(px(CONTROL_H_COMPACT))
+        .h(px(CONTROL_H_COMPACT))
+        .p_0()
+        .rounded(px(RADIUS_SM))
+        .custom(dialog_neutral_variant(cx))
+        .icon(Icon::new(icon).size(design::icon_sm()))
 }
 
 /// Recorder chip used by Settings → Keyboard shortcuts. It keeps keycaps on
@@ -1626,11 +1929,7 @@ pub fn sidebar_bar_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &Ap
 /// with no gap, and that proximity alone groups them — no track, no rule. The
 /// glyph is a child, not the button's icon slot: that slot re-sizes icons to
 /// the button's size.
-pub fn sidebar_footer_icon_button(
-    id: impl Into<ElementId>,
-    icon: IconName,
-    cx: &App,
-) -> Button {
+pub fn sidebar_footer_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &App) -> Button {
     Button::new(id)
         .ghost()
         .xsmall()
@@ -1650,11 +1949,7 @@ pub const SIDEBAR_FOOTER_CONTROL_H: f32 = 30.0;
 /// The one filled action in the left sidebar header (New Agent). Same geometry
 /// as `sidebar_bar_icon_button`, lifted to surface-2 so it reads as the row's
 /// primary without borrowing the accent channel.
-pub fn sidebar_bar_primary_button(
-    id: impl Into<ElementId>,
-    icon: IconName,
-    cx: &App,
-) -> Button {
+pub fn sidebar_bar_primary_button(id: impl Into<ElementId>, icon: IconName, cx: &App) -> Button {
     Button::new(id)
         .xsmall()
         .compact()
@@ -1824,6 +2119,33 @@ pub fn sidebar_agent_action_button(
             color,
             design::icon_sm(),
         ))
+}
+
+/// Fixed trailing activity/disclosure slot. The caller can swap a spinner for
+/// a chevron without moving the agent title or changing the button's hit area.
+pub fn sidebar_agent_status_button(
+    id: impl Into<ElementId>,
+    content: AnyElement,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(px(34.))
+        .h(px(20.))
+        .p_0()
+        .justify_end()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(transparent)
+                .foreground(design::t3(cx))
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+        .child(content)
 }
 
 /// A labelled utility toggle anchored in a panel footer/status bar. The active
@@ -2750,6 +3072,26 @@ pub fn editor_file_tab(
         .child(div().min_w(px(0.)).truncate().child(label.into()))
 }
 
+const STRIP_TAB_CLOSE_SIZE: f32 = 18.0;
+
+/// Close affordance that lives inside a strip tab (terminal sessions), so the
+/// action sits on the tab it closes rather than at the far end of the strip.
+/// Callers reveal it on tab hover; the 18px square fits inside the tab row
+/// without changing its height. The glyph is a child, not the icon slot, so
+/// it keeps the small inline size.
+pub fn strip_tab_close_button(id: impl Into<ElementId>, cx: &App) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .w(px(STRIP_TAB_CLOSE_SIZE))
+        .h(px(STRIP_TAB_CLOSE_SIZE))
+        .p_0()
+        .rounded(design::r_xs())
+        .text_color(design::t3(cx))
+        .child(Icon::new(IconName::Close).size(design::icon_sm()))
+}
+
 /// Hairline separator between independent action groups in a compact toolbar.
 pub fn toolbar_divider(cx: &App) -> Div {
     div()
@@ -3084,6 +3426,117 @@ pub fn chat_card_done_button(
         .px(design::split_primary_pad_x())
         .icon(Icon::new(IconName::Check).text_color(design::sage(cx)))
         .custom(chat_card_action_variant(cx))
+}
+
+// ---- delegation (Experts working for a lead) ----
+//
+// Delegation surfaces share the chat-card grammar; these builders only add the
+// two controls that grammar lacks: a label-only card action and the composer
+// chip that carries a live amber spinner. Nothing here restyles an existing
+// control.
+
+/// Transcript receipt for an app action, distinct from a typed user message.
+/// Code review, verification and Expert coordination share this same treatment.
+pub fn chat_action_chip(label: impl Into<SharedString>, icon: IconName, cx: &App) -> Div {
+    let label: SharedString = label.into();
+    let icon_color = if matches!(&icon, IconName::Bot) {
+        design::amber(cx)
+    } else {
+        design::t3(cx)
+    };
+    h_flex()
+        .items_center()
+        .gap_1p5()
+        .rounded_full()
+        .bg(surface(cx))
+        .px_3()
+        .py_1p5()
+        .child(
+            Icon::new(icon)
+                .size(design::icon_sm())
+                .text_color(icon_color),
+        )
+        .child(
+            div()
+                .text_size(design::text_ui())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(design::t3(cx))
+                .child(label),
+        )
+}
+
+/// Quiet, label-only action inside a delegation card row (Open, Stop, Resume).
+/// Same plane recipe as [`chat_card_done_button`], minus its check glyph.
+pub fn delegation_card_action_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    Button::new(id)
+        .label(label)
+        .xsmall()
+        .compact()
+        .h(design::control_h_xs())
+        .px(design::split_primary_pad_x())
+        .custom(chat_card_action_variant(cx))
+}
+
+/// The composer's "Bandmates working" chip. Bare at rest like [`composer_chip`],
+/// but the caller supplies the leading element so a live spinner can sit where
+/// a static glyph normally would. `live` tints the label toward amber so the
+/// chip reads as activity, not as a setting.
+pub fn delegation_activity_chip(
+    id: impl Into<ElementId>,
+    leading: AnyElement,
+    label: impl Into<SharedString>,
+    live: bool,
+    cx: &App,
+) -> Button {
+    composer_chip(id, label, Some(leading), cx)
+        .when(live, |button| button.text_color(design::amber(cx)))
+}
+
+/// Full-width keyboard-accessible assignment row, with caller-owned content.
+pub fn delegation_row_button(id: impl Into<ElementId>, content: AnyElement, cx: &App) -> Button {
+    // Stretch Button's internal label wrapper so custom row content fills the
+    // available width instead of being centered at its intrinsic text width.
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w_full()
+        .min_w(px(0.))
+        .h_auto()
+        .flex_col()
+        .map(|mut button| {
+            button.style().align_items = Some(gpui::AlignItems::Stretch);
+            button
+        })
+        .justify_start()
+        .text_left()
+        .px_2()
+        .py_2()
+        .rounded(design::r_sm())
+        .text_size(design::text_ui())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .foreground(design::t2(cx))
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+        .child(content)
+}
+
+/// A compact child row beneath a sidebar agent. Uses the same full-width,
+/// keyboard-accessible content layout as the Experts overview, at list density.
+pub fn sidebar_expert_row_button(
+    id: impl Into<ElementId>,
+    content: AnyElement,
+    cx: &App,
+) -> Button {
+    delegation_row_button(id, content, cx)
+        .min_h(px(26.))
+        .px_1p5()
+        .py_1()
 }
 
 /// A bordered inline row in the chat — a tool call, a source/citation, a
