@@ -1007,8 +1007,8 @@ fn terminal_config(background: Hsla, foreground: Hsla, cursor: Hsla) -> Terminal
     TerminalConfig {
         cols: INITIAL_COLS as usize,
         rows: INITIAL_ROWS as usize,
-        font_family: "Menlo".into(),
-        font_size: px(13.0),
+        font_family: crate::ui::design::FONT_MONO.into(),
+        font_size: crate::ui::design::text_file(),
         scrollback: 10_000,
         line_height_multiplier: 1.0,
         padding: Edges {

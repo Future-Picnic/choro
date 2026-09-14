@@ -491,9 +491,16 @@ impl Runtime {
         }
         setup_application()?;
 
-        let cache_root = dirs::data_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(ide_core::APP_ID)
+        // Demo and other explicitly isolated instances must not contend for
+        // the production profile lock or inherit its cookies and site data.
+        let cache_root = std::env::var_os("CHORO_DATA_DIR")
+            .filter(|root| !root.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs::data_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join(ide_core::APP_ID)
+            })
             .join("chromium");
         let cache_path = cache_root.join("Default");
         std::fs::create_dir_all(&cache_path)

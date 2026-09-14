@@ -499,39 +499,63 @@ impl QuickAskPanel {
             cx,
         )
         .tooltip(format!("{} · {}", provider.label(), label))
-        .dropdown_menu(move |mut menu, window, _| {
-            for (provider_index, candidate_provider) in
-                [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
-                    .into_iter()
-                    .enumerate()
-            {
-                if provider_index > 0 {
-                    menu = menu.item(PopupMenuItem::separator());
-                }
-                for model in AgentModel::models_for(candidate_provider) {
-                    let candidate = if candidate_provider == AgentKind::OpenCode {
-                        GenerationAgent::for_provider(AgentKind::OpenCode)
+        .dropdown_menu(move |mut menu, window, cx| {
+            let workspace = view.read(cx).workspace.clone();
+            let mut choices = Vec::new();
+            for provider in [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode] {
+                for model in AgentModel::models_for(provider) {
+                    choices.push(if provider == AgentKind::OpenCode {
+                        GenerationAgent::for_provider(provider)
                     } else {
                         GenerationAgent {
-                            provider: candidate_provider,
+                            provider,
                             model: *model,
                             external_model_id: None,
                             external_model_label: None,
                         }
-                    };
-                    let checked = selected == candidate;
-                    let item_label = format!(
-                        "{} · {}",
-                        candidate_provider.label(),
-                        candidate.model_label()
-                    );
-                    menu = menu.item(PopupMenuItem::new(item_label).checked(checked).on_click(
-                        window.listener_for(&view, move |this: &mut Self, _, _, cx| {
+                    });
+                }
+            }
+            let choices = crate::ui::model_favorites::grouped_choices(
+                choices,
+                &workspace.read(cx).favorite_models,
+                |agent| {
+                    ide_core::model_favorites::ModelFavorite::new(
+                        agent.model,
+                        agent.external_model_id.as_deref(),
+                    )
+                },
+            );
+            let mut previous_provider = None;
+            for (heading, candidate, key) in choices {
+                if let Some(heading) = heading {
+                    menu = menu.item(PopupMenuItem::label(heading));
+                } else if previous_provider.is_some_and(|provider| provider != candidate.provider) {
+                    menu = menu.item(PopupMenuItem::separator());
+                }
+                previous_provider = Some(candidate.provider);
+                let checked = selected == candidate;
+                let label = format!(
+                    "{} · {}",
+                    candidate.provider.label(),
+                    candidate.model_label()
+                );
+                menu = menu.item(
+                    crate::ui::model_favorites::model_menu_item(
+                        label,
+                        key,
+                        checked,
+                        workspace.clone(),
+                        cx,
+                    )
+                    .on_click(window.listener_for(
+                        &view,
+                        move |this: &mut Self, _, _, cx| {
                             this.quick_ask
                                 .update(cx, |state, cx| state.set_agent(candidate.clone(), cx));
-                        }),
-                    ));
-                }
+                        },
+                    )),
+                );
             }
             menu
         })

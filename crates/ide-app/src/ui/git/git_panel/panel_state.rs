@@ -151,7 +151,10 @@ impl GitPanel {
     pub(crate) fn change_count(&self, cx: &App) -> Option<usize> {
         let git = self.active_git(cx)?;
         let state = git.read(cx);
-        state.snapshot.as_ref().map(|snapshot| snapshot.entries.len())
+        state
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.entries.len())
     }
 
     pub(crate) fn connected_git_accounts(&self) -> Vec<GitHubAccount> {

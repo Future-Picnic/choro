@@ -14,6 +14,8 @@ pub const CHORO_RIFFS_SCHEMA_VERSION: u32 = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentCapabilitySource {
+    Expert,
+    Delegate,
     Preview,
     Orbit,
     ChoroRiff,
@@ -26,6 +28,8 @@ pub enum AgentCapabilitySource {
 impl AgentCapabilitySource {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Expert => "Bandmates",
+            Self::Delegate => "Delegate",
             Self::Preview => "Preview",
             Self::Orbit => "Orbit",
             Self::ChoroRiff => "Riff",
@@ -37,6 +41,8 @@ impl AgentCapabilitySource {
 
     pub fn priority(self) -> u8 {
         match self {
+            Self::Expert => 2,
+            Self::Delegate => 1,
             Self::Preview => 0,
             Self::Orbit => 1,
             Self::ChoroRiff => 2,
@@ -49,6 +55,10 @@ impl AgentCapabilitySource {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCapability {
+    #[serde(default)]
+    pub expert_id: Option<Uuid>,
+    #[serde(default)]
+    pub skill_path: Option<PathBuf>,
     pub provider: AgentKind,
     pub source: AgentCapabilitySource,
     pub name: String,
@@ -98,6 +108,40 @@ impl AgentCapability {
     }
 }
 
+/// Resolve only catalog-advertised skills. A missing or ambiguous source stays
+/// unavailable instead of turning an invocation string into guessed content.
+pub(crate) fn expert_skill_path(skill: &AgentCapability, cwd: &str) -> Option<PathBuf> {
+    if let Some(path) = &skill.skill_path {
+        return path.is_file().then(|| path.clone());
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let provider = if skill.provider == AgentKind::Claude {
+        ".claude"
+    } else {
+        ".codex"
+    };
+    let leaf = skill.name.rsplit(':').next()?;
+    if leaf.contains('/') || leaf.contains('\\') || leaf == ".." {
+        return None;
+    }
+    let candidates = [
+        PathBuf::from(cwd)
+            .join(provider)
+            .join("skills")
+            .join(leaf)
+            .join("SKILL.md"),
+        home.join(provider)
+            .join("skills")
+            .join(leaf)
+            .join("SKILL.md"),
+    ];
+    let found = candidates
+        .into_iter()
+        .filter(|p| p.is_file())
+        .collect::<Vec<_>>();
+    (found.len() == 1).then(|| found[0].clone())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChoroRiff {
     pub id: Uuid,
@@ -111,6 +155,8 @@ pub struct ChoroRiff {
 impl ChoroRiff {
     pub fn capability_for(&self, provider: AgentKind) -> AgentCapability {
         AgentCapability {
+            expert_id: None,
+            skill_path: None,
             provider,
             source: AgentCapabilitySource::ChoroRiff,
             name: self.name.clone(),
@@ -464,6 +510,26 @@ impl AgentCapabilityCacheFile {
         {
             capabilities.extend(skills.iter().filter_map(claude_skill_from_value));
         }
+        if let Some(plugins) = value.pointer("/claude/plugins").and_then(Value::as_array) {
+            for skill in capabilities.iter_mut().filter(|s| {
+                s.provider == AgentKind::Claude && s.source == AgentCapabilitySource::Skill
+            }) {
+                if let Some((namespace, leaf)) = skill.name.split_once(':') {
+                    if !leaf.contains('/') && !leaf.contains('\\') && leaf != ".." {
+                        let candidates = plugins
+                            .iter()
+                            .filter(|p| p.get("name").and_then(Value::as_str) == Some(namespace))
+                            .filter_map(|p| p.get("path").and_then(Value::as_str))
+                            .map(|p| PathBuf::from(p).join("skills").join(leaf).join("SKILL.md"))
+                            .filter(|p| p.is_absolute())
+                            .collect::<Vec<_>>();
+                        if candidates.len() == 1 {
+                            skill.skill_path = Some(candidates[0].clone());
+                        }
+                    }
+                }
+            }
+        }
         capabilities.sort_by(|left, right| {
             (
                 left.provider.label(),
@@ -516,6 +582,8 @@ fn codex_skill_from_value(skill: &Value) -> Option<AgentCapability> {
         .and_then(|interface| first_string(interface, &["shortDescription"]))
         .or_else(|| first_string(skill, &["description", "summary"]));
     Some(AgentCapability {
+        expert_id: None,
+        skill_path: first_string(skill, &["path"]).map(PathBuf::from),
         provider: AgentKind::Codex,
         source: AgentCapabilitySource::Skill,
         name,
@@ -535,6 +603,8 @@ fn claude_command_from_value(command: &Value) -> Option<AgentCapability> {
         return None;
     }
     Some(AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider: AgentKind::Claude,
         source: AgentCapabilitySource::Command,
         title: name.clone(),
@@ -554,6 +624,8 @@ fn claude_skill_from_value(skill: &Value) -> Option<AgentCapability> {
         return None;
     }
     Some(AgentCapability {
+        expert_id: None,
+        skill_path: None,
         provider: AgentKind::Claude,
         source: AgentCapabilitySource::Skill,
         title: name.clone(),

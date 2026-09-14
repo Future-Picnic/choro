@@ -44,6 +44,13 @@ const DEFAULT_RELAY_URL: &str = "https://choro-relay.onrender.com";
 const RELAY_KEYCHAIN_SERVICE: &str = "com.ritmus.choro.remote.relay";
 const RELAY_KEYCHAIN_ACCOUNT: &str = "host-identity";
 
+fn relay_keychain_service() -> String {
+    std::env::var("CHORO_RELAY_KEYCHAIN_SERVICE")
+        .ok()
+        .filter(|service| !service.trim().is_empty())
+        .unwrap_or_else(|| RELAY_KEYCHAIN_SERVICE.into())
+}
+
 #[derive(Clone)]
 pub struct RelayIdentity {
     signing_key: [u8; 32],
@@ -158,7 +165,12 @@ impl RelayIdentity {
                     .join("relay-identity.json")
             })
             .unwrap_or_else(|_| PathBuf::from("relay-identity.json"));
-        Self::load_or_create(&path, cfg!(target_os = "macos"))
+        // An explicitly offline instance has no reason to access the Keychain.
+        // Use the existing private-file fallback for its isolated local identity.
+        Self::load_or_create(
+            &path,
+            cfg!(target_os = "macos") && configured_url().is_some(),
+        )
     }
 
     fn load_or_create(path: &Path, use_keychain: bool) -> Self {
@@ -891,7 +903,7 @@ fn decode_key(value: &str) -> Option<[u8; 32]> {
 #[cfg(target_os = "macos")]
 fn relay_keychain_get() -> Option<String> {
     let bytes = security_framework::passwords::get_generic_password(
-        RELAY_KEYCHAIN_SERVICE,
+        &relay_keychain_service(),
         RELAY_KEYCHAIN_ACCOUNT,
     )
     .ok()?;
@@ -906,7 +918,7 @@ fn relay_keychain_get() -> Option<String> {
 #[cfg(target_os = "macos")]
 fn relay_keychain_set(secret: &str) -> Result<(), String> {
     security_framework::passwords::set_generic_password(
-        RELAY_KEYCHAIN_SERVICE,
+        &relay_keychain_service(),
         RELAY_KEYCHAIN_ACCOUNT,
         secret.as_bytes(),
     )

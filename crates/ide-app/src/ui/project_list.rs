@@ -25,16 +25,20 @@ use uuid::Uuid;
 
 use crate::state::agent_chat::AgentChatStatus;
 use crate::state::agents::AgentRecordsEvent;
+use crate::state::delegation::display::DelegationActivity;
 use crate::state::{
     AgentActivityCache, AgentChatState, AgentRecords, GitStates, TerminalManager, Workspace,
 };
 use crate::ui::center::CenterArea;
-use crate::ui::logo_spinner::logo_spinner;
+use crate::ui::logo_spinner::{delegation_spinner, logo_spinner};
 use crate::ui::project_visuals::{
     import_project_svg, project_color_options, project_icon_color, project_icon_element,
     project_icon_glyph, project_icon_options, project_icon_visual_glyph, POPULAR_PROJECT_ICONS,
 };
 use crate::ui::style;
+
+mod agent_hover_card;
+mod delegation_rows;
 
 /// Everything a sidebar row displays for one project.
 #[derive(Clone)]
@@ -55,6 +59,8 @@ struct RowInfo {
     scripts: Vec<SharedString>,
     /// Any live agent terminal actively writing for this project.
     agents_working: bool,
+    /// Work in progress only because Experts are busy on a lead's behalf.
+    agents_delegating: bool,
     /// Agents waiting for user attention.
     agents_waiting: usize,
     /// Agents included by the selected view (the In progress lane in All agents).
@@ -137,6 +143,14 @@ impl Render for DragProjectSection {
             .child(Icon::new(IconName::Menu).size(crate::ui::design::icon_sm()))
             .child(self.label.clone())
     }
+}
+
+/// Live activity rolled up per project for the collapsed row indicator.
+#[derive(Clone, Copy, Default)]
+struct ProjectActivity {
+    working: bool,
+    delegating: bool,
+    waiting: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -578,11 +592,15 @@ pub struct ProjectList {
     menu_project: Option<ProjectId>,
     menu_section: Option<ProjectSectionId>,
     expanded_agent_lists: HashSet<ProjectId>,
+    /// Leads whose delegated Expert rows are disclosed. Never set by activity:
+    /// only the chevron on the lead's own row toggles it.
+    expanded_delegations: HashSet<Uuid>,
     agent_list_view: AgentListView,
     /// Agent opened from the attention section; kept visible there until another
     /// agent is opened, so the row doesn't vanish under the click.
     attention_pinned: Option<Uuid>,
     hovered_agent: Option<HoveredAgentRow>,
+    agent_hover: agent_hover_card::SidebarAgentHover,
     /// Waiting agent ids seen on the last refresh; `None` until the first scan.
     /// A newly waiting agent auto-expands a collapsed attention section, but the
     /// baseline scan at startup respects the persisted collapse.
@@ -847,6 +865,18 @@ impl ProjectList {
                 cx.notify();
             })
             .detach();
+            // Delegation is application-owned: a lead's in-progress state must
+            // update here even while a different chat is selected.
+            if let Some(handle) = cx
+                .try_global::<crate::state::delegation::DelegationHandle>()
+                .cloned()
+            {
+                cx.observe(&handle.0, |this: &mut Self, _, cx| {
+                    this.refresh_attention_autoexpand(cx);
+                    cx.notify();
+                })
+                .detach();
+            }
             let sidebar_active_work = workspace.read(cx).sidebar_active_work;
             Self {
                 workspace,
@@ -861,12 +891,14 @@ impl ProjectList {
                 menu_project: None,
                 menu_section: None,
                 expanded_agent_lists: HashSet::new(),
+                expanded_delegations: HashSet::new(),
                 agent_list_view: AgentListView {
                     active_work: sidebar_active_work,
                     expanded_project: None,
                 },
                 attention_pinned: None,
                 hovered_agent: None,
+                agent_hover: Default::default(),
                 known_waiting: None,
                 known_agent_titles,
                 agent_title_animation_epochs: HashMap::new(),
@@ -879,20 +911,26 @@ impl ProjectList {
         project: ProjectId,
         records: &[AgentRecord],
         cx: &App,
-    ) -> (bool, usize) {
-        let mut working = false;
-        let mut waiting = 0;
+    ) -> ProjectActivity {
+        let mut activity = ProjectActivity::default();
         for agent in records
             .iter()
             .filter(|agent| agent.project_id == project && !agent.status.is_finished())
         {
             match self.runtime_for_agent(project, agent, cx) {
-                ProjectAgentRuntime::Working => working = true,
-                ProjectAgentRuntime::Waiting => waiting += 1,
+                ProjectAgentRuntime::Working => {
+                    activity.working = true;
+                    if self.delegation_state_for(agent.id, cx).activity
+                        == DelegationActivity::Working
+                    {
+                        activity.delegating = true;
+                    }
+                }
+                ProjectAgentRuntime::Waiting => activity.waiting += 1,
                 _ => {}
             }
         }
-        (working, waiting)
+        activity
     }
 
     fn collect_rows(&self, cx: &App) -> Vec<RowInfo> {
@@ -921,19 +959,20 @@ impl ProjectList {
                         }
                     })
                     .unwrap_or(0);
-                let (agents_working, agents_waiting) =
-                    self.agent_activity(p.id, &agent_records, cx);
+                let activity = self.agent_activity(p.id, &agent_records, cx);
                 let in_progress_agents = agent_records
                     .iter()
                     .filter(|agent| {
-                        agent.project_id == p.id && self.agent_list_view.includes(
-                            p.id, agent.status,
-                            if self.agent_list_view.active_work {
-                                self.runtime_for_agent(p.id, agent, cx)
-                            } else {
-                                ProjectAgentRuntime::Idle
-                            },
-                        )
+                        agent.project_id == p.id
+                            && self.agent_list_view.includes(
+                                p.id,
+                                agent.status,
+                                if self.agent_list_view.active_work {
+                                    self.runtime_for_agent(p.id, agent, cx)
+                                } else {
+                                    ProjectAgentRuntime::Idle
+                                },
+                            )
                     })
                     .cloned()
                     .collect();
@@ -950,8 +989,9 @@ impl ProjectList {
                     is_active: state.active == Some(p.id),
                     changes,
                     scripts: terminals.running_scripts(p.id),
-                    agents_working,
-                    agents_waiting,
+                    agents_working: activity.working,
+                    agents_delegating: activity.delegating,
+                    agents_waiting: activity.waiting,
                     in_progress_agents,
                 }
             })
@@ -1107,13 +1147,42 @@ impl ProjectList {
         }
 
         if row.agents_working && project_collapsed {
+            if row.agents_delegating {
+                return delegation_spinner(
+                    16.,
+                    "project-row-delegation",
+                    row.ix,
+                    crate::ui::design::amber(cx),
+                );
+            }
             return logo_spinner(16., "project-row-logo", row.ix, crate::ui::design::t3(cx));
         }
 
         div().into_any_element()
     }
 
+    /// The provider's own runtime, overlaid with application-owned delegation
+    /// state: a lead whose Experts are busy is in progress even while its own
+    /// provider sits idle, and an Expert waiting on a person is real attention.
+    /// Provider status itself is never rewritten.
     fn runtime_for_agent(
+        &self,
+        project: ProjectId,
+        agent: &AgentRecord,
+        cx: &App,
+    ) -> ProjectAgentRuntime {
+        let provider = self.provider_runtime_for_agent(project, agent, cx);
+        if agent.status.is_finished() || provider == ProjectAgentRuntime::Waiting {
+            return provider;
+        }
+        match self.delegation_state_for(agent.id, cx).activity {
+            DelegationActivity::Attention => ProjectAgentRuntime::Waiting,
+            DelegationActivity::Working => ProjectAgentRuntime::Working,
+            DelegationActivity::Paused | DelegationActivity::Idle => provider,
+        }
+    }
+
+    fn provider_runtime_for_agent(
         &self,
         project: ProjectId,
         agent: &AgentRecord,
@@ -1263,7 +1332,8 @@ impl ProjectList {
         if self.agent_list_view.active_work {
             self.agent_list_view.toggle_project(project);
             if self.workspace.read(cx).active != Some(project) {
-                self.workspace.update(cx, |workspace, cx| workspace.set_active(project, cx));
+                self.workspace
+                    .update(cx, |workspace, cx| workspace.set_active(project, cx));
             }
             cx.notify();
             return;
@@ -1274,7 +1344,8 @@ impl ProjectList {
             });
             return;
         }
-        self.workspace.update(cx, |workspace, cx| workspace.set_active(project, cx));
+        self.workspace
+            .update(cx, |workspace, cx| workspace.set_active(project, cx));
     }
 
     fn render_project_agent(
@@ -1295,9 +1366,13 @@ impl ProjectList {
         let hover_key = HoveredAgentRow::Project(agent_id);
         let hovered = self.hovered_agent == Some(hover_key);
         let pinned = self.workspace.read(cx).is_agent_pinned(agent_id);
+        let delegation = self.delegation_state_for(agent_id, cx);
+        let has_delegations = !delegation.tasks.is_empty();
+        let delegations_expanded = has_delegations && self.expanded_delegations.contains(&agent_id);
 
-        h_flex()
-            .id(("project-agent-row", row_ix * 1000 + agent_ix))
+        let row = h_flex()
+            .id(("project-agent-row", agent_id.as_u128() as u64))
+            .child(self.agent_hover_anchor(hover_key, cx))
             .w_full()
             .pl(px(34.))
             .pr_2()
@@ -1308,7 +1383,8 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
-            .on_hover(cx.listener(move |this, is_hovered, _, cx| {
+            .on_hover(cx.listener(move |this, is_hovered, window, cx| {
+                this.set_agent_card_hover(hover_key, agent_id, *is_hovered, window, cx);
                 this.hovered_agent = if *is_hovered {
                     Some(hover_key)
                 } else if this.hovered_agent == Some(hover_key) {
@@ -1363,22 +1439,29 @@ impl ProjectList {
             .when(hovered, |row| {
                 row.child(self.render_agent_actions(agent_id, pinned, cx))
             })
-            .when(!hovered && runtime == ProjectAgentRuntime::Working, |row| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .w(px(34.))
-                        .flex()
-                        .justify_end()
-                        .child(logo_spinner(
+            .when(has_delegations, |row| {
+                row.child(self.render_delegation_toggle(
+                    agent_id,
+                    &delegation,
+                    runtime == ProjectAgentRuntime::Working,
+                    hovered,
+                    cx,
+                ))
+            })
+            .when(
+                !has_delegations && !hovered && runtime == ProjectAgentRuntime::Working,
+                |row| {
+                    row.child(div().flex_none().w(px(34.)).flex().justify_end().child(
+                        logo_spinner(
                             16.,
                             "project-agent-logo",
                             row_ix * 1000 + agent_ix,
                             crate::ui::design::t3(cx),
-                        )),
-                )
-            })
-            .when(!hovered && waiting, |row| {
+                        ),
+                    ))
+                },
+            )
+            .when(!has_delegations && !hovered && waiting, |row| {
                 row.child(
                     div()
                         .flex_none()
@@ -1388,7 +1471,15 @@ impl ProjectList {
                         .items_center()
                         .child(div().size(px(6.)).rounded_full().bg(warning)),
                 )
-            })
+            });
+        if !delegations_expanded {
+            return row.into_any_element();
+        }
+        v_flex()
+            .w_full()
+            .gap_0p5()
+            .child(row)
+            .child(self.render_delegated_task_rows(project, agent_id, px(34.), &delegation, cx))
             .into_any_element()
     }
 
@@ -1597,8 +1688,12 @@ impl ProjectList {
             .find(|candidate| candidate.id == project)
             .and_then(|candidate| candidate.icon_image_path.clone());
 
-        h_flex()
-            .id(("pinned-agent-row", ix))
+        let delegation = self.delegation_state_for(agent_id, cx);
+        let has_delegations = !delegation.tasks.is_empty();
+        let expanded = self.expanded_delegations.contains(&agent_id);
+        let row = h_flex()
+            .id(("pinned-agent-row", agent_id.as_u128() as u64))
+            .child(self.agent_hover_anchor(hover_key, cx))
             .w_full()
             .min_h(px(30.))
             .pl_3()
@@ -1610,7 +1705,8 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
-            .on_hover(cx.listener(move |this, is_hovered, _, cx| {
+            .on_hover(cx.listener(move |this, is_hovered, window, cx| {
+                this.set_agent_card_hover(hover_key, agent_id, *is_hovered, window, cx);
                 this.hovered_agent = if *is_hovered {
                     Some(hover_key)
                 } else if this.hovered_agent == Some(hover_key) {
@@ -1644,21 +1740,23 @@ impl ProjectList {
             .when(hovered, |row| {
                 row.child(self.render_agent_actions(agent_id, true, cx))
             })
-            .when(!hovered && runtime == ProjectAgentRuntime::Working, |row| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .w(px(34.))
-                        .flex()
-                        .justify_end()
-                        .child(logo_spinner(
-                            16.,
-                            "pinned-agent-logo",
-                            ix,
-                            crate::ui::design::t3(cx),
-                        )),
-                )
+            .when(has_delegations, |row| {
+                row.child(self.render_delegation_toggle(
+                    agent_id,
+                    &delegation,
+                    runtime == ProjectAgentRuntime::Working,
+                    hovered,
+                    cx,
+                ))
             })
+            .when(
+                !has_delegations && !hovered && runtime == ProjectAgentRuntime::Working,
+                |row| {
+                    row.child(div().flex_none().w(px(34.)).flex().justify_end().child(
+                        logo_spinner(16., "pinned-agent-logo", ix, crate::ui::design::t3(cx)),
+                    ))
+                },
+            )
             .when(!hovered, |row| {
                 row.child(
                     div()
@@ -1678,6 +1776,19 @@ impl ProjectList {
                             px(13.),
                         )),
                 )
+            })
+            .into_any_element();
+        v_flex()
+            .w_full()
+            .child(row)
+            .when(expanded && !delegation.tasks.is_empty(), |col| {
+                col.child(self.render_delegated_task_rows(
+                    project,
+                    agent_id,
+                    px(12.),
+                    &delegation,
+                    cx,
+                ))
             })
             .into_any_element()
     }
@@ -1774,7 +1885,7 @@ impl ProjectList {
 
     fn render_attention_agent(
         &self,
-        ix: usize,
+        _ix: usize,
         project: ProjectId,
         project_name: SharedString,
         project_icon_id: &str,
@@ -1796,7 +1907,8 @@ impl ProjectList {
             .and_then(|candidate| candidate.icon_image_path.clone());
 
         h_flex()
-            .id(("attention-agent-row", ix))
+            .id(("attention-agent-row", agent_id.as_u128() as u64))
+            .child(self.agent_hover_anchor(hover_key, cx))
             .w_full()
             .min_h(px(30.))
             .pl_3()
@@ -1808,7 +1920,8 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
+            .on_hover(cx.listener(move |this, hovered, window, cx| {
+                this.set_agent_card_hover(hover_key, agent_id, *hovered, window, cx);
                 this.hovered_agent = if *hovered {
                     Some(hover_key)
                 } else if this.hovered_agent == Some(hover_key) {
@@ -2631,7 +2744,11 @@ impl ProjectList {
                                                 cx,
                                             )
                                             .tooltip(if self.agent_list_view.active_work {
-                                                if collapsed { "Show all agents in project" } else { "Show active work only" }
+                                                if collapsed {
+                                                    "Show all agents in project"
+                                                } else {
+                                                    "Show active work only"
+                                                }
                                             } else if collapsed {
                                                 "Expand project"
                                             } else {
@@ -2644,9 +2761,14 @@ impl ProjectList {
                                                         this.agent_list_view.toggle_project(id);
                                                         cx.notify();
                                                     } else {
-                                                        this.workspace.update(cx, |workspace, cx| {
-                                                            workspace.toggle_project_expanded(id, cx);
-                                                        });
+                                                        this.workspace.update(
+                                                            cx,
+                                                            |workspace, cx| {
+                                                                workspace.toggle_project_expanded(
+                                                                    id, cx,
+                                                                );
+                                                            },
+                                                        );
                                                     }
                                                 }),
                                             ),
@@ -2714,14 +2836,16 @@ impl ProjectList {
                         )
                     }),
             )
-            .when((!collapsed || self.agent_list_view.active_work) && has_in_progress_agents, |column| {
-                column.child(agents_section)
-            })
+            .when(
+                (!collapsed || self.agent_list_view.active_work) && has_in_progress_agents,
+                |column| column.child(agents_section),
+            )
     }
 }
 
 impl Render for ProjectList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.agent_hover.begin_render();
         // The Active/All choice lives in Workspace (persisted, switched from the
         // sidebar footer). Mirror it before collecting rows so the filter agrees.
         self.agent_list_view.active_work = self.workspace.read(cx).sidebar_active_work;
@@ -2795,7 +2919,10 @@ impl Render for ProjectList {
             })
             .collect::<Vec<_>>();
 
+        self.agent_hover.finish_render();
+
         v_flex()
+            .child(self.agent_sidebar_bounds(cx))
             .size_full()
             .px_2()
             .py_2()

@@ -147,6 +147,17 @@ pub(crate) fn split_prompt_attached_files(prompt: &str) -> (String, Vec<PathBuf>
 }
 
 pub(super) fn queued_turn_composer_draft(turn: &QueuedChatTurn) -> (String, Vec<PathBuf>) {
+    if let Some(handoff) = &turn.handoff {
+        let text = if handoff.references == "No explicit references were selected." {
+            handoff.original_text.clone()
+        } else {
+            format!(
+                "{}\n\nReferences:\n{}",
+                handoff.original_text, handoff.references
+            )
+        };
+        return (text, Vec::new());
+    }
     let visible_text = turn
         .display_text
         .clone()

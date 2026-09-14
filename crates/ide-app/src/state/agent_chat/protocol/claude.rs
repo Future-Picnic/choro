@@ -88,6 +88,7 @@ impl ClaudeBridgeRuntime {
         mode: AgentInteractionMode,
         read_only: bool,
     ) -> anyhow::Result<()> {
+        let mode = super::managed::interaction_mode(&self.agent, mode);
         let system_prompt = if self.agent.hidden_doc_assistant {
             format!(
                 "{}\n\n{}",
@@ -97,6 +98,7 @@ impl ClaudeBridgeRuntime {
         } else {
             super::CHORO_NATIVE_TOOL_INSTRUCTIONS.to_string()
         };
+        let system_prompt = super::managed::instructions(system_prompt, &self.agent)?;
         let system_prompt = super::append_choro_visualization_instructions(
             system_prompt,
             self.visualization_dir.as_deref(),
@@ -120,6 +122,9 @@ impl ClaudeBridgeRuntime {
             "effort": self.effort,
             "accessMode": self.access_mode.claude_permission_mode(),
             "systemPrompt": system_prompt,
+            "managedDelegation": self.agent.delegation.is_some(),
+            "managedChild": super::managed::is_child(&self.agent),
+            "managedConsultation": super::managed::consultation(&self.agent),
             "visualizationDir": self.visualization_dir,
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
@@ -246,6 +251,9 @@ impl ClaudeBridgeRuntime {
                     .ok();
             }
             "proposed_plan" => {
+                if super::managed::is_child(&self.agent) {
+                    return Ok(());
+                }
                 if let Some(markdown) = message
                     .get("markdown")
                     .and_then(Value::as_str)
@@ -312,12 +320,22 @@ impl ClaudeBridgeRuntime {
                         .ok();
                 }
             }
+            "compaction" => {
+                if let Some(active) = message.get("active").and_then(Value::as_bool) {
+                    self.events
+                        .send_blocking(ChatBackendEvent::Compaction(active))
+                        .ok();
+                }
+            }
             "status" => {
                 let status = match message.get("status").and_then(Value::as_str) {
                     Some("running") => AgentChatStatus::Running,
                     Some("cancelling") => AgentChatStatus::Cancelling,
                     Some("idle") => AgentChatStatus::Idle,
                     Some("waiting_for_user") => AgentChatStatus::WaitingForUser,
+                    Some("plan_ready") if super::managed::is_child(&self.agent) => {
+                        AgentChatStatus::Idle
+                    }
                     Some("plan_ready") => AgentChatStatus::PlanReady,
                     Some("failed") => AgentChatStatus::Failed,
                     _ => return Ok(()),

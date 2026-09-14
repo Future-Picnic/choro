@@ -31,8 +31,8 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 34;
-const EXPORT_FORMAT_VERSION: u32 = 8;
+const STORE_SCHEMA_VERSION: u32 = 35;
+const EXPORT_FORMAT_VERSION: u32 = 9;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
 
@@ -772,7 +772,10 @@ mod api;
 mod archive;
 mod brain;
 mod chat;
+mod delegation;
+mod delegation_archive;
 mod diffs;
+pub use delegation::ExpertAuthorization;
 mod maintenance;
 mod memories;
 mod orbit;

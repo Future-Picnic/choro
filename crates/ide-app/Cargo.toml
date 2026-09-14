@@ -7,6 +7,10 @@ license.workspace = true
 [lints.rust]
 unexpected_cfgs = "allow"
 
+[features]
+# Native layout fixtures use an in-memory test window, never the live app.
+ui-layout-tests = ["gpui/test-support"]
+
 [[bin]]
 name = "choro"
 path = "src/main.rs"
@@ -69,7 +73,7 @@ block2 = "0.6"
 objc = "0.2"
 objc2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSSound", "NSSpeechSynthesizer", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace", "NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSSound", "NSSpeechSynthesizer", "NSView", "NSWindow"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSTimer", "NSURL", "NSValue"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }

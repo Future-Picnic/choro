@@ -25,7 +25,7 @@ run_step() {
     local label=$2
     shift 2
     CURRENT_STEP="$label"
-    printf '\n[%s/6] %s\n' "$number" "$label"
+    printf '\n[%s/9] %s\n' "$number" "$label"
     "$@"
 }
 
@@ -36,8 +36,11 @@ run_step 1 "Check Rust formatting" cargo fmt --all -- --check
 run_step 2 "Compile every workspace target" cargo check --workspace --all-targets
 run_step 3 "Run ide-core tests" cargo test -p ide-core --quiet
 run_step 4 "Run ide-app tests" cargo test -p ide-app --quiet
-run_step 5 "Run Velotype tests" cargo test -p velotype --quiet -- --test-threads=1
-run_step 6 "Build production app and MCP binaries" cargo build --release -p ide-app -p ide-mcp
+run_step 5 "Run ide-mcp tests" cargo test -p ide-mcp --quiet
+run_step 6 "Run Claude bridge tests" node --test crates/ide-app/assets/agent-chat/claude_file_attribution.test.mjs crates/ide-app/assets/agent-chat/claude_delegation.test.mjs
+run_step 7 "Run Velotype tests" cargo test -p velotype --quiet -- --test-threads=1
+run_step 8 "Verify bundled Expert skills and provenance" python3 scripts/verify-expert-catalog.py
+run_step 9 "Build production app and MCP binaries" cargo build --release -p ide-app -p ide-mcp
 
 CURRENT_STEP="complete"
 printf '\nVerification passed in %ss.\n' "$((SECONDS - STARTED_AT))"

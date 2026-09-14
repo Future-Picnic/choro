@@ -2,6 +2,9 @@ use super::*;
 
 pub(super) async fn clear_imported_tables(conn: &Connection) -> Result<()> {
     for table in [
+        "delegation_authorizations",
+        "delegation_runs",
+        "expert_profiles",
         "orbit_mutation_batches",
         "orbit_invocations",
         "orbit_records",

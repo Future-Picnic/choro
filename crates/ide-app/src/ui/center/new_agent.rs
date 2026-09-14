@@ -163,11 +163,15 @@ impl CenterArea {
                     .open(self.composer_model_expanded)
                     .on_open_change({
                         let composer_view = composer_view.clone();
-                        move |open, _, cx| {
+                        move |open, window, cx| {
                             composer_view.update(cx, |this, cx| {
                                 this.composer_model_expanded = *open;
                                 if *open {
                                     this.composer_model_provider = None;
+                                    this.composer_model_query
+                                        .update(cx, |query, cx| query.set_value("", window, cx));
+                                    this.composer_model_favorites_only =
+                                        !this.workspace.read(cx).favorite_models.is_empty();
                                     this.refresh_open_code_models(false, cx);
                                 }
                                 cx.notify();
@@ -940,6 +944,10 @@ impl CenterArea {
 
         let prompt = composer.prompt.clone();
         let selected_command = composer.selected_command.clone();
+        let selected_expert = composer
+            .expert_snapshot
+            .as_ref()
+            .map(|e| e.profile.name.clone());
         let selected_mentions = composer.selected_mentions.clone();
         let provider = composer.provider;
         let runtime = composer.runtime;
@@ -1553,6 +1561,7 @@ impl CenterArea {
                                                         ),
                                                 )
                                             })
+                                            .when_some(selected_expert, |col,name|col.child(crate::ui::style::dialog_neutral_button("new-agent-expert-chip",format!("Bandmate · {name} · Remove"),cx).on_click(cx.listener(|this,_,_,cx|{if let Some(c)=&mut this.new_agent_composer{c.expert_snapshot=None;}cx.notify();}))))
                                             .when_some(selected_command.clone(), |col, command| {
                                                 let command_for_remove = command.clone();
                                                 let prompt_for_remove = prompt.clone();

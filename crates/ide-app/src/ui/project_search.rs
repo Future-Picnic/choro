@@ -838,12 +838,18 @@ mod tests {
         let mut record = agent("Date check", "");
         for timestamp in [0, u64::MAX, i64::MAX as u64] {
             record.created_at = timestamp;
-            assert!(agent_item(&record, None, "").unwrap().created_date.is_none());
+            assert!(agent_item(&record, None, "")
+                .unwrap()
+                .created_date
+                .is_none());
         }
         record.created_at = 1_700_000_000;
         let date = agent_item(&record, None, "").unwrap().created_date.unwrap();
         assert!(date.starts_with("Nov ") && date.ends_with(", 2023"));
         record.updated_at = 1_800_000_000;
-        assert_eq!(agent_item(&record, None, "").unwrap().created_date, Some(date));
+        assert_eq!(
+            agent_item(&record, None, "").unwrap().created_date,
+            Some(date)
+        );
     }
 }

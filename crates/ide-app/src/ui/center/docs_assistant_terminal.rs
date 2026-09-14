@@ -190,42 +190,58 @@ impl CenterArea {
                             }),
                     )
                     .child(
-                        Button::new("doc-assistant-terminal-model")
-                            .ghost()
-                            .xsmall()
-                            .compact()
-                            .label(model.label())
-                            .dropdown_caret(true)
-                            .disabled(runtime_locked)
-                            .dropdown_menu({
-                                let center = center.clone();
-                                let relative = relative_doc_path.clone();
-                                move |mut menu, window, _| {
-                                    for candidate in AgentModel::models_for(provider) {
-                                        let candidate = *candidate;
-                                        let relative = relative.clone();
-                                        menu = menu.item(
-                                            PopupMenuItem::new(candidate.label())
-                                                .checked(candidate == model)
-                                                .on_click(window.listener_for(
-                                                    &center,
-                                                    move |this: &mut Self, _, _, cx| {
-                                                        this.doc_assistants.update(
-                                                            cx,
-                                                            |assistants, cx| {
-                                                                assistants.update_runtime(
-                                                                    project, &relative, provider,
-                                                                    candidate, effort, cx,
-                                                                )
-                                                            },
-                                                        );
-                                                    },
-                                                )),
-                                        );
+                        crate::ui::style::ghost_button_compact(
+                            "doc-assistant-terminal-model",
+                            model.label(),
+                        )
+                        .dropdown_caret(true)
+                        .disabled(runtime_locked)
+                        .dropdown_menu({
+                            let center = center.clone();
+                            let relative = relative_doc_path.clone();
+                            move |mut menu, window, cx| {
+                                let workspace = center.read(cx).workspace.clone();
+                                let choices = crate::ui::model_favorites::grouped_choices(
+                                    AgentModel::models_for(provider).to_vec(),
+                                    &workspace.read(cx).favorite_models,
+                                    |model| {
+                                        ide_core::model_favorites::ModelFavorite::new(*model, None)
+                                    },
+                                );
+                                for (heading, candidate, key) in choices {
+                                    if let Some(heading) = heading {
+                                        menu = menu.item(PopupMenuItem::label(heading));
                                     }
-                                    menu
+                                    let relative = relative.clone();
+                                    menu = menu.item(
+                                        crate::ui::model_favorites::model_menu_item(
+                                            candidate.label(),
+                                            key,
+                                            candidate == model,
+                                            workspace.clone(),
+                                            cx,
+                                        )
+                                        .on_click(
+                                            window.listener_for(
+                                                &center,
+                                                move |this: &mut Self, _, _, cx| {
+                                                    this.doc_assistants.update(
+                                                        cx,
+                                                        |assistants, cx| {
+                                                            assistants.update_runtime(
+                                                                project, &relative, provider,
+                                                                candidate, effort, cx,
+                                                            )
+                                                        },
+                                                    );
+                                                },
+                                            ),
+                                        ),
+                                    );
                                 }
-                            }),
+                                menu
+                            }
+                        }),
                     )
                     .when(!supported_efforts.is_empty(), |bar| {
                         bar.child(

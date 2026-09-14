@@ -204,6 +204,7 @@ impl CenterArea {
             access_mode: AgentAccessMode::FullAccess,
             linked_docs: Vec::new(),
             selected_command: None,
+            expert_snapshot: None,
             solo: false,
             lane_profile: ide_core::LaneProfile::Full,
             solo_base: None,
@@ -361,6 +362,39 @@ impl CenterArea {
             .as_ref()
             .and_then(|command| command.orbit_module_id)
             .map(|module_id| (Uuid::new_v4(), module_id));
+        let expert_snapshot = match composer
+            .expert_snapshot
+            .as_ref()
+            .map(|e| experts::snapshot(e.profile.id))
+            .transpose()
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                composer.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if let Some(snapshot) = &expert_snapshot {
+            if let Some(previous) = &composer.expert_snapshot {
+                let model_override = composer.model != previous.profile.model;
+                let effort_override = composer.effort != previous.profile.effort;
+                if !model_override {
+                    composer.provider = snapshot.profile.provider;
+                    composer.model = snapshot.profile.model;
+                }
+                if !effort_override {
+                    composer.effort = snapshot.profile.effort;
+                }
+            }
+            if composer.provider != snapshot.profile.provider
+                || !composer.model.efforts().contains(&composer.effort)
+            {
+                composer.error=Some("The Bandmate configuration changed. Select a compatible model and effort, or choose the bandmate again.".into());
+                cx.notify();
+                return;
+            }
+        }
         let submission_command = composer.selected_command.clone();
         let raw_doc = composer_mentions_submission_text(&draft, &selected_mentions, &projects);
         let raw_doc = agent_chat_submission_text(
@@ -527,6 +561,12 @@ impl CenterArea {
                 AgentStatus::InProgress,
                 cx,
             );
+            if let Some(snapshot) = expert_snapshot.clone() {
+                if let Some(mut record) = agents.agent(agent_id).cloned() {
+                    record.expert_snapshot = Some(snapshot);
+                    agents.adopt_managed(record, cx);
+                }
+            }
             if provider == AgentKind::OpenCode {
                 if let (Some(id), Some(label)) =
                     (external_model_id.clone(), external_model_label.clone())
@@ -557,7 +597,18 @@ impl CenterArea {
             let persisted = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::state::agents::persist_agent_store_snapshot(save_revision, agent_store)
+                    crate::state::agents::persist_agent_store_snapshot(save_revision, agent_store)?;
+                    if runtime == AgentRuntimeKind::Chat
+                        && matches!(provider, AgentKind::Codex | AgentKind::Claude)
+                    {
+                        experts::authorize(
+                            agent_id,
+                            &draft,
+                            &[],
+                            interaction_mode == AgentInteractionMode::Plan,
+                        )?;
+                    }
+                    Ok::<(), anyhow::Error>(())
                 })
                 .await;
             if let Err(error) = persisted {
@@ -901,6 +952,13 @@ impl CenterArea {
         else {
             return;
         };
+        if let Some(id) = command.expert_id {
+            let current = prompt.read(cx).value().to_string();
+            let (next, _) = remove_agent_chat_slash_query(&current, &query);
+            prompt.update(cx, |input, cx| input.set_value(next, window, cx));
+            self.select_expert(id, cx);
+            return;
+        }
         let current = prompt.read(cx).value().to_string();
         if query.range.start > query.range.end || query.range.end > current.len() {
             return;

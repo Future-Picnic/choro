@@ -32,6 +32,35 @@ fn append_unique_ship_result(
     true
 }
 
+/// Return only the changed receipt for persistence. Shipping must never copy
+/// or rewrite the rest of a potentially very large conversation.
+fn attach_ship_commit_metadata(
+    changed_files: &mut crate::state::agent_chat::ChangedFilesSummary,
+    timeline: &mut [AgentChatTimelineItem],
+    ship_snapshot_id: Option<Uuid>,
+    commit_sha: &str,
+) -> (Option<Uuid>, Option<AgentChatTimelineItem>) {
+    let mut snapshot_id = None;
+    if !changed_files.is_empty() {
+        changed_files.snapshot_id = changed_files.snapshot_id.or(ship_snapshot_id);
+        changed_files.commit_sha = Some(commit_sha.to_owned());
+        snapshot_id = changed_files.snapshot_id;
+    }
+    for item in timeline.iter_mut().rev() {
+        let AgentChatTimelineItem::ChangedFiles(summary) = item else {
+            continue;
+        };
+        summary.snapshot_id = summary.snapshot_id.or(ship_snapshot_id);
+        summary.commit_sha = Some(commit_sha.to_owned());
+        snapshot_id = summary.snapshot_id.or(snapshot_id);
+        return (
+            snapshot_id,
+            Some(AgentChatTimelineItem::ChangedFiles(summary.clone())),
+        );
+    }
+    (snapshot_id, None)
+}
+
 pub(super) fn exact_agent_ship_paths(
     root: &Path,
     summary: &crate::state::agent_chat::ChangedFilesSummary,
@@ -76,47 +105,35 @@ impl CenterArea {
         commit_sha: String,
         cx: &mut Context<Self>,
     ) {
-        let mut timeline_to_persist = None;
-        let mut snapshot_to_update = None;
-        self.agent_chats.update(cx, |chats, cx| {
+        let snapshot_to_update = self.agent_chats.update(cx, |chats, cx| {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
-                return;
+                return None;
             };
-            if !session.changed_files.is_empty() {
-                if session.changed_files.snapshot_id.is_none() {
-                    session.changed_files.snapshot_id = ship_snapshot_id;
-                }
-                session.changed_files.commit_sha = Some(commit_sha.clone());
-                snapshot_to_update = session.changed_files.snapshot_id;
+            let (snapshot_id, receipt) = attach_ship_commit_metadata(
+                &mut session.changed_files,
+                &mut session.timeline,
+                ship_snapshot_id,
+                &commit_sha,
+            );
+            if let Some(receipt) = receipt {
+                crate::state::agent_chat::persist_timeline_item(agent_id, receipt, cx);
             }
-            for item in session.timeline.iter_mut().rev() {
-                let AgentChatTimelineItem::ChangedFiles(summary) = item else {
-                    continue;
-                };
-                if summary.snapshot_id.is_none() {
-                    summary.snapshot_id = ship_snapshot_id;
-                }
-                summary.commit_sha = Some(commit_sha.clone());
-                snapshot_to_update = summary.snapshot_id.or(snapshot_to_update);
-                break;
-            }
-            timeline_to_persist = Some(session.timeline.clone());
             cx.notify();
+            snapshot_id
         });
 
         if let Some(snapshot_id) = snapshot_to_update {
-            if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
-                if let Err(error) =
-                    store.update_agent_diff_snapshot_commit(snapshot_id, &commit_sha)
-                {
-                    eprintln!("failed to update changed-files snapshot commit SHA: {error:#}");
-                }
-            }
-        }
-        if let Some(timeline) = timeline_to_persist {
-            if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
-                eprintln!("failed to persist changed-files ship metadata: {error:#}");
-            }
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) =
+                        ide_core::local_store::LocalStore::open_default().and_then(|store| {
+                            store.update_agent_diff_snapshot_commit(snapshot_id, &commit_sha)
+                        })
+                    {
+                        eprintln!("failed to update changed-files snapshot commit SHA: {error:#}");
+                    }
+                })
+                .detach();
         }
     }
 
@@ -169,22 +186,19 @@ impl CenterArea {
             suggested_status: suggested_status.clone(),
             applied: None,
         };
-        let mut timeline_to_persist = None;
         self.agent_chats.update(cx, |chats, cx| {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
                 return;
             };
-            if append_unique_ship_result(&mut session.timeline, ship_result) {
-                timeline_to_persist = Some(session.timeline.clone());
+            if append_unique_ship_result(&mut session.timeline, ship_result.clone()) {
+                crate::state::agent_chat::persist_timeline_item(
+                    agent_id,
+                    AgentChatTimelineItem::ShipResult(ship_result),
+                    cx,
+                );
                 cx.notify();
             }
         });
-
-        if let Some(timeline) = timeline_to_persist {
-            if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
-                eprintln!("failed to persist agent ship result: {error:#}");
-            }
-        }
 
         // Pre-seed the post-ship "update the task" card and warm up its status
         // list so the controls are ready the moment the card appears.
@@ -768,6 +782,82 @@ impl CenterArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ship_metadata_updates_only_the_latest_receipt_in_a_large_chat() {
+        use crate::state::agent_chat::{ChangedFilesSummary, FileChangeStat};
+
+        let previous = ChangedFilesSummary {
+            commit_sha: Some("previous-commit".into()),
+            ..ChangedFilesSummary::attributed(
+                "previous-turn",
+                vec![FileChangeStat::new("previous.rs", 1, 0)],
+                Vec::new(),
+            )
+        };
+        let mut timeline = vec![AgentChatTimelineItem::ChangedFiles(previous.clone()); 2_000];
+        let mut ledger = ChangedFilesSummary::attributed(
+            "current-turn",
+            (0..250)
+                .map(|i| FileChangeStat::new(format!("file-{i}.rs"), 2, 1))
+                .collect(),
+            Vec::new(),
+        );
+        timeline.push(AgentChatTimelineItem::ChangedFiles(ledger.clone()));
+        let snapshot_id = Uuid::new_v4();
+
+        let (snapshot, receipt) = attach_ship_commit_metadata(
+            &mut ledger,
+            &mut timeline,
+            Some(snapshot_id),
+            "shipped-commit",
+        );
+
+        assert_eq!(snapshot, Some(snapshot_id));
+        assert_eq!(ledger.commit_sha.as_deref(), Some("shipped-commit"));
+        assert_eq!(timeline.len(), 2_001);
+        for item in &timeline[..2_000] {
+            assert!(
+                matches!(item, AgentChatTimelineItem::ChangedFiles(summary) if summary == &previous)
+            );
+        }
+        let Some(AgentChatTimelineItem::ChangedFiles(receipt)) = receipt else {
+            panic!("the latest receipt must be returned for incremental persistence");
+        };
+        assert_eq!(receipt.turn_id.as_deref(), Some("current-turn"));
+        assert_eq!(receipt.files.len(), 250);
+        assert_eq!(receipt.snapshot_id, Some(snapshot_id));
+        assert_eq!(receipt.commit_sha.as_deref(), Some("shipped-commit"));
+    }
+
+    #[test]
+    fn ship_metadata_preserves_existing_snapshots_and_handles_missing_receipts() {
+        use crate::state::agent_chat::{ChangedFilesSummary, FileChangeStat};
+
+        let ledger_snapshot = Uuid::new_v4();
+        let receipt_snapshot = Uuid::new_v4();
+        let mut ledger = ChangedFilesSummary {
+            snapshot_id: Some(ledger_snapshot),
+            ..ChangedFilesSummary::attributed(
+                "turn",
+                vec![FileChangeStat::new("file.rs", 1, 0)],
+                Vec::new(),
+            )
+        };
+        let mut receipt = ledger.clone();
+        receipt.snapshot_id = Some(receipt_snapshot);
+        let mut timeline = vec![AgentChatTimelineItem::ChangedFiles(receipt)];
+        let (snapshot, _) =
+            attach_ship_commit_metadata(&mut ledger, &mut timeline, Some(Uuid::new_v4()), "commit");
+        assert_eq!(snapshot, Some(receipt_snapshot));
+        assert_eq!(ledger.snapshot_id, Some(ledger_snapshot));
+
+        let (snapshot, receipt) =
+            attach_ship_commit_metadata(&mut ledger, &mut [], Some(Uuid::new_v4()), "next-commit");
+        assert_eq!(snapshot, Some(ledger_snapshot));
+        assert!(receipt.is_none());
+        assert_eq!(ledger.commit_sha.as_deref(), Some("next-commit"));
+    }
 
     #[test]
     fn maps_workspace_changed_files_into_nested_repository_scope() {

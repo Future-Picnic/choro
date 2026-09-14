@@ -124,8 +124,12 @@ impl Render for TasksPanel {
         }
 
         let Some(project) = self.workspace.read(cx).active_project().cloned() else {
-            return crate::ui::style::empty_context_panel("Tasks", "Open a project to see tasks", cx)
-                .into_any_element();
+            return crate::ui::style::empty_context_panel(
+                "Tasks",
+                "Open a project to see tasks",
+                cx,
+            )
+            .into_any_element();
         };
         let connections = self.tasks.read(cx).connections_for_project(project.id, cx);
         let active_connection = self.tasks.read(cx).active_connection_id(project.id, cx);

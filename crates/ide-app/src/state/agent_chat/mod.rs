@@ -5,6 +5,7 @@
 
 mod changed_files;
 mod code_review;
+mod handoffs;
 mod interactions;
 mod pending_approval;
 mod pending_user_input;
@@ -27,6 +28,7 @@ use ide_core::{AgentAccessMode, AgentEffort, AgentModel, AgentRecord, TaskRef};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub(crate) use changed_files::bounded_line_diff_counts;
 pub(crate) use changed_files::VisualizationArtifactFilter;
 pub use changed_files::{ChangedFilesSummary, FileChangeActivity, FileChangeStat};
 pub use code_review::{split_code_review, CodeReview, CodeReviewFinding, CodeReviewSeverity};
@@ -40,7 +42,8 @@ pub use review_checklist::{
     REVIEW_CHECKLIST_REQUEST_MARKER,
 };
 pub(crate) use search::{
-    fold_search_text, search_turn_is_hidden, searchable_message_text, TIMELINE_SEARCH_TEXT_VERSION,
+    delegation_delivery_action_label, fold_search_text, search_turn_is_hidden,
+    searchable_message_text, TIMELINE_SEARCH_TEXT_VERSION,
 };
 pub use usage::{ConversationUsage, ModelUsage, UsageTotals};
 pub use verification::{split_verification, Verification, VerificationItem, VerificationStatus};
@@ -86,6 +89,11 @@ pub struct AgentChatState {
     controllers: HashMap<Uuid, ChatBackendController>,
     backend_generations: HashMap<Uuid, u64>,
     cancellation_requested: HashSet<Uuid>,
+    /// Stop pauses automatic dispatch until the user sends another message.
+    paused_queues: HashSet<Uuid>,
+    handoffs_sending: HashSet<Uuid>,
+    /// Holds ordinary sends while a coordinator snapshots or applies files.
+    pub(crate) delegation_reservations: HashSet<Uuid>,
 }
 
 #[derive(Clone, Debug)]
@@ -96,6 +104,8 @@ pub struct AgentChatSession {
     pub cli_session_id: Option<String>,
     pub hidden_from_notifications: bool,
     pub status: AgentChatStatus,
+    /// Live provider activity, never restored from conversation history.
+    pub is_compacting: bool,
     pub interaction_mode: AgentInteractionMode,
     pub composer_text: String,
     pub messages: Vec<AgentChatMessage>,
@@ -111,6 +121,17 @@ pub struct AgentChatSession {
     pub last_activity_at: u64,
 }
 
+impl AgentChatSession {
+    pub(crate) fn set_status(&mut self, status: AgentChatStatus) {
+        self.status = status;
+        self.is_compacting = false;
+    }
+
+    fn set_compacting(&mut self, active: bool) {
+        self.is_compacting = active && self.status == AgentChatStatus::Running;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueuedChatTurn {
     pub id: Uuid,
@@ -119,6 +140,16 @@ pub struct QueuedChatTurn {
     pub tags: Vec<AgentChatMessageTag>,
     pub mode: AgentInteractionMode,
     pub created_at: u64,
+    pub handoff: Option<QueuedAgentHandoff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedAgentHandoff {
+    pub target_agent_id: Uuid,
+    pub target_title: String,
+    pub kind: String,
+    pub original_text: String,
+    pub references: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,6 +253,7 @@ pub struct AgentChatMessageTag {
 
 #[derive(Clone, Debug)]
 pub enum AgentChatTimelineItem {
+    DelegationGroup { run_id: Uuid, created_at: u64 },
     Message(AgentChatMessage),
     WorkLog(WorkLogEntry),
     FileChangeActivity(FileChangeActivity),
@@ -376,6 +408,10 @@ pub struct RejoinConflictCard {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum StoredTimelinePayload {
+    DelegationGroup {
+        run_id: Uuid,
+        created_at: u64,
+    },
     Message {
         role: String,
         text: String,
@@ -620,6 +656,54 @@ impl AgentChatState {
         self.controllers.contains_key(&agent_id)
     }
 
+    pub(crate) fn record_delegation_integration(
+        &mut self,
+        id: Uuid,
+        summary: ChangedFilesSummary,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            if session.timeline.iter().any(|item|matches!(item,AgentChatTimelineItem::ChangedFiles(old)if old.turn_id==summary.turn_id)){return;}
+            if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
+                persist_changed_files_turn(id, receipt, ledger, cx);
+            }
+            cx.emit(AgentChatEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn background_reserved(&self, agent_id: Uuid) -> bool {
+        self.delegation_reservations.contains(&agent_id)
+    }
+
+    pub(crate) fn safe_for_delegation(&self, agent_id: Uuid) -> bool {
+        !self.background_reserved(agent_id)
+            && !self.paused_queues.contains(&agent_id)
+            && !self.handoffs_sending.contains(&agent_id)
+            && self.session(agent_id).is_none_or(|s| {
+                s.status == AgentChatStatus::Idle
+                    && s.pending_approval.is_none()
+                    && s.pending_user_input.is_none()
+                    && s.queued_turns.is_empty()
+                    && !s.is_compacting
+            })
+    }
+
+    pub(crate) fn release_delegation_reservation(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        self.delegation_reservations.remove(&id);
+        if !self.paused_queues.contains(&id) {
+            self.schedule_next_queued_turn(id, cx);
+        }
+    }
+
+    pub(crate) fn allow_managed_resume(&mut self, id: Uuid) {
+        self.paused_queues.remove(&id);
+    }
+
+    pub(crate) fn backend_generation(&self, id: Uuid) -> u64 {
+        self.backend_generations.get(&id).copied().unwrap_or(0)
+    }
+
     pub fn dock_badge_label(&self) -> Option<String> {
         let unread_attention = self
             .sessions
@@ -651,6 +735,7 @@ impl AgentChatState {
                 chat_session_id: None,
                 cli_session_id: None,
                 hidden_from_notifications: false,
+                is_compacting: false,
                 status: AgentChatStatus::Idle,
                 interaction_mode: AgentInteractionMode::Default,
                 composer_text: String::new(),
@@ -766,7 +851,7 @@ impl AgentChatState {
             session
                 .work_log
                 .retain(|entry| entry.kind != WorkLogEntryKind::Plan);
-            session.status = AgentChatStatus::Running;
+            session.set_status(AgentChatStatus::Running);
             session.pending_approval = None;
             session.started_running_at = Some(unix_now());
             session.last_activity_at = unix_now();
@@ -791,7 +876,7 @@ impl AgentChatState {
         }
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             self.cancellation_requested.remove(&agent_id);
-            session.status = AgentChatStatus::Running;
+            session.set_status(AgentChatStatus::Running);
             session.pending_approval = None;
             session.started_running_at = Some(unix_now());
             session.last_activity_at = unix_now();
@@ -883,7 +968,11 @@ impl AgentChatState {
                 tags,
                 mode,
                 created_at: unix_now(),
+                handoff: None,
             });
+            if session.status == AgentChatStatus::Idle {
+                self.schedule_next_queued_turn(agent_id, cx);
+            }
         }
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
@@ -898,10 +987,50 @@ impl AgentChatState {
         cx.notify();
     }
 
+    pub fn resume_queue(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        if self.paused_queues.remove(&agent_id) {
+            self.schedule_next_queued_turn(agent_id, cx);
+            cx.emit(AgentChatEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    fn can_drain_queue(&self, agent_id: Uuid) -> bool {
+        !self.background_reserved(agent_id)
+            && !self.paused_queues.contains(&agent_id)
+            && !self.handoffs_sending.contains(&agent_id)
+            && self.sessions.get(&agent_id).is_some_and(|session| {
+                session.status == AgentChatStatus::Idle
+                    && session
+                        .queued_turns
+                        .first()
+                        .is_some_and(|turn| turn.handoff.is_some() || self.has_backend(agent_id))
+            })
+    }
+
     pub fn steer_queued_turn(&mut self, agent_id: Uuid, turn_id: Uuid, cx: &mut Context<Self>) {
+        if self.handoffs_sending.contains(&agent_id) {
+            return;
+        }
+        // A force-stop removes the backend. Keep the message until a new
+        // composer submission can safely restart that backend.
+        if !self.has_backend(agent_id)
+            && self.session(agent_id).is_some_and(|session| {
+                session
+                    .queued_turns
+                    .iter()
+                    .any(|turn| turn.id == turn_id && turn.handoff.is_none())
+            })
+        {
+            return;
+        }
         let Some(turn) = self.take_queued_turn(agent_id, turn_id) else {
             return;
         };
+        if turn.handoff.is_some() {
+            self.send_queued_handoff(agent_id, turn, cx);
+            return;
+        }
         self.start_turn(
             agent_id,
             turn.text,
@@ -913,9 +1042,16 @@ impl AgentChatState {
     }
 
     fn drain_next_queued_turn(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        if !self.can_drain_queue(agent_id) {
+            return;
+        }
         let Some(turn) = self.take_next_queued_turn(agent_id) else {
             return;
         };
+        if turn.handoff.is_some() {
+            self.send_queued_handoff(agent_id, turn, cx);
+            return;
+        }
         self.start_turn(
             agent_id,
             turn.text,
@@ -936,13 +1072,9 @@ impl AgentChatState {
                 .timer(Duration::from_millis(1))
                 .await;
             this.update(cx, |state, cx| {
-                let still_idle = state
-                    .sessions
-                    .get(&agent_id)
-                    .is_some_and(|session| session.status == AgentChatStatus::Idle);
-                if still_idle {
-                    state.drain_next_queued_turn(agent_id, cx);
-                }
+                // Recheck pause state when the callback runs: Stop may have
+                // happened after this dispatch was scheduled.
+                state.drain_next_queued_turn(agent_id, cx);
             })
             .ok();
         })
@@ -987,6 +1119,7 @@ impl AgentChatState {
     }
 
     pub fn stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+        self.paused_queues.insert(agent_id);
         if !self.controllers.contains_key(&agent_id) {
             let _ = self.hard_stop_backend(agent_id, true, cx);
             return;
@@ -1005,7 +1138,7 @@ impl AgentChatState {
         }
         self.cancellation_requested.insert(agent_id);
         if let Some(session) = self.sessions.get_mut(&agent_id) {
-            session.status = AgentChatStatus::Cancelling;
+            session.set_status(AgentChatStatus::Cancelling);
             session.started_running_at = None;
             session.pending_user_input = None;
             session.pending_approval = None;
@@ -1020,7 +1153,7 @@ impl AgentChatState {
                 WorkLogStatus::InProgress,
             )
             .detail(Some(
-                "Click stop again to force-kill the backend process.".to_string(),
+                "Queued messages are kept and paused until you send another message. Click stop again to force-kill the backend process.".to_string(),
             ));
             upsert_work_log_entry(&mut session.work_log, entry.clone());
             upsert_timeline_work_log(&mut session.timeline, entry.clone());
@@ -1052,7 +1185,7 @@ impl AgentChatState {
         let Some(session) = self.sessions.get(&agent_id) else {
             return false;
         };
-        if !session_safe_to_retire(session) {
+        if !session_safe_to_retire(session) || self.handoffs_sending.contains(&agent_id) {
             return false;
         }
         // Bump the generation so trailing events from the dying backend cannot
@@ -1070,6 +1203,7 @@ impl AgentChatState {
         let _ = self.hard_stop_backend(agent_id, true, cx);
         self.sessions.remove(&agent_id);
         self.cancellation_requested.remove(&agent_id);
+        self.paused_queues.remove(&agent_id);
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
     }
@@ -1096,7 +1230,7 @@ impl AgentChatState {
         }
         self.cancellation_requested.clear();
         for session in self.sessions.values_mut() {
-            session.status = AgentChatStatus::Idle;
+            session.set_status(AgentChatStatus::Idle);
             session.started_running_at = None;
             session.pending_user_input = None;
             session.pending_approval = None;
@@ -1111,6 +1245,7 @@ impl AgentChatState {
         record_user_stop: bool,
         cx: &mut Context<Self>,
     ) -> Option<ChatBackendStopSignal> {
+        self.paused_queues.insert(agent_id);
         // A force-stop cannot wait for the provider's normal terminal event.
         // Promote the live action rows into the same immutable receipt shape
         // so the interrupted turn still lands in the drawer and survives a
@@ -1163,7 +1298,7 @@ impl AgentChatState {
         session
             .timeline
             .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
-        session.status = AgentChatStatus::Running;
+        session.set_status(AgentChatStatus::Running);
         session.last_activity_at = unix_now();
         cx.emit(AgentChatEvent::Changed);
         cx.notify();
@@ -1183,7 +1318,7 @@ impl AgentChatState {
         session
             .timeline
             .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
-        session.status = AgentChatStatus::Idle;
+        session.set_status(AgentChatStatus::Idle);
         session.started_running_at = None;
         session.last_activity_at = unix_now();
         cx.emit(AgentChatEvent::Changed);
@@ -1215,7 +1350,7 @@ impl AgentChatState {
             return false;
         }
         session.pending_approval = None;
-        session.status = AgentChatStatus::Running;
+        session.set_status(AgentChatStatus::Running);
         session.started_running_at = Some(unix_now());
         session.last_activity_at = unix_now();
         cx.emit(AgentChatEvent::Changed);
@@ -1271,7 +1406,7 @@ impl AgentChatState {
                     self.cancellation_requested.remove(&agent_id);
                     let session = self.ensure_backend_event_session(agent_id, now);
                     session.last_activity_at = now;
-                    session.status = AgentChatStatus::Idle;
+                    session.set_status(AgentChatStatus::Idle);
                     session.started_running_at = None;
                     session.pending_user_input = None;
                     session.pending_approval = None;
@@ -1384,12 +1519,12 @@ impl AgentChatState {
                     cx,
                 );
                 session.pending_user_input = Some(pending);
-                session.status = AgentChatStatus::WaitingForUser;
+                session.set_status(AgentChatStatus::WaitingForUser);
                 session.started_running_at = None;
             }
             ChatBackendEvent::PendingApproval(pending) => {
                 session.pending_approval = Some(pending);
-                session.status = AgentChatStatus::WaitingForUser;
+                session.set_status(AgentChatStatus::WaitingForUser);
                 session.started_running_at = None;
             }
             ChatBackendEvent::ProposedPlan(plan) => {
@@ -1402,7 +1537,7 @@ impl AgentChatState {
                     cx,
                 );
                 session.proposed_plan = Some(plan);
-                session.status = AgentChatStatus::PlanReady;
+                session.set_status(AgentChatStatus::PlanReady);
                 session.interaction_mode = AgentInteractionMode::Plan;
                 session.started_running_at = None;
             }
@@ -1457,6 +1592,9 @@ impl AgentChatState {
             ChatBackendEvent::Usage(usage) => {
                 apply_usage_snapshot(session, usage);
             }
+            ChatBackendEvent::Compaction(active) => {
+                session.set_compacting(active);
+            }
             ChatBackendEvent::Status(status) => {
                 if status == AgentChatStatus::Idle
                     && session
@@ -1464,9 +1602,9 @@ impl AgentChatState {
                         .as_ref()
                         .is_some_and(|plan| plan.implemented_at.is_none())
                 {
-                    session.status = AgentChatStatus::PlanReady;
+                    session.set_status(AgentChatStatus::PlanReady);
                 } else {
-                    session.status = status;
+                    session.set_status(status);
                 }
                 if !matches!(session.status, AgentChatStatus::Running) {
                     session.started_running_at = None;
@@ -1497,7 +1635,7 @@ impl AgentChatState {
                             cx,
                         );
                     }
-                    session.status = AgentChatStatus::Idle;
+                    session.set_status(AgentChatStatus::Idle);
                     session.started_running_at = None;
                     session.pending_user_input = None;
                     session.pending_approval = None;
@@ -1511,7 +1649,7 @@ impl AgentChatState {
                     append_or_extend_message(&mut session.messages, message.clone());
                     append_or_extend_timeline_message(&mut session.timeline, message.clone());
                     persist_chat_message(agent_id, message, cx);
-                    session.status = AgentChatStatus::Failed;
+                    session.set_status(AgentChatStatus::Failed);
                     session.started_running_at = None;
                     session.pending_user_input = None;
                     session.pending_approval = None;
@@ -1590,6 +1728,7 @@ impl AgentChatState {
                 chat_session_id: None,
                 cli_session_id: None,
                 hidden_from_notifications: false,
+                is_compacting: false,
                 status: AgentChatStatus::Idle,
                 interaction_mode: AgentInteractionMode::Default,
                 composer_text: String::new(),
@@ -1700,9 +1839,8 @@ fn settle_hard_stopped_session(
     session: &mut AgentChatSession,
     record_user_stop: bool,
 ) -> Option<WorkLogEntry> {
-    session.status = AgentChatStatus::Idle;
+    session.set_status(AgentChatStatus::Idle);
     session.started_running_at = None;
-    session.queued_turns.clear();
     session.pending_user_input = None;
     session.pending_approval = None;
     session
@@ -1716,6 +1854,9 @@ fn settle_hard_stopped_session(
             "Stopped by user",
             WorkLogStatus::Completed,
         )
+        .detail(Some(
+            "Queued messages are kept and paused until you send another message.".to_string(),
+        ))
     });
     if let Some(entry) = entry.as_ref() {
         upsert_work_log_entry(&mut session.work_log, entry.clone());
@@ -1789,6 +1930,7 @@ mod retirement_tests {
             chat_session_id: None,
             cli_session_id: Some("claude-session-1".to_string()),
             hidden_from_notifications: false,
+            is_compacting: false,
             status: AgentChatStatus::Idle,
             interaction_mode: AgentInteractionMode::Default,
             composer_text: String::new(),
@@ -1815,6 +1957,119 @@ mod retirement_tests {
         assert!(session_safe_to_retire(&codex));
     }
 
+    fn queued_handoff_fixture(kind: &str) -> QueuedChatTurn {
+        QueuedChatTurn {
+            id: Uuid::new_v4(),
+            text: "Prepared teammate context".to_string(),
+            display_text: Some("Teammate request".to_string()),
+            tags: Vec::new(),
+            mode: AgentInteractionMode::Default,
+            created_at: 0,
+            handoff: Some(QueuedAgentHandoff {
+                target_agent_id: Uuid::new_v4(),
+                target_title: "SDK agent".to_string(),
+                kind: kind.to_string(),
+                original_text: "Check the SDK".to_string(),
+                references: "File: sdk.rs".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn queued_handoff_waits_for_active_work_decisions_and_existing_queue() {
+        let mut state = AgentChatState::new();
+        let session = retirable_session();
+        let id = session.agent_id;
+        state.sessions.insert(id, session);
+        for status in [
+            AgentChatStatus::Running,
+            AgentChatStatus::Cancelling,
+            AgentChatStatus::WaitingForUser,
+            AgentChatStatus::PlanReady,
+        ] {
+            state.sessions.get_mut(&id).unwrap().set_status(status);
+            assert!(state.handoff_must_wait(id), "{status:?}");
+        }
+        state
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .set_status(AgentChatStatus::Idle);
+        assert!(!state.handoff_must_wait(id));
+        state
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .queued_turns
+            .push(queued_handoff_fixture("ask"));
+        assert!(state.handoff_must_wait(id));
+        assert!(state.has_queued_work(id));
+        state.take_next_queued_turn(id);
+        state.handoffs_sending.insert(id);
+        assert!(state.handoff_must_wait(id));
+        assert!(state.has_queued_work(id));
+        state.handoffs_sending.remove(&id);
+        assert!(!state.handoff_must_wait(id));
+    }
+
+    #[test]
+    fn queued_handoffs_keep_fifo_order_and_routing_metadata() {
+        for kind in ["ask", "delegate"] {
+            let mut state = AgentChatState::new();
+            let mut session = retirable_session();
+            let id = session.agent_id;
+            let handoff = queued_handoff_fixture(kind);
+            let mut first = queued_handoff_fixture(kind);
+            first.handoff = None;
+            let mut last = first.clone();
+            last.id = Uuid::new_v4();
+            session.queued_turns = vec![first.clone(), handoff.clone(), last.clone()];
+            state.sessions.insert(id, session);
+            assert_eq!(state.take_next_queued_turn(id), Some(first));
+            assert_eq!(state.take_next_queued_turn(id), Some(handoff));
+            assert_eq!(state.take_next_queued_turn(id), Some(last));
+            assert_eq!(state.take_next_queued_turn(id), None);
+        }
+    }
+
+    #[test]
+    fn compaction_preserves_the_running_turn_and_ends_explicitly() {
+        let mut session = retirable_session();
+        session.set_status(AgentChatStatus::Running);
+        session.started_running_at = Some(123);
+        session.set_compacting(true);
+        assert!(session.is_compacting);
+        assert_eq!(session.status, AgentChatStatus::Running);
+        assert_eq!(session.started_running_at, Some(123));
+        assert!(!session_safe_to_retire(&session));
+        session.set_compacting(false);
+        assert!(!session.is_compacting);
+        assert_eq!(session.status, AgentChatStatus::Running);
+        assert_eq!(session.started_running_at, Some(123));
+    }
+
+    #[test]
+    fn compaction_clears_on_every_turn_transition() {
+        for status in [
+            AgentChatStatus::Idle,
+            AgentChatStatus::Running,
+            AgentChatStatus::Cancelling,
+            AgentChatStatus::WaitingForUser,
+            AgentChatStatus::PlanReady,
+            AgentChatStatus::Failed,
+        ] {
+            let mut session = retirable_session();
+            session.set_status(AgentChatStatus::Running);
+            session.set_compacting(true);
+            session.set_status(status);
+            assert!(!session.is_compacting, "status {status:?}");
+            if status != AgentChatStatus::Running {
+                session.set_compacting(true);
+                assert!(!session.is_compacting, "late event for {status:?}");
+            }
+        }
+    }
+
     #[test]
     fn any_in_flight_state_blocks_retirement() {
         for status in [
@@ -1825,7 +2080,7 @@ mod retirement_tests {
             AgentChatStatus::Failed,
         ] {
             let mut session = retirable_session();
-            session.status = status;
+            session.set_status(status);
             assert!(!session_safe_to_retire(&session), "status {status:?}");
         }
 
@@ -1837,6 +2092,7 @@ mod retirement_tests {
             tags: Vec::new(),
             mode: AgentInteractionMode::Default,
             created_at: 0,
+            handoff: None,
         });
         assert!(!session_safe_to_retire(&queued));
 
@@ -1864,7 +2120,7 @@ mod retirement_tests {
     #[test]
     fn lane_exit_stops_without_claiming_the_user_pressed_stop() {
         let mut session = retirable_session();
-        session.status = AgentChatStatus::Running;
+        session.set_status(AgentChatStatus::Running);
 
         let entry = settle_hard_stopped_session(&mut session, false);
 
@@ -1877,7 +2133,7 @@ mod retirement_tests {
     #[test]
     fn explicit_force_stop_keeps_the_user_stop_outcome() {
         let mut session = retirable_session();
-        session.status = AgentChatStatus::Running;
+        session.set_status(AgentChatStatus::Running);
 
         let entry = settle_hard_stopped_session(&mut session, true)
             .expect("an explicit stop should produce a timeline outcome");
@@ -1887,6 +2143,87 @@ mod retirement_tests {
             item,
             AgentChatTimelineItem::WorkLog(entry) if entry.title == "Stopped by user"
         )));
+    }
+
+    #[test]
+    fn repeated_force_stops_preserve_every_queued_message_and_handoff() {
+        let mut session = retirable_session();
+        let mut message = queued_handoff_fixture("ask");
+        message.handoff = None;
+        message.text = "Review the attached image: /tmp/reference.png".into();
+        message.display_text = Some("Review the attached image".into());
+        let queued = vec![message, queued_handoff_fixture("delegate")];
+        session.queued_turns = queued.clone();
+        session.set_status(AgentChatStatus::Cancelling);
+
+        for _ in 0..2 {
+            settle_hard_stopped_session(&mut session, true);
+            assert_eq!(session.status, AgentChatStatus::Idle);
+            assert_eq!(session.queued_turns, queued);
+        }
+    }
+
+    #[test]
+    fn paused_queue_stays_paused_after_completion_and_new_arrivals() {
+        let mut state = AgentChatState::new();
+        let mut session = retirable_session();
+        let id = session.agent_id;
+        let first = queued_handoff_fixture("ask");
+        let second = queued_handoff_fixture("delegate");
+        session.queued_turns = vec![first.clone()];
+        session.set_status(AgentChatStatus::Cancelling);
+        state.sessions.insert(id, session);
+        state.paused_queues.insert(id);
+        assert!(!state.can_drain_queue(id));
+
+        let session = state.sessions.get_mut(&id).unwrap();
+        session.set_status(AgentChatStatus::Idle);
+        session.queued_turns.push(second.clone());
+        assert!(!state.can_drain_queue(id));
+        assert_eq!(
+            state.session(id).unwrap().queued_turns,
+            vec![first.clone(), second.clone()]
+        );
+
+        // The next explicit Send releases the pause; FIFO order is unchanged.
+        state.paused_queues.remove(&id);
+        assert!(state.can_drain_queue(id));
+        assert_eq!(state.take_next_queued_turn(id), Some(first));
+        assert_eq!(state.take_next_queued_turn(id), Some(second));
+    }
+
+    #[test]
+    fn queue_dispatch_waits_for_cancellation_and_in_flight_handoffs() {
+        let mut state = AgentChatState::new();
+        let mut session = retirable_session();
+        let id = session.agent_id;
+        session.queued_turns.push(queued_handoff_fixture("ask"));
+        session.set_status(AgentChatStatus::Cancelling);
+        state.sessions.insert(id, session);
+        // Sending during cancellation must wait for the stop acknowledgement.
+        assert!(!state.can_drain_queue(id));
+        state
+            .sessions
+            .get_mut(&id)
+            .unwrap()
+            .set_status(AgentChatStatus::Idle);
+        state.handoffs_sending.insert(id);
+        assert!(!state.can_drain_queue(id));
+        state.handoffs_sending.remove(&id);
+        assert!(state.can_drain_queue(id));
+    }
+
+    #[test]
+    fn queued_message_cannot_be_consumed_without_a_backend_after_force_stop() {
+        let mut state = AgentChatState::new();
+        let mut session = retirable_session();
+        let id = session.agent_id;
+        let mut message = queued_handoff_fixture("ask");
+        message.handoff = None;
+        session.queued_turns.push(message.clone());
+        state.sessions.insert(id, session);
+        assert!(!state.can_drain_queue(id));
+        assert_eq!(state.session(id).unwrap().queued_turns, vec![message]);
     }
 
     #[test]

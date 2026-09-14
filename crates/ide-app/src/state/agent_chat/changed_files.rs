@@ -364,7 +364,7 @@ fn bounded_content(content: Option<String>) -> Option<String> {
 /// Count the shortest line edit script without retaining diff hunks. The
 /// projection is capped so a generated file cannot make a foreground ledger
 /// update quadratic in the file size.
-fn bounded_line_diff_counts(baseline: &str, result: &str) -> Option<(usize, usize)> {
+pub(crate) fn bounded_line_diff_counts(baseline: &str, result: &str) -> Option<(usize, usize)> {
     let baseline = baseline.lines().collect::<Vec<_>>();
     let result = result.lines().collect::<Vec<_>>();
     if baseline.len().max(result.len()) > MAX_LEDGER_DIFF_LINES {

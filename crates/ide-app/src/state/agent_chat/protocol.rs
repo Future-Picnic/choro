@@ -1,8 +1,10 @@
 mod claude;
 mod codex;
 mod events;
+pub(crate) mod managed;
 mod open_code;
 mod process;
+mod worktree_changes;
 
 use codex::capture_changed_files_snapshot;
 use events::*;
@@ -222,6 +224,7 @@ pub enum ChatBackendEvent {
     ReviewChecklist(ReviewChecklist),
     ChangedFiles(ChangedFilesSummary),
     Usage(ConversationUsage),
+    Compaction(bool),
     Status(AgentChatStatus),
     Error(String),
 }
@@ -380,7 +383,9 @@ struct CodexRuntime {
     assistant_stream: StreamChunkBuffer,
     plan_buffer: String,
     pending_changed_files: Option<ChangedFilesSummary>,
+    pending_file_actions: std::collections::BTreeMap<String, Vec<FileChangeStat>>,
     pending_observed_files: Vec<FileChangeStat>,
+    worktree_baseline: Option<worktree_changes::WorktreeChanges>,
     active_turn_id: String,
     command_ran_this_turn: bool,
     active_command_item_id: Option<String>,
@@ -596,6 +601,16 @@ fn choro_mcp_binary_path() -> Option<PathBuf> {
     let current = binary_dir.join("choro-mcp");
     if current.exists() {
         return Some(current);
+    }
+    // Cargo test executables live one directory beneath the development
+    // binaries. Acceptance uses the same freshly built MCP executable.
+    #[cfg(test)]
+    if let Some(path) = binary_dir
+        .parent()
+        .map(|p| p.join("choro-mcp"))
+        .filter(|p| p.is_file())
+    {
+        return Some(path);
     }
     // Compatibility with development bundles created before the rename.
     let legacy = binary_dir.join("ide-mcp");
@@ -941,6 +956,17 @@ fn run_codex_app_server(
         anyhow!("Codex executable was not found. Install Codex or add it to your shell PATH.")
     })?;
     let mut command = Command::new(&codex_path);
+    if agent.delegation.is_some() {
+        managed::preflight(agent.provider)?;
+        command.args([
+            "-c",
+            "agents.enabled=false",
+            "-c",
+            "features.multi_agent=false",
+            "-c",
+            "features.multi_agent_v2=false",
+        ]);
+    }
     command
         .args(["app-server", "--stdio"])
         .env("PATH", &path_env)
@@ -962,6 +988,20 @@ fn run_codex_app_server(
             command
                 .arg("-c")
                 .arg(codex_mcp_args_config_arg("ide", &agent));
+            if ide_core::delegation::enabled() {
+                // Codex filters inherited stdio-server environment variables.
+                // Pass the development gate explicitly or discovery loses all
+                // delegation tools while the model still receives its brief.
+                command.args([
+                    "-c",
+                    "mcp_servers.ide.env.CHORO_EXPERTS=\"1\"",
+                    "-c",
+                    "mcp_servers.ide.enabled=true",
+                ]);
+            }
+            if agent.delegation.is_some() {
+                command.args(["-c", "mcp_servers.ide.required=true"]);
+            }
         }
         if agent_requires_design_mcp(&agent) {
             if let Some(url) = crate::state::penpot::configured_mcp_url() {
@@ -1014,7 +1054,9 @@ fn run_codex_app_server(
         assistant_stream: StreamChunkBuffer::new(),
         plan_buffer: String::new(),
         pending_changed_files: None,
+        pending_file_actions: Default::default(),
         pending_observed_files: Vec::new(),
+        worktree_baseline: None,
         active_turn_id: next_request_id(),
         command_ran_this_turn: false,
         active_command_item_id: None,

@@ -3,20 +3,26 @@ use super::*;
 const POCKETCOMET_PROJECT_LIST_W: f32 = 220.0;
 
 fn pocketcomet_response_markdown(text: &str) -> String {
-    text.lines().map(|line| {
-        let trimmed = line.trim();
-        // Final deliverables are often download links rather than image Markdown.
-        if trimmed.starts_with('[') && trimmed.ends_with(')') {
-            if let Some((_, target)) = trimmed.split_once("](") {
-                let target = target[..target.len() - 1].trim().trim_matches(['<', '>']);
-                let path = PathBuf::from(target.strip_prefix("file://").unwrap_or(target));
-                if path.is_absolute() && path.is_file() && image_format_for_path(&path).is_some() {
-                    return format!("![Image]({})", path.display());
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            // Final deliverables are often download links rather than image Markdown.
+            if trimmed.starts_with('[') && trimmed.ends_with(')') {
+                if let Some((_, target)) = trimmed.split_once("](") {
+                    let target = target[..target.len() - 1].trim().trim_matches(['<', '>']);
+                    let path = PathBuf::from(target.strip_prefix("file://").unwrap_or(target));
+                    if path.is_absolute()
+                        && path.is_file()
+                        && image_format_for_path(&path).is_some()
+                    {
+                        return format!("![Image]({})", path.display());
+                    }
                 }
             }
-        }
-        line.to_string()
-    }).collect::<Vec<_>>().join("\n")
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -25,11 +31,15 @@ mod image_reply_tests {
 
     #[test]
     fn final_image_download_link_uses_the_chat_image_preview() {
-        let directory = std::env::temp_dir().join(format!("choro-tumble-preview-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("choro-tumble-preview-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("logo.png");
         std::fs::write(&path, b"image").unwrap();
-        assert_eq!(pocketcomet_response_markdown(&format!("[Download PNG]({})", path.display())), format!("![Image]({})", path.display()));
+        assert_eq!(
+            pocketcomet_response_markdown(&format!("[Download PNG]({})", path.display())),
+            format!("![Image]({})", path.display())
+        );
         let remote = "[Requirements](https://example.com/logo.png)";
         assert_eq!(pocketcomet_response_markdown(remote), remote);
         let missing = "[Missing](/not-a-real-tumble-result.png)";
@@ -722,26 +732,42 @@ impl CenterArea {
         let responses = self.pocketcomet_chat_responses(chat, cx);
         let runtime = self.agent_runtime(chat, chat.project_id, cx);
         let session = self.agent_chats.read(cx).session(chat.id);
-        let (status, detail) = if let Some(approval) = session.and_then(|s| s.pending_approval.as_ref()) {
+        let (status, detail) = if let Some(approval) =
+            session.and_then(|s| s.pending_approval.as_ref())
+        {
             ("Waiting for your approval", approval.title.clone())
         } else if let Some(input) = session.and_then(|s| s.pending_user_input.as_ref()) {
-            ("Waiting for your answer", input.questions.get(input.question_index)
-                .map(|question| question.question.clone()).unwrap_or_else(|| "Open the work session to respond.".into()))
+            (
+                "Waiting for your answer",
+                input
+                    .questions
+                    .get(input.question_index)
+                    .map(|question| question.question.clone())
+                    .unwrap_or_else(|| "Open the work session to respond.".into()),
+            )
         } else {
-            (pocketcomet_runtime_label(runtime), match runtime {
-                AgentRuntime::Working => "The reply will appear in PocketComet when Choro finishes.",
-                AgentRuntime::Waiting => "Open the work session to review what Choro needs.",
-                AgentRuntime::Ended => "Open the work session to check why Choro stopped.",
-                _ => "Open the work session to see activity and results.",
-            }.to_string())
+            (
+                pocketcomet_runtime_label(runtime),
+                match runtime {
+                    AgentRuntime::Working => {
+                        "The reply will appear in PocketComet when Choro finishes."
+                    }
+                    AgentRuntime::Waiting => "Open the work session to review what Choro needs.",
+                    AgentRuntime::Ended => "Open the work session to check why Choro stopped.",
+                    _ => "Open the work session to see activity and results.",
+                }
+                .to_string(),
+            )
         };
         let chat_id = chat.id;
         let project_id = chat.project_id;
-        let open_work = style::secondary_button_compact("pocketcomet-chat-open-work", "Open work session")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.workspace.update(cx, |workspace, cx| workspace.set_active(project_id, cx));
-                this.open_agent(chat_id, window, cx);
-            }));
+        let open_work =
+            style::secondary_button_compact("pocketcomet-chat-open-work", "Open work session")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.workspace
+                        .update(cx, |workspace, cx| workspace.set_active(project_id, cx));
+                    this.open_agent(chat_id, window, cx);
+                }));
         let activity = h_flex()
             .w_full()
             .max_w(crate::ui::design::center_content_frame_max_w())
@@ -750,12 +776,26 @@ impl CenterArea {
             .py_3()
             .gap_3()
             .items_start()
-            .child(v_flex().flex_1().min_w(px(0.)).gap_1()
-                .child(div().text_size(crate::ui::design::text_ui())
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(pocketcomet_runtime_tone(runtime, cx)).child(status))
-                .child(div().text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t2(cx)).whitespace_normal().child(detail)))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_ui())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(pocketcomet_runtime_tone(runtime, cx))
+                            .child(status),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t2(cx))
+                            .whitespace_normal()
+                            .child(detail),
+                    ),
+            )
             .child(open_work);
         let back = style::secondary_button_compact("pocketcomet-chat-back", "Back")
             .icon(IconName::ArrowLeft)

@@ -201,7 +201,10 @@ impl CenterArea {
         let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
             return false;
         };
-        if agent.hidden_doc_assistant || agent.design_context.is_some() {
+        if agent.hidden_doc_assistant
+            || agent.design_context.is_some()
+            || agent.delegation.is_some()
+        {
             return false;
         }
         let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
@@ -328,6 +331,42 @@ impl CenterArea {
     /// session is cancelling into a force-stop of the backend process.
     pub(super) fn request_agent_chat_stop(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         self.sync_chat_session_ids(cx);
+        if let Some(run_id) = self
+            .agents
+            .read(cx)
+            .agent(agent_id)
+            .and_then(|a| a.delegation.as_ref())
+            .map(|b| b.run_id)
+            .or_else(|| {
+                self.delegation_runs(agent_id, cx)
+                    .into_iter()
+                    .find(|r| !r.status.terminal())
+                    .map(|r| r.id)
+            })
+        {
+            if let Some(h) = cx
+                .try_global::<crate::state::delegation::DelegationHandle>()
+                .cloned()
+            {
+                let task_id = self
+                    .agents
+                    .read(cx)
+                    .agent(agent_id)
+                    .and_then(|a| a.delegation.as_ref())
+                    .and_then(|b| b.task_id);
+                if let Err(error) = h.0.update(cx, |s, cx| {
+                    if let Some(task) = task_id {
+                        s.pause_task(run_id, task, cx)
+                    } else {
+                        s.pause(run_id, cx)
+                    }
+                }) {
+                    self.agent_start_errors.insert(agent_id, error.to_string());
+                }
+                cx.notify();
+                return;
+            }
+        }
         self.agent_chats
             .update(cx, |chats, cx| chats.stop_backend(agent_id, cx));
         cx.notify();
@@ -387,7 +426,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         let (project, relative_doc_path) = match surface {
-            AgentChatSurface::Standard => {
+            AgentChatSurface::Standard | AgentChatSurface::Delegated { .. } => {
                 self.update_agent_chat_model_effort(agent_id, model, effort, cx);
                 return;
             }
@@ -463,7 +502,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         let (project, relative_doc_path) = match surface {
-            AgentChatSurface::Standard => return,
+            AgentChatSurface::Standard | AgentChatSurface::Delegated { .. } => return,
             AgentChatSurface::Document {
                 project,
                 relative_doc_path,
@@ -566,7 +605,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         match surface {
-            AgentChatSurface::Standard => {
+            AgentChatSurface::Standard | AgentChatSurface::Delegated { .. } => {
                 self.agents.update(cx, |agents, cx| {
                     agents.update_access_mode(agent_id, access_mode, cx);
                 });
@@ -1192,6 +1231,9 @@ impl CenterArea {
                 .retain(|agent_id, _| chats.sessions.contains_key(agent_id));
             for (agent_id, session) in chats.sessions.iter() {
                 let agent = agents.agent(*agent_id);
+                if agent.is_some_and(|a| a.delegation.is_some()) {
+                    continue;
+                }
                 // Skip sessions whose decision inputs haven't changed since
                 // the last scan: the lifecycle walk below reads the whole
                 // timeline, and this observer fires on every event from any
@@ -1630,6 +1672,37 @@ impl CenterArea {
         );
         let message_tags =
             composer_message_tags(selected_command.as_ref(), &selected_mentions, preview_armed);
+        if ide_core::delegation::enabled()
+            && !agent.hidden_doc_assistant
+            && agent.design_context.is_none()
+        {
+            if let Some(binding) = agent.delegation.as_ref().filter(|b| b.task_id.is_some()) {
+                let result = LocalStore::open_default().and_then(|s| {
+                    s.update_delegation(binding.run_id, None, |r| {
+                        r.user_correction(
+                            binding.task_id.unwrap(),
+                            prompt_with_attached_files(
+                                &append_pasted_text_blocks(&draft, &pasted_text_blocks),
+                                &attached_files,
+                            ),
+                        )
+                    })
+                });
+                match result {
+                    Ok(()) => {
+                        input.update(cx, |input, cx| input.set_value("", window, cx));
+                        self.agent_chat_attached_files.remove(&agent.id);
+                        self.agent_chat_pasted_text_blocks.remove(&agent.id);
+                        self.agent_start_errors.remove(&agent.id);
+                    }
+                    Err(error) => {
+                        self.agent_start_errors.insert(agent.id, error.to_string());
+                    }
+                }
+                cx.notify();
+                return;
+            }
+        }
         let projects = self.workspace.read(cx).projects.clone();
         let selected_target = self
             .agent_chat_selected_agent_targets
@@ -1665,12 +1738,53 @@ impl CenterArea {
             );
             return;
         }
+        let mut delegation_stopped = false;
+        if ide_core::delegation::enabled()
+            && !agent.hidden_doc_assistant
+            && agent.design_context.is_none()
+        {
+            let explicit = self.delegation_selection.get(&agent.id).copied();
+            if let Some(h) = cx
+                .try_global::<crate::state::delegation::DelegationHandle>()
+                .cloned()
+            {
+                match h
+                    .0
+                    .update(cx, |s, cx| s.prepare_parent_message(agent.id, cx))
+                {
+                    Ok(stopped) => delegation_stopped = stopped,
+                    Err(error) => {
+                        self.agent_start_errors.insert(agent.id, error.to_string());
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+            if !delegation_stopped && explicit == Some(None) {
+                self.agent_start_errors
+                    .insert(agent.id, "Choose a bandmate for this assignment.".into());
+                cx.notify();
+                return;
+            }
+            let ids = explicit.flatten().into_iter().collect::<Vec<_>>();
+            let plan = self
+                .agent_chats
+                .read(cx)
+                .session(agent.id)
+                .is_some_and(|s| s.interaction_mode == AgentInteractionMode::Plan);
+            if let Err(error) = experts::authorize(agent.id, &draft, &ids, plan) {
+                self.agent_start_errors.insert(agent.id, error.to_string());
+                cx.notify();
+                return;
+            }
+        }
         // Captured before resolution: plan feedback is a decision worth
         // examining for a durable preference once the submission goes through.
         let refine_plan_markdown = self
             .agent_chats
             .read(cx)
             .session(agent.id)
+            .filter(|_| surface.allows_plan_mode(agent))
             .and_then(|session| session.proposed_plan.as_ref())
             .filter(|plan| plan.implemented_at.is_none())
             .map(|plan| plan.markdown.clone());
@@ -1680,10 +1794,11 @@ impl CenterArea {
             let draft_with_pastes = append_pasted_text_blocks(&draft, &pasted_text_blocks);
             let has_actionable_plan = {
                 let session = chats.ensure_session(agent.id, agent.title.clone(), cx);
-                session
-                    .proposed_plan
-                    .as_ref()
-                    .is_some_and(|plan| plan.implemented_at.is_none())
+                surface.allows_plan_mode(agent)
+                    && session
+                        .proposed_plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.implemented_at.is_none())
             };
             if has_actionable_plan {
                 chats.resolve_proposed_plan_submission(agent.id, &draft_with_pastes, cx)
@@ -1742,14 +1857,6 @@ impl CenterArea {
             }
         }
 
-        input.update(cx, |input, cx| input.set_value("", window, cx));
-        self.agent_chat_attached_files.remove(&agent.id);
-        self.agent_chat_pasted_text_blocks.remove(&agent.id);
-        self.agent_chat_selected_commands.remove(&agent.id);
-        self.agent_chat_selected_mentions.remove(&agent.id);
-        self.agent_chat_preview_armed.remove(&agent.id);
-        self.agent_chat_preview_suggestion_dismissed
-            .remove(&agent.id);
         if steer_running {
             let is_running = self
                 .agent_chats
@@ -1767,7 +1874,7 @@ impl CenterArea {
                     .update(cx, |chats, cx| chats.force_stop_backend(agent.id, cx));
             }
         }
-        let mode = if surface.allows_plan_mode() {
+        let mode = if surface.allows_plan_mode(agent) {
             mode
         } else {
             AgentInteractionMode::Default
@@ -1780,6 +1887,14 @@ impl CenterArea {
         } else {
             message_display_text
         };
+        let selected_expert = self.delegation_selection.get(&agent.id).copied().flatten();
+        let submission_text = if delegation_stopped {
+            format!("{submission_text}\n\nChoro status: Bandmate delegation remains stopped. This message continues only the lead conversation. Answer the user and inspect saved status as needed; do not restart Bandmates, schedule or integrate their work, or substitute other agents. The user can resume Bandmates or end delegation using the controls beside the composer.")
+        } else if let Some(id) = selected_expert {
+            format!("{submission_text}\n\nThe user explicitly selected Bandmate {id} for this assignment. Use experts_list and delegation_plan to prepare and schedule it. Do not change this lead's model.")
+        } else {
+            submission_text
+        };
         let submitted = self.dispatch_agent_chat_submission_with_agent(
             agent,
             submission_text,
@@ -1789,6 +1904,18 @@ impl CenterArea {
             cx,
         );
         if submitted {
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+            self.agent_chat_attached_files.remove(&agent.id);
+            self.agent_chat_pasted_text_blocks.remove(&agent.id);
+            self.agent_chat_selected_commands.remove(&agent.id);
+            self.agent_chat_selected_mentions.remove(&agent.id);
+            self.agent_chat_preview_armed.remove(&agent.id);
+            self.agent_chat_preview_suggestion_dismissed
+                .remove(&agent.id);
+            self.delegation_selection.remove(&agent.id);
+            self.agent_start_errors.remove(&agent.id);
+            self.agent_chats
+                .update(cx, |chats, cx| chats.resume_queue(agent.id, cx));
             self.agents.update(cx, |agents, cx| {
                 agents.update_status(agent.id, AgentStatus::InProgress, cx)
             });
@@ -2323,6 +2450,12 @@ impl CenterArea {
             })
             .unwrap_or((fallback_mode, false));
         let is_running = is_running_status && has_backend;
+        let should_queue = is_running
+            || self.agent_chats.read(cx).background_reserved(agent_id)
+            || (!read_only
+                && (self.agent_chats.read(cx).has_queued_work(agent_id)
+                    || (super::agent_chat_brain::is_agent_request_submission(&submission_text)
+                        && self.agent_chats.read(cx).handoff_must_wait(agent_id))));
         if read_only && is_running {
             return false;
         }
@@ -2427,32 +2560,17 @@ impl CenterArea {
             }
         }
         self.agent_chats.update(cx, |chats, cx| {
-            if is_running {
-                chats.queue_turn(
-                    agent_id,
-                    submission_text.clone(),
-                    display_text.clone(),
-                    tags.clone(),
-                    mode,
-                    cx,
-                );
-            } else {
-                chats.append_message(
-                    agent_id,
-                    AgentChatMessage::User {
-                        text: submission_text.clone(),
-                        display_text: display_text.clone(),
-                        tags: tags.clone(),
-                        created_at: unix_now_secs(),
-                    },
-                    cx,
-                );
-                if read_only {
-                    chats.send_read_only_turn(agent_id, submission_text.clone(), mode, cx);
-                } else {
-                    chats.send_turn(agent_id, submission_text.clone(), mode, cx);
-                }
-            }
+            crate::state::chat_dispatch::dispatch_loaded(
+                chats,
+                agent_id,
+                submission_text,
+                display_text,
+                tags,
+                mode,
+                should_queue,
+                read_only,
+                cx,
+            );
         });
         cx.notify();
         true
@@ -2502,6 +2620,17 @@ impl CenterArea {
         }
         let commands =
             self.cached_agent_chat_slash_capabilities(agent.provider, agent.project_id, cx);
+        let mut commands = (*commands).clone();
+        if self.can_delegate_from(agent_id, cx)
+            && agent
+                .delegation
+                .as_ref()
+                .is_none_or(|b| b.task_id.is_none())
+            && !agent.hidden_doc_assistant
+            && agent.design_context.is_none()
+        {
+            commands.extend(experts::capabilities(agent.provider));
+        }
         let matches = agent_chat_slash_matches(&commands, &query.query);
         let selected = self
             .agent_chat_slash_selection
@@ -2530,6 +2659,19 @@ impl CenterArea {
             return;
         }
         let (next, cursor) = remove_agent_chat_slash_query(&current, &query);
+        if command.expert_id.is_some() || command.source == AgentCapabilitySource::Delegate {
+            if !self.can_delegate_from(agent_id, cx) {
+                self.agent_start_errors
+                    .insert(agent_id, ide_core::delegation::BETA_DISABLED.into());
+                cx.notify();
+                return;
+            }
+            self.delegation_selection
+                .insert(agent_id, command.expert_id);
+            input.update(cx, |input, cx| input.set_value(next, window, cx));
+            cx.notify();
+            return;
+        }
         let (next, cursor) = insert_agent_chat_command_invocation(&next, cursor, &command);
         if command.is_choro_preview() {
             self.agent_chat_preview_armed.insert(agent_id);
@@ -2582,6 +2724,12 @@ impl CenterArea {
         let Some(input) = self.agent_chat_inputs.get(&agent_id).cloned() else {
             return;
         };
+        let handoff = self
+            .agent_chats
+            .read(cx)
+            .session(agent_id)
+            .and_then(|session| session.queued_turns.iter().find(|turn| turn.id == turn_id))
+            .and_then(|turn| turn.handoff.clone());
         let Some((text, attached_files)) = self
             .agent_chats
             .read(cx)
@@ -2594,6 +2742,22 @@ impl CenterArea {
         self.agent_chats.update(cx, |chats, cx| {
             chats.remove_queued_turn(agent_id, turn_id, cx)
         });
+        if let Some(handoff) = handoff {
+            self.agent_chat_selected_agent_targets
+                .insert(agent_id, handoff.target_agent_id);
+            self.agent_chat_agent_request_kind_overrides.insert(
+                agent_id,
+                if handoff.kind == "ask" {
+                    AgentRequestKind::Ask
+                } else {
+                    AgentRequestKind::Delegate
+                },
+            );
+        } else {
+            self.agent_chat_selected_agent_targets.remove(&agent_id);
+            self.agent_chat_agent_request_kind_overrides
+                .remove(&agent_id);
+        }
         if attached_files.is_empty() {
             self.agent_chat_attached_files.remove(&agent_id);
         } else {
@@ -3271,6 +3435,8 @@ impl CenterArea {
             false,
             cx,
         ) {
+            self.agent_chats
+                .update(cx, |chats, cx| chats.resume_queue(agent_id, cx));
             self.agents.update(cx, |agents, cx| {
                 agents.update_status(agent_id, AgentStatus::InProgress, cx)
             });

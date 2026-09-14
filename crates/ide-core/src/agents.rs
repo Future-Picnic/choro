@@ -553,6 +553,10 @@ impl LaneProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: Uuid,
+    #[serde(default)]
+    pub expert_snapshot: Option<crate::experts::ExpertSnapshot>,
+    #[serde(default)]
+    pub delegation: Option<crate::delegation::DelegationBinding>,
     pub project_id: ProjectId,
     pub project_path: PathBuf,
     /// Repository selected when the agent was created. `None` means the agent
@@ -669,6 +673,8 @@ impl AgentRecord {
         let effort = model.normalize_effort(effort);
         Self {
             id: Uuid::new_v4(),
+            expert_snapshot: None,
+            delegation: None,
             project_id,
             project_path,
             repository_path: None,
@@ -850,6 +856,13 @@ impl AgentRecord {
     /// resumed agent back into a branch whose work has already been rejoined.
     /// Every consumer that means "the agent's working directory" must use this.
     pub fn runtime_path(&self) -> &Path {
+        if let Some(path) = self
+            .delegation
+            .as_ref()
+            .and_then(|b| b.workspace.as_deref())
+        {
+            return path;
+        }
         if self.is_active_solo() {
             self.lane_path
                 .as_deref()
@@ -1713,6 +1726,8 @@ mod tests {
         let project = Project::from_path(PathBuf::from("/tmp/app"));
         AgentRecord {
             id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+            expert_snapshot: None,
+            delegation: None,
             project_id: project.id,
             project_path: project.path,
             repository_path: None,

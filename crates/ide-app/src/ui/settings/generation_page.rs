@@ -107,36 +107,49 @@ impl SettingsView {
                         }))
                 })
                 .collect::<Vec<_>>();
-            let model_buttons = if generation_agent.provider == AgentKind::OpenCode {
+            let mut model_buttons_choices = if generation_agent.provider == AgentKind::OpenCode {
                 vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
             } else {
                 AgentModel::models_for(generation_agent.provider)
                     .iter()
                     .map(|model| (*model, model.menu_label().to_string()))
                     .collect::<Vec<_>>()
-            }
-            .into_iter()
-            .enumerate()
-            .map(|(index, (model, label))| {
-                let selected = generation_agent.model == model;
-                let button = if selected {
-                    crate::ui::style::primary_button_compact(
-                        ("settings-generation-model", index),
-                        label,
-                        cx,
-                    )
-                } else {
-                    crate::ui::style::dialog_neutral_button(
-                        ("settings-generation-model", index),
-                        label,
-                        cx,
-                    )
-                };
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_generation_model(model, cx);
-                }))
-            })
-            .collect::<Vec<_>>();
+            };
+            ide_core::model_favorites::favorites_first(
+                &mut model_buttons_choices,
+                &self.workspace.read(cx).favorite_models,
+                |(model, _)| ide_core::model_favorites::ModelFavorite::new(*model, None),
+            );
+            let model_buttons = model_buttons_choices
+                .into_iter()
+                .enumerate()
+                .map(|(index, (model, label))| {
+                    let selected = generation_agent.model == model;
+                    let button = if selected {
+                        crate::ui::style::primary_button_compact(
+                            ("settings-generation-model", index),
+                            label,
+                            cx,
+                        )
+                    } else {
+                        crate::ui::style::dialog_neutral_button(
+                            ("settings-generation-model", index),
+                            label,
+                            cx,
+                        )
+                    };
+                    h_flex()
+                        .gap_0p5()
+                        .child(button.on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_generation_model(model, cx);
+                        })))
+                        .child(crate::ui::model_favorites::favorite_toggle(
+                            self.workspace.clone(),
+                            ide_core::model_favorites::ModelFavorite::new(model, None),
+                            cx,
+                        ))
+                })
+                .collect::<Vec<_>>();
             let quick_ask_provider_buttons =
                 [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
                     .into_iter()
@@ -162,35 +175,49 @@ impl SettingsView {
                             }))
                     })
                     .collect::<Vec<_>>();
-            let quick_ask_model_buttons = if quick_ask_agent.provider == AgentKind::OpenCode {
-                vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
-            } else {
-                AgentModel::models_for(quick_ask_agent.provider)
-                    .iter()
-                    .map(|model| (*model, model.menu_label().to_string()))
-                    .collect::<Vec<_>>()
-            }
-            .into_iter()
-            .enumerate()
-            .map(|(index, (model, label))| {
-                let button = if quick_ask_agent.model == model {
-                    crate::ui::style::primary_button_compact(
-                        ("settings-quick-ask-model", index),
-                        label,
-                        cx,
-                    )
+            let mut quick_ask_model_buttons_choices =
+                if quick_ask_agent.provider == AgentKind::OpenCode {
+                    vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
                 } else {
-                    crate::ui::style::dialog_neutral_button(
-                        ("settings-quick-ask-model", index),
-                        label,
-                        cx,
-                    )
+                    AgentModel::models_for(quick_ask_agent.provider)
+                        .iter()
+                        .map(|model| (*model, model.menu_label().to_string()))
+                        .collect::<Vec<_>>()
                 };
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_quick_ask_model(model, cx);
-                }))
-            })
-            .collect::<Vec<_>>();
+            ide_core::model_favorites::favorites_first(
+                &mut quick_ask_model_buttons_choices,
+                &self.workspace.read(cx).favorite_models,
+                |(model, _)| ide_core::model_favorites::ModelFavorite::new(*model, None),
+            );
+            let quick_ask_model_buttons = quick_ask_model_buttons_choices
+                .into_iter()
+                .enumerate()
+                .map(|(index, (model, label))| {
+                    let button = if quick_ask_agent.model == model {
+                        crate::ui::style::primary_button_compact(
+                            ("settings-quick-ask-model", index),
+                            label,
+                            cx,
+                        )
+                    } else {
+                        crate::ui::style::dialog_neutral_button(
+                            ("settings-quick-ask-model", index),
+                            label,
+                            cx,
+                        )
+                    };
+                    h_flex()
+                        .gap_0p5()
+                        .child(button.on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_quick_ask_model(model, cx);
+                        })))
+                        .child(crate::ui::model_favorites::favorite_toggle(
+                            self.workspace.clone(),
+                            ide_core::model_favorites::ModelFavorite::new(model, None),
+                            cx,
+                        ))
+                })
+                .collect::<Vec<_>>();
             let default_provider_buttons =
                 [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
                     .into_iter()
@@ -216,35 +243,49 @@ impl SettingsView {
                             }))
                     })
                     .collect::<Vec<_>>();
-            let default_model_buttons = if agent_defaults.provider == AgentKind::OpenCode {
-                vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
-            } else {
-                AgentModel::models_for(agent_defaults.provider)
-                    .iter()
-                    .map(|model| (*model, model.menu_label().to_string()))
-                    .collect::<Vec<_>>()
-            }
-            .into_iter()
-            .enumerate()
-            .map(|(index, (model, label))| {
-                let button = if agent_defaults.model == model {
-                    crate::ui::style::primary_button_compact(
-                        ("settings-agent-default-model", index),
-                        label,
-                        cx,
-                    )
+            let mut default_model_buttons_choices =
+                if agent_defaults.provider == AgentKind::OpenCode {
+                    vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
                 } else {
-                    crate::ui::style::dialog_neutral_button(
-                        ("settings-agent-default-model", index),
-                        label,
-                        cx,
-                    )
+                    AgentModel::models_for(agent_defaults.provider)
+                        .iter()
+                        .map(|model| (*model, model.menu_label().to_string()))
+                        .collect::<Vec<_>>()
                 };
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_default_agent_model(model, cx);
-                }))
-            })
-            .collect::<Vec<_>>();
+            ide_core::model_favorites::favorites_first(
+                &mut default_model_buttons_choices,
+                &self.workspace.read(cx).favorite_models,
+                |(model, _)| ide_core::model_favorites::ModelFavorite::new(*model, None),
+            );
+            let default_model_buttons = default_model_buttons_choices
+                .into_iter()
+                .enumerate()
+                .map(|(index, (model, label))| {
+                    let button = if agent_defaults.model == model {
+                        crate::ui::style::primary_button_compact(
+                            ("settings-agent-default-model", index),
+                            label,
+                            cx,
+                        )
+                    } else {
+                        crate::ui::style::dialog_neutral_button(
+                            ("settings-agent-default-model", index),
+                            label,
+                            cx,
+                        )
+                    };
+                    h_flex()
+                        .gap_0p5()
+                        .child(button.on_click(cx.listener(move |this, _, _, cx| {
+                            this.select_default_agent_model(model, cx);
+                        })))
+                        .child(crate::ui::model_favorites::favorite_toggle(
+                            self.workspace.clone(),
+                            ide_core::model_favorites::ModelFavorite::new(model, None),
+                            cx,
+                        ))
+                })
+                .collect::<Vec<_>>();
             let default_effort_buttons = AgentEffort::ALL
                 .into_iter()
                 .enumerate()

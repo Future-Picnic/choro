@@ -110,7 +110,26 @@ impl Render for CenterArea {
             && self
                 .penpot_open_design
                 .is_some_and(|(open_project, _)| open_project == project);
-        let project_preview_intent = if !overlay_open {
+        let selected_parent = (effective_mode == CenterMode::Agents)
+            .then(|| self.agents.read(cx).selected_agent_id(project))
+            .flatten();
+        let overview = self
+            .delegated_overview
+            .filter(|id| Some(*id) == selected_parent);
+        let delegated = self.delegated_panel.filter(|id| {
+            overview.is_none()
+                && self.agents.read(cx).agent(*id).is_some_and(|a| {
+                    a.project_id == project
+                        && a.delegation
+                            .as_ref()
+                            .is_some_and(|b| Some(b.parent_agent_id) == selected_parent)
+                })
+        });
+        let project_preview_intent = if !overlay_open && overview.is_some() {
+            None
+        } else if !overlay_open && delegated.is_some() {
+            self.delegated_preview_intent(project, cx)
+        } else if !overlay_open {
             self.project_preview_intent(project, cx)
         } else {
             None
@@ -229,7 +248,11 @@ impl Render for CenterArea {
                     url,
                     theme: web_preview::PenpotTheme::from_app(cx),
                 })
-        } else if !overlay_open && effective_mode == CenterMode::Agents {
+        } else if !overlay_open
+            && effective_mode == CenterMode::Agents
+            && overview.is_none()
+            && delegated.is_none()
+        {
             self.agents
                 .read(cx)
                 .selected_agent(project)
@@ -346,13 +369,34 @@ impl Render for CenterArea {
             }
         };
 
-        let show_project_preview = self.is_project_preview_open(project);
+        let narrow = window.viewport_size().width < px(900.);
+        let expert_surface = overview.is_some() || delegated.is_some();
+        let body = if narrow {
+            if let Some(parent) = overview {
+                self.render_assignment_overview_panel(parent, window, cx)
+            } else if let Some(child) = delegated {
+                self.render_delegated_panel(child, window, cx)
+            } else {
+                body
+            }
+        } else {
+            body
+        };
+        let show_project_preview =
+            expert_surface && !narrow || !expert_surface && self.is_project_preview_open(project);
         let project_preview_ratio = self
             .project_preview_panel_ratio
             .clamp(0.0, PROJECT_PREVIEW_PANEL_MAX_RATIO);
         let preview_layout_view = cx.entity().clone();
-        let project_preview_panel =
-            show_project_preview.then(|| self.render_project_preview_panel(project, window, cx));
+        let project_preview_panel = show_project_preview.then(|| {
+            if let Some(parent) = overview {
+                self.render_assignment_overview_panel(parent, window, cx)
+            } else if let Some(child) = delegated {
+                self.render_delegated_panel(child, window, cx)
+            } else {
+                self.render_project_preview_panel(project, window, cx)
+            }
+        });
 
         v_flex()
             .size_full()

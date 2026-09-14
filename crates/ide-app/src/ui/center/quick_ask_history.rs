@@ -887,6 +887,7 @@ impl CenterArea {
             chat_session_id: None,
             cli_session_id: None,
             hidden_from_notifications: true,
+            is_compacting: false,
             status: AgentChatStatus::Running,
             interaction_mode: AgentInteractionMode::Default,
             composer_text: String::new(),

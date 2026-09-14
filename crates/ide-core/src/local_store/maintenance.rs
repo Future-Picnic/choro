@@ -2,12 +2,44 @@ use super::*;
 
 impl LocalStore {
     pub fn export_workspace(&self, target: &Path) -> Result<()> {
-        let snapshot = self.export_snapshot()?;
+        let mut snapshot = self.export_snapshot()?;
+        let delegation_files =
+            delegation_archive::prepare_delegation_export(self, &mut snapshot.delegations)?;
         let file = File::create(target)
             .with_context(|| format!("failed to create export archive {}", target.display()))?;
         let mut zip = ZipWriter::new(file);
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let mut checksums = Vec::new();
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "experts.jsonl",
+            &snapshot.experts,
+            &mut checksums,
+        )?;
+        write_zip_jsonl(
+            &mut zip,
+            options,
+            "delegations.jsonl",
+            &snapshot.delegations,
+            &mut checksums,
+        )?;
+        for path in delegation_files {
+            let relative = path
+                .strip_prefix(&self.root)
+                .context("Delegation export escaped application storage")?;
+            let name = PathBuf::from("files")
+                .join(relative)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let bytes = fs::read(&path)?;
+            checksums.push(ExportChecksum {
+                path: name.clone(),
+                sha256: sha256_hex(&bytes),
+            });
+            zip.start_file(name, options)?;
+            zip.write_all(&bytes)?;
+        }
 
         write_zip_json(
             &mut zip,
@@ -265,7 +297,17 @@ impl LocalStore {
             manifest.format_version
         );
         let workspace: AppConfig = read_zip_json(&mut zip, "workspace.json")?;
-        let agents: Vec<AgentRecord> = read_zip_jsonl(&mut zip, "agents.jsonl")?;
+        let mut agents: Vec<AgentRecord> = read_zip_jsonl(&mut zip, "agents.jsonl")?;
+        let experts: Vec<crate::experts::ExpertProfile> =
+            read_zip_jsonl_optional(&mut zip, "experts.jsonl")?;
+        let mut delegations: Vec<crate::delegation::DelegationRun> =
+            read_zip_jsonl_optional(&mut zip, "delegations.jsonl")?;
+        for run in &mut delegations {
+            run.pause(
+                "Imported task — review its working copies before resuming",
+                true,
+            );
+        }
         let messages: Vec<StoredChatMessage> = read_zip_jsonl(&mut zip, "messages.jsonl")?;
         let timeline_events: Vec<StoredTimelineEvent> = read_zip_jsonl(&mut zip, "timeline.jsonl")?;
         let chat_file_ledgers: Vec<StoredChatFileLedger> =
@@ -316,6 +358,12 @@ impl LocalStore {
             let Some(relative) = name.strip_prefix("files/") else {
                 continue;
             };
+            anyhow::ensure!(
+                Path::new(relative)
+                    .components()
+                    .all(|c| matches!(c, std::path::Component::Normal(_))),
+                "Archive path escapes application storage."
+            );
             let target = self.root.join(relative);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
@@ -323,6 +371,7 @@ impl LocalStore {
             let mut output = File::create(&target)?;
             std::io::copy(&mut entry, &mut output)?;
         }
+        delegation_archive::restore_delegation_export(self, &mut delegations, &mut agents)?;
 
         let workspace_for_db = workspace.clone();
         self.rt.block_on(async {
@@ -487,6 +536,14 @@ impl LocalStore {
                     for message in &agent_messages {
                         insert_stored_agent_message_async(conn, message).await?;
                     }
+                    for expert in &experts {
+                        expert.validate()?;
+                        conn.execute("INSERT INTO expert_profiles (id, name_key, revision, payload_json) VALUES (?1, ?2, ?3, ?4)", params![expert.id.to_string(), crate::experts::normalized_expert_name(&expert.name), expert.revision as i64, serde_json::to_string(expert)?]).await?;
+                    }
+                    for run in &delegations { delegation::write_run(conn, run).await?; }
+                    // The replaced profiles may come from a pre-Experts archive.
+                    // A seed marker from the destination must not suppress defaults.
+                    set_meta(conn, "expert_catalog_version", "0").await?;
                     for attachment in &attachments {
                         insert_attachment_async(conn, attachment).await?;
                     }
@@ -499,6 +556,7 @@ impl LocalStore {
             .await
         })?;
         workspace.save_to(&self.root.join("config.json"))?;
+        self.ensure_default_experts()?;
         Ok(backup)
     }
 
@@ -626,6 +684,8 @@ impl LocalStore {
             let orbit_records = orbit::load_all_orbit_records_async(&conn).await?;
             Ok(ExportSnapshot {
                 workspace,
+                experts: delegation::load_experts_async(&conn).await?,
+                delegations: delegation::load_delegations_async(&conn).await?,
                 agents: load_agents_async(&conn).await?,
                 messages: load_all_messages_async(&conn).await?,
                 timeline_events: load_all_timeline_events_async(&conn).await?,
@@ -681,6 +741,8 @@ impl LocalStore {
 
 pub(super) struct ExportSnapshot {
     workspace: AppConfig,
+    experts: Vec<crate::experts::ExpertProfile>,
+    delegations: Vec<crate::delegation::DelegationRun>,
     project_references: Vec<ProjectReference>,
     personal_tasks: Vec<PersonalTaskRecord>,
     agents: Vec<AgentRecord>,

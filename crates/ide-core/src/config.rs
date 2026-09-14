@@ -167,6 +167,14 @@ pub enum SeparatorStyle {
     Solid,
 }
 
+/// Explicit local opt-ins, stored separately from portable workspace configuration.
+/// Missing settings and older installations keep experimental behavior disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct BetaFeatures {
+    #[serde(default)]
+    pub delegation: bool,
+}
+
 /// When a completed agent turn should create an operating-system notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -651,6 +659,9 @@ pub struct AppConfig {
     /// to double as the composer default.
     #[serde(default)]
     pub new_agent_defaults: Option<NewAgentDefaults>,
+    /// Shared by every model picker; older configurations start without favorites.
+    #[serde(default)]
+    pub favorite_models: Vec<crate::model_favorites::ModelFavorite>,
     /// Instruction sent when the Code review action is used in an agent chat.
     #[serde(default = "default_code_review_prompt")]
     pub code_review_prompt: String,
@@ -711,6 +722,7 @@ impl Default for AppConfig {
             generation_agent: GenerationAgent::default(),
             quick_ask_agent: GenerationAgent::default(),
             new_agent_defaults: None,
+            favorite_models: Vec::new(),
             code_review_prompt: default_code_review_prompt(),
             code_review_output_instructions: default_code_review_output_instructions(),
             memory_proposals_enabled: true,
@@ -901,6 +913,9 @@ mod tests {
             quick_ask_agent: GenerationAgent::default(),
             voice: VoiceSettings::default(),
             new_agent_defaults: Some(NewAgentDefaults::for_provider(AgentKind::Claude)),
+            favorite_models: vec![crate::model_favorites::ModelFavorite::BuiltIn(
+                AgentModel::ClaudeHaiku45,
+            )],
             code_review_prompt: default_code_review_prompt(),
             code_review_output_instructions: default_code_review_output_instructions(),
             memory_proposals_enabled: true,
@@ -1050,6 +1065,28 @@ mod tests {
         config.save_to(&path).unwrap();
         let loaded = AppConfig::load_from(&path);
         assert_eq!(config, loaded);
+    }
+
+    #[test]
+    fn model_favorites_default_to_empty_for_older_configs() {
+        let mut json = serde_json::to_value(sample_config()).unwrap();
+        json.as_object_mut().unwrap().remove("favorite_models");
+        let config: AppConfig = serde_json::from_value(json).unwrap();
+        assert!(config.favorite_models.is_empty());
+    }
+
+    #[test]
+    fn model_favorites_round_trip_without_changing_model_defaults() {
+        use crate::model_favorites::ModelFavorite;
+        let mut config = sample_config();
+        config
+            .favorite_models
+            .push(ModelFavorite::OpenCode("anthropic/claude-sonnet".into()));
+        let restored: AppConfig =
+            serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
+        assert_eq!(restored.favorite_models, config.favorite_models);
+        assert_eq!(restored.new_agent_defaults, config.new_agent_defaults);
+        assert_eq!(restored.quick_ask_agent, config.quick_ask_agent);
     }
 
     #[test]

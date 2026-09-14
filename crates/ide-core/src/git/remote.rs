@@ -45,8 +45,9 @@ fn run_git_with_timeout(
         // Fail fast instead of hanging on an interactive credential prompt.
         .env("GIT_TERMINAL_PROMPT", "0");
     let operation = args.first().copied().unwrap_or("operation");
-    let output = crate::process::output_with_timeout(&mut command, timeout)
-        .map_err(|error| anyhow!("Git {operation} failed: {error:#}. Check the network or remote and try again."))?;
+    let output = crate::process::output_with_timeout(&mut command, timeout).map_err(|error| {
+        anyhow!("Git {operation} failed: {error:#}. Check the network or remote and try again.")
+    })?;
     Ok(RemoteOutput {
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

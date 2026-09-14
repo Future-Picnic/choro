@@ -3,6 +3,11 @@ use super::*;
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let section = self.section;
+        let contained_page = matches!(
+            section,
+            SettingsSection::AgentSkills | SettingsSection::Experts
+        );
+        let editing_bandmate = section == SettingsSection::Experts && self.expert_editor.is_some();
         let settings_query = self.settings_search.read(cx).value().trim().to_lowercase();
         let brain_matches = settings_query.is_empty()
             || "brain".contains(&settings_query)
@@ -104,6 +109,18 @@ impl Render for SettingsView {
                             ))
                         },
                     )
+                    .when(
+                        ide_core::delegation::enabled()
+                            && SettingsSection::Experts.matches(&settings_query),
+                        |nav| {
+                            nav.child(Self::section_button(
+                                "settings-experts",
+                                SettingsSection::Experts,
+                                section,
+                                cx,
+                            ))
+                        },
+                    )
                     .when(SettingsSection::Orbit.matches(&settings_query), |nav| {
                         nav.child(Self::section_button(
                             "settings-orbit-section",
@@ -151,6 +168,17 @@ impl Render for SettingsView {
                             cx,
                         ))
                     })
+                    .when(
+                        SettingsSection::BetaFeatures.matches(&settings_query),
+                        |nav| {
+                            nav.child(Self::section_button(
+                                "settings-beta-features",
+                                SettingsSection::BetaFeatures,
+                                section,
+                                cx,
+                            ))
+                        },
+                    )
                     .when(SettingsSection::Process.matches(&settings_query), |nav| {
                         nav.child(Self::section_button(
                             "settings-process-section",
@@ -177,18 +205,14 @@ impl Render for SettingsView {
                     .min_w(px(0.))
                     .h_full()
                     .id("settings-content-scroll")
-                    .when(section == SettingsSection::AgentSkills, |content| {
-                        content.overflow_hidden()
-                    })
-                    .when(section != SettingsSection::AgentSkills, |content| {
-                        content.overflow_y_scroll()
-                    })
+                    .when(contained_page, |content| content.overflow_hidden())
+                    .when(!contained_page, |content| content.overflow_y_scroll())
                     .child(
                         v_flex()
                             .w_full()
                             .min_w(px(0.))
                             .mx_auto()
-                            .when(section == SettingsSection::AgentSkills, |page| {
+                            .when(contained_page, |page| {
                                 page.h_full()
                                     .min_h(px(0.))
                                     .max_w(px(960.))
@@ -200,14 +224,20 @@ impl Render for SettingsView {
                                 page.gap_5().px_6().py_7()
                             })
                             .when(
-                                section != SettingsSection::AgentSkills
-                                    && section != SettingsSection::Process,
+                                !contained_page && section != SettingsSection::Process,
                                 |page| page.max_w(px(1200.)).gap_5().px_8().py_7(),
                             )
                             .when(section == SettingsSection::Companion, |page| {
                                 page.max_w(px(960.))
                             })
-                            .child(Self::page_header(section, cx))
+                            .when(!editing_bandmate, |page| {
+                                page.child(
+                                    div()
+                                        .w_full()
+                                        .flex_none()
+                                        .child(Self::page_header(section, cx)),
+                                )
+                            })
                             .child(match section {
                                 SettingsSection::Design => self.render_design_section(cx),
                                 SettingsSection::Brain => self.render_brain_section(window, cx),
@@ -222,6 +252,8 @@ impl Render for SettingsView {
                                 SettingsSection::Remote => self.render_remote_page(cx),
                                 SettingsSection::Data => self.render_data_page(cx),
                                 SettingsSection::AgentSkills => self.render_skills_page(cx),
+                                SettingsSection::Experts => self.render_experts_page(window, cx),
+                                SettingsSection::BetaFeatures => self.render_beta_features_page(cx),
                                 SettingsSection::Orbit => self.render_orbit_page(window, cx),
                                 SettingsSection::Process => self.render_process_page(cx),
                                 SettingsSection::Shortcuts => self.render_shortcuts(cx),

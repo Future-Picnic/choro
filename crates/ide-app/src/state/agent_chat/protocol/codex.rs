@@ -114,6 +114,11 @@ impl CodexRuntime {
         mode: AgentInteractionMode,
         read_only: bool,
     ) -> anyhow::Result<()> {
+        let mode = super::managed::interaction_mode(&self.agent, mode);
+        let consultation = super::managed::consultation(&self.agent);
+        let read_only = read_only
+            || consultation
+            || (self.agent.delegation.is_some() && mode == AgentInteractionMode::Plan);
         let Some(thread_id) = self.thread_id.clone() else {
             return Err(anyhow!("Codex thread is not started"));
         };
@@ -126,7 +131,11 @@ impl CodexRuntime {
         self.assistant_buffer.clear();
         self.plan_buffer.clear();
         self.pending_changed_files = None;
+        self.pending_file_actions.clear();
         self.pending_observed_files.clear();
+        self.worktree_baseline = worktree_changes::WorktreeChanges::capture(&self.agent)
+            .map_err(|error| eprintln!("failed to capture turn file baseline: {error:#}"))
+            .ok();
         self.active_turn_id = next_request_id();
         self.command_ran_this_turn = false;
         self.active_command_item_id = None;
@@ -148,6 +157,8 @@ impl CodexRuntime {
                 .hidden_doc_assistant
                 .then_some(self.agent.doc.as_str()),
         );
+        let developer_instructions =
+            super::managed::instructions(developer_instructions, &self.agent)?;
         let design_assistant = is_design_assistant(&self.agent);
         let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
         let mut sandbox_policy = if read_only {
@@ -166,7 +177,7 @@ impl CodexRuntime {
         // filesystem confinement or the user's approval policy. The bridge
         // authorizes each call against this run's conversation and memory scope.
         allow_pocketcomet_chat_network(&mut sandbox_policy, self.agent.origin.as_ref());
-        let approval_policy = if design_assistant && !design_preview_review {
+        let approval_policy = if consultation || (design_assistant && !design_preview_review) {
             "never"
         } else if design_assistant {
             self.access_mode.codex_approval_policy()
@@ -386,11 +397,24 @@ impl CodexRuntime {
             return Ok(());
         };
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        // An app-server connection also receives notifications from delegated
+        // threads. Their deltas, usage and completion must never mutate the
+        // parent conversation. Keep server requests above this guard so child
+        // tool/approval requests can still receive their required response.
+        if !codex_notification_for_thread(&params, self.thread_id.as_deref()) {
+            return Ok(());
+        }
         if codex_event_confirms_recovery(method) {
             self.finish_reconnect(WorkLogStatus::Completed, "Reconnected to Codex", None);
         }
         if method != "item/agentMessage/delta" {
             self.assistant_stream.flush(&self.events);
+        }
+        if let Some(active) = codex_compaction_activity(method, &params) {
+            self.events
+                .send_blocking(ChatBackendEvent::Compaction(active))
+                .ok();
+            return Ok(());
         }
         match method {
             "item/agentMessage/delta" => {
@@ -444,15 +468,32 @@ impl CodexRuntime {
                 }
             }
             "item/completed" => {
+                // Commands and delegated tools can write files without any
+                // provider fileChange event. Observe actual Git/content changes
+                // at tool completion so they also appear while the turn runs.
+                if matches!(
+                    item_type_from_params(&params),
+                    Some(
+                        "commandExecution"
+                            | "mcpToolCall"
+                            | "dynamicToolCall"
+                            | "collabAgentToolCall"
+                    )
+                ) {
+                    self.observe_worktree_changes();
+                }
                 let files = completed_file_change_stats(&params);
                 if !files.is_empty() {
                     let action_id = item_id_from_params(&params)
                         .unwrap_or_else(|| format!("file-change-{}", self.active_turn_id));
                     self.record_exact_file_changes(action_id, files);
                 }
-                if let Some(plan) = plan_text_from_completed_item(&params).or_else(|| {
-                    (!self.plan_buffer.trim().is_empty()).then(|| self.plan_buffer.clone())
-                }) {
+                if let Some(plan) = plan_text_from_completed_item(&params)
+                    .or_else(|| {
+                        (!self.plan_buffer.trim().is_empty()).then(|| self.plan_buffer.clone())
+                    })
+                    .filter(|_| !super::managed::is_child(&self.agent))
+                {
                     self.events
                         .send_blocking(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
                             next_request_id(),
@@ -573,7 +614,9 @@ impl CodexRuntime {
                     self.events
                         .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Idle))
                         .ok();
-                } else if let Some(plan) = extract_proposed_plan(&self.assistant_buffer) {
+                } else if let Some(plan) = extract_proposed_plan(&self.assistant_buffer)
+                    .filter(|_| !super::managed::is_child(&self.agent))
+                {
                     self.events
                         .send_blocking(ChatBackendEvent::ProposedPlan(ProposedPlan::new(
                             next_request_id(),
@@ -653,6 +696,8 @@ impl CodexRuntime {
     }
 
     fn emit_pending_changed_files(&mut self) {
+        self.observe_worktree_changes();
+        self.worktree_baseline = None;
         let mut summary = self.pending_changed_files.take().unwrap_or_default();
         summary.observed_files = std::mem::take(&mut self.pending_observed_files);
         summary.turn_id = Some(self.active_turn_id.clone());
@@ -668,16 +713,46 @@ impl CodexRuntime {
         }
     }
 
-    fn record_exact_file_changes(&mut self, action_id: String, files: Vec<FileChangeStat>) {
+    fn observe_worktree_changes(&mut self) {
+        let Some(before) = self.worktree_baseline.as_ref() else {
+            return;
+        };
+        let current = match worktree_changes::WorktreeChanges::capture(&self.agent) {
+            Ok(current) => current,
+            Err(error) => {
+                eprintln!("failed to observe turn file changes: {error:#}");
+                return;
+            }
+        };
+        let files = current.changes_since(before);
+        self.worktree_baseline = Some(current);
+        for file in &files {
+            self.events
+                .send_blocking(ChatBackendEvent::FileChangeActivity(
+                    FileChangeActivity::new(
+                        format!(
+                            "codex:worktree:{}:{}",
+                            self.active_turn_id,
+                            file.path.to_string_lossy()
+                        ),
+                        self.active_turn_id.clone(),
+                        file.clone(),
+                        true,
+                        unix_now(),
+                    ),
+                ))
+                .ok();
+        }
+        upsert_file_change_stats(&mut self.pending_observed_files, files);
+    }
+
+    fn record_exact_file_changes(&mut self, action_id: String, mut files: Vec<FileChangeStat>) {
         if files.is_empty() {
             return;
         }
-        let exact_paths = files
-            .iter()
-            .map(|file| file.path.clone())
-            .collect::<HashSet<_>>();
-        self.pending_observed_files
-            .retain(|file| !exact_paths.contains(&file.path));
+        for file in &mut files {
+            file.path = normalize_repo_path(self.agent.runtime_path(), &file.path);
+        }
         for file in &files {
             let activity_id = format!("codex:{action_id}:{}", file.path.to_string_lossy());
             self.events
@@ -692,10 +767,29 @@ impl CodexRuntime {
                 ))
                 .ok();
         }
+        // Streaming updates replace the same action. Distinct actions editing
+        // one file must accumulate rather than overwriting each other's counts.
+        self.pending_file_actions.insert(action_id, files);
+        let activities = self
+            .pending_file_actions
+            .iter()
+            .flat_map(|(id, files)| {
+                files.iter().map(|file| {
+                    FileChangeActivity::new(
+                        id.clone(),
+                        self.active_turn_id.clone(),
+                        file.clone(),
+                        false,
+                        0,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
         let summary = self
             .pending_changed_files
             .get_or_insert_with(ChangedFilesSummary::default);
-        upsert_file_change_stats(&mut summary.files, files);
+        summary.files =
+            ChangedFilesSummary::from_activities(self.active_turn_id.clone(), &activities).files;
     }
 
     fn handle_server_request(&mut self, message: Value) -> anyhow::Result<()> {
@@ -844,7 +938,10 @@ mod usage_tests {
             "conversation_id": "conversation", "conversation_name": "Chat", "thread_id": "thread", "thread_title": "Question"
         })).unwrap();
         for mut policy in [
-            codex_turn_sandbox_policy(AgentAccessMode::AskForApproval, Some(Path::new("/tmp/visualizations"))),
+            codex_turn_sandbox_policy(
+                AgentAccessMode::AskForApproval,
+                Some(Path::new("/tmp/visualizations")),
+            ),
             json!({ "type": "readOnly" }),
         ] {
             let original = policy.clone();
@@ -942,7 +1039,10 @@ fn codex_turn_workspace_sandbox_policy(visualization_dir: Option<&Path>) -> Valu
     })
 }
 
-fn allow_pocketcomet_chat_network(policy: &mut Value, origin: Option<&ide_core::agents::AgentOrigin>) {
+fn allow_pocketcomet_chat_network(
+    policy: &mut Value,
+    origin: Option<&ide_core::agents::AgentOrigin>,
+) {
     if origin.is_some_and(ide_core::agents::AgentOrigin::is_pocketcomet_chat)
         && matches!(policy["type"].as_str(), Some("workspaceWrite" | "readOnly"))
     {
@@ -985,13 +1085,14 @@ pub(super) fn capture_changed_files_snapshot(
     summary.reconcile_final_files(&repo_path);
     summary.remove_visualization_artifacts(agent.id, &repo_path);
     summary.remove_provider_private_artifacts();
-    if summary.snapshot_id.is_some() || summary.files.is_empty() {
+    if summary.snapshot_id.is_some() || summary.is_empty() {
         return summary;
     }
 
     let wanted_paths = summary
         .files
         .iter()
+        .chain(&summary.observed_files)
         .map(|file| normalize_repo_path(&repo_path, &file.path))
         .collect::<HashSet<_>>();
     if wanted_paths.is_empty() {

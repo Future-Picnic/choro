@@ -65,8 +65,47 @@ fn stroke_circle(window: &mut Window, cx: f32, cy: f32, r: f32, w: f32, bg: impl
     }
 }
 
+/// The colours one spinner paints with. The brand ramp is fixed lavender; the
+/// delegation ramp is derived from the theme's amber so it tracks every theme.
+#[derive(Clone, Copy)]
+struct SpinnerRamp {
+    track: Hsla,
+    sweep_bright: Hsla,
+    sweep_deep: Hsla,
+    light: Hsla,
+    shadow: Hsla,
+}
+
+impl SpinnerRamp {
+    fn brand() -> Self {
+        Self {
+            track: gpui::rgb(crate::ui::design::palette::SPINNER_TRACK).into(),
+            sweep_bright: gpui::rgb(crate::ui::design::palette::SPINNER_SWEEP_BRIGHT).into(),
+            sweep_deep: gpui::rgb(crate::ui::design::palette::SPINNER_SWEEP_DEEP).into(),
+            light: gpui::rgb(crate::ui::design::palette::SPINNER_LIGHT).into(),
+            shadow: gpui::rgb(crate::ui::design::palette::SPINNER_SHADOW).into(),
+        }
+    }
+
+    /// One semantic colour, shaded the same way the brand ramp is: a lit head,
+    /// a deeper tail, a pale rim and a dark inner edge.
+    fn from_semantic(color: Hsla) -> Self {
+        let shade = |delta: f32| Hsla {
+            l: (color.l + delta).clamp(0.0, 1.0),
+            ..color
+        };
+        Self {
+            track: color,
+            sweep_bright: shade(0.14),
+            sweep_deep: shade(-0.08),
+            light: shade(0.30),
+            shadow: shade(-0.30),
+        }
+    }
+}
+
 /// Paint the spinner at rotation `rot` within `bounds`.
-fn paint_spinner(bounds: Bounds<Pixels>, rot: f32, window: &mut Window) {
+fn paint_spinner_with(bounds: Bounds<Pixels>, rot: f32, ramp: SpinnerRamp, window: &mut Window) {
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
     let s = width.min(height);
@@ -76,8 +115,7 @@ fn paint_spinner(bounds: Bounds<Pixels>, rot: f32, window: &mut Window) {
     let r = s / 2.0 - lw / 2.0 - 1.0;
 
     // Faint full-circle track underneath.
-    let track: Hsla = gpui::rgb(crate::ui::design::palette::SPINNER_TRACK).into();
-    stroke_circle(window, cx, cy, r, lw, track.opacity(0.16));
+    stroke_circle(window, cx, cy, r, lw, ramp.track.opacity(0.16));
 
     // The 70% purple arc: a 3D lavender gradient (lit top-left, deeper toward
     // the bottom-right) with a bright outer rim and a shadowed inner edge.
@@ -93,17 +131,11 @@ fn paint_spinner(bounds: Bounds<Pixels>, rot: f32, window: &mut Window) {
         head,
         linear_gradient(
             135.0,
-            linear_color_stop(
-                gpui::rgb(crate::ui::design::palette::SPINNER_SWEEP_BRIGHT),
-                0.0,
-            ),
-            linear_color_stop(
-                gpui::rgb(crate::ui::design::palette::SPINNER_SWEEP_DEEP),
-                1.0,
-            ),
+            linear_color_stop(ramp.sweep_bright, 0.0),
+            linear_color_stop(ramp.sweep_deep, 1.0),
         ),
     );
-    let light: Hsla = gpui::rgb(crate::ui::design::palette::SPINNER_LIGHT).into();
+    let light = ramp.light;
     stroke_arc(
         window,
         cx,
@@ -114,7 +146,7 @@ fn paint_spinner(bounds: Bounds<Pixels>, rot: f32, window: &mut Window) {
         head - 0.06,
         light.opacity(0.45),
     );
-    let shadow: Hsla = gpui::rgb(crate::ui::design::palette::SPINNER_SHADOW).into();
+    let shadow = ramp.shadow;
     stroke_arc(
         window,
         cx,
@@ -135,6 +167,38 @@ pub fn logo_spinner(
     seed: usize,
     _line_color: Hsla,
 ) -> AnyElement {
+    spinner_with_ramp(diameter, namespace, seed, SpinnerRamp::brand())
+}
+
+/// The same arc in the delegation colour: pass `design::amber(cx)`. Used only
+/// where Experts are working on a lead's behalf, so the amber reads as "someone
+/// else is busy for you" rather than as the app itself loading.
+pub fn delegation_spinner(
+    diameter: f32,
+    namespace: &'static str,
+    seed: usize,
+    amber: Hsla,
+) -> AnyElement {
+    #[cfg(target_os = "macos")]
+    if objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
+        return canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                paint_spinner_with(bounds, 0., SpinnerRamp::from_semantic(amber), window)
+            },
+        )
+        .size(px(diameter))
+        .into_any_element();
+    }
+    spinner_with_ramp(diameter, namespace, seed, SpinnerRamp::from_semantic(amber))
+}
+
+fn spinner_with_ramp(
+    diameter: f32,
+    namespace: &'static str,
+    seed: usize,
+    ramp: SpinnerRamp,
+) -> AnyElement {
     let s = diameter;
     div()
         .relative()
@@ -150,7 +214,9 @@ pub fn logo_spinner(
                         let rot = TAU * delta;
                         canvas(
                             move |_, _, _| (),
-                            move |bounds, _, window, _| paint_spinner(bounds, rot, window),
+                            move |bounds, _, window, _| {
+                                paint_spinner_with(bounds, rot, ramp, window)
+                            },
                         )
                         .size(px(s))
                     },

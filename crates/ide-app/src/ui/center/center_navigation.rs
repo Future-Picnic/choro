@@ -470,13 +470,22 @@ impl CenterArea {
             return;
         }
         let title = agent.title.clone();
+        let mode = if self
+            .agent_chats
+            .read(cx)
+            .session(agent.id)
+            .is_some_and(|s| s.interaction_mode == AgentInteractionMode::Plan)
+        {
+            AgentInteractionMode::Default
+        } else {
+            AgentInteractionMode::Plan
+        };
+        if !self.set_expert_plan_mode(agent.id, mode, cx) {
+            return;
+        }
         self.agent_chats.update(cx, |chats, cx| {
             let session = chats.ensure_session(agent.id, title, cx);
-            session.interaction_mode = if session.interaction_mode == AgentInteractionMode::Plan {
-                AgentInteractionMode::Default
-            } else {
-                AgentInteractionMode::Plan
-            };
+            session.interaction_mode = mode;
             cx.notify();
         });
         cx.notify();

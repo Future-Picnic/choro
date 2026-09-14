@@ -43,6 +43,10 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_pending_project_script_presets_schema(conn).await?;
         ensure_orbit_schema(conn).await?;
         ensure_quick_ask_schema(conn).await?;
+        execute_transaction(conn, |conn| {
+            Box::pin(async move { super::delegation::ensure_delegation_schema_inner(conn).await })
+        })
+        .await?;
         return Ok(());
     }
     if current < 1 {
@@ -561,6 +565,16 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             Box::pin(async move {
                 ensure_quick_ask_schema_inner(conn).await?;
                 record_schema_version(conn, 34).await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    if current < 35 {
+        execute_transaction(conn, |conn| {
+            Box::pin(async move {
+                super::delegation::ensure_delegation_schema_inner(conn).await?;
+                record_schema_version(conn, 35).await?;
                 Ok(())
             })
         })
