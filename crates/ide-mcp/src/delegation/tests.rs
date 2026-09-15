@@ -412,3 +412,83 @@ fn context_omits_hidden_reasoning_and_preserves_pagination() {
     assert!(read["context"]["older_context_before"].is_number());
     assert_eq!(read["context"]["excerpts"].as_array().unwrap().len(), 12);
 }
+
+#[test]
+fn temporary_teammates_share_inherited_config_but_have_distinct_tasks() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    let parent = store.load_agents().unwrap()[0].clone();
+    let count = store.load_experts().unwrap().len();
+    let source = Uuid::new_v4();
+    store
+        .authorize_experts(
+            parent.id,
+            source,
+            "Please delegate research and testing",
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    let listed = content(
+        DelegationTool("experts_list")
+            .call(&ctx, &json!({}))
+            .unwrap(),
+    );
+    let temporary = listed["on_demand_expert_ids"][0].as_str().unwrap();
+    let tasks = ["Research editors", "Test integration"].iter().enumerate().map(|(i, goal)| json!({
+        "key":format!("task-{i}"), "expert_id":temporary, "goal":goal,
+        "brief":"Inspect relevant files and report evidence", "expected_outcome":"Findings with sources",
+        "repository":parent.project_path, "kind":"consultation"
+    })).collect::<Vec<_>>();
+    let args = json!({"authorization_id":source,"operation_key":"temporary-plan","expected_revision":0,"tasks":tasks});
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    let runs = store.load_delegations().unwrap();
+    assert_eq!(runs.len(), 1);
+    let run = &runs[0];
+    assert_eq!(run.tasks.len(), 2);
+    assert_ne!(run.tasks[0].id, run.tasks[1].id);
+    assert_ne!(
+        run.tasks[0].expert.profile.name,
+        run.tasks[1].expert.profile.name
+    );
+    for task in &run.tasks {
+        assert_eq!(task.expert.profile.provider, parent.provider);
+        assert_eq!(task.expert.profile.model, parent.model);
+        assert_eq!(task.expert.profile.effort, parent.effort);
+    }
+    assert_eq!(store.load_experts().unwrap().len(), count);
+    store
+        .update_delegation(run.id, None, |run| {
+            run.status = RunStatus::Paused;
+            Ok(())
+        })
+        .unwrap();
+    let mut later = args.clone();
+    later["run_id"] = json!(run.id);
+    later["expected_revision"] = json!(store.load_delegation(run.id).unwrap().revision);
+    later["operation_key"] = json!("paused-plan");
+    assert!(DelegationTool("delegation_plan")
+        .call(&ctx, &later)
+        .is_err());
+}
+
+#[test]
+fn ordinary_text_cannot_authorize_temporary_teammates() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    let parent = ctx.agent_id().unwrap();
+    let source = Uuid::new_v4();
+    assert!(store
+        .authorize_experts(parent, source, "Build a page", &[], false)
+        .unwrap()
+        .is_none());
+    assert!(store.begin_delegation(parent, source).is_err());
+    let listed = content(
+        DelegationTool("experts_list")
+            .call(&ctx, &json!({}))
+            .unwrap(),
+    );
+    assert_eq!(listed["on_demand_expert_ids"], json!([]));
+}

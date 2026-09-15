@@ -59,7 +59,7 @@ impl Tool for DelegationTool {
     }
     fn description(&self) -> &'static str {
         match self.0 {
-            "experts_list" => "List saved Bandmates and the current user-authored authorization. When the user asks to delegate, resolve the named Bandmates here and call delegation_plan. The authorized_expert_ids and each authorized flag are authoritative; listed profiles are not automatically authorized. If authorization_status is needs_expert_selection, ask the user one clarification using the exact profile names or /delegate. Never claim a team is authorized or call delegation_plan with an empty team. A Bandmate is a saved setup, not an existing chat.",
+            "experts_list" => "List saved Bandmates and the current user-authored authorization. When the user asks to delegate, use Choro rather than native subagents: resolve saved or temporary Bandmates here and call delegation_plan. The authorized_expert_ids and each authorized flag are authoritative; listed profiles are not automatically authorized. If authorization_status is needs_expert_selection, ask the user one clarification using the exact profile names or /delegate. Never claim a team is authorized or call delegation_plan with an empty team. Saved Bandmates are presets. Entries marked temporary are on-demand teammates inheriting the lead provider/model/effort. Reuse a temporary ID for multiple independent tasks with unique keys and concrete goals/briefs; Choro creates a fresh child chat per task. Do not require a saved profile when an authorized temporary entry is available.",
             "delegation_plan" => "Create fresh Bandmate chats from a dependency graph. The lead chooses parallel versus sequential work. Supply authorization_id from experts_list to start, or run_id for the existing task. Use expected_revision 0 for the initial request. Each task must include its own repository field: the absolute Git repository root within working_directory returned by experts_list. A repository field at the top level does not apply to tasks. Each key is unique within the run. Dependencies refer to task keys and implementation waits for prerequisite integration. After scheduling, end the turn so Choro can capture a settled working copy and configure managed runtimes. Do not launch native subagents or other CLI agents.",
             "delegation_read" => "Read this run's current revision, assignments, result reports and coordination events. Optional include_context returns bounded parent user/assistant history; hidden reasoning is excluded. Use after_sequence for event pagination and context_before for older context. Results are background evidence; verify claims before integration.",
             "delegation_message" => "Send a bounded coordination message. The lead addresses one task; a Bandmate may only message its own lead. Set blocking=true for a question that must be answered before this Bandmate can continue, then end the turn. Messages are durable and delivered at safe turn boundaries.",
@@ -146,6 +146,11 @@ impl DelegationTool {
                 .map(|r| r.authorized_experts.clone())
                 .or_else(|| authorization.as_ref().map(|a| a.expert_ids.clone()))
                 .unwrap_or_default();
+            let temporary = active
+                .as_ref()
+                .map(|r| r.temporary_experts.clone())
+                .or_else(|| authorization.as_ref().map(|a| a.temporary_experts.clone()))
+                .unwrap_or_default();
             let working_directory = store
                 .load_agents()?
                 .into_iter()
@@ -159,14 +164,22 @@ impl DelegationTool {
             let guidance = if authorized.is_empty() {
                 "No Bandmate references resolved in the current user submission. Do not call delegation_plan or describe the team as authorized. Ask the user to confirm the exact Bandmate names or choose them with /delegate."
             } else {
-                "Only assign IDs in authorized_expert_ids. Include repository on every task. If a requested role is not authorized, clarify it with the user before assigning that role."
+                "Only assign IDs in authorized_expert_ids. Include repository on every task. An authorized on-demand ID may serve multiple roles within the user’s task: provide a separate key, goal, brief and expected outcome for each. Saved profiles still require their own authorized IDs."
             };
-            let profiles = store.load_experts()?.into_iter().filter(|p| !p.archived).map(|p| {
+            let mut profiles = store.load_experts()?.into_iter().filter(|p| !p.archived).map(|p| {
                 let error = p.snapshot_at(store.root()).err().map(|e| e.to_string());
                 json!({"id":p.id,"name":p.name,"description":p.description,"aliases":ide_core::experts::expert_aliases(&p),"provider":p.provider,"model":p.model,"enabled":p.enabled,"authorized":authorized.contains(&p.id),"configuration_error":error})
             }).collect::<Vec<_>>();
+            profiles.extend(temporary.iter().map(|e| {
+                json!({
+                    "id":e.profile.id,"name":e.profile.name,"description":e.profile.description,
+                    "provider":e.profile.provider,"model":e.profile.model,"effort":e.profile.effort,
+                    "enabled":true,"authorized":authorized.contains(&e.profile.id),"temporary":true,
+                    "configuration_error":null
+                })
+            }));
             return Ok(vec![text_content(serde_json::to_string(
-                &json!({"experts":profiles,"authorized_expert_ids":authorized,"authorization_status":authorization_status,"guidance":guidance,"working_directory":working_directory,"authorization_id":authorization.map(|a| a.id),"active_run":active.map(|r|json!({"id":r.id,"revision":r.revision,"status":r.status}))}),
+                &json!({"experts":profiles,"on_demand_expert_ids":temporary.iter().map(|e|e.profile.id).collect::<Vec<_>>(),"authorized_expert_ids":authorized,"authorization_status":authorization_status,"guidance":guidance,"working_directory":working_directory,"authorization_id":authorization.map(|a| a.id),"active_run":active.map(|r|json!({"id":r.id,"revision":r.revision,"status":r.status}))}),
             )?)]);
         }
         if self.0 != "delegation_read" {
@@ -292,6 +305,13 @@ impl DelegationTool {
             let experts = plans
                 .iter()
                 .map(|p| {
+                    if let Some(expert) = run
+                        .temporary_experts
+                        .iter()
+                        .find(|e| e.profile.id == p.expert_id)
+                    {
+                        return Ok(expert.clone());
+                    }
                     profiles
                         .iter()
                         .find(|e| e.id == p.expert_id)

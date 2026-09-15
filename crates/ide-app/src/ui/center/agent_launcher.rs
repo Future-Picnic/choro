@@ -952,6 +952,23 @@ impl CenterArea {
         else {
             return;
         };
+        if command.source == AgentCapabilitySource::Delegate {
+            if !self.workspace.read(cx).beta_features.delegation {
+                if let Some(composer) = self.new_agent_composer.as_mut() {
+                    composer.error = Some(ide_core::delegation::BETA_DISABLED.into());
+                }
+                cx.notify();
+                return;
+            }
+            let current = prompt.read(cx).value().to_string();
+            let (next, _) = remove_agent_chat_slash_query(&current, &query);
+            prompt.update(cx, |input, cx| {
+                input.set_value(format!("Delegate: {}", next.trim_start()), window, cx);
+                input.focus(window, cx);
+            });
+            cx.notify();
+            return;
+        }
         if let Some(id) = command.expert_id {
             let current = prompt.read(cx).value().to_string();
             let (next, _) = remove_agent_chat_slash_query(&current, &query);

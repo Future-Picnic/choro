@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, lstat, readlink } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,8 @@ let turnObservedChanges = new Map();
 let toolMutationBaselines = new Map();
 let commandDiffBaselines = new Map();
 let turnFileBaseline = null;
-let turnDiffEmitted = false;
+let turnFileFlush = null;
+let pendingMutationTasks = new Set();
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
 let currentDesignAssistant = false;
@@ -487,12 +488,12 @@ function mutationPaths(toolName, input) {
   );
 }
 
-async function readMutationState(path) {
-  const absolute = isAbsolute(path) ? path : join(currentCwd, path);
+async function readMutationState(path, cwd = currentCwd) {
+  const absolute = isAbsolute(path) ? path : join(cwd, path);
   try {
     return mutationStateForContents(await readFile(absolute));
-  } catch {
-    return { hash: "missing", lines: 0, content: "" };
+  } catch (error) {
+    return error.code === "ENOENT" ? { hash: "missing", lines: 0, content: "" } : { hash: null, lines: 0, content: null };
   }
 }
 
@@ -588,7 +589,18 @@ async function finishTurnAfterFileReceipt(flushChanges, finish) {
   return finish();
 }
 
-async function captureToolMutationBaseline(input, toolUseID) {
+function trackMutation(work) {
+  const pending = pendingMutationTasks;
+  const task = Promise.resolve().then(work);
+  pending.add(task);
+  return task.finally(() => pending.delete(task));
+}
+
+function captureToolMutationBaseline(input, toolUseID) {
+  return trackMutation(() => captureToolMutationBaselineImpl(input, toolUseID));
+}
+
+async function captureToolMutationBaselineImpl(input, toolUseID) {
   const toolName = input?.tool_name;
   const toolInput = input?.tool_input || {};
   const id = input?.tool_use_id || toolUseID || randomUUID();
@@ -607,7 +619,11 @@ async function captureToolMutationBaseline(input, toolUseID) {
   return {};
 }
 
-async function captureCompletedToolMutation(input, toolUseID) {
+function captureCompletedToolMutation(input, toolUseID) {
+  return trackMutation(() => captureCompletedToolMutationImpl(input, toolUseID));
+}
+
+async function captureCompletedToolMutationImpl(input, toolUseID) {
   const toolName = input?.tool_name;
   const id = input?.tool_use_id || toolUseID;
   if (isEditTool(toolName)) {
@@ -653,25 +669,38 @@ async function completeDirectMutationBaseline(id, baseline) {
   }
 }
 
-async function completeCommandMutationBaseline(id, baseline, next) {
+async function commandChangesSince(baseline, current) {
+  const changes = [];
+  for (const [path, file] of current) {
+    const before = baseline.get(path);
+    if (before?.patch !== file.patch || before?.hash !== file.hash) {
+      changes.push({ path, additions: file.additions, deletions: file.deletions,
+        baseline_hash: before?.hash ?? null, result_hash: file.hash ?? null,
+        baseline_content: before?.content ?? null, result_content: file.content ?? null });
+    }
+  }
+  for (const path of baseline.keys()) {
+    if (current.has(path)) continue;
+    const repository = [...(baseline.heads?.keys() || [])]
+      .filter((root) => !root || path.startsWith(`${root}/`))
+      .sort((a, b) => b.length - a.length)[0];
+    if (repository === undefined || !current.heads?.has(repository) ||
+      baseline.heads.get(repository) !== current.heads.get(repository)) continue;
+    const result = await readMutationState(path, current.root);
+    changes.push({ path, additions: 0, deletions: 0, clears_projection: true,
+      baseline_hash: null, result_hash: result.hash,
+      baseline_content: null, result_content: result.content });
+  }
+  return changes;
+}
+
+async function completeCommandMutationBaseline(id, baseline, next,
+  target = turnObservedChanges, turnId = activeTurnId) {
   const current = next || (await readChangedFileSnapshot());
   if (!current) return;
-  for (const [path, file] of current) {
-    if (baseline.get(path)?.patch !== file.patch) {
-      // Git reports the current worktree projection, not a delta for this
-      // command. Keep only the latest projection for the turn.
-      const change = {
-        path,
-        additions: file.additions,
-        deletions: file.deletions,
-        baseline_hash: null,
-        result_hash: null,
-        baseline_content: null,
-        result_content: null,
-      };
-      setTurnProjection(turnObservedChanges, change);
-      emitFileChangeActivity(id, change, true);
-    }
+  for (const change of await commandChangesSince(baseline, current)) {
+    setTurnProjection(target, change);
+    emit({ ...fileChangeActivityEvent(id, change, true), turn_id: turnId });
   }
 }
 
@@ -689,6 +718,7 @@ async function captureOutstandingToolMutations() {
   if (commands.length > 0) {
     const next = await readChangedFileSnapshot();
     for (const [id, baseline] of commands) {
+      if (!baseline) continue;
       await completeCommandMutationBaseline(id, baseline, next);
     }
   }
@@ -875,24 +905,28 @@ async function consumeRuntime(activeRuntime) {
   try {
     emit({ type: "status", status: "running" });
     for await (const message of activeRuntime) {
+      if (runtime !== activeRuntime) break;
       await handleSdkMessage(message);
     }
   } catch (error) {
-    if (!closing && !cancelRequested) {
+    if (!closing && !cancelRequested && runtime === activeRuntime) {
+      await emitChangedFiles();
       emitError(error);
     }
   } finally {
-    if (runtime === activeRuntime) {
+    const wasCurrent = runtime === activeRuntime;
+    const turnId = activeTurnId;
+    if (wasCurrent) {
       runtime = null;
       promptController?.close();
       promptController = null;
     }
-    if (!closing) {
-      emit({ type: "status", status: "idle" });
-      if (!cancelRequested) {
-        await emitChangedFiles();
+    if (!closing && wasCurrent) {
+      await emitChangedFiles();
+      if (activeTurnId === turnId) {
+        emit({ type: "status", status: "idle" });
+        cancelRequested = false;
       }
-      cancelRequested = false;
     }
   }
 }
@@ -903,6 +937,7 @@ async function closeRuntimeForPlanBoundary() {
   if (!activeRuntime) {
     return;
   }
+  await emitChangedFiles();
   activePromptController?.close();
   try {
     if (typeof activeRuntime.interrupt === "function") {
@@ -939,14 +974,14 @@ async function cancelActiveTurn() {
   // A cancelled turn can already have completed edits. Flush their immutable
   // receipt before closing the runtime and resetting the next turn's maps.
   try {
-    await finishCancelledTurn(
-      captureOutstandingToolMutations,
+    await finishTurnAfterFileReceipt(
       emitChangedFiles,
       () => activeRuntime?.close?.(),
     );
   } finally {
     if (runtime === activeRuntime) {
       runtime = null;
+      emit({ type: "status", status: "idle" });
     }
     if (promptController === activePromptController) {
       promptController = null;
@@ -1128,7 +1163,7 @@ function summarizeToolInput(input) {
 
 async function readChangedFileSnapshot() {
   try {
-    return await readGitChangedFileSnapshot(currentCwd);
+    return await readWorkspaceChangedFileSnapshot(currentCwd);
   } catch (error) {
     // A failed snapshot is unknown, never an empty/clean baseline.
     process.stderr.write(`Failed to track changed files: ${error.message}\n`);
@@ -1136,68 +1171,118 @@ async function readChangedFileSnapshot() {
   }
 }
 
-async function readGitChangedFileSnapshot(cwd) {
-  const head = await execGit(["rev-parse", "--verify", "HEAD"], cwd, true);
-  const bases = head ? [["HEAD"]] : [["--cached"], []];
-  const snapshot = new Map();
-  for (const base of bases) {
-    const stdout = await execGit(["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", ...base, "--"], cwd);
-    for (const row of stdout.split("\0").filter(Boolean)) {
-      const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(row);
-      if (!match) throw new Error("Invalid Git numstat record");
-      const [, added, removed, path] = match;
-      const previous = snapshot.get(path);
-      const patch = await execGit(["diff", "--no-ext-diff", "--no-renames", ...base, "--", path], cwd);
-      snapshot.set(path, {
-        path,
-        additions: (previous?.additions || 0) + (Number(added) || 0),
-        deletions: (previous?.deletions || 0) + (Number(removed) || 0),
-        patch: (previous?.patch || "") + patch,
-      });
+const snapshotSkipDirectories = new Set([
+  ".git", ".choro", ".codex", ".claude", "node_modules", ".venv", ".build", ".swiftpm",
+  ".gradle", ".terraform", ".next", ".nuxt", ".svelte-kit", ".angular", ".turbo",
+  "__pycache__", "target", "build", "DerivedData", "SourcePackages", "dist", "vendor", "Pods",
+]);
+
+async function readWorkspaceChangedFileSnapshot(cwd) {
+  const repositories = [];
+  const pending = [[cwd, 0]];
+  for (let i = 0; i < pending.length && repositories.length < 128; i++) {
+    const [directory, depth] = pending[i];
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    if (entries.some((entry) => entry.name === ".git")) repositories.push(directory);
+    if (depth < 8) {
+      for (const entry of entries) {
+        if (entry.isDirectory() && !snapshotSkipDirectories.has(entry.name)) {
+          pending.push([join(directory, entry.name), depth + 1]);
+        }
+      }
     }
   }
-  const untracked = await execGit(["ls-files", "--others", "--exclude-standard", "-z"], cwd);
-  for (const path of untracked.split("\0").filter(Boolean)) {
-    const contents = await readFile(join(cwd, path));
-    const binary = contents.includes(0);
-    snapshot.set(path, {
-      path,
-      additions: binary ? 0 : countTextLines(contents.toString("utf8")),
-      deletions: 0,
-      patch: `untracked:${createHash("sha256").update(contents).digest("hex")}`,
-    });
+  if (!repositories.length) return readGitChangedFileSnapshot(cwd);
+  const snapshot = new Map();
+  snapshot.root = cwd;
+  snapshot.heads = new Map();
+  for (const repository of repositories) {
+    const files = await readGitChangedFileSnapshot(repository);
+    snapshot.heads.set(relative(cwd, repository), files.heads.get(""));
+    for (const [path, file] of files) {
+      const absolute = join(repository, path);
+      if (repositories.some((nested) => nested.startsWith(`${repository}/`) &&
+        (absolute === nested || absolute.startsWith(`${nested}/`)))) continue;
+      const local = relative(cwd, absolute);
+      snapshot.set(local, { ...file, path: local });
+    }
   }
   return snapshot;
 }
 
-async function emitChangedFiles() {
-  if (turnDiffEmitted) {
-    return;
+async function readGitChangedFileSnapshot(cwd) {
+  await execGit(["rev-parse", "--git-dir"], cwd);
+  const head = await execGit(["rev-parse", "--verify", "HEAD"], cwd, true);
+  const snapshot = new Map();
+  snapshot.root = cwd;
+  snapshot.heads = new Map([["", head?.trim() ?? null]]);
+  if (head) {
+    const stdout = await execGit(["diff", "--relative", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", "HEAD", "--"], cwd);
+    for (const row of stdout.split("\0").filter(Boolean)) {
+      const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(row);
+      if (!match) throw new Error("Invalid Git numstat record");
+      const [, added, removed, path] = match;
+      const patch = await execGit(["diff", "--relative", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", "--", path], cwd);
+      snapshot.set(path, { path, additions: Number(added) || 0, deletions: Number(removed) || 0, patch, ...await readMutationState(path, cwd) });
+    }
   }
-  turnDiffEmitted = true;
-  // Include shell/delegated edits even if the SDK supplied no mutation hook.
-  if (turnFileBaseline) {
-    await completeCommandMutationBaseline(`turn:${activeTurnId}`, turnFileBaseline);
-    turnFileBaseline = null;
+  const newPaths = await execGit(["ls-files", ...(!head ? ["--cached"] : []), "--others", "--exclude-standard", "-z"], cwd);
+  for (const path of new Set(newPaths.split("\0").filter(Boolean))) {
+    try {
+      const absolute = join(cwd, path);
+      const metadata = await lstat(absolute);
+      const contents = metadata.isSymbolicLink() ? Buffer.from(await readlink(absolute)) :
+        metadata.isFile() ? await readFile(absolute) : Buffer.alloc(0);
+      snapshot.set(path, {
+        ...mutationStateForContents(contents),
+        path,
+        additions: contents.includes(0) ? 0 : countTextLines(contents.toString("utf8")),
+        deletions: 0,
+        patch: `new:${createHash("sha256").update(contents).digest("hex")}`,
+      });
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      // Keep a known path even if its content cannot be inspected. One unreadable
+      // file must not discard all of the other observed changes.
+      snapshot.set(path, { path, additions: 0, deletions: 0, patch: `unreadable:${error.code}` });
+    }
   }
-  const files = Array.from(turnDirectChanges.values());
-  const exactPaths = new Set(files.map((file) => file.path));
-  const observed_files = Array.from(turnObservedChanges.values()).filter(
-    (file) => !exactPaths.has(file.path),
-  );
-  if (files.length > 0 || observed_files.length > 0) {
-    emit({
-      type: "changed_files",
-      turn_id: activeTurnId,
-      attribution_version: 1,
-      files,
-      observed_files,
+  return snapshot;
+}
+
+function onceAsync(action) {
+  let promise;
+  return () => promise ??= Promise.resolve().then(action);
+}
+
+function emitChangedFiles() {
+  if (!turnFileFlush) {
+    const turnId = activeTurnId;
+    const direct = turnDirectChanges;
+    const observed = turnObservedChanges;
+    const baseline = turnFileBaseline;
+    const pending = pendingMutationTasks;
+    turnFileFlush = onceAsync(async () => {
+      while (pending.size) await Promise.allSettled([...pending]);
+      await captureOutstandingToolMutations();
+      if (baseline) {
+        await completeCommandMutationBaseline(`turn:${turnId}`, baseline, null, observed, turnId);
+      }
+      const files = Array.from(direct.values());
+      // Rust reconciles exact paths with final command projections. Dropping
+      // overlaps here would lose shell edits/reverts after an Edit or Write.
+      const observed_files = Array.from(observed.values());
+      if (files.length || observed_files.length) {
+        emit({ type: "changed_files", turn_id: turnId, attribution_version: 1, files, observed_files });
+      }
     });
   }
+  return turnFileFlush();
 }
 
 async function handleCommand(command) {
   if (command.type === "send_turn") {
+    if (turnFileFlush) await turnFileFlush();
     cancelRequested = false;
     if (planCaptured && command.mode !== "plan") {
       await closeRuntimeForPlanBoundary();
@@ -1209,7 +1294,8 @@ async function handleCommand(command) {
     turnObservedChanges = new Map();
     toolMutationBaselines = new Map();
     commandDiffBaselines = new Map();
-    turnDiffEmitted = false;
+    turnFileFlush = null;
+    pendingMutationTasks = new Set();
     await ensureRuntime(command);
     turnFileBaseline = await readChangedFileSnapshot();
     emit({ type: "status", status: "running" });
@@ -1253,6 +1339,8 @@ if (resolve(process.argv[1] || "") === resolve(fileURLToPath(import.meta.url))) 
 
 export {
   countTextLines,
+  commandChangesSince,
+  onceAsync,
   directEditCounts,
   fileChangeActivityEvent,
   fileAttributionHooks,
@@ -1263,6 +1351,7 @@ export {
   mutationStateForContents,
   mutationStateUnchanged,
   readGitChangedFileSnapshot,
+  readWorkspaceChangedFileSnapshot,
   resumeSessionIdForCommand,
   setTurnProjection,
 };

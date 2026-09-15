@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, writeFile, rename } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   compactionEventForSdkMessage,
   countTextLines,
+  commandChangesSince,
+  onceAsync,
   directEditCounts,
   fileChangeActivityEvent,
   fileAttributionHooks,
@@ -13,9 +19,136 @@ import {
   mergeTurnChange,
   mutationStateForContents,
   mutationStateUnchanged,
+  readGitChangedFileSnapshot,
+  readWorkspaceChangedFileSnapshot,
   resumeSessionIdForCommand,
   setTurnProjection,
 } from "./claude_bridge.mjs";
+
+function git(cwd, ...args) {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+}
+
+async function repository() {
+  const scratch = await mkdtemp(join(tmpdir(), "choro-file-tracking-"));
+  const root = join(scratch, "repo");
+  await mkdir(root);
+  git(root, "init", "-q");
+  return { scratch, root };
+}
+
+function commit(root) {
+  git(root, "add", ".");
+  git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base");
+}
+
+test("Git observation includes staged, existing, deleted, renamed, and binary files with literal paths", async () => {
+  const { scratch, root } = await repository();
+  for (const name of ["existing.txt", "staged.txt", "deleted.txt", "old.txt", "unrelated.txt"]) {
+    await writeFile(join(root, name), "before\n");
+  }
+  commit(root);
+  await writeFile(join(root, "existing.txt"), "already dirty\n");
+  await writeFile(join(root, "unrelated.txt"), "other work\n");
+  const before = await readGitChangedFileSnapshot(root);
+  await writeFile(join(root, "existing.txt"), "feature edit\n");
+  await writeFile(join(root, "staged.txt"), "staged edit\n");
+  git(root, "add", "staged.txt");
+  await rename(join(root, "deleted.txt"), join(scratch, "deleted-fixture"));
+  await rename(join(root, "old.txt"), join(root, "new.txt"));
+  await writeFile(join(root, "tab\tand\nnewline.txt"), "one\ntwo\n");
+  await writeFile(join(root, "image.bin"), Buffer.from([0, 1, 2]));
+  const after = await readGitChangedFileSnapshot(root);
+  const changed = [...after.keys()].filter((path) => after.get(path).patch !== before.get(path)?.patch).sort();
+  assert.deepEqual(changed, ["deleted.txt", "existing.txt", "image.bin", "new.txt", "old.txt", "staged.txt", "tab\tand\nnewline.txt"]);
+  assert.equal(after.get("deleted.txt").deletions, 1);
+  assert.equal(after.get("staged.txt").additions, 1);
+  assert.equal(after.get("tab\tand\nnewline.txt").additions, 2);
+  assert.equal(after.get("image.bin").additions, 0);
+});
+
+test("unborn repositories count final content once across staging and later edits", async () => {
+  const { root } = await repository();
+  await writeFile(join(root, "new.txt"), "one\n");
+  git(root, "add", "new.txt");
+  await writeFile(join(root, "new.txt"), "two\n");
+  const snapshot = await readGitChangedFileSnapshot(root);
+  assert.equal(snapshot.get("new.txt").additions, 1);
+  assert.equal(snapshot.get("new.txt").deletions, 0);
+});
+
+test("workspace observations include files in nested repositories without duplicates", async () => {
+  const { root } = await repository();
+  const nested = join(root, "api");
+  await mkdir(nested);
+  git(nested, "init", "-q");
+  await writeFile(join(root, "front.txt"), "front\n");
+  await writeFile(join(nested, "auth.txt"), "backend\n");
+  const snapshot = await readWorkspaceChangedFileSnapshot(root);
+  assert.deepEqual([...snapshot.keys()].sort(), ["api/auth.txt", "front.txt"]);
+});
+
+test("failed Git reads are errors rather than clean snapshots", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "choro-not-a-repo-"));
+  await assert.rejects(readGitChangedFileSnapshot(directory));
+});
+
+test("tracking reads real source even when a configured text converter fails", async () => {
+  const { root } = await repository();
+  await writeFile(join(root, ".gitattributes"), "*.txt diff=custom\n");
+  await writeFile(join(root, "file.txt"), "base\n");
+  commit(root);
+  git(root, "config", "diff.custom.textconv", "false");
+  await writeFile(join(root, "file.txt"), "changed\n");
+  const snapshot = await readGitChangedFileSnapshot(root);
+  assert.equal(snapshot.get("file.txt").content, "changed\n");
+  assert.equal(snapshot.get("file.txt").additions, 1);
+});
+
+test("reverts clear tracked observations while committing preserves the receipt history", async () => {
+  const { root } = await repository();
+  await writeFile(join(root, "file.txt"), "base\n");
+  commit(root);
+  await writeFile(join(root, "file.txt"), "changed\n");
+  const dirty = await readWorkspaceChangedFileSnapshot(root);
+  await writeFile(join(root, "file.txt"), "base\n");
+  const reverted = await commandChangesSince(dirty, await readWorkspaceChangedFileSnapshot(root));
+  assert.equal(reverted.length, 1);
+  assert.equal(reverted[0].path, "file.txt");
+  assert.equal(reverted[0].clears_projection, true);
+  assert.equal(reverted[0].result_content, "base\n");
+  await writeFile(join(root, "file.txt"), "changed\n");
+  const beforeCommit = await readWorkspaceChangedFileSnapshot(root);
+  commit(root);
+  assert.deepEqual(await commandChangesSince(beforeCommit, await readWorkspaceChangedFileSnapshot(root)), []);
+});
+
+test("shell projections carry the actual content after an earlier direct edit", async () => {
+  const { root } = await repository();
+  await writeFile(join(root, "file.txt"), "base\n");
+  commit(root);
+  await writeFile(join(root, "file.txt"), "direct\n");
+  const direct = await readGitChangedFileSnapshot(root);
+  await writeFile(join(root, "file.txt"), "direct\nshell\n");
+  const changes = await commandChangesSince(direct, await readGitChangedFileSnapshot(root));
+  assert.equal(changes[0].baseline_hash, direct.get("file.txt").hash);
+  assert.equal(changes[0].result_content, "direct\nshell\n");
+  assert.equal(changes[0].additions, 2);
+});
+
+test("concurrent completion paths wait for one receipt before reporting idle", async () => {
+  const events = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const flush = onceAsync(async () => { events.push("start"); await gate; events.push("files"); });
+  const result = finishTurnAfterFileReceipt(flush, () => events.push("result"));
+  const shutdown = finishTurnAfterFileReceipt(flush, () => events.push("idle"));
+  await Promise.resolve();
+  assert.deepEqual(events, ["start"]);
+  release();
+  await Promise.all([result, shutdown]);
+  assert.deepEqual(events, ["start", "files", "result", "idle"]);
+});
 
 test("Claude compaction starts on SDK status and ends on status or boundary", () => {
   const status = (value, extra = {}) => ({

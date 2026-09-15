@@ -614,13 +614,15 @@ struct StoredPendingAnswer {
     custom_answer: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredFileChange {
     path: String,
     additions: usize,
     deletions: usize,
     #[serde(default)]
     counts_are_projection: bool,
+    #[serde(default)]
+    clears_projection: bool,
     #[serde(default)]
     baseline_hash: Option<String>,
     #[serde(default)]
@@ -1877,6 +1879,24 @@ fn apply_changed_files_summary(
     if summary.is_empty() {
         return None;
     }
+    if summary.turn_id.is_some()
+        && session.timeline.iter().any(|item| {
+            let AgentChatTimelineItem::ChangedFiles(previous) = item else {
+                return false;
+            };
+            let stats = |files: &[FileChangeStat]| {
+                files
+                    .iter()
+                    .map(StoredFileChange::from_stat)
+                    .collect::<Vec<_>>()
+            };
+            previous.turn_id == summary.turn_id
+                && stats(&previous.files) == stats(&summary.files)
+                && stats(&previous.observed_files) == stats(&summary.observed_files)
+        })
+    {
+        return None;
+    }
     session.changed_files.merge_turn(&summary);
     let mut receipt = summary;
     receipt.ledger_revision = session.changed_files.ledger_revision;
@@ -1946,6 +1966,20 @@ mod retirement_tests {
             started_running_at: None,
             last_activity_at: 0,
         }
+    }
+
+    #[test]
+    fn replaying_a_turn_receipt_does_not_double_the_file_counts() {
+        let mut session = retirable_session();
+        let receipt = ChangedFilesSummary::attributed(
+            "turn-replay",
+            vec![FileChangeStat::new("a.rs", 2, 1)],
+            vec![],
+        );
+        assert!(apply_changed_files_summary(&mut session, receipt.clone()).is_some());
+        assert!(apply_changed_files_summary(&mut session, receipt).is_none());
+        assert_eq!(session.changed_files.files[0].additions, 2);
+        assert_eq!(session.changed_files.ledger_revision, 1);
     }
 
     #[test]

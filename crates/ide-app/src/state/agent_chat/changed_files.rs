@@ -70,6 +70,9 @@ pub struct FileChangeStat {
     /// turn-local delta. Repeated projections replace earlier totals so they
     /// are never added twice.
     pub counts_are_projection: bool,
+    /// A verified return to a clean Git state. This is an update to the ledger,
+    /// not a changed-file row (zero-line binary/empty-file changes are rows).
+    pub clears_projection: bool,
     /// Optional hashes let capable adapters identify an exact edit that
     /// returns a file to the chat's original content without persisting file
     /// contents in the timeline.
@@ -165,7 +168,19 @@ impl ChangedFilesSummary {
                 continue;
             }
             if activity.observed {
-                if !exact.contains_key(&activity.file.path) {
+                if let Some(edited) = exact.get_mut(&activity.file.path) {
+                    if activity.file.counts_are_projection {
+                        apply_count_projection(edited, &activity.file);
+                        if edited.clears_projection {
+                            exact.remove(&activity.file.path);
+                            observed.insert(activity.file.path.clone(), activity.file.clone());
+                        }
+                    }
+                } else if activity.file.clears_projection {
+                    // Keep the tombstone in the receipt so interrupted turns
+                    // can clear a path already present in the cumulative ledger.
+                    observed.insert(activity.file.path.clone(), activity.file.clone());
+                } else {
                     merge_file_stat(&mut observed, &activity.file);
                 }
             } else {
@@ -222,6 +237,10 @@ impl ChangedFilesSummary {
                 if file.counts_are_projection {
                     apply_count_projection(edited, &file);
                 }
+                if edited.clears_projection {
+                    exact.remove(&file.path);
+                    observed.insert(file.path.clone(), file);
+                }
             } else {
                 observed.insert(file.path.clone(), file);
             }
@@ -266,9 +285,17 @@ impl ChangedFilesSummary {
         for file in &turn.observed_files {
             if let Some(edited) = exact.get_mut(&file.path) {
                 if file.counts_are_projection
-                    && turn.files.iter().any(|exact| exact.path == file.path)
+                    && (file.clears_projection
+                        || file
+                            .baseline_hash
+                            .as_ref()
+                            .is_some_and(|hash| edited.result_hash.as_ref() == Some(hash))
+                        || turn.files.iter().any(|exact| exact.path == file.path))
                 {
                     apply_count_projection(edited, file);
+                    if edited.clears_projection {
+                        exact.remove(&file.path);
+                    }
                 }
             } else {
                 merge_file_stat(&mut observed, file);
@@ -289,31 +316,46 @@ fn apply_count_projection(edited: &mut FileChangeStat, projection: &FileChangeSt
     edited.additions = projection.additions;
     edited.deletions = projection.deletions;
     edited.counts_are_projection = true;
-    if projection.result_hash.is_some() {
-        edited.result_hash.clone_from(&projection.result_hash);
+    edited.result_hash.clone_from(&projection.result_hash);
+    edited.result_content = bounded_content(projection.result_content.clone());
+    edited.clears_projection = projection.clears_projection;
+    if let Some((baseline, result)) = edited
+        .baseline_hash
+        .as_ref()
+        .zip(edited.result_hash.as_ref())
+    {
+        edited.clears_projection = baseline == result;
     }
-    if projection.result_content.is_some() {
-        edited.result_content = bounded_content(projection.result_content.clone());
+    if let Some((baseline, result)) = edited
+        .baseline_content
+        .as_deref()
+        .zip(edited.result_content.as_deref())
+    {
+        if let Some((additions, deletions)) = bounded_line_diff_counts(baseline, result) {
+            edited.additions = additions;
+            edited.deletions = deletions;
+        }
     }
 }
 
 fn merge_file_stat(files: &mut BTreeMap<PathBuf, FileChangeStat>, next: &FileChangeStat) {
-    let baseline = files
-        .get(&next.path)
-        .and_then(|existing| existing.baseline_hash.clone())
-        .or_else(|| next.baseline_hash.clone());
-    let baseline_content = files
-        .get(&next.path)
-        .and_then(|existing| existing.baseline_content.clone())
-        .or_else(|| bounded_content(next.baseline_content.clone()));
-    let result_content = bounded_content(next.result_content.clone()).or_else(|| {
-        files
-            .get(&next.path)
-            .and_then(|existing| existing.result_content.clone())
-    });
+    let baseline = files.get(&next.path).map_or_else(
+        || next.baseline_hash.clone(),
+        |existing| existing.baseline_hash.clone(),
+    );
+    let baseline_content = files.get(&next.path).map_or_else(
+        || bounded_content(next.baseline_content.clone()),
+        |existing| existing.baseline_content.clone(),
+    );
+    // A missing new result is unknown. Reusing the previous text can hide a
+    // large/binary edit or falsely turn it into a revert after restoration.
+    let result_content = bounded_content(next.result_content.clone());
     let returned_to_baseline = match (baseline.as_ref(), next.result_hash.as_ref()) {
         (Some(baseline), Some(result)) => baseline == result,
-        _ => baseline_content.is_some() && result_content == baseline_content,
+        _ => {
+            (baseline_content.is_some() && result_content == baseline_content)
+                || next.clears_projection
+        }
     };
     if returned_to_baseline {
         files.remove(&next.path);
@@ -340,9 +382,9 @@ fn merge_file_stat(files: &mut BTreeMap<PathBuf, FileChangeStat>, next: &FileCha
             existing.baseline_hash = baseline;
             existing.baseline_content = baseline_content;
             existing.result_content = result_content;
-            if next.result_hash.is_some() {
-                existing.result_hash.clone_from(&next.result_hash);
-            }
+            existing.result_hash.clone_from(&next.result_hash);
+            existing.counts_are_projection = next.counts_are_projection;
+            existing.clears_projection = false;
         }
         None => {
             let mut file = next.clone();
@@ -450,6 +492,7 @@ impl FileChangeStat {
             additions,
             deletions,
             counts_are_projection: false,
+            clears_projection: false,
             baseline_hash: None,
             result_hash: None,
             baseline_content: None,
@@ -485,11 +528,104 @@ impl FileChangeStat {
     pub fn as_count_projection(self) -> Self {
         self.with_count_projection(true)
     }
+
+    pub fn with_cleared_projection(mut self, cleared: bool) -> Self {
+        self.clears_projection = cleared;
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_projection_cannot_reuse_content_from_an_older_result() {
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "first",
+            vec![FileChangeStat::new("file.txt", 1, 1)
+                .with_content_hashes(Some("base".into()), Some("first".into()))
+                .with_content_projection(Some("base\n".into()), Some("first\n".into()))],
+            vec![],
+        ));
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "second",
+            vec![FileChangeStat::new("file.txt", 100, 1)
+                .as_count_projection()
+                .with_content_hashes(None, Some("large-result".into()))],
+            vec![],
+        ));
+        assert_eq!(ledger.files[0].additions, 100);
+        assert_eq!(ledger.files[0].result_content, None);
+    }
+
+    #[test]
+    fn command_reverts_clear_rows_without_hiding_zero_line_files() {
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "edit",
+            vec![FileChangeStat::new("direct.rs", 1, 0)],
+            vec![FileChangeStat::new("shell.rs", 1, 0).as_count_projection()],
+        ));
+        let clear = |path| {
+            FileChangeStat::new(path, 0, 0)
+                .as_count_projection()
+                .with_cleared_projection(true)
+        };
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "revert",
+            vec![],
+            vec![
+                clear("direct.rs"),
+                clear("shell.rs"),
+                FileChangeStat::new("empty.txt", 0, 0).as_count_projection(),
+            ],
+        ));
+        assert!(ledger.files.is_empty());
+        assert_eq!(ledger.observed_files.len(), 1);
+        assert_eq!(ledger.observed_files[0].path, Path::new("empty.txt"));
+    }
+
+    #[test]
+    fn interrupted_turn_keeps_revert_updates_for_the_ledger() {
+        let activities = [
+            FileChangeActivity::new("edit", "turn", FileChangeStat::new("a.rs", 2, 0), false, 1),
+            FileChangeActivity::new(
+                "shell",
+                "turn",
+                FileChangeStat::new("a.rs", 0, 0)
+                    .as_count_projection()
+                    .with_cleared_projection(true),
+                true,
+                2,
+            ),
+        ];
+        let receipt = ChangedFilesSummary::from_activities("turn", &activities);
+        assert!(receipt.files.is_empty());
+        assert_eq!(receipt.observed_files.len(), 1);
+        assert!(receipt.observed_files[0].clears_projection);
+    }
+
+    #[test]
+    fn final_shell_content_updates_an_exact_edit_without_stale_hashes() {
+        let mut receipt = ChangedFilesSummary::attributed(
+            "turn",
+            vec![FileChangeStat::new("a.rs", 1, 1)
+                .with_content_hashes(Some("base".into()), Some("edit".into()))
+                .with_content_projection(Some("base\n".into()), Some("edited\n".into()))],
+            vec![FileChangeStat::new("a.rs", 2, 1)
+                .as_count_projection()
+                .with_content_hashes(Some("edit".into()), Some("shell".into()))
+                .with_content_projection(None, Some("edited\nshell\n".into()))],
+        );
+        receipt.reconcile_final_files(Path::new("/repo"));
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&receipt);
+        assert_eq!(receipt.files[0].additions, 2);
+        assert_eq!(ledger.files[0].additions, 2);
+        assert_eq!(ledger.files[0].result_hash.as_deref(), Some("shell"));
+    }
 
     #[test]
     fn sums_totals_across_files() {

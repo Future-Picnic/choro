@@ -41,9 +41,9 @@ pub(super) fn capabilities(provider: AgentKind) -> Vec<AgentCapability> {
         provider,
         source: AgentCapabilitySource::Delegate,
         name: "delegate".into(),
-        title: "Delegate to a bandmate".into(),
+        title: "Delegate work".into(),
         invocation: String::new(),
-        description: Some("Choose a bandmate and write its assignment".into()),
+        description: Some("Create on-demand teammates or choose a saved bandmate".into()),
         instructions: None,
         orbit_module_id: None,
         enabled: true,
@@ -674,6 +674,23 @@ impl CenterArea {
                     .text_color(crate::ui::design::t3(cx))
                     .child("Delegate to"),
             );
+            let temporary = if selection.is_none() {
+                crate::ui::style::primary_button_compact(
+                    ("delegate-temporary", id.as_u128() as u64),
+                    "On-demand teammate",
+                    cx,
+                )
+            } else {
+                crate::ui::style::dialog_neutral_button(
+                    ("delegate-temporary", id.as_u128() as u64),
+                    "On-demand teammate",
+                    cx,
+                )
+            };
+            row = row.child(temporary.on_click(cx.listener(move |this, _, _, cx| {
+                this.delegation_selection.insert(id, None);
+                cx.notify();
+            })));
             for (i, p) in experts.into_iter().enumerate() {
                 let selected = selection == Some(p.id);
                 let b = if selected {

@@ -216,12 +216,13 @@ pub(super) fn stored_timeline_event_parts(
 }
 
 impl StoredFileChange {
-    fn from_stat(file: &FileChangeStat) -> Self {
+    pub(super) fn from_stat(file: &FileChangeStat) -> Self {
         Self {
             path: file.path.to_string_lossy().to_string(),
             additions: file.additions,
             deletions: file.deletions,
             counts_are_projection: file.counts_are_projection,
+            clears_projection: file.clears_projection,
             baseline_hash: file.baseline_hash.clone(),
             result_hash: file.result_hash.clone(),
         }
@@ -230,6 +231,7 @@ impl StoredFileChange {
     fn into_stat(self) -> FileChangeStat {
         FileChangeStat::new(self.path, self.additions, self.deletions)
             .with_count_projection(self.counts_are_projection)
+            .with_cleared_projection(self.clears_projection)
             .with_content_hashes(self.baseline_hash, self.result_hash)
     }
 }
@@ -330,6 +332,7 @@ impl StoredTimelinePayload {
                         additions: file.additions,
                         deletions: file.deletions,
                         counts_are_projection: file.counts_are_projection,
+                        clears_projection: file.clears_projection,
                         baseline_hash: file.baseline_hash.clone(),
                         result_hash: file.result_hash.clone(),
                     })
@@ -342,6 +345,7 @@ impl StoredTimelinePayload {
                         additions: file.additions,
                         deletions: file.deletions,
                         counts_are_projection: file.counts_are_projection,
+                        clears_projection: file.clears_projection,
                         baseline_hash: file.baseline_hash.clone(),
                         result_hash: file.result_hash.clone(),
                     })
@@ -580,6 +584,7 @@ impl StoredTimelinePayload {
                 let restore = |file: StoredFileChange| {
                     FileChangeStat::new(file.path, file.additions, file.deletions)
                         .with_count_projection(file.counts_are_projection)
+                        .with_cleared_projection(file.clears_projection)
                         .with_content_hashes(file.baseline_hash, file.result_hash)
                 };
                 let mut files = files.into_iter().map(restore).collect::<Vec<_>>();
@@ -931,6 +936,67 @@ mod tests {
             PathBuf::from("generated.css")
         );
         assert!(restored.observed_files[0].counts_are_projection);
+    }
+
+    #[test]
+    fn restoring_a_large_receipt_keeps_all_files_and_projection_counts() {
+        let files = (0..24)
+            .map(|i| FileChangeStat::new(format!("direct-{i}.rs"), 1, 0))
+            .collect();
+        let observed = (0..64)
+            .map(|i| FileChangeStat::new(format!("shell-{i}.rs"), 1, 0).as_count_projection())
+            .collect();
+        let receipt = ChangedFilesSummary::attributed("large-turn", files, observed);
+        let (_, _, payload, _) =
+            stored_timeline_event_parts(&AgentChatTimelineItem::ChangedFiles(receipt)).unwrap();
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&payload)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::ChangedFiles(restored) = restored else {
+            panic!("expected file receipt");
+        };
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&restored);
+        assert_eq!(ledger.files.len(), 24);
+        assert_eq!(ledger.observed_files.len(), 64);
+        assert!(ledger
+            .observed_files
+            .iter()
+            .all(|file| file.counts_are_projection));
+        assert_eq!(
+            ledger.total_additions() + ledger.total_observed_additions(),
+            88
+        );
+    }
+
+    #[test]
+    fn a_restored_revert_receipt_clears_the_old_ledger_entry() {
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "edit",
+            vec![FileChangeStat::new("a.rs", 8, 0)],
+            vec![],
+        ));
+        let receipt = ChangedFilesSummary::attributed(
+            "revert",
+            vec![],
+            vec![FileChangeStat::new("a.rs", 0, 0)
+                .as_count_projection()
+                .with_cleared_projection(true)],
+        );
+        let (_, _, payload, _) =
+            stored_timeline_event_parts(&AgentChatTimelineItem::ChangedFiles(receipt)).unwrap();
+        let AgentChatTimelineItem::ChangedFiles(restored) =
+            serde_json::from_str::<StoredTimelinePayload>(&payload)
+                .unwrap()
+                .into_timeline_item()
+                .unwrap()
+        else {
+            panic!("expected receipt");
+        };
+        ledger.merge_turn(&restored);
+        assert!(ledger.is_empty());
     }
 
     #[test]

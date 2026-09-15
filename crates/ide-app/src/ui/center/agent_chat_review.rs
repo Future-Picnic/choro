@@ -14,7 +14,9 @@ impl CenterArea {
         let visible = if show_all { total } else { 3 };
 
         let summary = if review.is_clean() {
-            "Looks clean".to_string()
+            "No findings".to_string()
+        } else if total == 0 {
+            "Coverage not confirmed".to_string()
         } else if total == 1 {
             "1 finding".to_string()
         } else {
@@ -44,7 +46,7 @@ impl CenterArea {
                 ),
         );
 
-        if review.is_clean() {
+        if total == 0 {
             return card
                 .child(
                     h_flex()
@@ -54,20 +56,28 @@ impl CenterArea {
                         .px(crate::ui::design::chat_card_body_pad_x())
                         .py(crate::ui::design::chat_card_body_pad_y())
                         .child(
-                            gpui_component::Icon::new(IconName::CircleCheck)
-                                .size(crate::ui::design::icon())
-                                .text_color(crate::ui::design::sage(cx)),
-                        )
-                        .child(
                             div()
                                 .flex_1()
                                 .min_w(px(0.))
                                 .text_size(crate::ui::design::text_body())
                                 .text_color(crate::ui::design::t2(cx))
-                                .child("No real issues found in the changed files."),
+                                .child(render_plan_markdown(
+                                    &review.display_markdown(),
+                                    window,
+                                    cx,
+                                )),
                         ),
                 )
                 .into_any_element();
+        }
+
+        if let Some(coverage) = review.coverage() {
+            card = card.child(
+                div()
+                    .px(crate::ui::design::chat_card_body_pad_x())
+                    .py(crate::ui::design::chat_card_body_pad_y())
+                    .child(render_plan_markdown(&coverage, window, cx)),
+            );
         }
 
         let review_id_for_rows = review.id.clone();

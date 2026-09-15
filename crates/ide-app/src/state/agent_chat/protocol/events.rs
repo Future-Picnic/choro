@@ -805,6 +805,28 @@ mod work_log_tests {
     use super::*;
 
     #[test]
+    fn diff_receipt_preserves_deletions_renames_binary_and_quoted_paths() {
+        let patch = concat!(
+            "diff --git a/first.txt b/first.txt\n--- a/first.txt\n+++ b/first.txt\n@@ -1 +1 @@\n-old\n+new\n",
+            "diff --git a/deleted.txt b/deleted.txt\ndeleted file mode 100644\n--- a/deleted.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n",
+            "diff --git a/old.txt b/renamed.txt\nsimilarity index 100%\nrename from old.txt\nrename to renamed.txt\n",
+            "diff --git a/image.bin b/image.bin\nindex 1234567..abcdef0 100644\nBinary files a/image.bin and b/image.bin differ\n",
+            "diff --git \"a/tab\\tname.txt\" \"b/tab\\tname.txt\"\n--- \"a/tab\\tname.txt\"\n+++ \"b/tab\\tname.txt\"\n@@ -1 +1 @@\n--- old content\n+++ new content\n",
+        );
+        assert_eq!(
+            changed_files_from_unified_diff(patch),
+            vec![
+                FileChangeStat::new("first.txt", 1, 1),
+                FileChangeStat::new("deleted.txt", 0, 1),
+                FileChangeStat::new("renamed.txt", 0, 0),
+                FileChangeStat::new("image.bin", 0, 0),
+                FileChangeStat::new("tab\tname.txt", 1, 1),
+            ]
+        );
+        assert_eq!(count_unified_diff_lines(patch), (2, 3));
+    }
+
+    #[test]
     fn codex_compaction_uses_item_lifecycle_and_legacy_completion() {
         let params = json!({"item": {"id": "compact-1", "type": "contextCompaction"}});
         assert_eq!(

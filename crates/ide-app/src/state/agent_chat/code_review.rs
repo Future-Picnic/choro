@@ -91,9 +91,33 @@ impl CodeReview {
         }
     }
 
-    /// No parseable findings — the agent reported the changes look clean.
+    /// Missing findings alone say nothing about whether the review finished.
     pub fn is_clean(&self) -> bool {
-        self.findings.is_empty()
+        self.findings.is_empty() && self.coverage_complete()
+    }
+
+    pub fn coverage(&self) -> Option<String> {
+        let mut lines = self.markdown.lines();
+        lines.find(|line| is_coverage_heading(line.trim()))?;
+        Some(
+            lines
+                .take_while(|line| !line.trim_start().starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string(),
+        )
+    }
+
+    pub fn coverage_complete(&self) -> bool {
+        self.coverage().is_some_and(|coverage| {
+            let statuses = coverage
+                .lines()
+                .map(|line| line.trim().trim_matches('`'))
+                .filter(|line| line.to_ascii_lowercase().starts_with("completion:"))
+                .collect::<Vec<_>>();
+            statuses.len() == 1 && statuses[0].eq_ignore_ascii_case("Completion: complete")
+        })
     }
 
     pub fn selected_count(&self) -> usize {
@@ -133,9 +157,21 @@ pub fn parse_code_review_findings(markdown: &str) -> Vec<CodeReviewFinding> {
     let mut findings: Vec<CodeReviewFinding> = Vec::new();
     let mut current_severity = CodeReviewSeverity::Info;
     let mut current: Option<CodeReviewFinding> = None;
+    let mut in_coverage = false;
 
     for raw in markdown.lines() {
         let line = raw.trim();
+        if is_coverage_heading(line) {
+            flush_finding(&mut current, &mut findings);
+            in_coverage = true;
+            continue;
+        }
+        if in_coverage {
+            if parse_severity_heading(line).is_none() {
+                continue;
+            }
+            in_coverage = false;
+        }
         if line.is_empty() {
             if let Some(finding) = current.as_mut() {
                 if !finding.detail.is_empty() && !finding.detail.ends_with('\n') {
@@ -176,6 +212,14 @@ pub fn parse_code_review_findings(markdown: &str) -> Vec<CodeReviewFinding> {
     }
     flush_finding(&mut current, &mut findings);
     findings
+}
+
+fn is_coverage_heading(line: &str) -> bool {
+    line.starts_with('#')
+        && line
+            .trim_matches('#')
+            .trim()
+            .eq_ignore_ascii_case("Coverage")
 }
 
 fn flush_finding(current: &mut Option<CodeReviewFinding>, findings: &mut Vec<CodeReviewFinding>) {
@@ -384,8 +428,33 @@ mod tests {
 
     #[test]
     fn clean_review_has_no_findings() {
-        let review = CodeReview::new("r1", "The changes look clean.");
+        let review = CodeReview::new("r1", "## Coverage\nCompletion: complete\nReviewed all 88 feature files; excluded 7 unrelated calendar files.\n\nNo findings in the reviewed code.");
         assert!(review.is_clean());
+    }
+
+    #[test]
+    fn incomplete_or_legacy_reviews_never_imply_complete_coverage() {
+        for markdown in [
+            "",
+            "The changes look clean.",
+            "I could not read the repository.",
+            "## Coverage\nCompletion: partial\nReviewed 24 of 88 files. No findings so far.",
+            "## Coverage\nCompletion: complete\nCompletion: partial\nSome files remain.",
+        ] {
+            assert!(!CodeReview::new("partial", markdown).is_clean());
+        }
+    }
+
+    #[test]
+    fn coverage_lists_are_preserved_but_do_not_become_findings() {
+        let review = CodeReview::new("r", "## Coverage\nCompletion: partial\n- Reviewed 24 files.\n- 64 files remain.\n## High\n- **src/auth.rs:9 — Access check missing**\nWhat happens: another user can read a private file.\nSuggested fix: check membership.");
+        assert_eq!(review.findings.len(), 1);
+        assert_eq!(
+            review.findings[0].location.as_deref(),
+            Some("src/auth.rs:9")
+        );
+        assert!(review.coverage().unwrap().contains("64 files remain"));
+        assert!(!review.coverage_complete());
     }
 
     #[test]
