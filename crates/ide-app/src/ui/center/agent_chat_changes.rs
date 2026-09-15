@@ -16,12 +16,12 @@ impl CenterArea {
         let visible_files = reconciled
             .files
             .iter()
-            .filter(|file| !artifact_filter.is_artifact(&file.path))
+            .filter(|file| !file.clears_projection && !artifact_filter.is_artifact(&file.path))
             .collect::<Vec<_>>();
         let visible_observed_files = reconciled
             .observed_files
             .iter()
-            .filter(|file| !artifact_filter.is_artifact(&file.path))
+            .filter(|file| !file.clears_projection && !artifact_filter.is_artifact(&file.path))
             .collect::<Vec<_>>();
         if visible_files.is_empty() && visible_observed_files.is_empty() {
             return div().into_any_element();

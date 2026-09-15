@@ -276,6 +276,8 @@ pub struct DelegationRun {
     pub source_message_id: Uuid,
     pub original_assignment: String,
     pub authorized_experts: Vec<Uuid>,
+    #[serde(default)]
+    pub temporary_experts: Vec<ExpertSnapshot>,
     pub revision: u64,
     pub status: RunStatus,
     pub pause_reason: Option<String>,
@@ -306,6 +308,7 @@ impl DelegationRun {
             source_message_id: source,
             original_assignment: text,
             authorized_experts: experts,
+            temporary_experts: Vec::new(),
             revision: 1,
             status: RunStatus::Preparing,
             pause_reason: None,
@@ -431,11 +434,18 @@ impl DelegationRun {
                 !self.plan_mode || plan.kind == TaskKind::Consultation,
                 "Plan mode only permits consultation tasks."
             );
-            let expert = experts
+            let mut expert = experts
                 .iter()
                 .find(|e| e.profile.id == plan.expert_id)
                 .ok_or_else(|| anyhow::anyhow!("Bandmate configuration is unavailable."))?
                 .clone();
+            if self
+                .temporary_experts
+                .iter()
+                .any(|e| e.profile.id == plan.expert_id)
+            {
+                expert.profile.name = plan.goal.chars().take(80).collect();
+            }
             let status = if plan.held {
                 TaskStatus::Planned
             } else {

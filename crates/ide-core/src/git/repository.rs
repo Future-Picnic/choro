@@ -120,6 +120,53 @@ pub fn workspace_worktree_diffs(workspace_root: &Path) -> anyhow::Result<Vec<sup
     Ok(combined)
 }
 
+/// Inventory every staged, unstaged, deleted, renamed, and untracked path for
+/// review discovery. This reads status only, without loading patches or blobs.
+pub fn workspace_changed_paths(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let canonical_root = fs::canonicalize(workspace_root)?;
+    let workspace_root = canonical_root.as_path();
+    let mut repositories = discover_repositories(workspace_root);
+    if repositories.len() >= MAX_DISCOVERED_REPOSITORIES {
+        anyhow::bail!(
+            "repository discovery limit reached; enumerate remaining repositories with Git"
+        );
+    }
+    if repositories.is_empty() {
+        // Also supports opening a project below its repository root.
+        let repo = Repository::discover(workspace_root)?;
+        repositories.push(
+            repo.workdir()
+                .ok_or_else(|| anyhow::anyhow!("repository has no working tree"))?
+                .to_path_buf(),
+        );
+    }
+    let mut paths = std::collections::BTreeSet::new();
+    for root in &repositories {
+        let repo = Repository::open(root)?;
+        let mut options = git2::StatusOptions::new();
+        options.include_untracked(true).recurse_untracked_dirs(true);
+        for entry in repo.statuses(Some(&mut options))?.iter() {
+            let path = Path::new(entry.path()?);
+            if entry.status().contains(git2::Status::WT_NEW)
+                && (super::is_internal_visualization_path(path)
+                    || super::is_generated_tool_path(path))
+            {
+                continue;
+            }
+            let absolute = root.join(path);
+            if repositories.iter().any(|nested| {
+                nested != root && nested.starts_with(root) && absolute.starts_with(nested)
+            }) {
+                continue;
+            }
+            if let Ok(relative) = absolute.strip_prefix(workspace_root) {
+                paths.insert(relative.to_path_buf());
+            }
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +252,39 @@ mod tests {
             vec![
                 PathBuf::from("apps/client/client.txt"),
                 PathBuf::from("services/api/api.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn review_inventory_includes_nested_staged_untracked_and_deleted_paths() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("repo");
+        let nested = root.join("api");
+        init_repo(&root);
+        init_repo(&nested);
+        commit_file(&root, "deleted.txt", "before\n");
+        commit_file(&root, "staged.txt", "before\n");
+        commit_file(&nested, "auth.rs", "before\n");
+        fs::rename(
+            root.join("deleted.txt"),
+            workspace.path().join("deleted-fixture"),
+        )
+        .unwrap();
+        fs::write(root.join("staged.txt"), "after\n").unwrap();
+        let repo = Repository::open(&root).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("staged.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(nested.join("auth.rs"), "after\n").unwrap();
+        fs::write(root.join("new\tfile.txt"), "new\n").unwrap();
+        assert_eq!(
+            workspace_changed_paths(&root).unwrap(),
+            vec![
+                PathBuf::from("api/auth.rs"),
+                PathBuf::from("deleted.txt"),
+                PathBuf::from("new\tfile.txt"),
+                PathBuf::from("staged.txt"),
             ]
         );
     }

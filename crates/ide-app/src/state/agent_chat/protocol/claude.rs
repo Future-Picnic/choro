@@ -409,6 +409,11 @@ fn file_change_stat_from_bridge(file: &Value, projection: bool) -> Option<FileCh
     Some(
         FileChangeStat::new(path, additions, deletions)
             .with_count_projection(projection)
+            .with_cleared_projection(
+                file.get("clears_projection")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
             .with_content_hashes(
                 file.get("baseline_hash")
                     .and_then(Value::as_str)

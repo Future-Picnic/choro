@@ -459,13 +459,14 @@
   <main>
     <header>
       <h1>Choro how-to video library</h1>
-      <div class="summary" aria-label="Library summary"><strong id="playlist-count">8</strong> playlists · <strong id="video-count">39</strong> short videos</div>
+      <div class="summary" aria-label="Library summary"><strong id="playlist-count">10</strong> playlists · <strong id="video-count">61</strong> short videos</div>
     </header>
 
     <div class="tabs-shell">
       <div role="tablist" aria-label="Video categories">
         <button role="tab" id="tab-start" aria-controls="panel-start" aria-selected="true">Getting Started</button>
         <button role="tab" id="tab-agents" aria-controls="panel-agents" aria-selected="false" tabindex="-1">Agents</button>
+        <button role="tab" id="tab-band" aria-controls="panel-band" aria-selected="false" tabindex="-1">Band &amp; Delegation</button>
         <button role="tab" id="tab-context" aria-controls="panel-context" aria-selected="false" tabindex="-1">Tasks &amp; Docs</button>
         <button role="tab" id="tab-review" aria-controls="panel-review" aria-selected="false" tabindex="-1">Review &amp; Ship</button>
         <button role="tab" id="tab-preview" aria-controls="panel-preview" aria-selected="false" tabindex="-1">Run &amp; Preview</button>
@@ -505,6 +506,20 @@
         <tr><td><span class="video-title">Work in Parallel with Solo</span><span class="duration">2:15</span></td><td>Start Solo <span class="flow-arrow">→</span> independent lane <span class="flow-arrow">→</span> review <span class="flow-arrow">→</span> bring home</td><td class="value-text">Lets users run parallel work without mixing branches.</td></tr>
         <tr><td><span class="video-title">Continue a Saved Conversation</span><span class="duration">1:30</span></td><td>Open completed agent <span class="flow-arrow">→</span> Resume <span class="flow-arrow">→</span> continue with context</td><td class="value-text">Keeps previous decisions and work available when a task returns.</td></tr>
       </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-band" aria-labelledby="tab-band" data-slug="band" hidden>
+      <div class="panel-heading"><h2>Band &amp; Delegation</h2><p>Give one lead a team of specialists. Set up bandmates, delegate by name, and follow their work through one verified result.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Build a Feature with Your Band</span><span class="duration">3:00</span></td><td>Name two bandmates <span class="flow-arrow">→</span> lead assigns work <span class="flow-arrow">→</span> follow both chats <span class="flow-arrow">→</span> verified result</td><td class="value-text">Combines different specialists in one task while the lead coordinates and checks the result.</td></tr>
+        <tr><td><span class="video-title">Set Up a Bandmate</span><span class="duration">2:00</span></td><td>Settings <span class="flow-arrow">→</span> Band <span class="flow-arrow">→</span> Edit or New <span class="flow-arrow">→</span> model and instructions <span class="flow-arrow">→</span> save</td><td class="value-text">Saves a reusable specialist setup without repeating the same brief in every chat.</td></tr>
+        <tr><td><span class="video-title">Give a Bandmate the Right Skills</span><span class="duration">2:15</span></td><td>Skills <span class="flow-arrow">→</span> inspect guidance <span class="flow-arrow">→</span> add or write a skill <span class="flow-arrow">→</span> apply <span class="flow-arrow">→</span> save</td><td class="value-text">Combines focused guidance with reusable skills and Riffs in one specialist.</td></tr>
+        <tr><td><span class="video-title">Start a Chat with a Bandmate</span><span class="duration">1:30</span></td><td>New Agent <span class="flow-arrow">→</span> / <span class="flow-arrow">→</span> Bandmates <span class="flow-arrow">→</span> task <span class="flow-arrow">→</span> send</td><td class="value-text">Uses a specialist directly when the task does not need a coordinating lead.</td></tr>
+        <tr><td><span class="video-title">Bring a Bandmate into Work Already Started</span><span class="duration">1:45</span></td><td>Existing chat <span class="flow-arrow">→</span> /delegate <span class="flow-arrow">→</span> choose bandmate <span class="flow-arrow">→</span> brief <span class="flow-arrow">→</span> assignment</td><td class="value-text">Adds specialist help midway through a task without manually copying the conversation.</td></tr>
+        <tr><td><span class="video-title">Follow Your Band and Give Feedback</span><span class="duration">2:00</span></td><td>Band panel <span class="flow-arrow">→</span> assignment chat <span class="flow-arrow">→</span> correction <span class="flow-arrow">→</span> summary <span class="flow-arrow">→</span> lead result</td><td class="value-text">Keeps every assignment accessible while the lead remains the main conversation.</td></tr>
+        <tr><td><span class="video-title">Stop Your Band and Resume When Ready</span><span class="duration">2:00</span></td><td>Stop <span class="flow-arrow">→</span> lead-only conversation <span class="flow-arrow">→</span> restart <span class="flow-arrow">→</span> explicit Resume</td><td class="value-text">Lets users pause delegated work without losing chats, drafts, or working files.</td></tr>
+      </tbody></table></div>
+      <p class="footer-note">Recording setup: use a disposable Git project and existing Codex or Claude authentication. Enable Settings → Beta features → Delegation for managed assignments; standalone bandmate chats do not need the toggle. Durations are edited recording targets, not promised task runtimes.</p>
     </section>
 
     <section role="tabpanel" id="panel-context" aria-labelledby="tab-context" data-slug="context" hidden>
@@ -611,6 +626,73 @@
 
   <script>
     const recordingFlows = {
+      "Build a Feature with Your Band": {
+        "steps": [
+          "Prepare a disposable to-do app repository and enable Settings → Beta features → Delegation. In Settings → Band, confirm UI Designer and Backend Engineer have available models and skills.",
+          "Start a lead chat with: “Build a to-do list with due dates and saved tasks. Delegate design to UI Designer and persistence to Backend Engineer. Do the rest yourself.”",
+          "Show the lead establish the shared contract and choose parallel or sequential assignments. Explain why the chosen order fits this task.",
+          "Open the Band panel and visit both assignment chats to show their briefs and real activity. Cut past long execution waits.",
+          "Show a prepared bandmate question reaching the lead and its answer, then the completed reports and integration.",
+          "Finish on the lead’s verification and the working app in Preview; distinguish a bandmate finishing from the whole task being complete."
+        ],
+        "outcome": "The working to-do app, both contributions, and the lead’s combined verification visible."
+      },
+      "Set Up a Bandmate": {
+        "steps": [
+          "Open Settings → Band and edit a built-in bandmate or create a new one.",
+          "In Overview, set its name, when to use it, provider, available model, and supported effort using an existing Codex or Claude installation.",
+          "Write focused job instructions and an expected result, then inspect its Skills tab.",
+          "Save bandmate and reopen it to show the saved configuration. Explain that existing chats keep their original setup."
+        ],
+        "outcome": "A saved bandmate with a clear role, available model, and expected result."
+      },
+      "Give a Bandmate the Right Skills": {
+        "steps": [
+          "Edit UI Designer and open Skills. View a bundled skill and show its instructions, source, and license.",
+          "Return to the list and use Add skill to choose a compatible bundled skill, installed skill, or Riff.",
+          "Write a short custom skill with project-specific design guidance and choose Apply skill to stage it.",
+          "Choose Save bandmate to persist the setup. Explain that bundled guidance is read-only and detaching a skill does not delete its files."
+        ],
+        "outcome": "The saved bandmate with its selected guidance and custom skill attached."
+      },
+      "Start a Chat with a Bandmate": {
+        "steps": [
+          "Open New Agent and use the slash picker’s Bandmates group to select UI Designer.",
+          "Show the applied provider, model, and bandmate chip, then write a small design task.",
+          "Optionally select a Riff alongside the bandmate and explain that a model override affects this chat only.",
+          "Send the request and show the ordinary top-level chat using the selected setup."
+        ],
+        "outcome": "A standalone specialist chat running with the chosen configuration and task."
+      },
+      "Bring a Bandmate into Work Already Started": {
+        "steps": [
+          "Open an implementation chat in a disposable project with Delegation enabled.",
+          "Use /delegate, select UI Designer, and request a focused polish pass on the existing screen.",
+          "Show Preparing assignment, then the lead’s brief and the new assignment once the current turn reaches a safe boundary.",
+          "Open the bandmate chat and inspect its relevant context. Explain that naming a bandmate in a normal message is another way to request delegation."
+        ],
+        "outcome": "A new delegated assignment linked to the existing lead, with its own brief and conversation."
+      },
+      "Follow Your Band and Give Feedback": {
+        "steps": [
+          "Open a prepared run with two assignments from the Band indicator and show the Active and Finished lists.",
+          "Open one assignment, inspect its brief and activity, then return through All bandmates and select the other.",
+          "Send a correction to a running bandmate and show Queued until it is delivered at a turn boundary; show the correction in the lead’s coordination history.",
+          "Open View summary for a settled result and inspect addressed requirements, unfinished work, and checks.",
+          "Return to the lead and distinguish result ready, integration, and final verification."
+        ],
+        "outcome": "The correction delivered to the right assignment and the result traceable back to the lead."
+      },
+      "Stop Your Band and Resume When Ready": {
+        "steps": [
+          "Stop a prepared active run from the lead and show that the bandmates stop while their chats and files remain.",
+          "Send a follow-up to the lead and show that the conversation continues without restarting the bandmates.",
+          "Restart the demo app and reopen the stopped run; show that delegated work has not resumed automatically.",
+          "Choose Resume bandmates explicitly and show the saved assignments continuing after recovery checks.",
+          "Point out End delegation · Keep files as the alternative when the user wants to leave the run stopped and move on."
+        ],
+        "outcome": "Saved assignments resume only after the user chooses, with their earlier work intact."
+      },
       "Meet Choro and the Core Workflow": {
         steps: [
           "Start with several projects and agent statuses visible in the shared navigation.",

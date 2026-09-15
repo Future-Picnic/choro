@@ -66,6 +66,7 @@ struct OpenCodeRuntime {
     observed_changed_paths: HashSet<PathBuf>,
     tool_changed_paths: HashMap<String, Vec<(PathBuf, bool)>>,
     active_turn_id: String,
+    worktree_baseline: Option<super::worktree_changes::WorktreeChanges>,
     deferred_turns: VecDeque<(String, AgentInteractionMode, bool)>,
     read_only_turn: bool,
     /// True while a `session/prompt` is in flight. The question poller only
@@ -185,6 +186,7 @@ fn run_open_code_acp(
         observed_changed_paths: HashSet::new(),
         tool_changed_paths: HashMap::new(),
         active_turn_id: next_request_id(),
+        worktree_baseline: None,
         deferred_turns: VecDeque::new(),
         read_only_turn: false,
         turn_active: Arc::new(AtomicBool::new(false)),
@@ -419,6 +421,9 @@ impl OpenCodeRuntime {
         self.active_turn_id = next_request_id();
         self.read_only_turn = read_only;
         self.tool_changed_paths.clear();
+        self.worktree_baseline = super::worktree_changes::WorktreeChanges::capture(&self.agent)
+            .map_err(|error| eprintln!("failed to capture OpenCode file baseline: {error:#}"))
+            .ok();
         self.interaction_mode = mode;
         let is_plan = mode == AgentInteractionMode::Plan;
         self.events
@@ -440,6 +445,9 @@ impl OpenCodeRuntime {
             }),
         );
         self.turn_active.store(false, Ordering::SeqCst);
+        if result.is_err() {
+            self.emit_changed_files_receipt();
+        }
         let result = result?;
         self.assistant_stream.flush(&self.events);
         let stop_reason = result
@@ -485,18 +493,7 @@ impl OpenCodeRuntime {
                     .ok();
             }
         }
-        let changed = self.changed_files_summary();
-        // `session/resume` replays earlier tool calls before the next prompt.
-        // Keep those paths until that resumed prompt completes, then start a
-        // fresh batch for the following turn.
-        self.changed_paths.clear();
-        self.observed_changed_paths.clear();
-        if !changed.is_empty() {
-            let changed = capture_changed_files_snapshot(&self.agent, changed, "opencode-acp");
-            self.events
-                .send_blocking(ChatBackendEvent::ChangedFiles(changed))
-                .ok();
-        }
+        self.emit_changed_files_receipt();
         if stop_reason == "refusal" {
             self.events
                 .send_blocking(ChatBackendEvent::Error(
@@ -804,7 +801,21 @@ impl OpenCodeRuntime {
                         .tool_changed_paths
                         .remove(&action_id)
                         .unwrap_or_default();
-                    self.emit_file_change_activities(&action_id, &paths);
+                    if update.get("status").and_then(Value::as_str) == Some("completed") {
+                        for (path, observed) in &paths {
+                            if *observed {
+                                self.observed_changed_paths.insert(path.clone());
+                            } else {
+                                self.changed_paths.insert(path.clone());
+                            }
+                        }
+                        self.emit_file_change_activities(&action_id, &paths);
+                    } else {
+                        // A failed mutation may still have written files. Only
+                        // disk evidence establishes that; its requested path is
+                        // not proof that an already-dirty file was edited.
+                        self.emit_file_change_activities(&action_id, &[]);
+                    }
                 }
                 self.events
                     .send_blocking(ChatBackendEvent::WorkLog(open_code_tool_entry(update)))
@@ -1002,11 +1013,6 @@ impl OpenCodeRuntime {
                 continue;
             };
             let path = project_relative_path(self.agent.runtime_path(), Path::new(path));
-            if exact {
-                self.changed_paths.insert(path.clone());
-            } else {
-                self.observed_changed_paths.insert(path.clone());
-            }
             if !paths.iter().any(|(existing, _)| existing == &path) {
                 paths.push((path, !exact));
             }
@@ -1025,7 +1031,6 @@ impl OpenCodeRuntime {
                     continue;
                 };
                 let path = project_relative_path(self.agent.runtime_path(), Path::new(path));
-                self.changed_paths.insert(path.clone());
                 if !paths.iter().any(|(existing, _)| existing == &path) {
                     paths.push((path, false));
                 }
@@ -1035,11 +1040,14 @@ impl OpenCodeRuntime {
     }
 
     fn emit_file_change_activities(&self, action_id: &str, paths: &[(PathBuf, bool)]) {
-        if paths.is_empty() {
-            return;
-        }
         let summary = self.changed_files_summary();
-        for (path, observed) in paths {
+        let mut paths = paths.to_vec();
+        for file in &summary.observed_files {
+            if !paths.iter().any(|(path, _)| *path == file.path) {
+                paths.push((file.path.clone(), true));
+            }
+        }
+        for (path, observed) in &paths {
             let file = summary
                 .files
                 .iter()
@@ -1060,6 +1068,19 @@ impl OpenCodeRuntime {
                         unix_now(),
                     ),
                 ))
+                .ok();
+        }
+    }
+
+    fn emit_changed_files_receipt(&mut self) {
+        let changed = self.changed_files_summary();
+        self.changed_paths.clear();
+        self.observed_changed_paths.clear();
+        self.worktree_baseline = None;
+        if !changed.is_empty() {
+            let changed = capture_changed_files_snapshot(&self.agent, changed, "opencode-acp");
+            self.events
+                .send_blocking(ChatBackendEvent::ChangedFiles(changed))
                 .ok();
         }
     }
@@ -1100,7 +1121,7 @@ impl OpenCodeRuntime {
                 ))
             })
             .collect::<Vec<_>>();
-        ChangedFilesSummary::attributed(
+        let mut summary = ChangedFilesSummary::attributed(
             self.active_turn_id.clone(),
             files
                 .iter()
@@ -1112,7 +1133,18 @@ impl OpenCodeRuntime {
                 .filter(|(exact, _)| !exact)
                 .map(|(_, file)| file)
                 .collect(),
-        )
+        );
+        if let Some(before) = &self.worktree_baseline {
+            match super::worktree_changes::WorktreeChanges::capture(&self.agent) {
+                Ok(current) => upsert_file_change_stats(
+                    &mut summary.observed_files,
+                    current.changes_since(before),
+                ),
+                Err(error) => eprintln!("failed to observe OpenCode file changes: {error:#}"),
+            }
+        }
+        summary.reconcile_final_files(self.agent.runtime_path());
+        summary
     }
 }
 

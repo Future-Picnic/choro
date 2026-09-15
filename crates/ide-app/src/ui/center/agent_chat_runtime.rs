@@ -47,49 +47,46 @@ pub(super) const AGENT_VERIFY_FIX_PREFIX: &str =
 /// tracker descriptions are the one unbounded input.
 const VERIFY_TASK_DESCRIPTION_MAX_CHARS: usize = 4000;
 const REVIEW_CHECKLIST_FILE_LIMIT: usize = 40;
-const CODE_REVIEW_SCOPE_FILE_LIMIT: usize = 40;
 
 fn code_review_feature_scope_prompt(
     attributed_files: &[String],
     observed_files: &[String],
-    omitted_count: usize,
+    working_tree: &Result<Vec<String>, String>,
 ) -> String {
     let mut prompt = String::from(
-        "Feature scope for this review:\n\
-- Before inspecting the diff, reconstruct the feature intent from this agent conversation: the user's request, decisions, plan, implementation, and tests. Review the implementation against that intent.\n\
-- Report findings only for the feature implemented in this conversation. Other agents or the user may have unrelated uncommitted changes in the same working tree; do not review or report those. You may read unrelated files only when needed as surrounding context.\n\
-- The file attribution below narrows the review scope; it is not a substitute for understanding the conversation.",
+        "Feature scope for this review (read-only; do not change files):\n\
+- Reconstruct the feature intent from this agent conversation: the user's request, decisions, plan, implementation, and tests. Review the implementation against that intent.\n\
+- File attribution is incomplete evidence, never the review boundary. Shell commands, generators, delegated tools, and older turns may have changed files absent from the chat ledger.\n\
+- Before reviewing, reconcile the full current Git inventory with the conversation and tool history. Inspect staged and unstaged diffs, untracked files, deletions, and renames in every relevant repository. Refresh the inventory using Git because files may have changed since this request was prepared. Include relevant committed work from this conversation if it is no longer in the working-tree diff.\n\
+- Classify every candidate as feature-related, unrelated, or unresolved. Inspect unlisted files to establish their relationship. Exclude files or hunks only with a concrete reason; absence from attribution is not a reason. Review all feature-related code and its callers, guards, and tests. Preserve unrelated work.\n\
+- If scope or inspection is incomplete, state that explicitly. Passing tests and finding a few bugs do not establish complete review coverage.",
     );
-
-    if !attributed_files.is_empty() {
-        prompt.push_str("\n\nFiles directly changed by this agent conversation:\n");
-        for path in attributed_files {
-            prompt.push_str("- ");
-            prompt.push_str(path);
-            prompt.push('\n');
+    for (label, files) in [
+        (
+            "Files directly changed by this conversation",
+            attributed_files,
+        ),
+        (
+            "Files observed changing during this conversation (ownership may be shared)",
+            observed_files,
+        ),
+    ] {
+        prompt.push_str(&format!("\n\n{label} ({}):\n", files.len()));
+        for path in files {
+            prompt.push_str(&format!("- {}\n", serde_json::to_string(path).unwrap()));
         }
     }
-    if !observed_files.is_empty() {
-        prompt.push_str(
-            "\nFiles observed changing around this agent's commands (include only when the conversation confirms they belong to the feature):\n",
-        );
-        for path in observed_files {
-            prompt.push_str("- ");
-            prompt.push_str(path);
-            prompt.push('\n');
+    match working_tree {
+        Ok(files) => {
+            prompt.push_str(&format!("\nFull working-tree inventory ({} files; includes candidates outside attribution):\n", files.len()));
+            for path in files {
+                prompt.push_str(&format!("- {}\n", serde_json::to_string(path).unwrap()));
+            }
         }
+        Err(error) => prompt.push_str(&format!("\nWorking-tree inventory unavailable: {error}. Discover the scope from Git and tool history; do not interpret this as a clean tree.\n")),
     }
-    if attributed_files.is_empty() && observed_files.is_empty() {
-        prompt.push_str(
-            "\n\nNo reliable per-chat file attribution is available. Infer the feature files from the conversation and tool history, and exclude unrelated working-tree changes.",
-        );
-    } else if omitted_count > 0 {
-        prompt.push_str(&format!(
-            "\n{omitted_count} additional tracked file(s) were omitted from this bounded list. Use the conversation and tool history to include them only when they belong to this feature."
-        ));
-    }
-
-    prompt.trim_end().to_string()
+    prompt.push_str("\nBegin the <code_review> block with a ## Coverage section. Write `Completion: complete` only after reviewing every feature-related candidate; otherwise write `Completion: partial`. In plain paragraphs, report the number of feature files actually reviewed, exclusions and their reasons, unresolved files, and checks performed or not performed. Follow with severity headings and findings. Even with no findings, retain Coverage and qualify the result to the code actually inspected. These coverage requirements also apply to a clean result.");
+    prompt
 }
 
 fn pocketcomet_handoff_prompt() -> String {
@@ -968,83 +965,57 @@ impl CenterArea {
     /// Claude Code / Codex expose, triggered from inside our composer. Sends the
     /// canonical review prompt as a turn; the agent replies with the findings.
     pub(super) fn request_agent_code_review(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        let agent = self.agents.read(cx).agent(agent_id).cloned();
-        let filter = agent
-            .as_ref()
-            .map(|agent| VisualizationArtifactFilter::new(agent.id, agent.runtime_path()));
-        let (mode, attributed_files, observed_files, omitted_count) = {
+        let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
+            return;
+        };
+        let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
+        let (mode, summary) = {
             let chats = self.agent_chats.read(cx);
             let Some(session) = chats.session(agent_id) else {
                 return;
             };
-            let mut attributed_files = session
-                .changed_files
-                .files
-                .iter()
-                .filter(|file| {
-                    filter
-                        .as_ref()
-                        .is_none_or(|filter| !filter.is_artifact(&file.path))
-                })
-                .map(|file| {
-                    file.path
-                        .to_string_lossy()
-                        .chars()
-                        .take(240)
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>();
-            attributed_files.sort();
-            attributed_files.dedup();
-
-            let mut observed_files = session
-                .changed_files
-                .observed_files
-                .iter()
-                .filter(|file| {
-                    filter
-                        .as_ref()
-                        .is_none_or(|filter| !filter.is_artifact(&file.path))
-                })
-                .map(|file| {
-                    file.path
-                        .to_string_lossy()
-                        .chars()
-                        .take(240)
-                        .collect::<String>()
-                })
-                .filter(|path| !attributed_files.contains(path))
-                .collect::<Vec<_>>();
-            observed_files.sort();
-            observed_files.dedup();
-
-            let total_count = attributed_files.len() + observed_files.len();
-            attributed_files.truncate(CODE_REVIEW_SCOPE_FILE_LIMIT);
-            let observed_limit =
-                CODE_REVIEW_SCOPE_FILE_LIMIT.saturating_sub(attributed_files.len());
-            observed_files.truncate(observed_limit);
-            let omitted_count =
-                total_count.saturating_sub(attributed_files.len() + observed_files.len());
             (
                 session.interaction_mode,
-                attributed_files,
-                observed_files,
-                omitted_count,
+                session
+                    .changed_files
+                    .reconciled_final_files(agent.runtime_path()),
             )
         };
-        let feature_scope =
-            code_review_feature_scope_prompt(&attributed_files, &observed_files, omitted_count);
-        let prompt = {
+        let paths = |files: &[crate::state::agent_chat::FileChangeStat]| {
+            files
+                .iter()
+                .filter(|file| !filter.is_artifact(&file.path))
+                .map(|file| file.path.to_string_lossy().into_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let attributed_files = paths(&summary.files);
+        let observed_files = paths(&summary.observed_files);
+        let (review_prompt, output_instructions) = {
             let workspace = self.workspace.read(cx);
-            format!(
-                "{AGENT_CODE_REVIEW_REQUEST_MARKER}\n{}\n\n{}\n\n{}",
-                workspace.effective_code_review_prompt(),
-                feature_scope,
-                workspace.effective_code_review_output_instructions(),
+            (
+                workspace.effective_code_review_prompt().to_string(),
+                workspace
+                    .effective_code_review_output_instructions()
+                    .to_string(),
             )
         };
-        self.dispatch_agent_chat_submission(agent_id, prompt, mode, cx);
-        self.acknowledge_agent_chat_seen(agent_id, cx);
+        cx.spawn(async move |this, cx| {
+            let inventory = cx.background_executor().spawn(async move {
+                ide_core::git::repository::workspace_changed_paths(agent.runtime_path())
+                    .map(|paths| paths.into_iter()
+                        .filter(|path| !filter.is_artifact(path) && !crate::state::agent_chat::ChangedFilesSummary::is_provider_private_artifact(path))
+                        .map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>())
+                    .map_err(|error| error.to_string())
+            }).await;
+            let scope = code_review_feature_scope_prompt(&attributed_files, &observed_files, &inventory);
+            let prompt = format!("{AGENT_CODE_REVIEW_REQUEST_MARKER}\n{review_prompt}\n\n{output_instructions}\n\n{scope}");
+            this.update(cx, |this, cx| {
+                this.dispatch_agent_chat_submission(agent_id, prompt, mode, cx);
+                this.acknowledge_agent_chat_seen(agent_id, cx);
+            }).ok();
+        }).detach();
     }
 
     /// Ask the agent to apply fixes for a review's findings: the ticked ones when
@@ -1760,13 +1731,10 @@ impl CenterArea {
                     }
                 }
             }
-            if !delegation_stopped && explicit == Some(None) {
-                self.agent_start_errors
-                    .insert(agent.id, "Choose a bandmate for this assignment.".into());
-                cx.notify();
-                return;
-            }
-            let ids = explicit.flatten().into_iter().collect::<Vec<_>>();
+            let ids = explicit
+                .map(|id| id.unwrap_or(Uuid::nil()))
+                .into_iter()
+                .collect::<Vec<_>>();
             let plan = self
                 .agent_chats
                 .read(cx)
@@ -1890,6 +1858,8 @@ impl CenterArea {
         let selected_expert = self.delegation_selection.get(&agent.id).copied().flatten();
         let submission_text = if delegation_stopped {
             format!("{submission_text}\n\nChoro status: Bandmate delegation remains stopped. This message continues only the lead conversation. Answer the user and inspect saved status as needed; do not restart Bandmates, schedule or integrate their work, or substitute other agents. The user can resume Bandmates or end delegation using the controls beside the composer.")
+        } else if self.delegation_selection.get(&agent.id) == Some(&None) {
+            format!("{submission_text}\n\nThe user selected /delegate with on-demand teammates. Use Choro experts_list and delegation_plan to create focused assignments using the authorized temporary teammate ID. Choose dependencies and parallel work as appropriate. Do not use native subagents or change the lead's model.")
         } else if let Some(id) = selected_expert {
             format!("{submission_text}\n\nThe user explicitly selected Bandmate {id} for this assignment. Use experts_list and delegation_plan to prepare and schedule it. Do not change this lead's model.")
         } else {
@@ -2621,7 +2591,9 @@ impl CenterArea {
         let commands =
             self.cached_agent_chat_slash_capabilities(agent.provider, agent.project_id, cx);
         let mut commands = (*commands).clone();
-        if self.can_delegate_from(agent_id, cx)
+        if ide_core::delegation::enabled()
+            && matches!(agent.provider, AgentKind::Codex | AgentKind::Claude)
+            && agent.runtime == AgentRuntimeKind::Chat
             && agent
                 .delegation
                 .as_ref()
@@ -3766,26 +3738,31 @@ mod verification_trigger_tests {
     }
 
     #[test]
-    fn code_review_scope_uses_conversation_and_agent_attribution() {
-        let prompt = code_review_feature_scope_prompt(
-            &["src/feature.rs".to_string()],
-            &["generated/schema.rs".to_string()],
-            2,
-        );
-
-        assert!(prompt.contains("reconstruct the feature intent from this agent conversation"));
-        assert!(prompt.contains("do not review or report"));
-        assert!(prompt.contains("src/feature.rs"));
-        assert!(prompt.contains("generated/schema.rs"));
-        assert!(prompt.contains("2 additional tracked file(s) were omitted"));
+    fn code_review_scope_includes_every_candidate_without_truncating_paths() {
+        let attributed = (0..24)
+            .map(|i| format!("src/direct-{i}.rs"))
+            .collect::<Vec<_>>();
+        let observed = (0..64)
+            .map(|i| format!("src/shell-{i}.rs"))
+            .collect::<Vec<_>>();
+        let long_path = format!("src/{}/feature.rs", "directory/".repeat(30));
+        let inventory = vec!["src/unlisted-auth.rs".to_string(), long_path.clone()];
+        let prompt =
+            code_review_feature_scope_prompt(&attributed, &observed, &Ok(inventory.clone()));
+        for path in attributed.iter().chain(&observed).chain(&inventory) {
+            assert!(prompt.contains(path), "missing {path}");
+        }
+        assert!(prompt.contains("never the review boundary"));
+        assert!(prompt.contains("Classify every candidate"));
+        assert!(prompt.contains("Completion: partial"));
     }
 
     #[test]
-    fn code_review_scope_falls_back_to_conversation_when_attribution_is_missing() {
-        let prompt = code_review_feature_scope_prompt(&[], &[], 0);
-
-        assert!(prompt.contains("No reliable per-chat file attribution is available"));
-        assert!(prompt.contains("exclude unrelated working-tree changes"));
+    fn code_review_scope_does_not_treat_inventory_errors_as_a_clean_tree() {
+        let prompt =
+            code_review_feature_scope_prompt(&[], &[], &Err("Git unavailable".to_string()));
+        assert!(prompt.contains("Git unavailable"));
+        assert!(prompt.contains("do not interpret this as a clean tree"));
     }
 
     #[test]

@@ -1000,7 +1000,10 @@ impl CenterArea {
             commands.extend(
                 experts::capabilities(composer.provider)
                     .into_iter()
-                    .filter(|c| c.expert_id.is_some()),
+                    .filter(|c| {
+                        c.expert_id.is_some()
+                            || matches!(composer.provider, AgentKind::Codex | AgentKind::Claude)
+                    }),
             );
         }
         let matches = agent_chat_slash_matches(&commands, &query.query);

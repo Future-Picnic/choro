@@ -2453,6 +2453,7 @@ fn resolve_remote_repository_path(
 fn changed_files_dto(files: &[crate::state::agent_chat::FileChangeStat]) -> Vec<ChangedFileDto> {
     files
         .iter()
+        .filter(|file| !file.clears_projection)
         .map(|file| ChangedFileDto {
             path: file.path.to_string_lossy().to_string(),
             additions: file.additions,

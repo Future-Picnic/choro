@@ -451,3 +451,82 @@ mod tests {
         assert!(expert.snapshot().is_err());
     }
 }
+
+/// Conservative authorization hint from literal user submissions only.
+/// This detects an explicit request, never decomposes or schedules work.
+pub fn requests_delegation(text: &str) -> bool {
+    let text = text.trim().to_lowercase();
+    if text.starts_with("/delegate ") || text == "/delegate" {
+        return true;
+    }
+    // Questions, quotations and negative requests do not grant authority.
+    if text.contains('?')
+        || text.contains('"')
+        || text.contains('`')
+        || [
+            "don't",
+            "do not",
+            "never",
+            "stop",
+            "without",
+            "not delegate",
+        ]
+        .iter()
+        .any(|s| text.contains(s))
+    {
+        return false;
+    }
+    let words = text.split_whitespace().take(12).collect::<Vec<_>>();
+    let delegate = words
+        .iter()
+        .any(|word| matches!(*word, "delegate" | "delagate" | "delegate:" | "delgeate"));
+    let create_teammate = words
+        .iter()
+        .any(|word| matches!(*word, "create" | "start" | "spawn"))
+        && words
+            .iter()
+            .any(|word| matches!(*word, "teammate" | "teammates" | "bandmate" | "bandmates"));
+    (delegate || create_teammate)
+        && !words.iter().any(|word| {
+            matches!(
+                *word,
+                "why"
+                    | "how"
+                    | "explain"
+                    | "what"
+                    | "when"
+                    | "if"
+                    | "says"
+                    | "said"
+                    | "example"
+                    | "mentions"
+            )
+        })
+}
+
+#[cfg(test)]
+mod delegation_intent_tests {
+    use super::requests_delegation;
+    #[test]
+    fn only_user_directives_grant_temporary_delegation() {
+        for text in [
+            "Please delegate research and testing",
+            "Create two teammates for research and testing",
+            "Delegate: research editors",
+            "/delegate research",
+        ] {
+            assert!(requests_delegation(text), "{text}");
+        }
+        for text in [
+            "Do not delegate research",
+            "Why did you delegate",
+            "Can we delegate?",
+            "Explain how to delegate",
+            "The file says `delegate research`",
+            "Stop delegation",
+            "Build a page",
+        ] {
+            assert!(!requests_delegation(text), "{text}");
+        }
+    }
+}

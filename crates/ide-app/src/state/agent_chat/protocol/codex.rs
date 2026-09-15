@@ -132,6 +132,7 @@ impl CodexRuntime {
         self.plan_buffer.clear();
         self.pending_changed_files = None;
         self.pending_file_actions.clear();
+        self.pending_file_previews.clear();
         self.pending_observed_files.clear();
         self.worktree_baseline = worktree_changes::WorktreeChanges::capture(&self.agent)
             .map_err(|error| eprintln!("failed to capture turn file baseline: {error:#}"))
@@ -361,6 +362,7 @@ impl CodexRuntime {
     }
 
     fn cancel_turn(&mut self) -> anyhow::Result<()> {
+        self.observe_worktree_changes();
         self.assistant_stream.flush(&self.events);
         self.finish_reconnect(WorkLogStatus::Completed, "Reconnect stopped", None);
         self.deny_all_pending_approvals()?;
@@ -482,11 +484,21 @@ impl CodexRuntime {
                 ) {
                     self.observe_worktree_changes();
                 }
-                let files = completed_file_change_stats(&params);
-                if !files.is_empty() {
+                if item_type_from_params(&params) == Some("fileChange") {
                     let action_id = item_id_from_params(&params)
                         .unwrap_or_else(|| format!("file-change-{}", self.active_turn_id));
-                    self.record_exact_file_changes(action_id, files);
+                    let preview = self
+                        .pending_file_previews
+                        .remove(&action_id)
+                        .unwrap_or_default();
+                    if params.pointer("/item/status").and_then(Value::as_str) == Some("completed") {
+                        let files = completed_file_change_stats(&params);
+                        self.record_exact_file_changes(
+                            action_id,
+                            if files.is_empty() { preview } else { files },
+                        );
+                    }
+                    self.observe_worktree_changes();
                 }
                 if let Some(plan) = plan_text_from_completed_item(&params)
                     .or_else(|| {
@@ -534,10 +546,18 @@ impl CodexRuntime {
                     .flatten()
                     .filter_map(file_stat_from_patch_change)
                     .collect::<Vec<_>>();
-                self.record_exact_file_changes(action_id, files);
+                // A preview may still fail or be declined. Attribute it only
+                // when completion confirms success; show real writes as Git
+                // observations in the meantime.
+                self.pending_file_previews.insert(action_id, files);
+                self.observe_worktree_changes();
             }
             "turn/diff/updated" => {
-                if let Some(diff) = self
+                if self.worktree_baseline.is_some() {
+                    // Provider patches can lag the disk (especially after a
+                    // shell revert). They must not overwrite verified states.
+                    self.observe_worktree_changes();
+                } else if let Some(diff) = self
                     .command_ran_this_turn
                     .then(|| params.get("diff").and_then(Value::as_str))
                     .flatten()
@@ -666,6 +686,7 @@ impl CodexRuntime {
                             .ok();
                     }
                     CodexErrorDisposition::Terminal { message } => {
+                        self.emit_pending_changed_files();
                         self.finish_reconnect(
                             WorkLogStatus::Failed,
                             "Could not reconnect to Codex",

@@ -456,12 +456,12 @@ mod imp {
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
     use objc2::{
-        define_class, msg_send, ClassType, DeclaredClass, MainThreadMarker, MainThreadOnly,
+        define_class, msg_send, sel, ClassType, DeclaredClass, MainThreadMarker, MainThreadOnly,
     };
     use objc2_app_kit::{
         NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep,
-        NSBitmapImageRepPropertyKey, NSEvent, NSEventModifierFlags, NSEventType, NSImage,
-        NSPasteboard, NSPasteboardWriting, NSView,
+        NSBitmapImageRepPropertyKey, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
+        NSImage, NSPasteboard, NSPasteboardWriting, NSView,
     };
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_foundation::{
@@ -1068,6 +1068,7 @@ mod imp {
 
     struct WebKitSurface {
         webview: WebView,
+        paste_monitor: Option<Retained<AnyObject>>,
         project_preview_handlers: Option<ProjectPreviewHandlers>,
         // Declared last so the exclusivity slot is released only after WebView drops.
         _lease: WebKitLease,
@@ -1075,8 +1076,10 @@ mod imp {
 
     impl WebKitSurface {
         fn new(webview: WebView, lease: WebKitLease) -> Self {
+            let paste_monitor = install_preview_paste_monitor(&webview);
             Self {
                 webview,
+                paste_monitor,
                 project_preview_handlers: None,
                 _lease: lease,
             }
@@ -1087,17 +1090,18 @@ mod imp {
             lease: WebKitLease,
             handlers: ProjectPreviewHandlers,
         ) -> Self {
-            Self {
-                webview,
-                project_preview_handlers: Some(handlers),
-                _lease: lease,
-            }
+            let mut surface = Self::new(webview, lease);
+            surface.project_preview_handlers = Some(handlers);
+            surface
         }
     }
 
     impl Drop for WebKitSurface {
         fn drop(&mut self) {
             unsafe {
+                if let Some(monitor) = self.paste_monitor.take() {
+                    NSEvent::removeMonitor(&monitor);
+                }
                 if let Some(handlers) = self.project_preview_handlers.as_ref() {
                     handlers
                         .controller
@@ -1120,6 +1124,58 @@ mod imp {
                 native.setNavigationDelegate(None);
                 native.setUIDelegate(None);
             }
+        }
+    }
+
+    fn is_preview_paste_shortcut(key: &str, flags: NSEventModifierFlags) -> bool {
+        let modifiers = flags
+            & (NSEventModifierFlags::Command
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option
+                | NSEventModifierFlags::Shift);
+        modifiers == NSEventModifierFlags::Command && key.eq_ignore_ascii_case("v")
+    }
+
+    fn install_preview_paste_monitor(webview: &WebView) -> Option<Retained<AnyObject>> {
+        let view: Retained<NSView> = webview.webview().into_super().into_super();
+        let handler = RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| unsafe {
+            let native_event = event.as_ref();
+            let Some(key) = native_event.charactersIgnoringModifiers() else {
+                return event.as_ptr();
+            };
+            if !is_preview_paste_shortcut(&key.to_string(), native_event.modifierFlags())
+                || view.isHiddenOrHasHiddenAncestor()
+            {
+                return event.as_ptr();
+            }
+            let Some(window) = view.window() else {
+                return event.as_ptr();
+            };
+            if native_event.window(view.mtm()).as_ref() != Some(&window) {
+                return event.as_ptr();
+            }
+            let Some(responder) = window.firstResponder() else {
+                return event.as_ptr();
+            };
+            let Some(focused_view) = responder.downcast_ref::<NSView>() else {
+                return event.as_ptr();
+            };
+            if !focused_view.isDescendantOf(&view) {
+                return event.as_ptr();
+            }
+
+            // GPUIView handles key equivalents using its own focus state,
+            // which can still point at the composer while WebKit is focused.
+            // Dispatch native paste before GPUI sees Cmd-V so WebKit preserves
+            // clipboard formats and DOM paste events. Consume it even when
+            // the page cannot paste; it must never reach the stale composer.
+            if responder.respondsToSelector(sel!(paste:)) {
+                let _: () = msg_send![&*responder, paste: std::ptr::null::<AnyObject>()];
+            }
+            std::ptr::null_mut()
+        });
+        unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
         }
     }
 

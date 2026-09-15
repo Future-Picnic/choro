@@ -35,6 +35,8 @@ pub struct ExpertAuthorization {
     pub original_assignment: String,
     pub expert_ids: Vec<Uuid>,
     pub plan_mode: bool,
+    #[serde(default)]
+    pub temporary_experts: Vec<crate::experts::ExpertSnapshot>,
 }
 
 async fn end_transaction<T>(conn: &Connection, result: Result<T>) -> Result<T> {
@@ -217,14 +219,27 @@ impl LocalStore {
         plan_mode: bool,
     ) -> Result<Option<ExpertAuthorization>> {
         let profiles = self.load_experts()?;
-        let mut ids = match named_experts(user_text, &profiles) {
-            Ok(ids) => ids,
-            // An explicit picker selection resolves an ambiguous textual
-            // reference. Do not infer any additional team members in that case.
-            Err(_) if !explicit.is_empty() => explicit.to_vec(),
-            Err(error) => return Err(error),
+        // Nil is a trusted composer selection, never an MCP-provided profile ID.
+        let explicit_temporary = explicit.contains(&Uuid::nil());
+        let temporary_requested =
+            explicit_temporary || crate::experts::requests_delegation(user_text);
+        let explicit = explicit
+            .iter()
+            .copied()
+            .filter(|id| !id.is_nil())
+            .collect::<Vec<_>>();
+        let mut ids = if explicit_temporary {
+            Vec::new()
+        } else {
+            match named_experts(user_text, &profiles) {
+                Ok(ids) => ids,
+                // An explicit picker selection resolves an ambiguous textual
+                // reference. Do not infer any additional team members in that case.
+                Err(_) if !explicit.is_empty() => explicit.to_vec(),
+                Err(error) => return Err(error),
+            }
         };
-        for id in explicit {
+        for id in &explicit {
             ensure!(
                 profiles
                     .iter()
@@ -235,12 +250,50 @@ impl LocalStore {
                 ids.push(*id);
             }
         }
+        let mut temporary_experts = Vec::new();
+        if temporary_requested
+            && (ids.is_empty() || explicit_temporary || user_text.contains("on-demand"))
+        {
+            let agents = self.load_agents()?;
+            let agent = agents
+                .iter()
+                .find(|a| a.id == parent)
+                .context("Lead chat is unavailable.")?;
+            ensure!(
+                matches!(
+                    agent.provider,
+                    crate::AgentKind::Codex | crate::AgentKind::Claude
+                ) && agent.runtime == crate::AgentRuntimeKind::Chat
+                    && !agent.hidden_doc_assistant
+                    && agent.design_context.is_none()
+                    && agent
+                        .delegation
+                        .as_ref()
+                        .is_none_or(|b| b.task_id.is_none()),
+                "On-demand teammates require an ordinary Codex or Claude lead chat."
+            );
+            let profile = ExpertProfile {
+                id: source, revision: 1, name: "Teammate".into(),
+                description: "On-demand teammate for this task".into(),
+                provider: agent.provider, model: agent.model.clone(), effort: agent.effort,
+                instructions: "Carry out the lead's scoped assignment. Use its brief, relevant context, and expected outcome; coordinate questions through the lead.".into(),
+                skills: vec![], expected_outcome: "Return the requested deliverable, evidence, and unresolved items to the lead.".into(),
+                enabled: true, archived: false, additions: Default::default(),
+            };
+            profile.validate()?;
+            ids.push(source);
+            temporary_experts.push(crate::experts::ExpertSnapshot {
+                profile,
+                skills: vec![],
+            });
+        }
         let authorization = ExpertAuthorization {
             id: source,
             parent_agent_id: parent,
             original_assignment: user_text.into(),
             expert_ids: ids,
             plan_mode,
+            temporary_experts,
         };
         self.rt.block_on(async {
             let conn = self.connect().await?;
@@ -275,13 +328,19 @@ impl LocalStore {
                     drop(existing);
                     ensure!(!run.status.stopped(), "Resume the existing task in Choro first.");
                     for id in authorization.expert_ids { if !run.authorized_experts.contains(&id) { run.authorized_experts.push(id); } }
+                    for expert in authorization.temporary_experts {
+                        if !run.temporary_experts.iter().any(|e| e.profile.id == expert.profile.id) {
+                            run.temporary_experts.push(expert);
+                        }
+                    }
                     run.revision += 1;
                     write_run(&conn, &run).await?;
                     return Ok(run);
                 }
                 drop(existing);
                 ensure!(beta_features_async(&conn).await?.delegation, "{}", crate::delegation::BETA_DISABLED);
-                let run = DelegationRun::new(parent, agent.project_id, authorization.id, authorization.original_assignment, authorization.expert_ids, authorization.plan_mode, limits);
+                let mut run = DelegationRun::new(parent, agent.project_id, authorization.id, authorization.original_assignment, authorization.expert_ids, authorization.plan_mode, limits);
+                run.temporary_experts = authorization.temporary_experts;
                 write_run(&conn, &run).await?;
                 Ok(run)
             }.await;
@@ -629,6 +688,36 @@ mod tests {
         let profile = store.save_expert(profile, None).unwrap();
         (dir, store, agent, profile)
     }
+    #[test]
+    fn temporary_selection_is_durable_and_does_not_change_saved_profiles() {
+        let (dir, store, agent, profile) = fixture();
+        let source = Uuid::new_v4();
+        let auth = store
+            .authorize_experts(
+                agent.id,
+                source,
+                "Research UI Designer alternatives",
+                &[Uuid::nil()],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(auth.expert_ids, vec![source]);
+        assert_eq!(auth.temporary_experts[0].profile.model, agent.model);
+        let run = store.begin_delegation(agent.id, source).unwrap();
+        drop(store);
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let restored = store.load_delegation(run.id).unwrap();
+        assert_eq!(restored.temporary_experts, run.temporary_experts);
+        assert_eq!(store.load_experts().unwrap(), vec![profile]);
+        let mut old = serde_json::to_value(&restored).unwrap();
+        old.as_object_mut().unwrap().remove("temporary_experts");
+        assert!(serde_json::from_value::<DelegationRun>(old)
+            .unwrap()
+            .temporary_experts
+            .is_empty());
+    }
+
     #[test]
     fn expert_profiles_are_revisioned_and_names_are_unique() {
         let (_dir, store, _agent, p) = fixture();

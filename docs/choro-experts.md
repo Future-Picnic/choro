@@ -273,3 +273,29 @@ including workspace formatting and compilation, 349 core tests, 748 app tests,
 33 MCP tests, 17 Claude bridge tests, the Velotype suites, bundled catalog and
 license verification, and optimized app/MCP builds. Existing opt-in tests stayed
 ignored; this pass did not start authenticated model work or control the live UI.
+
+## On-demand teammates
+
+Delegation can use saved Bandmate presets or temporary teammates. An explicit
+user request such as “Please delegate research and testing” can authorize a
+temporary setup when no saved recipient resolves. `/delegate` is discoverable
+in new and existing supported chats even when the beta is off; selecting it
+then explains how to enable Settings → Beta features → Delegation.
+
+In an existing chat, `/delegate` defaults to **On-demand teammate**; a saved
+Bandmate can be selected instead. In a new chat it inserts an editable
+“Delegate:” request. Temporary teammates inherit the lead's provider, model,
+and effort at authorization. They receive the existing scoped handoff and
+assignment brief, without creating saved profiles or automatically adding skills.
+`experts_list` exposes their authorized IDs in `on_demand_expert_ids`. The lead
+can reuse one ID for multiple distinct task keys, goals, and briefs; each task
+gets its own chat and working copy through the normal coordinator. All existing
+limits, dependencies, result checks, Stop, and restart gates apply.
+
+Authorization comes only from literal user submissions or the explicit composer
+selection. The conservative request detector recognizes direct delegation or
+teammate-creation instructions; questions, quoted instructions, and negations
+require clarification or `/delegate`. It does not decompose tasks. Runtime
+instructions route requests to Choro and prohibit replacing requested delegation
+with native helpers, including when the beta is disabled or a profile needs repair.
+Temporary configurations remain in task history and are not added to Settings.
