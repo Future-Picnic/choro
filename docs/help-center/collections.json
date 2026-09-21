@@ -1,0 +1,230 @@
+[
+  [
+    "Getting started",
+    1,
+    "Start confidently with your first project and agent.",
+    "Provider setup, Add project, workspace overview, first completed task.",
+    [
+      "What is Choro?",
+      "Install Choro and complete setup",
+      "Connect your coding provider",
+      "Add your first project",
+      "Complete your first agent task",
+      "Find your way around the workspace",
+      "Choose between Quick Ask, Project Talk, and an agent"
+    ]
+  ],
+  [
+    "Projects & context",
+    3,
+    "Keep project information organized and available to your agents.",
+    "Reference attachment, search results, memory editor, Knowledge.",
+    [
+      "Organize and customize your projects",
+      "Find files, tasks, docs, and conversations",
+      "Add project assets and references",
+      "Attach files, images, and links to a request",
+      "Create and manage project memories",
+      "Manage memories that apply across projects",
+      "Use Knowledge to find previous decisions"
+    ]
+  ],
+  [
+    "Working with agents",
+    1,
+    "Configure work, follow progress, and make informed decisions.",
+    "New Agent configuration, plan approval, attention states, completed result.",
+    [
+      "Start and configure an agent",
+      "Choose a provider, model, and reasoning effort",
+      "Understand agent access and approvals",
+      "Plan a task before implementation",
+      "Understand agent statuses and activity cards",
+      "Answer questions and approve a plan",
+      "Stop, resume, or continue a conversation",
+      "Manage several active agents"
+    ]
+  ],
+  [
+    "Band & delegation",
+    2,
+    "Coordinate specialist work from one lead conversation.",
+    "Bandmate editor, skill picker, delegation setup, assignment panel, result summary.",
+    [
+      "Understand leads, Bandmates, and delegation",
+      "Create or customize a Bandmate",
+      "Add skills and Riffs to a Bandmate",
+      "Start a standalone chat with a Bandmate",
+      "Enable delegation and set its limits",
+      "Delegate to saved Bandmates",
+      "Delegate with an on-demand teammate",
+      "Follow assignments and give feedback",
+      "Review Bandmate results",
+      "Pause, resume, or end delegation"
+    ]
+  ],
+  [
+    "Tasks & docs",
+    2,
+    "Turn written requirements into linked agent work.",
+    "Task editor, external-source setup, doc editor, Implement handoff.",
+    [
+      "Create and organize personal tasks",
+      "Connect an external task source",
+      "Filter an external task board",
+      "Start agent work from a task",
+      "Create and edit a project doc",
+      "Start agent work from a doc",
+      "Follow the work linked to a task or doc"
+    ]
+  ],
+  [
+    "Review & ship",
+    1,
+    "Understand the result and deliver the intended changes.",
+    "Changed Files diff, checklist, review findings, Ship flow.",
+    [
+      "Inspect an agent’s changed files",
+      "Use the What to check checklist",
+      "Run work verification and request fixes",
+      "Run Code Review and resolve findings",
+      "Select changes and create a commit",
+      "Ship work to a branch and pull request",
+      "Track pull requests and workflow checks"
+    ]
+  ],
+  [
+    "Parallel work with Solo",
+    2,
+    "Keep parallel implementation isolated until it is ready.",
+    "Start Solo, active workspace indicator, Rejoin, conflict state.",
+    [
+      "Understand when to use Solo",
+      "Start an isolated Solo workspace",
+      "Switch between your main project and Solo work",
+      "Review changes in a Solo workspace",
+      "Rejoin Solo work with your target branch",
+      "Resolve a conflict during Rejoin"
+    ]
+  ],
+  [
+    "Run, code & preview",
+    1,
+    "Run your project and inspect its actual behavior.",
+    "Saved scripts, terminal output, service picker, visual feedback selection.",
+    [
+      "Browse and edit project files",
+      "Use the integrated terminal",
+      "Create and run saved scripts",
+      "Stop and restart a project service",
+      "Open a running app in Preview",
+      "Preview a local HTML file",
+      "Send visual feedback to an agent",
+      "Connect and inspect a project database"
+    ]
+  ],
+  [
+    "Design & Studio",
+    2,
+    "Create a visual direction and hand it to an implementation agent.",
+    "Screen overview, inspector, agent sidebar, design-system review, Implement selection.",
+    [
+      "Choose a design workflow: Studio, Penpot, or Figma",
+      "Create your first Studio design",
+      "Create a design from a task or doc",
+      "Add and organize screens",
+      "Edit text and styles with the visual inspector",
+      "Refine a design with an agent",
+      "Manage design conversations and history",
+      "Preview desktop and mobile layouts",
+      "Create a reusable design system",
+      "Review and apply design-system changes",
+      "Change a design’s system and manage local overrides",
+      "Implement a design or selected screens",
+      "Review the implementation against the design"
+    ]
+  ],
+  [
+    "Orbit & integrations",
+    3,
+    "Connect structured project information to useful actions.",
+    "Environment with safe demo values, integration evidence, module editor.",
+    [
+      "Understand Orbit and its built-in views",
+      "Find and edit environment variables",
+      "Inspect detected services and integrations",
+      "Create a reusable Orbit module",
+      "Add a module to a project",
+      "Create records and organize module views",
+      "Start agent work from an Orbit record"
+    ]
+  ],
+  [
+    "Quick Ask, voice & reusable instructions",
+    3,
+    "Use lightweight conversations and repeatable guidance.",
+    "Quick Ask answer, Start agent handoff, voice setup, Riff editor.",
+    [
+      "Ask a project question with Quick Ask",
+      "Continue a Quick Ask conversation",
+      "Turn a Quick Ask answer into an agent task",
+      "Set up voice input",
+      "Discuss your project with Project Talk",
+      "Dictate and edit a message",
+      "Create and use a Riff",
+      "Manage provider skills"
+    ]
+  ],
+  [
+    "Choro Remote",
+    3,
+    "Stay connected to work running on your Mac.",
+    "Mac pairing screen and actual iPhone captures of each mobile workflow.",
+    [
+      "Understand how Choro Remote connects to your Mac",
+      "Pair your iPhone",
+      "Choose a device’s access level",
+      "Monitor agent progress from your phone",
+      "Start or continue work from your phone",
+      "Respond to questions, plans, and approvals",
+      "Review results and request fixes",
+      "Revoke a paired device"
+    ]
+  ],
+  [
+    "Settings & your data",
+    3,
+    "Choose your preferences and manage your stored work.",
+    "Generation preferences, shortcuts, notifications, process monitor, export/import.",
+    [
+      "Set default models and generation preferences",
+      "Customize keyboard shortcuts",
+      "Configure notifications",
+      "Change appearance and workspace preferences",
+      "Use the process monitor",
+      "Enable or disable beta features",
+      "Export a backup",
+      "Import a backup",
+      "Understand where Choro stores data and what providers receive"
+    ]
+  ],
+  [
+    "Troubleshooting & support",
+    4,
+    "Recover from common problems and find the right next step.",
+    "Relevant settings and representative error/recovery states with safe demo data.",
+    [
+      "Coding provider unavailable or signed out",
+      "An agent is stuck, interrupted, or failing",
+      "A Bandmate cannot start or resume",
+      "A project or file cannot be accessed",
+      "A script fails or Preview will not load",
+      "Studio changes are not appearing or saving",
+      "A task source will not connect or refresh",
+      "Voice input is not working",
+      "Your phone cannot connect to your Mac",
+      "Report a problem with useful diagnostic details",
+      "Request a feature and follow the roadmap"
+    ]
+  ]
+]

@@ -36,6 +36,10 @@ impl Server {
         }
     }
 
+    pub fn set_studio(&mut self, studio: bool) {
+        self.ctx.studio = studio;
+    }
+
     pub fn run(&mut self) -> Result<()> {
         let stdin = std::io::stdin();
         let mut reader = stdin.lock();
@@ -80,7 +84,10 @@ impl Server {
             // Lifecycle notifications — acknowledged by doing nothing.
             Some("notifications/initialized") | Some("initialized") => None,
             Some("ping") => Some(reply(id, json!({}))),
-            Some("tools/list") => Some(reply(id, json!({ "tools": self.tools.list() }))),
+            Some("tools/list") => Some(reply(
+                id,
+                json!({ "tools": self.tools.list_for(&self.ctx) }),
+            )),
             Some("tools/call") => {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 Some(reply(id, self.tools.call(&self.ctx, &params)))
@@ -135,6 +142,7 @@ mod tests {
     fn initialize_scopes_choro_native_creation_instructions() {
         let server = Server {
             ctx: ServerContext {
+                studio: false,
                 delegation_scope: None,
                 project_id: None,
                 agent_id: None,

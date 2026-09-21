@@ -66,6 +66,10 @@ const editorNodeModules = options.editorNodeModules
   ? collectNodePackages(resolve(repoRoot, options.editorNodeModules))
   : [];
 
+const canvasNodeModules = options.canvasNodeModules
+  ? collectNodePackages(resolve(repoRoot, options.canvasNodeModules))
+  : [];
+
 const index = [
   "# Resolved third-party license inventory",
   "",
@@ -100,11 +104,21 @@ const index = [
       ]
     : ["No document editor `node_modules` directory was supplied or found."]),
   "",
+  "## Embedded Studio canvas Node packages",
+  "",
+  ...(canvasNodeModules.length > 0
+    ? [
+        "| Package | Version | Declared license | Repository | Copied files |",
+        "| --- | --- | --- | --- | --- |",
+        ...canvasNodeModules.map(formatRow),
+      ]
+    : ["No Studio canvas `node_modules` directory was supplied or found."]),
+  "",
 ];
 
 writeFileSync(join(thirdPartyRoot, "INDEX.md"), index.join("\n"));
 console.log(
-  `Collected licenses for ${rustPackages.length} Rust packages, ${agentNodeModules.length} agent Node packages, and ${editorNodeModules.length} editor Node packages into ${outputRoot}`,
+  `Collected licenses for ${rustPackages.length} Rust packages, ${agentNodeModules.length} agent Node packages, ${editorNodeModules.length} editor Node packages, and ${canvasNodeModules.length} canvas Node packages into ${outputRoot}`,
 );
 
 function parseArgs(args) {
@@ -123,12 +137,17 @@ function parseArgs(args) {
       parsed.editorNodeModules = args[++index];
     } else if (arg.startsWith("--editor-node-modules=")) {
       parsed.editorNodeModules = arg.slice("--editor-node-modules=".length);
+    } else if (arg === "--canvas-node-modules") {
+      parsed.canvasNodeModules = args[++index];
+    } else if (arg.startsWith("--canvas-node-modules=")) {
+      parsed.canvasNodeModules = arg.slice("--canvas-node-modules=".length);
     } else if (arg === "--help" || arg === "-h") {
       console.log(`Usage: node scripts/collect-third-party-licenses.mjs [options]
 
   --output PATH               License bundle destination
   --agent-node-modules PATH   Installed agent bridge node_modules directory
-  --editor-node-modules PATH  Installed document editor node_modules directory`);
+  --editor-node-modules PATH  Installed document editor node_modules directory
+  --canvas-node-modules PATH  Installed Studio canvas node_modules directory`);
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);

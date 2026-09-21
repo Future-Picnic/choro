@@ -144,8 +144,11 @@ impl CenterArea {
                 .sessions
                 .iter()
                 .map(|(agent_id, session)| {
-                    let mut files = session.changed_files.files.clone();
-                    files.extend(session.changed_files.observed_files.clone());
+                    let files = session
+                        .changed_files
+                        .conversation_files()
+                        .cloned()
+                        .collect::<Vec<_>>();
                     (*agent_id, files)
                 })
                 .collect::<Vec<_>>();

@@ -1,0 +1,73 @@
+{
+  "revision": "1acbab7ebfe3e7b004f1f18c039d26550fc04bd8",
+  "files": {
+    "builder.js": {
+      "path": "libs/builder/builder.js",
+      "sha256": "46a5525e2c2ac3c3ee52a72231509476cb1ba82dccd32036af885ba6c11b7887"
+    },
+    "autocomplete.js": {
+      "path": "libs/autocomplete/autocomplete.js",
+      "sha256": "1d0fec2640c47f6976c05baff14fd0cd27cd926ca2fdeb392c3f48d8cffe5828"
+    },
+    "undo.js": {
+      "path": "libs/builder/undo.js",
+      "sha256": "aaa668f5dd605d43f65e24c186496bab7b30c47238753bd4574d6f473453e72c"
+    },
+    "inputs.js": {
+      "path": "libs/builder/inputs.js",
+      "sha256": "ddddc214a73b896d4df05fa20195829685677fa55f167388923c5cd351218066"
+    },
+    "components-common.js": {
+      "path": "libs/builder/components-common.js",
+      "sha256": "7b26fe0f91f4e5b09c52885159b2ad1c4fd27cd275de288745770ee153e2de3b"
+    },
+    "components-html.js": {
+      "path": "libs/builder/components-html.js",
+      "sha256": "ee39c03aaeaf211bacfb6634ec888e7a490534bd4596b4621e0cfe73a4ef4fbd"
+    },
+    "editor.css": {
+      "path": "css/editor.css",
+      "sha256": "f8c6be0a9d9d6f7f9dcfb7d84cd489601c478bf0d8ae9c17915c382c9e995934"
+    },
+    "popper.min.js": {
+      "path": "js/popper.min.js",
+      "sha256": "5a07c69f9061eb12e39a031358a4f567f30a002ad6182639ac84fd1bda2f6e65"
+    },
+    "bootstrap.min.js": {
+      "path": "js/bootstrap.min.js",
+      "sha256": "de040986d9a3ed89d5d5f9ad6d5727015e9e238c2cd13af8f1b55909386d0864"
+    },
+    "coloris.js": {
+      "path": "libs/coloris/coloris.js",
+      "sha256": "fc99a788f9815a512eb44ac5d6673b9ea83d712505b237c8af825464c0b61a53"
+    },
+    "coloris.min.css": {
+      "path": "libs/coloris/coloris.min.css",
+      "sha256": "b2fcd959cbe199e1a8fb5ac3ab39d679d3253786bddc32e4a93c97acd1186e8a"
+    },
+    "right-panel.html": {
+      "path": "editor.html (verbatim fragment)",
+      "sha256": "552bdaa2569f55ead87f09cb08bed43f190d8080e256bb826e3d535dd801d674"
+    },
+    "inline-toolbar.html": {
+      "path": "editor.html (verbatim fragment)",
+      "sha256": "a2d26309111b887ccdd55fdb6fa62c5e6eb4c43cc9404548132f98b95efe4f96"
+    },
+    "la-brands-400.woff2": {
+      "path": "fonts/line-awesome/la-brands-400.woff2",
+      "sha256": "ff70c9bc4650cf5e6b12d1feaa7af29ebf0681993fc0c5ffe3658cea0dbd5403"
+    },
+    "la-regular-400.woff2": {
+      "path": "fonts/line-awesome/la-regular-400.woff2",
+      "sha256": "51ca2c00a3e30945e52227147fed9e296dde03af3c4d7589e8e95ca5740037db"
+    },
+    "la-solid-900.woff2": {
+      "path": "fonts/line-awesome/la-solid-900.woff2",
+      "sha256": "10a68e01209d939afa9318ee71601b0a6e10f025d4cd6d98a492d340b73941fb"
+    },
+    "ionicons.woff": {
+      "path": "fonts/ionicons/ionicons.woff",
+      "sha256": "33411f930ae608af480697a813e360994c491db37ed60639821978da7aae1faf"
+    }
+  }
+}

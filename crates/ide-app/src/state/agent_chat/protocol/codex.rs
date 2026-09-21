@@ -114,6 +114,7 @@ impl CodexRuntime {
         mode: AgentInteractionMode,
         read_only: bool,
     ) -> anyhow::Result<()> {
+        let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
         let consultation = super::managed::consultation(&self.agent);
         let read_only = read_only
@@ -127,6 +128,8 @@ impl CodexRuntime {
             "Reconnect superseded by a new turn",
             None,
         );
+        self.studio_review
+            .begin(self.agent.studio_context.is_some());
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.plan_buffer.clear();
@@ -162,7 +165,7 @@ impl CodexRuntime {
             super::managed::instructions(developer_instructions, &self.agent)?;
         let design_assistant = is_design_assistant(&self.agent);
         let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
-        let mut sandbox_policy = if read_only {
+        let mut sandbox_policy = if read_only || self.agent.studio_context.is_some() {
             json!({ "type": "readOnly" })
         } else if design_assistant && !design_preview_review {
             json!({ "type": "readOnly" })
@@ -178,7 +181,10 @@ impl CodexRuntime {
         // filesystem confinement or the user's approval policy. The bridge
         // authorizes each call against this run's conversation and memory scope.
         allow_pocketcomet_chat_network(&mut sandbox_policy, self.agent.origin.as_ref());
-        let approval_policy = if consultation || (design_assistant && !design_preview_review) {
+        let approval_policy = if self.agent.studio_context.is_some()
+            || consultation
+            || (design_assistant && !design_preview_review)
+        {
             "never"
         } else if design_assistant {
             self.access_mode.codex_approval_policy()
@@ -362,6 +368,8 @@ impl CodexRuntime {
     }
 
     fn cancel_turn(&mut self) -> anyhow::Result<()> {
+        self.studio_review.cancel();
+        ide_core::studio::revoke_agent_scope(&self.agent);
         self.observe_worktree_changes();
         self.assistant_stream.flush(&self.events);
         self.finish_reconnect(WorkLogStatus::Completed, "Reconnect stopped", None);
@@ -602,8 +610,45 @@ impl CodexRuntime {
                 }
             }
             "turn/completed" => {
+                let was_cancelled = self.studio_review.cancelled;
+                let interrupted = was_cancelled
+                    || params
+                        .pointer("/turn/status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| {
+                            matches!(status, "interrupted" | "failed" | "cancelled")
+                        });
+                if interrupted {
+                    self.studio_review.cancel();
+                }
+                if self.studio_review.complete() {
+                    if let Err(error) = ide_core::studio::verify_agent_completion(&self.agent) {
+                        ide_core::studio::revoke_agent_scope(&self.agent);
+                        self.pending_approvals.clear();
+                        self.events
+                            .send_blocking(ChatBackendEvent::Error(format!("{error:#}")))
+                            .ok();
+                        self.events
+                            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Failed))
+                            .ok();
+                        return Ok(());
+                    }
+                }
+                ide_core::studio::revoke_agent_scope(&self.agent);
                 self.pending_approvals.clear();
                 self.emit_pending_changed_files();
+                if interrupted {
+                    let failed = !was_cancelled
+                        && params.pointer("/turn/status").and_then(Value::as_str) == Some("failed");
+                    self.events
+                        .send_blocking(ChatBackendEvent::Status(if failed {
+                            AgentChatStatus::Failed
+                        } else {
+                            AgentChatStatus::Idle
+                        }))
+                        .ok();
+                    return Ok(());
+                }
                 let review = extract_code_review(&self.assistant_buffer);
                 let verification = extract_verification(&self.assistant_buffer);
                 let checklist = extract_review_checklist(&self.assistant_buffer);
@@ -1093,6 +1138,7 @@ fn codex_developer_instructions(
 
 impl Drop for CodexRuntime {
     fn drop(&mut self) {
+        ide_core::studio::revoke_agent_scope(&self.agent);
         terminate_child_process(&mut self.child);
     }
 }
@@ -1111,9 +1157,7 @@ pub(super) fn capture_changed_files_snapshot(
     }
 
     let wanted_paths = summary
-        .files
-        .iter()
-        .chain(&summary.observed_files)
+        .conversation_files()
         .map(|file| normalize_repo_path(&repo_path, &file.path))
         .collect::<HashSet<_>>();
     if wanted_paths.is_empty() {

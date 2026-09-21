@@ -223,6 +223,7 @@ impl CenterArea {
         let hidden = turns.len().saturating_sub(visible);
 
         v_flex()
+            .flex_shrink_0()
             .w_full()
             .min_w(px(0.))
             .max_w(crate::ui::design::agent_chat_content_max_w())

@@ -207,6 +207,20 @@ pub struct DelegationIndicator {
     pub live: bool,
 }
 
+impl DelegationIndicator {
+    /// Keep persistent header chrome short without losing the richer composer
+    /// recovery hints, which also remain available in the header tooltip.
+    pub fn header_label(&self) -> &str {
+        match self.label.as_str() {
+            "Band interrupted · Resume available" => "Band · Interrupted",
+            "Band paused · You can still message here" => "Band · Paused",
+            "Band · Preparing assignments" => "Band · Preparing",
+            "Band · Awaiting lead verification" => "Band · Verify",
+            label => label,
+        }
+    }
+}
+
 pub fn delegation_indicator(
     runs: &[DelegationRun],
     parent: Uuid,
@@ -501,6 +515,31 @@ pub fn bounded_text(text: &str, max_chars: usize) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn header_labels_preserve_status_without_composer_recovery_instructions() {
+        use super::{DelegationActivity, DelegationIndicator};
+        use ide_core::delegation::TaskStatus;
+        for (label, expected) in [
+            ("Band · 2 working", "Band · 2 working"),
+            ("Band · Needs attention", "Band · Needs attention"),
+            ("Band · Complete", "Band · Complete"),
+            ("Band · Ended", "Band · Ended"),
+            ("Band interrupted · Resume available", "Band · Interrupted"),
+            ("Band paused · You can still message here", "Band · Paused"),
+            ("Band · Preparing assignments", "Band · Preparing"),
+            ("Band · Awaiting lead verification", "Band · Verify"),
+        ] {
+            let indicator = DelegationIndicator {
+                label: label.into(),
+                activity: DelegationActivity::Idle,
+                status: TaskStatus::Queued,
+                live: false,
+            };
+            assert_eq!(indicator.header_label(), expected);
+            assert_eq!(indicator.label, label, "composer text must stay unchanged");
+        }
+    }
+
     use super::*;
     use ide_core::delegation::{DelegationAttempt, DelegationLimits, TaskKind, TaskPlan};
     use ide_core::experts::{ExpertProfile, ExpertSnapshot};

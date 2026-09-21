@@ -7,10 +7,7 @@ use gpui::{
     IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, WeakEntity, Window,
 };
-use gpui_component::{
-    button::{Button, ButtonVariants},
-    h_flex, v_flex, Icon, IconName, Sizable,
-};
+use gpui_component::{h_flex, v_flex, Icon, IconName, Sizable};
 use ide_core::git::{FileDiff, LineOrigin};
 use ide_core::ProjectId;
 use uuid::Uuid;
@@ -27,10 +24,12 @@ pub enum DiffKind {
     File { path: PathBuf, staged: bool },
     /// What a commit introduced.
     Commit { sha: String },
-    /// Immutable diff captured from an agent changed-files card.
-    AgentSnapshot {
-        snapshot_id: Uuid,
-        file: Option<PathBuf>,
+    /// Explicit conversation paths, also applied to older saved snapshots.
+    /// A missing snapshot never widens this to the entire project.
+    ConversationFiles {
+        repo_path: PathBuf,
+        snapshot_id: Option<Uuid>,
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -40,10 +39,13 @@ impl DiffKind {
             DiffKind::Project => "project-diff".into(),
             DiffKind::File { path, staged } => format!("file:{}:{staged}", path.display()),
             DiffKind::Commit { sha } => format!("commit:{sha}"),
-            DiffKind::AgentSnapshot { snapshot_id, file } => match file {
-                Some(file) => format!("agent-snapshot:{snapshot_id}:{}", file.display()),
-                None => format!("agent-snapshot:{snapshot_id}"),
-            },
+            DiffKind::ConversationFiles {
+                repo_path,
+                snapshot_id,
+                paths,
+            } => {
+                format!("conversation:{repo_path:?}:{snapshot_id:?}:{paths:?}")
+            }
         }
     }
 
@@ -92,10 +94,18 @@ impl DiffPane {
         center: WeakEntity<CenterArea>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let repo = match &kind {
+            DiffKind::ConversationFiles { repo_path, .. } => repo_path.clone(),
+            _ => repo,
+        };
         // Re-read while the working tree changes; historical diffs are immutable.
         if !matches!(
             kind,
-            DiffKind::Commit { .. } | DiffKind::AgentSnapshot { .. }
+            DiffKind::Commit { .. }
+                | DiffKind::ConversationFiles {
+                    snapshot_id: Some(_),
+                    ..
+                }
         ) {
             if let Some(git) = &git {
                 cx.observe(git, |this: &mut Self, _, cx| this.reload(cx))
@@ -134,8 +144,15 @@ impl DiffPane {
                             ide_core::git::diff::diff_file(&repo, &path, staged).map(|d| vec![d])
                         }
                         DiffKind::Commit { sha } => ide_core::git::commit_diff(&repo, &sha),
-                        DiffKind::AgentSnapshot { snapshot_id, file } => {
-                            load_agent_snapshot_diffs(snapshot_id, file)
+                        DiffKind::ConversationFiles {
+                            snapshot_id, paths, ..
+                        } => {
+                            if let Some(snapshot_id) = snapshot_id {
+                                load_agent_snapshot_diffs(snapshot_id, &paths)
+                            } else {
+                                ide_core::git::workspace_worktree_diffs(&repo)
+                                    .map(|diffs| filter_conversation_diffs(&repo, &paths, diffs))
+                            }
                         }
                     }
                 })
@@ -194,7 +211,7 @@ impl DiffPane {
 
         // Stage/unstage only makes sense for working-tree diffs.
         let stage_action: Option<(bool, Entity<GitState>)> = match (&self.kind, &self.git) {
-            (DiffKind::Commit { .. } | DiffKind::AgentSnapshot { .. }, _) | (_, None) => None,
+            (DiffKind::Commit { .. } | DiffKind::ConversationFiles { .. }, _) | (_, None) => None,
             (DiffKind::File { staged, .. }, Some(git)) => Some((*staged, git.clone())),
             (DiffKind::Project, Some(git)) => {
                 // In the project diff a file may have unstaged parts; offer Stage.
@@ -269,35 +286,33 @@ impl DiffPane {
             .when_some(stage_action, |row, (staged, git)| {
                 let file = path.clone();
                 row.child(
-                    Button::new(("stage-file", ix))
-                        .ghost()
-                        .xsmall()
-                        .label(if staged { "Unstage" } else { "Stage" })
-                        .on_click(move |_, _, cx| {
-                            let file = file.clone();
-                            git.update(cx, |git, cx| {
-                                if staged {
-                                    git.unstage(file, cx);
-                                } else {
-                                    git.stage(file, cx);
-                                }
-                            });
-                        }),
+                    crate::ui::style::ghost_button_compact(
+                        ("stage-file", ix),
+                        if staged { "Unstage" } else { "Stage" },
+                    )
+                    .on_click(move |_, _, cx| {
+                        let file = file.clone();
+                        git.update(cx, |git, cx| {
+                            if staged {
+                                git.unstage(file, cx);
+                            } else {
+                                git.stage(file, cx);
+                            }
+                        });
+                    }),
                 )
             })
             .child(
-                Button::new(("open-file", ix))
-                    .ghost()
-                    .xsmall()
-                    .label("Open File")
-                    .on_click(move |_, window, cx| {
+                crate::ui::style::ghost_button_compact(("open-file", ix), "Open File").on_click(
+                    move |_, window, cx| {
                         let path = open_path.clone();
                         open_center
                             .update(cx, |center, cx| {
                                 center.open_file(project, path, window, cx);
                             })
                             .ok();
-                    }),
+                    },
+                ),
             )
     }
 
@@ -436,27 +451,78 @@ impl DiffPane {
 
 fn load_agent_snapshot_diffs(
     snapshot_id: Uuid,
-    file: Option<PathBuf>,
+    paths: &[PathBuf],
 ) -> anyhow::Result<Vec<FileDiff>> {
     let snapshot = ide_core::local_store::LocalStore::open_default()?
         .load_agent_diff_snapshot(snapshot_id)?
         .ok_or_else(|| anyhow::anyhow!("diff snapshot {snapshot_id} not found"))?;
-    let target = file.map(|path| normalize_snapshot_path(&snapshot.repo_path, &path));
-    Ok(snapshot
-        .files
+    Ok(filter_conversation_diffs(
+        &snapshot.repo_path,
+        paths,
+        snapshot.files.into_iter().map(|file| file.diff).collect(),
+    ))
+}
+
+fn filter_conversation_diffs(
+    repo: &Path,
+    paths: &[PathBuf],
+    diffs: Vec<FileDiff>,
+) -> Vec<FileDiff> {
+    let allowed = paths
+        .iter()
+        .map(|path| normalize_snapshot_path(repo, path))
+        .collect::<HashSet<_>>();
+    diffs
         .into_iter()
-        .filter(|snapshot_file| {
-            target.as_ref().is_none_or(|target| {
-                normalize_snapshot_path(&snapshot.repo_path, &snapshot_file.path) == *target
-            })
-        })
-        .map(|snapshot_file| snapshot_file.diff)
-        .collect())
+        .filter(|diff| allowed.contains(&normalize_snapshot_path(repo, &diff.path)))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_diff_filters_old_snapshots_and_live_fallbacks_to_owned_paths() {
+        let repo = Path::new("/repo");
+        let diffs = vec![
+            FileDiff {
+                path: "src/ours.rs".into(),
+                ..Default::default()
+            },
+            FileDiff {
+                path: "other-agent.rs".into(),
+                ..Default::default()
+            },
+            FileDiff {
+                path: "generated.json".into(),
+                ..Default::default()
+            },
+        ];
+        let filtered =
+            filter_conversation_diffs(repo, &["/repo/./src/ours.rs".into()], diffs.clone());
+        assert_eq!(filtered, vec![diffs[0].clone()]);
+        assert!(filter_conversation_diffs(repo, &[], diffs).is_empty());
+    }
+
+    #[test]
+    fn conversation_diff_tab_keys_include_the_allowed_paths() {
+        let kind = |paths| DiffKind::ConversationFiles {
+            repo_path: "/repo".into(),
+            snapshot_id: Some(Uuid::nil()),
+            paths,
+        };
+        assert_ne!(
+            kind(vec!["a.rs".into()]).key(),
+            kind(vec!["b.rs".into()]).key()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let path = std::ffi::OsString::from_vec(vec![b'a', 0xff]);
+            assert!(!kind(vec![path.into()]).key().is_empty());
+        }
+    }
 
     #[test]
     fn diff_tab_keys_are_scoped_to_the_repository() {
@@ -537,23 +603,23 @@ impl Render for DiffPane {
                     })
                     .child(div().flex_1())
                     .child(
-                        Button::new("toggle-collapse-all")
-                            .ghost()
-                            .xsmall()
-                            .label(if all_collapsed {
+                        crate::ui::style::ghost_button_compact(
+                            "toggle-collapse-all",
+                            if all_collapsed {
                                 "Expand All"
                             } else {
                                 "Collapse All"
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if this.diffs.iter().all(|d| this.collapsed.contains(&d.path)) {
-                                    this.collapsed.clear();
-                                } else {
-                                    this.collapsed =
-                                        this.diffs.iter().map(|d| d.path.clone()).collect();
-                                }
-                                cx.notify();
-                            })),
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.diffs.iter().all(|d| this.collapsed.contains(&d.path)) {
+                                this.collapsed.clear();
+                            } else {
+                                this.collapsed =
+                                    this.diffs.iter().map(|d| d.path.clone()).collect();
+                            }
+                            cx.notify();
+                        })),
                     ),
             )
             .child(

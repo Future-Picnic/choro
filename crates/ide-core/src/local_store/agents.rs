@@ -220,6 +220,7 @@ pub(super) async fn load_agents_async(conn: &Connection) -> Result<Vec<AgentReco
             source_doc: opt_text(&row, 13)?.map(PathBuf::from),
             hidden_doc_assistant: row.get::<i64>(14)? != 0,
             design_context: None,
+            studio_context: None,
             cli_session_id: opt_text(&row, 15)?,
             chat_session_id: opt_text(&row, 16)?,
             ship_pr_repo_path: opt_text(&row, 17)?.map(PathBuf::from),

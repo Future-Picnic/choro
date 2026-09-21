@@ -325,6 +325,13 @@ impl CenterArea {
                 .flatten()
         });
         agent.cli_session_id = record.cli_session_id.clone();
+        if let Some(context) = ide_core::studio::context_from_path(&record.relative_doc_path) {
+            agent.doc = ide_core::studio::system_prompt(&context);
+            agent.title = if context.target == ide_core::studio::StudioAgentTarget::DesignSystem { "Design system agent" } else { "Studio Agent" }.into();
+            agent.linked_docs.clear();
+            agent.source_doc = None;
+            agent.studio_context = Some(context);
+        }
         agent
     }
 

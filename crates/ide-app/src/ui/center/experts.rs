@@ -667,52 +667,7 @@ impl CenterArea {
             }
         }
         if let Some(selection) = self.delegation_selection.get(&id).copied() {
-            let experts = profiles();
-            row = row.child(
-                div()
-                    .text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t3(cx))
-                    .child("Delegate to"),
-            );
-            let temporary = if selection.is_none() {
-                crate::ui::style::primary_button_compact(
-                    ("delegate-temporary", id.as_u128() as u64),
-                    "On-demand teammate",
-                    cx,
-                )
-            } else {
-                crate::ui::style::dialog_neutral_button(
-                    ("delegate-temporary", id.as_u128() as u64),
-                    "On-demand teammate",
-                    cx,
-                )
-            };
-            row = row.child(temporary.on_click(cx.listener(move |this, _, _, cx| {
-                this.delegation_selection.insert(id, None);
-                cx.notify();
-            })));
-            for (i, p) in experts.into_iter().enumerate() {
-                let selected = selection == Some(p.id);
-                let b = if selected {
-                    crate::ui::style::primary_button_compact(("delegate-expert", i), p.name, cx)
-                } else {
-                    crate::ui::style::dialog_neutral_button(("delegate-expert", i), p.name, cx)
-                };
-                row = row.child(b.on_click(cx.listener(move |this, _, _, cx| {
-                    this.delegation_selection.insert(id, Some(p.id));
-                    cx.notify();
-                })));
-            }
-            row = row.child(
-                crate::ui::style::ghost_button_compact(
-                    ("cancel-delegate", id.as_u128() as u64),
-                    "Cancel",
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.delegation_selection.remove(&id);
-                    cx.notify();
-                })),
-            );
+            row = row.child(self.render_delegation_recipient(id, selection, cx));
         }
         if let Some(e) = &agent.expert_snapshot {
             row = row.child(crate::ui::style::tag(
@@ -785,6 +740,69 @@ impl CenterArea {
                 })),
             )
             .into_any_element()
+    }
+
+    /// A second entry point for the same Band panel, outside the composer.
+    /// It follows the coordinator's display state, never the lead's runtime.
+    pub(super) fn render_band_header_toggle(
+        &self,
+        agent: &AgentRecord,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !ide_core::delegation::enabled()
+            || agent.runtime != AgentRuntimeKind::Chat
+            || agent
+                .delegation
+                .as_ref()
+                .is_some_and(|b| b.task_id.is_some())
+        {
+            return None;
+        }
+        let parent = agent.id;
+        let runs = self.delegation_runs(parent, cx);
+        let needs_user = |child| self.delegated_child_needs_user(child, cx);
+        let indicator = display::delegation_indicator(&runs, parent, &needs_user)?;
+        let active = self.delegated_overview == Some(parent)
+            || self.delegated_panel.is_some_and(|id| {
+                self.agents.read(cx).agent(id).is_some_and(|child| {
+                    child
+                        .delegation
+                        .as_ref()
+                        .is_some_and(|b| b.parent_agent_id == parent)
+                })
+            });
+        let leading = delegation_glyph(
+            indicator.activity,
+            indicator.status,
+            parent.as_u128() as usize,
+            cx,
+        );
+        Some(
+            crate::ui::style::header_activity_toggle_button(
+                ("agent-band-toggle", parent.as_u128() as u64),
+                leading,
+                SharedString::from(indicator.header_label().to_owned()),
+                active,
+                cx,
+            )
+            .tooltip(format!(
+                "{} — {} Band sidebar",
+                indicator.label,
+                if active { "Hide" } else { "Open" }
+            ))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if active {
+                    this.web_host.update(cx, |h, _| h.set_intent(None));
+                    this.delegated_overview = None;
+                    this.delegated_panel = None;
+                    this.delegated_preview = false;
+                    cx.notify();
+                } else {
+                    this.open_assignment_overview(parent, window, cx);
+                }
+            }))
+            .into_any_element(),
+        )
     }
 
     /// The aggregate Expert status. Clicking always opens all assignments.

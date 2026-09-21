@@ -7,11 +7,7 @@ fn suspend_doc_webview_for_menu(
     host: Entity<web_preview::WebPreviewHost>,
     cx: &mut Context<gpui_component::menu::PopupMenu>,
 ) {
-    host.update(cx, |host, _| host.set_overlay_suspended(true));
-    cx.on_release(move |_, cx| {
-        host.update(cx, |host, _| host.set_overlay_suspended(false));
-    })
-    .detach();
+    web_preview::suspend_for_menu(host, cx);
 }
 
 impl CenterArea {

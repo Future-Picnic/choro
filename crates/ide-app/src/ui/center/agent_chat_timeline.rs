@@ -37,10 +37,15 @@ impl CenterArea {
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
         let searchable = matches!(&surface, AgentChatSurface::Standard);
-        let compact_design_surface = surface.is_design();
+        let compact_design_surface = surface.is_design() || agent.studio_context.is_some();
         let compact_assistant_controls = surface.is_document();
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
-        let input = self.agent_chat_input(agent, surface.input_placeholder(), window, cx);
+        let placeholder = if agent.studio_context.is_some() {
+            "Describe this screen or ask for a design change"
+        } else {
+            surface.input_placeholder()
+        };
+        let input = self.agent_chat_input(agent, placeholder, window, cx);
         let voice_transcribing = self
             .voice
             .read(cx)
@@ -83,10 +88,11 @@ impl CenterArea {
                 AgentChatTimelineItem::ChangedFiles(summary) => {
                     summary.remove_visualization_artifacts(agent.id, agent.runtime_path());
                     summary.remove_provider_private_artifacts();
-                    !summary.is_empty()
+                    summary.conversation_files().next().is_some()
                 }
-                AgentChatTimelineItem::FileChangeActivity(activity) => !artifact_filter
-                    .is_artifact(&activity.file.path)
+                AgentChatTimelineItem::FileChangeActivity(activity) => !activity.observed
+                    && !activity.file.clears_projection
+                    && !artifact_filter.is_artifact(&activity.file.path)
                     && !crate::state::agent_chat::ChangedFilesSummary::is_provider_private_artifact(
                         &activity.file.path,
                     ),
@@ -172,14 +178,8 @@ impl CenterArea {
             has_pending_approval || has_pending_user_input || has_actionable_plan;
         let has_changed_files = session
             .changed_files
-            .files
-            .iter()
-            .any(|file| !artifact_filter.is_artifact(&file.path))
-            || session
-                .changed_files
-                .observed_files
-                .iter()
-                .any(|file| !artifact_filter.is_artifact(&file.path));
+            .conversation_files()
+            .any(|file| !artifact_filter.is_artifact(&file.path));
         let project_gits = self.git_states.read(cx).repositories(agent.project_id);
         let active_git = if let Some(repository_path) = agent.repository_path.as_deref() {
             self.git_states
@@ -329,6 +329,17 @@ impl CenterArea {
             .size_full()
             .min_w(px(0.))
             .bg(crate::ui::design::base(cx))
+            .when_some(
+                self.agent_start_errors.get(&agent.id).cloned().filter(|_| agent.studio_context.is_some()),
+                |layout, error| layout.child(
+                    div().flex_none().mx_2().my_2().px_2().py_2()
+                        .rounded(crate::ui::design::r_sm())
+                        .bg(crate::ui::design::rose(cx).opacity(0.08))
+                        .text_color(crate::ui::design::rose(cx))
+                        .text_size(crate::ui::design::text_ui())
+                        .child(error)
+                ),
+            )
             // Treat the conversation and composer as one drop surface. Users
             // naturally release files over the transcript, especially when the
             // composer is compact, so limiting this listener to the frame made
@@ -444,6 +455,7 @@ impl CenterArea {
                     .child(
                         crate::ui::style::composer_frame(cx)
                             .relative()
+                            .flex_shrink_0()
                             .w_full()
                             .min_w(px(0.))
                             .max_w(crate::ui::design::agent_chat_content_max_w())
@@ -807,12 +819,9 @@ impl CenterArea {
                                             )
                                         })
                                         .child(
-                                            div().flex_1().min_h(px(0.)).child(
-                                                crate::ui::style::composer_text_input(&input)
-                                                    .disabled(
-                                                        handoff_preparing || handoff_sending,
-                                                    )
-                                                    .h_full(),
+                                            crate::ui::style::composer_draft_editor(
+                                                &input,
+                                                handoff_preparing || handoff_sending,
                                             ),
                                         ),
                                 )
@@ -912,7 +921,9 @@ impl CenterArea {
                                                 let current_effort = agent.effort;
                                                 let model_view = chat_view.clone();
                                                 let surface = surface.clone();
+                                                let menu_host = self.web_host.clone();
                                                 move |mut menu, window, cx| {
+                                                    web_preview::suspend_for_menu(menu_host.clone(), cx);
                                                     let workspace = model_view.read(cx).workspace.clone();
                                                     let favorites = workspace.read(cx).favorite_models.clone();
                                                     let choices = crate::ui::model_favorites::grouped_choices(
@@ -980,7 +991,9 @@ impl CenterArea {
                                                     let effort_options = supported_efforts.clone();
                                                     let effort_view = chat_view.clone();
                                                     let surface = surface.clone();
-                                                    move |mut menu, window, _| {
+                                                    let menu_host = self.web_host.clone();
+                                                    move |mut menu, window, cx| {
+                                                        web_preview::suspend_for_menu(menu_host.clone(), cx);
                                                         for candidate in
                                                             effort_options.iter().copied()
                                                         {
@@ -1040,7 +1053,9 @@ impl CenterArea {
                                                     let current_access_mode = agent.access_mode;
                                                     let access_view = chat_view.clone();
                                                     let surface = surface.clone();
-                                                    move |mut menu, window, _| {
+                                                    let menu_host = self.web_host.clone();
+                                                    move |mut menu, window, cx| {
+                                                        web_preview::suspend_for_menu(menu_host.clone(), cx);
                                                         for candidate in AgentAccessMode::ALL {
                                                             let surface = surface.clone();
                                                             menu = menu.item(

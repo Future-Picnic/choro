@@ -627,19 +627,25 @@ impl CenterArea {
                     let _ = response.send(Err(RemoteError::not_found("agent not found")));
                     return;
                 };
-                let snapshot_id = self
+                let repo = agent.runtime_path().to_path_buf();
+                let snapshot = self
                     .agent_chats
                     .read(cx)
                     .session(agent_id)
                     .and_then(|session| {
-                        session.changed_files.snapshot_id.or_else(|| {
-                            session.timeline.iter().rev().find_map(|item| match item {
-                                AgentChatTimelineItem::ChangedFiles(summary) => summary.snapshot_id,
-                                _ => None,
-                            })
-                        })
+                        conversation_diff_snapshot(
+                            &repo,
+                            &session.changed_files,
+                            &session.timeline,
+                            &path,
+                        )
                     });
-                let repo = agent.runtime_path().to_path_buf();
+                let Some(snapshot_id) = snapshot else {
+                    let _ = response.send(Err(RemoteError::not_found(
+                        "file is not attributed to this conversation",
+                    )));
+                    return;
+                };
                 cx.background_executor()
                     .spawn(async move {
                         let _ = response.send(compute_remote_file_diff(&repo, snapshot_id, &path));
@@ -1176,23 +1182,8 @@ impl CenterArea {
             .map(pending_approval_dto);
         let changed_files = live_session
             .as_ref()
-            .map(|session| {
-                let mut files = changed_files_dto(&session.changed_files.files);
-                files.extend(changed_files_dto(&session.changed_files.observed_files));
-                files
-            })
-            .filter(|files| !files.is_empty())
-            .unwrap_or_else(|| {
-                agent
-                    .changed_files
-                    .iter()
-                    .map(|file| ChangedFileDto {
-                        path: file.path.to_string_lossy().to_string(),
-                        additions: file.additions,
-                        deletions: file.deletions,
-                    })
-                    .collect()
-            });
+            .map(|session| changed_files_dto(&session.changed_files))
+            .unwrap_or_default();
 
         let fixable_id = fixable_verification_id(&timeline);
         let rejoin_cleanup_pending =
@@ -1318,32 +1309,16 @@ impl CenterArea {
         agent_id: Uuid,
         cx: &App,
     ) -> RemoteResult<RemoteCompletedTurnContext> {
-        let agent = self
+        self
             .agents
             .read(cx)
             .agent(agent_id)
-            .cloned()
             .filter(|agent| !agent.hidden_doc_assistant)
             .ok_or_else(|| RemoteError::not_found("agent not found"))?;
         let session = self.agent_chats.read(cx).session(agent_id);
         let changed_files = session
-            .map(|session| {
-                let mut files = changed_files_dto(&session.changed_files.files);
-                files.extend(changed_files_dto(&session.changed_files.observed_files));
-                files
-            })
-            .filter(|files| !files.is_empty())
-            .unwrap_or_else(|| {
-                agent
-                    .changed_files
-                    .iter()
-                    .map(|file| ChangedFileDto {
-                        path: file.path.to_string_lossy().to_string(),
-                        additions: file.additions,
-                        deletions: file.deletions,
-                    })
-                    .collect()
-            });
+            .map(|session| changed_files_dto(&session.changed_files))
+            .unwrap_or_default();
         Ok(RemoteCompletedTurnContext {
             agent_id,
             idle: session.is_none_or(|session| matches!(session.status, AgentChatStatus::Idle)),
@@ -2153,12 +2128,15 @@ fn timeline_item_dto(
                 })
                 .collect(),
         }),
-        AgentChatTimelineItem::ChangedFiles(summary) => Some(TimelineItemDto::ChangedFiles {
-            files: changed_files_dto(&summary.files),
-            observed_files: changed_files_dto(&summary.observed_files),
-            turn_id: summary.turn_id.clone(),
-            attribution_version: summary.attribution_version,
-        }),
+        AgentChatTimelineItem::ChangedFiles(summary) => {
+            let files = changed_files_dto(summary);
+            (!files.is_empty()).then(|| TimelineItemDto::ChangedFiles {
+                files,
+                observed_files: Vec::new(),
+                turn_id: summary.turn_id.clone(),
+                attribution_version: summary.attribution_version,
+            })
+        }
         AgentChatTimelineItem::ShipResult(result) => Some(TimelineItemDto::ShipResult {
             action: result.action.clone(),
             repository: result.repository.clone(),
@@ -2309,23 +2287,38 @@ fn encode_generated_image_preview(path: &std::path::Path) -> RemoteResult<Vec<u8
     Ok(jpeg)
 }
 
-/// Resolve one file's diff for the phone: live worktree changes first, then
-/// the diff snapshot captured at ship time so the file stays reviewable after
-/// its changes were committed.
+/// Select only a receipt that attributes the requested path to this conversation.
+/// Historical cards remain inspectable after a later edit or revert.
+fn conversation_diff_snapshot(
+    repo: &std::path::Path,
+    summary: &crate::state::agent_chat::ChangedFilesSummary,
+    timeline: &[AgentChatTimelineItem],
+    query: &str,
+) -> Option<Option<Uuid>> {
+    let target = normalize_remote_diff_path(repo, std::path::Path::new(query));
+    timeline
+        .iter()
+        .rev()
+        .filter_map(|item| match item {
+            AgentChatTimelineItem::ChangedFiles(receipt) => Some(receipt),
+            _ => None,
+        })
+        .chain(std::iter::once(summary))
+        .find(|receipt| {
+            receipt
+                .conversation_files()
+                .any(|file| normalize_remote_diff_path(repo, &file.path) == target)
+        })
+        .map(|receipt| receipt.snapshot_id)
+}
+
+/// Prefer the conversation's saved diff over later changes in the shared tree.
 fn compute_remote_file_diff(
     repo: &std::path::Path,
     snapshot_id: Option<Uuid>,
     query: &str,
 ) -> RemoteResult<FileDiffDto> {
     let normalized_query = normalize_remote_diff_path(repo, std::path::Path::new(query));
-    if let Ok(diffs) = ide_core::git::worktree_diffs(repo) {
-        if let Some(diff) = diffs
-            .into_iter()
-            .find(|diff| normalize_remote_diff_path(repo, &diff.path) == normalized_query)
-        {
-            return Ok(file_diff_dto(&normalized_query, &diff, "worktree"));
-        }
-    }
     if let Some(snapshot_id) = snapshot_id {
         if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
             if let Ok(Some(snapshot)) = store.load_agent_diff_snapshot(snapshot_id) {
@@ -2337,6 +2330,14 @@ fn compute_remote_file_diff(
                     return Ok(file_diff_dto(&normalized_query, &file.diff, "snapshot"));
                 }
             }
+        }
+    }
+    if let Ok(diffs) = ide_core::git::workspace_worktree_diffs(repo) {
+        if let Some(diff) = diffs
+            .into_iter()
+            .find(|diff| normalize_remote_diff_path(repo, &diff.path) == normalized_query)
+        {
+            return Ok(file_diff_dto(&normalized_query, &diff, "worktree"));
         }
     }
     Err(RemoteError::not_found("no diff available for this file"))
@@ -2450,10 +2451,11 @@ fn resolve_remote_repository_path(
     }
 }
 
-fn changed_files_dto(files: &[crate::state::agent_chat::FileChangeStat]) -> Vec<ChangedFileDto> {
-    files
-        .iter()
-        .filter(|file| !file.clears_projection)
+fn changed_files_dto(
+    summary: &crate::state::agent_chat::ChangedFilesSummary,
+) -> Vec<ChangedFileDto> {
+    summary
+        .conversation_files()
         .map(|file| ChangedFileDto {
             path: file.path.to_string_lossy().to_string(),
             additions: file.additions,
@@ -2499,6 +2501,52 @@ fn pending_approval_dto(pending: &crate::state::agent_chat::PendingApproval) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_conversation_files_do_not_expose_shared_folder_observations() {
+        use crate::state::agent_chat::{ChangedFilesSummary, FileChangeStat};
+        let mut summary = ChangedFilesSummary::attributed(
+            "turn",
+            vec![FileChangeStat::new("ours.rs", 3, 1)],
+            vec![FileChangeStat::new("other-agent.rs", 99, 0)],
+        );
+        assert_eq!(
+            conversation_diff_snapshot(
+                std::path::Path::new("/repo"),
+                &summary,
+                &[],
+                "other-agent.rs"
+            ),
+            None
+        );
+        assert_eq!(
+            conversation_diff_snapshot(std::path::Path::new("/repo"), &summary, &[], "ours.rs"),
+            Some(None)
+        );
+        let files = changed_files_dto(&summary);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "ours.rs");
+        let item = timeline_item_dto(
+            &AgentChatTimelineItem::ChangedFiles(summary.clone()),
+            None,
+            false,
+        )
+        .unwrap();
+        let TimelineItemDto::ChangedFiles {
+            files,
+            observed_files,
+            ..
+        } = item
+        else {
+            panic!("expected changed files")
+        };
+        assert_eq!(files.len(), 1);
+        assert!(observed_files.is_empty());
+        summary.files.clear();
+        assert!(
+            timeline_item_dto(&AgentChatTimelineItem::ChangedFiles(summary), None, false).is_none()
+        );
+    }
 
     fn stored_message(
         role: &str,

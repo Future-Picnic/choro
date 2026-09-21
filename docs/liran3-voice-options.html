@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liran 3 — Choro voice auditions</title>
+<style>
+:root{color-scheme:dark;--bg:#0c0e12;--panel:#12151b;--raised:#171b22;--line:#292e38;--text:#f0f2f5;--muted:#adb4c0;--accent:#b7a7ed;--tint:#252135}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1060px;margin:auto;padding:40px 28px 56px}a{color:var(--accent);text-underline-offset:4px}::selection{background:var(--accent);color:var(--bg)}:focus-visible{outline:3px solid var(--accent);outline-offset:4px}html{scrollbar-color:var(--line) var(--bg)}header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:28px}.brand{font-size:24px;font-weight:650;letter-spacing:-.03em}.voice{color:var(--muted);font-size:14px}h1{font-size:clamp(28px,4vw,40px);line-height:1.12;letter-spacing:-.03em;margin:0 0 12px;font-weight:650}p{margin:0 0 20px;color:var(--muted);max-width:70ch}.auditions{padding:0;margin:28px 0 20px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel)}legend{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.take{display:grid;grid-template-columns:30px minmax(180px,1fr) minmax(275px,1.25fr) 96px;gap:18px;align-items:center;padding:18px 20px;border-bottom:1px solid var(--line)}.take:last-child{border:0}.take:has(input:checked){background:var(--tint)}.letter{font-size:20px;color:var(--accent);font-weight:600}.name{margin:0;font-size:17px;font-weight:600}.hint{display:block;color:var(--muted);font-size:13px;margin-top:3px}.badge{font-size:11px;font-weight:500;color:var(--accent);margin-left:6px;white-space:nowrap}audio{width:100%;height:40px;min-width:0}.pick{display:flex;align-items:center;gap:8px;cursor:pointer;min-height:44px;padding:6px;font-size:14px}.pick input{accent-color:var(--accent);width:18px;height:18px;margin:0}.chosen{display:none}.take:has(input:checked) .choose{display:none}.take:has(input:checked) .chosen{display:inline}.error{display:none;color:#ffb3b3;font-size:13px;grid-column:3/5}.error:not(:empty){display:block}.selection{padding:4px 0 20px;border-bottom:1px solid var(--line)}#choice{font-size:18px;font-weight:550;color:var(--text);margin:0 0 3px}.note{font-size:13px;color:var(--muted);margin:0}.details{display:flex;gap:36px;align-items:flex-start;margin-top:22px}.details details{flex:1;min-width:0}summary{cursor:pointer;color:var(--muted);padding:10px 0;min-height:44px}summary:hover{color:var(--text)}details p{font-size:14px;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}td,th{padding:9px 6px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}.settings-scroll{overflow-x:auto}footer{margin-top:26px;font-size:12px;color:var(--muted)}
+@media(max-width:760px){main{padding:24px 16px 36px}.take{grid-template-columns:24px minmax(0,1fr) 88px;gap:10px 12px;padding:16px}.take audio{grid-column:2/4;grid-row:2}.pick{grid-column:3;grid-row:1}.error{grid-column:2/4}.details{flex-direction:column;gap:6px}.details details{width:100%}.badge{display:block;margin-left:0}header{margin-bottom:24px}.auditions{margin-top:22px}}
+</style>
+</head>
+<body>
+<!-- THESIS: Choose a tutorial voice by listening, not reading a settings dashboard.
+OWN-WORLD: Inherit the video library's slate #0c0e12, lavender #b7a7ed, system UI type and 14px group corners.
+STORY: Hear five equal-length scripts, compare delivery, mark one favorite, tell the agent.
+FIRST VIEWPORT: Compact heading followed by five horizontal audition rows; native playback and selection stay adjacent.
+FORM: Precisely scoped listening comparison in the established Choro world; no new visual identity or concept seed.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance -->
+<main>
+<header><span class="brand">choro</span><span class="voice">Liran 3 / Voice auditions</span></header>
+<h1>Which one sounds like you?</h1>
+<p>Same voice. Same script. Five deliveries.<br>Play a sample, then pick your favorite.</p>
+<fieldset class="auditions"><legend>Choose a Liran 3 delivery</legend>
+<div class="take"><span class="letter" aria-hidden="true">A</span><div><h2 class="name" id="natural">Natural <span class="badge">The one you liked</span></h2><span class="hint">Original sample. No delivery tags.</span></div><audio controls preload="metadata" aria-label="Play A: Natural" src="liran3-voice-audio/natural.mp3"></audio><label class="pick"><input type="radio" name="voice" value="A — Natural" aria-label="Choose A: Natural"><span class="choose">Choose</span><span class="chosen">Chosen</span></label><span class="error" role="alert"></span></div>
+<div class="take"><span class="letter" aria-hidden="true">B</span><div><h2 class="name">Relaxed</h2><span class="hint">A casual, conversational direction.</span></div><audio controls preload="metadata" aria-label="Play B: Relaxed" src="liran3-voice-audio/relaxed.mp3"></audio><label class="pick"><input type="radio" name="voice" value="B — Relaxed" aria-label="Choose B: Relaxed"><span class="choose">Choose</span><span class="chosen">Chosen</span></label><span class="error" role="alert"></span></div>
+<div class="take"><span class="letter" aria-hidden="true">C</span><div><h2 class="name">Upbeat</h2><span class="hint">More energy, a slightly quicker pace.</span></div><audio controls preload="metadata" aria-label="Play C: Upbeat" src="liran3-voice-audio/upbeat.mp3"></audio><label class="pick"><input type="radio" name="voice" value="C — Upbeat" aria-label="Choose C: Upbeat"><span class="choose">Choose</span><span class="chosen">Chosen</span></label><span class="error" role="alert"></span></div>
+<div class="take"><span class="letter" aria-hidden="true">D</span><div><h2 class="name">Calm</h2><span class="hint">Slower pace, steadier delivery.</span></div><audio controls preload="metadata" aria-label="Play D: Calm" src="liran3-voice-audio/calm.mp3"></audio><label class="pick"><input type="radio" name="voice" value="D — Calm" aria-label="Choose D: Calm"><span class="choose">Choose</span><span class="chosen">Chosen</span></label><span class="error" role="alert"></span></div>
+<div class="take"><span class="letter" aria-hidden="true">E</span><div><h2 class="name">American-casual</h2><span class="hint">Relaxed, with an American accent cue.</span></div><audio controls preload="metadata" aria-label="Play E: American-casual" src="liran3-voice-audio/american.mp3"></audio><label class="pick"><input type="radio" name="voice" value="E — American-casual" aria-label="Choose E: American-casual"><span class="choose">Choose</span><span class="chosen">Chosen</span></label><span class="error" role="alert"></span></div>
+</fieldset>
+<div class="selection"><p id="choice" role="status" aria-live="polite">No favorite selected yet.</p><p class="note">Tell me the letter you prefer. Your pick is only marked on this page; it isn’t sent or saved.</p></div>
+<div class="details"><details><summary>Read the shared script</summary><p>Hi, it's Lee from Choro. Let's turn a project doc into working code, then review and verify the result. Start with a clear brief: what should change, and what should stay the same. Click Implement. Choro opens a new agent with the doc already attached, so you don't need to repeat the context.</p></details>
+<details><summary>See what changed</summary><div class="settings-scroll"><table><thead><tr><th>Take</th><th>Direction</th><th>Speed</th><th>Stability</th></tr></thead><tbody><tr><td>A</td><td>None</td><td>1.00×</td><td>0.5</td></tr><tr><td>B</td><td>Conversational, relaxed</td><td>1.00×</td><td>0.5</td></tr><tr><td>C</td><td>Excited</td><td>1.05×</td><td>0.5</td></tr><tr><td>D</td><td>Calm</td><td>0.93×</td><td>1.0</td></tr><tr><td>E</td><td>American accent, conversational, relaxed</td><td>1.00×</td><td>0.5</td></tr></tbody></table></div><p>All use Liran 3 with Eleven v3, similarity 0.75, style 0, and speaker boost enabled. Direction tags guide the performance; results can vary.</p></details></div>
+<footer>Audio only. No avatar generation, music, tracking, or account connection needed to listen.</footer>
+</main>
+<script>
+const players=[...document.querySelectorAll('audio')];
+for(const player of players){
+ player.addEventListener('play',()=>{for(const other of players)if(other!==player)other.pause();});
+ player.addEventListener('error',()=>{player.closest('.take').querySelector('.error').textContent='Audio could not load. Keep the liran3-voice-audio folder beside this HTML file, then reload.';});
+}
+for(const input of document.querySelectorAll('input[name="voice"]'))input.addEventListener('change',()=>{document.querySelector('#choice').textContent='Your pick: '+input.value;});
+</script>
+</body>
+</html>

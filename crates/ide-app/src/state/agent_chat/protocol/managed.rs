@@ -55,6 +55,7 @@ pub(crate) fn instructions(
     } else if ide_core::delegation::enabled()
         && !agent.hidden_doc_assistant
         && agent.design_context.is_none()
+        && agent.studio_context.is_none()
     {
         instructions.push_str("\n\nWhen the user asks to delegate, use Choro Band delegation, including generic requests for research, parallel work, or a teammate without a saved profile. First call ide experts_list, then delegation_plan. Never substitute native subagents or another agent CLI for such a request. Authorized temporary entries inherit the lead provider, model and effort: reuse their ID for several tasks with distinct keys and focused briefs. Saved profiles are optional presets; do not demand a matching saved specialist when an on-demand entry is authorized. Delegation is an opt-in beta: if the tools report it disabled, tell the user to enable Settings → Beta features → Delegation; do not bypass that preference. Treat authorized_expert_ids and the authorized flags from experts_list as the authority; a profile being listed does not authorize it. If no names resolved, ask the user to confirm exact names or use /delegate instead of claiming a team is authorized. Each delegation_plan task must include its own repository field for the Git root within working_directory. These are fresh Choro chats. Do not substitute native subagents or another model for a named Bandmate. Choro will prepare managed execution when this turn ends. Bandmate configuration errors must be repaired, never silently bypassed.");
     }

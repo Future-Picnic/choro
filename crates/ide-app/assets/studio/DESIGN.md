@@ -1,0 +1,194 @@
+---
+name: Choro Studio
+description: Native Studio workspace and named project system library; token values below describe the legacy starter only.
+colors:
+  color-background: "#ffffff"
+  color-surface: "#f4f5f7"
+  color-text: "#202124"
+  color-muted: "#60646c"
+  color-primary: "#335cff"
+  color-on-primary: "#ffffff"
+typography:
+  body:
+    fontFamily: "system-ui, sans-serif"
+    fontSize: "16px"
+  heading:
+    fontFamily: "system-ui, sans-serif"
+    fontSize: "32px"
+rounded:
+  radius-control: "6px"
+  radius-card: "12px"
+spacing:
+  space-small: "8px"
+  space-medium: "16px"
+  space-large: "32px"
+components:
+  button:
+    backgroundColor: "{colors.color-primary}"
+    textColor: "{colors.color-on-primary}"
+    rounded: "{rounded.radius-control}"
+  input:
+    backgroundColor: "{colors.color-background}"
+    textColor: "{colors.color-text}"
+    rounded: "{rounded.radius-control}"
+  card:
+    backgroundColor: "{colors.color-surface}"
+    rounded: "{rounded.radius-card}"
+    padding: "{spacing.space-medium}"
+  heading:
+    textColor: "{colors.color-text}"
+    typography: "{typography.heading}"
+---
+
+# Design System: Choro Studio
+
+## Overview
+
+Studio is a compact native Choro workspace for viewing and editing screens. Design workspaces have **Agent**, **Screens**, and **Design system** sidebar tabs. Named system workspaces have **Agent** and **Library**, with a generated specimen in the center. Ordinary screens retain the overview and embedded editor with a right inspector in Edit mode.
+
+This document describes the implemented surface from source. It is scoped to Studio, not the entire Choro application. The generated specimen has offscreen WebKit evidence; native library, sidebar, and review-dialog captures were unavailable. This document does not certify native rendered layout or contrast.
+
+**Token scope:** frontmatter preserves the legacy starter defined in `crates/ide-core/src/studio/mod.rs`, for compatibility documentation only. New systems start empty. New designs use an explicitly selected applied system or an explicitly configured project default; otherwise they have no system. These values are neither extracted project identity nor Choro chrome tokens. Named systems own their tokens, recipes, and bundled font faces; design overrides take precedence. Native controls and editor chrome use Choro’s theme.
+
+**Key Characteristics:**
+
+- Native sidebar navigation and shared Choro control builders.
+- Cached screen previews in a scrolling overview.
+- One selected screen with the actual upstream Vvveb inspector and inline editing toolbar.
+- Named, project-owned systems with separate draft and applied versions.
+- Explicit per-design selection and local overrides.
+- Generated specimens, native editing dialogs, and before/after review.
+
+## Colors
+
+### Primary
+
+The starter's `color-primary` supplies the button fill; `color-on-primary` supplies its text. This is retained legacy content, not the palette of a newly created system or the Studio shell.
+
+### Neutral
+
+The starter's `color-background` is the screen background, `color-surface` the card recipe fill, `color-text` the main text, and `color-muted` the supporting text.
+
+### Editor and native shell
+
+The editor and canvas receive one shared payload from `studio_editor::web_theme`: `bg` (`design::base`), `panel` (`nav`), `stage` (`design::stage`, the deepest plane), `track` (`design::track`), `seg` (`design::track_choice`), `field` (`design::field_well`), `surface`, `raised` (`surface_2`), `float` (`focus`), `text` (`t1`), `muted` (`t2`), `faint` (`t3`), `line`, `line2` (`line_2`), `accent`, `ink` (`accent_ink` on the base plane), `danger` (`rose`), `ok` (`sage`), `warn` (`amber`), and `scheme` (`light` or `dark`). These override the standalone Choro Dark fallbacks in `editor.html`. `scheme` selects `color-scheme`, Bootstrap's `data-bs-theme`, and the color picker mode, so light themes get light form controls. Native separators, preview tiles, labels, and errors also resolve through `ui/design`.
+
+Interactive emphasis in web chrome uses `ink`, not `accent`: the raw accent is pale by design and does not carry as a line or glyph on light planes.
+
+The embedded editor keeps a fixed blue element-selection outline (`#335cff`) because it must read over arbitrary authored content. Save errors use the `danger` role on the `float` plane.
+
+### Visual direction: lit stage, one track
+
+Studio's chrome is a quiet bench around a lit stage. Three decisions carry it:
+
+- **Planes.** All chrome — native sidebar, editor toolbar, inspector, and the native bar under the stage — sits on `base`. The stage (editor canvas, Canvas overview, Grid overview) sinks to `stage`. The authored artboard is therefore the brightest object in the workspace and carries the only shadow.
+- **One track for every choice.** Agent/Screens/Design system, Edit/Preview, Content/Style/Advanced, Desktop/Mobile, Canvas/Grid, and the inspector's option groups (Float, Text align…) all use the same recessed `track` with the chosen segment rising to `seg`. Location stays neutral; there is no accent underline. `seg` is `surface_2` in dark themes and `surface` in light themes, because light `surface_2` lands on the track's own lightness.
+- **Actions are quiet, status is a dot.** Actions (Undo, Redo, Retry save, Export PNG, Fit all…) are borderless fills that appear on hover. Save state is a 6px semantic dot (`ok`, `warn`, `danger`) plus the existing words. Semantic color lives on the glyph; only a failed save colors its text.
+
+**The Theme Ownership Rule.** Use Choro's theme for workspace controls. Resolve authored screen styling through project tokens and design overrides.
+
+## Typography
+
+Native Studio labels use `design::text_ui()` (12.5px). Sidebar mode tabs use the shared tab treatment with semibold text (12px); the workspace title uses the shared header builder.
+
+The embedded editor uses the platform system stack (`-apple-system, BlinkMacSystemFont, sans-serif`) at 12.5px, matching native `text_ui`. Inspector section headings use the same size at weight 600; field labels are 11px (`text_label`) in `faint`; track segments are 12px semibold like the native sidebar tabs. Controls inherit the editor font. Sizes and zoom values use tabular figures.
+
+Legacy starter screens use the body and heading roles in frontmatter. Named systems may bundle local WOFF, WOFF2, TTF, or OTF fonts and declare family, weight, and italic metadata. The generated specimen uses the draft’s body and heading tokens, with 16px and 32px fallbacks and 1.5 body line height. Its 36px system title and 18px section headings label the specimen; these are not authored product type tokens.
+
+## Layout
+
+- **Workspace:** a full-width shared Choro header sits above the working area. The left sidebar is fixed at 318px, with a right divider. Penpot and Studio share `design_sidebar_tabs_header`: a fixed-height native header that keeps the tab track from growing vertically. Screens and Design system scroll independently; Agent uses the native conversation scroller with its composer anchored below. Design workspaces use three tabs; system workspaces use Agent and Library. Each set shares one row. Collapsing the 318px sidebar leaves a 38px reopen rail.
+- **Overview:** non-archived screens appear in a virtualized list of grid rows. The column count is `floor((window width - 800) / 280)`, clamped to 1–4. Rows are 225px tall; previews are 175px tall and contain the full image. This sizing follows the window width, not the measured center-pane width.
+- **Editor:** a 44px toolbar sits above the stage and 300px upstream Vvveb inspector. Left to right: the Edit/Preview track, a short rule, Undo/Redo icon actions, free space, save status (with Retry save and Keep draft & reload when a save fails), zoom, and the Inspector toggle, which sits over the inspector's own column. The stage has 28px padding and a camera for pan and zoom. A matching 44px native `stage_bar` closes the stage from below, so the artboard is bracketed by two equal bars with 12px gutters. Inspector tabs, section headers, fields, and inline toolbar retain upstream markup. The toolbar is a wrapping row with a 44px minimum height, so no control can be clipped or pushed outside the host. Below 760px a failed save moves Retry save and Keep draft & reload onto their own right-aligned second row, as a pair. Below 640px the Inspector label gives way to its icon; below 520px the status keeps its dot and drops its word, except for Save failed, which keeps its word down to 440px. No action is removed at any width, and the stage simply refits: the authored viewport is never touched. `editor.test.py` asserts that every visible toolbar control stays inside the toolbar and the host without overlap at 560, 520, and 400px, with the inspector open and collapsed. The Inspector toolbar button collapses or reopens the right column without rebuilding the document or inspector.
+- **Preview:** hides the inspector and expands the canvas to one column, with 12px padding.
+- **System specimen:** a centered 960px content area uses 48px padding, reduced to 24px below 600px. Typography, color swatches, component examples, foundations, and source notes form a single document. Swatches use an automatic grid with 170px minimum columns and 24px gaps; the foundations list becomes one column below 600px.
+- **Screen size:** new screens start at 1440 × 960. Screen menu actions can change the viewport. The iframe receives its authored dimensions before the page loads. Zoom transforms a fixed-size inner surface inside a wrapper matching its scaled bounds; window and inspector resizing therefore do not trigger authored responsive breakpoints. Fit centers the screen using available canvas width and height after padding, capped at 100%. The single-screen camera supports 2%–400% zoom with 25%, 50%, 75%, 100%, 200%, and 400% presets; Fit selection centers the selected element. Pinch or Ctrl/Cmd-wheel zooms around the pointer. Two-finger scrolling pans in Edit; Preview keeps ordinary page scrolling for prototype interactions. Space-drag and middle-button drag pan in either mode, without stealing Space from text inputs. Gestures transform the same live iframe and leave source, selection and undo untouched. Free zoom preserves its center when sidebars or the host resize; Fit continues fitting. Camera preferences are versioned localStorage, keyed by screen and explicit viewing dimensions, with finite-value validation and an in-memory fallback when storage is unavailable. Preview uses a view-only input relay from its opaque iframe, checked against the active frame window. System specimens retain their original scrolling behavior, and exports ignore the camera. Desktop/Mobile viewing controls explicitly change the temporary viewport.
+
+The native header uses the same workspace bar, Back button, title column, contextual subline, and action slot as Penpot. Captured source documents and implementation agents appear as clickable subline indicators; available implementation pull requests use the shared indicator. Implement becomes Reimplement when an implementation agent exists. There are no attachment buttons or separate source banner. Preview refresh, saved-edit undo/redo, and subset implementation live under Screens → Screen actions.
+
+## Elevation & Depth
+
+The Studio overview and editor use surface fills, borders, and spacing to distinguish regions. Preview tiles have a tonal background without a Studio-specific shadow. Native dialogs and menus inherit the shared Choro elevation treatment.
+
+The starter system defines `shadow-card` as `0 2px 8px #00000012`; the starter card recipe does not apply it automatically. Do not describe this token as an active card shadow.
+
+## Shapes
+
+Native preview tiles use `design::r_sm()` (7px). Shared native tab tracks and controls retain the radii owned by their builders.
+
+Embedded controls share native geometry: 28px controls with 5px corners (`r_xs`), and 30px tracks with 7px corners (`r_sm`), 2px inset, and 26px segments. Toolbar actions have no resting fill or stroke; they take `surface` on hover and `raised` when pressed. Zoom keeps a resting `surface` fill because it holds a value. Inspector fields are wells: `field` fill, 1px `line2` border, `faint` on hover, `ink` with a soft ring on focus, `danger` when marked invalid. Inspector section rows are 36px with a quiet chevron. Bootstrap's color transitions are disabled in the inspector so state changes are immediate, as in native chrome. The editor artboard and canvas artboards use a 1px ring plus a soft two-layer shadow (box-shadow only), never a border, so chrome cannot change authored dimensions; the selected canvas artboard uses a 2px `ink` ring. Keyboard focus uses a 2px `ink` outline with 2px offset. Disabled buttons reduce opacity to 0.45. These editor measurements are distinct from the authored starter's control and card radii in frontmatter.
+
+## Components
+
+### Native controls
+
+All new or modified feature buttons must use `ui/style.rs` builders or canonical `ui/design` helpers. The bar under the stage is built from `stage_bar`, `stage_bar_choices`, `stage_bar_choice`, `stage_bar_readout`, `stage_bar_rule`, and `stage_bar_notice`; the track is the sidebar tab track, and `stage_bar_choice` is a real `Button` (keyboard focus, activation, and selected state) whose custom variant uses the same `track_choice` fill and ink as the sidebar tabs. Studio also uses `design_sidebar_tabs_header`, `sidebar_mode_tabs`, `sidebar_mode_tab`, `ghost_button_compact`, `header_icon_button`, `refresh_icon_button`, and `implement_button`. Naming dialogs use `primary_button_compact` for Save and `dialog_neutral_button` for Cancel. Destructive modal actions, if added, must use `danger_button_compact`.
+
+### New design form
+
+The 480px native dialog uses a single full-width form, with 20px between field groups and 8px between labels and controls. Design name starts empty with a short example placeholder and receives focus. Design system uses the shared field selector, with a project default preselected when available; draft systems remain visible but cannot be selected before application. One short hint sits below the selector. Cancel and Create design use shared modal builders. Enter and Create design share validation; an empty name keeps the dialog open with a field message.
+
+### Screen navigation and preview cards
+
+Screens provides All screens, selectable screen rows, per-screen overflow menus, and Add screen. Archived screens remain labeled in the sidebar and are omitted from the overview. Preview cards show the screen name under a cached image. An older cached image remains visible with an Updating label while its replacement is pending; missing images show Rendering screen…. Refresh screen previews retries rendering.
+
+The 318px native sidebar shares Penpot's tab track and collapse icon. Collapsing leaves a 38px reopen rail and gives the canvas the remaining width. The selected tab, selected screen, expanded sections, and each tab's scroll position remain in workspace state. Screens uses flat 28px rows with page icons and a selected fill, a separate All screens row, a Screens section with an Add action, and an initially collapsed Archived section.
+
+System **Library** groups draft tokens into Colors, Typography, Spacing, Corners, Shadows, and Other. Compact rows show readable names, values, and hex swatches; tooltips retain exact names and full values. Recipes expand into property/value pairs. An ordinary design’s **Design system** panel uses a 36px full-width system dropdown with 12px horizontal padding, a quiet description, an Open design system action when linked, and a separated local-overrides section. The dropdown refreshes records on open, marks unapplied systems Draft, and includes Manage design systems. Studio tabs use content-based widths and horizontal padding; the collapse control sits separately outside the track, with symmetric vertical header spacing. All of this chrome retains Choro’s theme.
+
+In the Designs hub, Studio shares the 252 × 190 card shell with Penpot and Figma. Its 124px preview area contains a cached image from a non-archived screen, or a quiet design placeholder. A Studio badge identifies the provider; the footer contains the design name and active screen count. Catalog images are resolved off the UI thread and refreshed after returning from a design or finishing a thumbnail batch. No live webview is created for a hub card.
+
+### Inspector and editing toolbar
+
+The toolbar provides Edit/Preview, Undo/Redo (icon actions that keep their accessible names and tooltips), zoom, save status, and an Inspector toggle. With nothing selected, the inspector shows a centered, non-dismissible empty state — “Nothing selected. Click an element on the screen to edit its content and style.” — in place of upstream's alert; the adapter rewrites the alert's text in place and leaves the pinned vendor file unchanged. The right inspector is upstream Vvveb's Content/Style/Advanced panel, with its real templates, inputs and component definitions. Collapsing preserves the selected element, inspector inputs, dirty draft, and undo history while returning the column's space to the stage. The collapse preference survives Edit/Preview transitions and uses versioned localStorage when available, with an in-memory fallback. Preview, system specimens, and thumbnails hide the toggle. Double-clicking text opens the floating rich-text toolbar, including partial-text formatting.
+
+The integration uses unmodified, pinned upstream files. Choro supplies a separate adapter for local image imports, screen links, custom token overrides, clean document saves and revisioned undo. The full Vvveb left navigation, page manager and server features are not initialized. Layout overrides keep the native Choro sidebar outside the editor.
+
+### Screen footer and implementation comparison
+
+An open ordinary screen has a native `stage_bar` below the web surface: an always-accessible All screens action, the Desktop/Mobile track and dimensions on the left, Export PNG on the right. The bar wraps at narrow widths rather than hiding actions. All screens flushes the camera and active edit before navigation; failed saves retain the editor and draft. Export progress and results (“Exporting screen…”, “Exported <path>”) appear inside the bar beside Export PNG, truncated with the full text in a tooltip, not as a second row under the header. All screens uses the same bar for Canvas/Grid, zoom, Fit all, Fit selected, and Arrange. Named system workspaces have no bar and keep the notice row. Errors keep their full-width row. Viewing changes preserve the editor document and undo state; they are temporary and reset on screen navigation. Export displays a pending state while the editor flushes or the PNG is being written, and surfaces errors in the workspace. PNGs render saved source at the displayed dimensions, without transient prototype state.
+
+Compare sits beside Implement in the shared header and becomes Close Compare while open. It reuses the existing implementation preview panel. Review feedback targets the linked coding agent, with a saved Studio snapshot as context.
+
+### Save and recovery states
+
+The editor reports Saved, Unsaved, Saving…, and Save failed. A failed save exposes Retry save and Keep draft & reload plus an error message. Native structural actions are disabled while edits are dirty or saving. Implement stays actionable and waits for its correlated editor flush acknowledgement; save failure keeps the request pending and preserves the buffer. Choose screens flushes before opening its selection dialog. Screen changes flush pending edits before navigation.
+
+### Named system library and specimen
+
+The project’s Design systems library uses the shared design-hub card shell. Cards show a cached specimen or color strip, name, platform, Draft/Applied/Archived state, and linked-design count. New system asks for a name, platform, and project source or proposed direction. System actions provide details, duplication, explicit project-default selection/clearing, and archive/restore.
+
+The system workspace reuses Penpot-style native navigation and regular agent conversation history. Before any conversation starts, Build with agent submits a source-aware draft request through the shared composer flow; existing typed text is preserved. The center is a deterministic, script-free specimen generated from draft tokens and recipes. Selecting a specimen token or component opens a native token or recipe dialog; the specimen itself is not a freeform screen document. Draft undo/redo uses the existing Studio transaction history.
+
+Review changes shows token/recipe/font changes, affected design names, and before/after images for the system and the first linked design when present. Apply system publishes the draft; Keep editing leaves it uncommitted to consumers. An ordinary design’s Change system flow also presents a comparison and preserves local overrides. All active systems appear in the sidebar selector. Draft choices open a guided Open draft dialog; only applied systems can be bound. No system is explicit. Missing token references must be resolved before switching.
+
+**The Explicit Publication Rule.** System editing changes the draft. Linked designs inherit only the applied version, published through the native review action.
+
+**The Explicit Override Rule.** Local values stay with their design when its system changes. System edits belong in the named system workspace.
+
+## Do's and Don'ts
+
+- Do keep design navigation in Agent/Screens/Design system and system navigation in Agent/Library, using the shared native sidebar.
+- Do show the cached overview or selected screen in design workspaces, and the generated specimen in system workspaces.
+- Do use shared native button and header builders.
+- Do apply host theme roles to editor chrome and design tokens to authored screens.
+- Do keep pending, failed, and recoverable save states visible.
+- Don't add a second screen-tab row or recreate the full Vvveb application shell.
+- Don't give a choice an accent underline or an outlined button group; use the track. Don't put a shadow or a lifted fill on chrome; the artboard owns elevation.
+- Don't instantiate `gpui_component::Button` directly in Studio feature modules.
+- Don't silently turn local styling changes into project-wide token changes.
+- Don't install the legacy starter silently or treat its colors and recipes as extracted project identity.
+- Don't treat this source-based description or the offscreen specimen capture as native visual validation.
+
+
+### Editing an artboard on the canvas
+
+Double-click an artboard (or select it and press Enter) to activate its editor in place. While editing, clicking another artboard saves and switches the active editor. Clicking empty canvas or **Done editing** saves and releases it. All other screens remain images; distant nodes and images are still culled. The active editor is independent of node culling, so panning it offscreen cannot discard its draft or undo history. Its authored viewport stays fixed while the canvas camera transforms its visible bounds. Canvas editing zoom follows the overview's 2%–200% range.
+
+The native host generates one trusted editor document and grants its editor session to the current canvas session. The canvas mounts that document in one sandboxed `srcdoc` wrapper, with the existing sanitized authored iframe inside. The full-size wrapper is clipped to the artboard, toolbar, inspector and visible floating controls; other canvas pixels remain interactive. The editor relays gestures to the canvas camera. Its save messages travel through the parent, which checks the source window and session; Rust checks the parent origin and active session grant again. Unmounting or switching revokes that grant. Overview images remain within their existing budgets; the active editor's DOM and assets are additional memory, not part of the decoded-image budget.
+
+Saving, conflicts, recovery, asset uploads, implementation flushes and undo reuse the single-screen editor paths. Canvas navigation flushes the active editor before acknowledging its own correlated navigation request. An unrelated autosave acknowledgement cannot release pending canvas navigation. Failed saves keep the draft and recovery controls available. Only the changed screen's preview is refreshed unless its shared tokens/assets affect other screens.
+
+**Prototype** plays one authored screen with scripts enabled inside the existing opaque-origin sandbox. Its linked elements use `data-studio-screen` to navigate to an unarchived screen. **Back** follows the linked-screen history, and **All screens** returns to the saved canvas camera. Editing controls are hidden in Prototype. The existing standalone editor and Grid fallback remain available.
+
+`inline.test.py` exercises the real bundled canvas and editor together in isolated WebKit with 100 screens: geometry, hit-testing through the clipped shell, gestures, retained offscreen drafts, save failures, retry, undo, one-active-editor switching, stale/foreign message rejection and Prototype links. It is a correctness test, not a native frame-pacing or combined-process memory benchmark.

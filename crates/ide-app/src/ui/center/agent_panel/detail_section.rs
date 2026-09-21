@@ -118,6 +118,7 @@ impl CenterArea {
             || !linked_design_indicators.is_empty();
         let agent_status_accent = status_accent(agent.status, cx);
         let expert_status = self.render_expert_chat_status(&agent, cx);
+        let band_header_toggle = self.render_band_header_toggle(&agent, cx);
         let bandmate_index = self.expert_bandmate_index(&agent, cx);
         let title_edit_input = self
             .agent_title_edit
@@ -409,6 +410,7 @@ impl CenterArea {
                             }),
                     )
                     .child(crate::ui::design::header::actions().map(|actions| {
+                        let actions = actions.children(band_header_toggle);
                         if let Some(status) = expert_status {
                             return actions.child(status);
                         }

@@ -217,7 +217,7 @@ impl CenterArea {
             source_doc: None,
             linked_tasks: Vec::new(),
             source_task: None,
-            implementation_design: None,
+            implementation_target: None,
             design_browser_open_confirmed: false,
             starting: false,
             error: None,
@@ -478,7 +478,7 @@ impl CenterArea {
         let linked_docs = composer.linked_docs.clone();
         let linked_tasks = composer.linked_tasks.clone();
         let attached_files = composer.attached_files.clone();
-        let implementation_design = composer.implementation_design;
+        let implementation_target = composer.implementation_target;
         let design_browser_open_confirmed = composer.design_browser_open_confirmed;
         let doc = prompt_with_attached_files(&raw_doc, &attached_files);
         let doc = if solo {
@@ -496,7 +496,7 @@ impl CenterArea {
             .source_task
             .clone()
             .filter(|source_task| linked_tasks.iter().any(|task| task.same_issue(source_task)));
-        if let Some(design_id) = implementation_design {
+        if let Some(ImplementationTarget::Penpot(design_id)) = implementation_target {
             let prompt_dismissed = self.workspace.read(cx).design_browser_open_prompt_dismissed;
             if !design_browser_open_confirmed && !prompt_dismissed {
                 if let Some(design) = self.penpot.read(cx).design(project, design_id) {
@@ -541,6 +541,10 @@ impl CenterArea {
             })
         } else {
             None
+        };
+        let studio_implementation = match implementation_target {
+            Some(ImplementationTarget::Studio(handoff)) => Some((workspace_root.clone(), handoff)),
+            _ => None,
         };
         let agent_id = self.agents.update(cx, |agents, cx| {
             let agent_id = agents.create_agent(
@@ -598,6 +602,11 @@ impl CenterArea {
                 .background_executor()
                 .spawn(async move {
                     crate::state::agents::persist_agent_store_snapshot(save_revision, agent_store)?;
+                    if let Some((root, handoff)) = studio_implementation {
+                        ide_core::studio::StudioStore::for_project(root)?
+                            .link_implementation_agent(handoff, agent_id)?;
+                    }
+
                     if runtime == AgentRuntimeKind::Chat
                         && matches!(provider, AgentKind::Codex | AgentKind::Claude)
                     {

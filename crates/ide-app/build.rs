@@ -16,6 +16,30 @@ fn main() {
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"));
+    println!("cargo:rerun-if-changed=assets/studio/thumbnail.swift");
+    let swift_arch = if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+    let swift_target = format!("{swift_arch}-apple-macosx13.0");
+    run(
+        Command::new("xcrun")
+            .args([
+                "swiftc",
+                "-target",
+                &swift_target,
+                "-O",
+                "-framework",
+                "AppKit",
+                "-framework",
+                "WebKit",
+                "assets/studio/thumbnail.swift",
+                "-o",
+            ])
+            .arg(out_dir.join("choro-studio-thumbnail")),
+        "Studio thumbnail helper compilation",
+    );
     let object = out_dir.join("sparkle_bridge.o");
     let library = out_dir.join("libchoro_sparkle_bridge.a");
 

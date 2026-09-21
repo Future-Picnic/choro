@@ -20,6 +20,7 @@ let currentVisualizationDir = null;
 let closing = false;
 let planCaptured = false;
 let activeTurnId = randomUUID();
+let commandGeneration = 0;
 let turnDirectChanges = new Map();
 let turnObservedChanges = new Map();
 let toolMutationBaselines = new Map();
@@ -30,6 +31,7 @@ let pendingMutationTasks = new Set();
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
 let currentDesignAssistant = false;
+let currentStudioAssistant = false;
 let currentManagedDelegation = false;
 let currentManagedChild = false;
 let currentManagedConsultation = false;
@@ -264,6 +266,9 @@ function createPromptController() {
 async function ensureRuntime(command) {
   currentAccessMode = command.accessMode || "bypassPermissions";
   currentDesignAssistant = Boolean(command.designAssistant);
+  const requestedStudioAssistant = Boolean(command.studioAssistant);
+  if (runtime && currentStudioAssistant !== requestedStudioAssistant) throw new Error("Studio role changed. Reconnect before continuing.");
+  currentStudioAssistant = requestedStudioAssistant;
   const requestedManagedDelegation = Boolean(command.managedDelegation);
   const requestedManagedChild = requestedManagedDelegation && Boolean(command.managedChild);
   const requestedManagedConsultation = requestedManagedChild && Boolean(command.managedConsultation);
@@ -285,11 +290,12 @@ async function ensureRuntime(command) {
   );
   if (runtime) {
     if (typeof runtime.setPermissionMode === "function") {
-      await runtime.setPermissionMode(permissionModeFor(command.mode, command.accessMode, currentManagedChild));
+      await runtime.setPermissionMode(currentStudioAssistant ? "default" : permissionModeFor(command.mode, command.accessMode, currentManagedChild));
     }
     if (typeof runtime.setModel === "function") {
       await runtime.setModel(command.model || undefined);
     }
+    if (currentStudioAssistant) await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {}));
     return;
   }
 
@@ -306,14 +312,15 @@ async function ensureRuntime(command) {
       model: command.model || undefined,
       effort: command.effort || undefined,
       ...managedDelegationOptions(currentManagedDelegation, currentManagedChild, currentManagedConsultation),
-      permissionMode: permissionModeFor(command.mode, command.accessMode, currentManagedChild),
+      ...(currentStudioAssistant ? {tools: ["Read", "Glob", "Grep", "AskUserQuestion"], disallowedTools: ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", ...MANAGED_SPAWN_TOOLS]} : {}),
+      permissionMode: currentStudioAssistant ? "default" : permissionModeFor(command.mode, command.accessMode, currentManagedChild),
       allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
       canUseTool,
       hooks: fileAttributionHooks(),
       mcpServers: command.mcpServers || undefined,
-      strictMcpConfig: currentDesignAssistant,
-      settingSources: currentDesignAssistant ? [] : undefined,
+      strictMcpConfig: currentDesignAssistant || currentStudioAssistant,
+      settingSources: currentDesignAssistant || currentStudioAssistant ? [] : undefined,
       sandbox: currentDesignAssistant
         ? {
             enabled: true,
@@ -335,6 +342,31 @@ async function ensureRuntime(command) {
   });
 
   void consumeRuntime(runtime);
+  if (currentStudioAssistant) {
+    try { await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {})); }
+    catch (error) { await closeRuntimeForPlanBoundary(); throw error; }
+  }
+}
+
+export async function preflightStudioRuntime(candidate, expectedServers) {
+  const repair = "Studio cannot verify Claude restrictions. Update Claude Code and repair Choro's bundled bridge, then reconnect.";
+  if (typeof candidate?.initializationResult !== "function" || typeof candidate?.mcpServerStatus !== "function"
+      || !expectedServers.length || expectedServers.some(name => !["choro", "ide"].includes(name))) throw new Error(repair);
+  let timer;
+  try {
+    await Promise.race([ (async () => {
+      await candidate.initializationResult();
+      const servers = await candidate.mcpServerStatus();
+      if (servers.length !== expectedServers.length || servers.some(server => !expectedServers.includes(server.name) || server.status !== "connected")) throw new Error(repair);
+      for (const server of servers) {
+        const names = (server.tools || []).map(tool => tool.name);
+        for (const required of ["studio_context", "studio_apply", "studio_snapshot", "studio_review"]) {
+          if (!names.includes(required)) throw new Error(`${repair} Missing ${required}.`);
+        }
+        if (names.some(name => toolPolicyDenial(`mcp__${server.name}__${name}`, {studio:true}))) throw new Error(`${repair} Unexpected MCP tool.`);
+      }
+    })(), new Promise((_, reject) => { timer=setTimeout(() => reject(new Error(`${repair} Initialization timed out.`)), 30000); }) ]);
+  } finally { clearTimeout(timer); }
 }
 
 function resumeSessionIdForCommand(requestedSessionId, activeSessionId) {
@@ -355,6 +387,11 @@ export function isChoroCoordinationTool(toolName) {
 }
 
 async function canUseTool(toolName, input, options) {
+  if (currentStudioAssistant) {
+    if (toolName === "AskUserQuestion") return handleAskUserQuestion(input, options);
+    if (["Read", "Glob", "Grep"].includes(toolName) || /^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) return {behavior:"allow",updatedInput:input};
+    return {behavior:"deny",message:"Studio can inspect context and edit only through its scoped Studio tools."};
+  }
   const denial = toolPolicyDenial(toolName, currentToolPolicy());
   if (denial) return { behavior: "deny", message: denial };
   if (
@@ -731,10 +768,13 @@ async function finishCancelledTurn(capturePending, flushChanges, finish) {
 
 function currentToolPolicy() {
   return { managed: currentManagedDelegation, child: currentManagedChild,
-    consultation: currentManagedConsultation, readOnly: currentReadOnly };
+    consultation: currentManagedConsultation, readOnly: currentReadOnly, studio: currentStudioAssistant };
 }
 
 export function toolPolicyDenial(toolName, policy) {
+  if (policy.studio && !["Read", "Glob", "Grep", "AskUserQuestion"].includes(toolName) && !/^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) {
+    return "Studio permits only context reads and host-scoped design operations.";
+  }
   if (policy.managed && MANAGED_SPAWN_TOOLS.has(toolName)) {
     return "Use Choro delegation tools to coordinate this managed task.";
   }
@@ -963,6 +1003,11 @@ async function cancelActiveTurn() {
   emit({ type: "status", status: "cancelling" });
   const activeRuntime = runtime;
   const activePromptController = promptController;
+  const generation = commandGeneration;
+  // Detach before awaiting interrupt: the SDK consumer must not publish a
+  // premature idle event while cancellation is still draining receipts.
+  runtime = null;
+  promptController = null;
   activePromptController?.close();
   try {
     if (typeof activeRuntime?.interrupt === "function") {
@@ -979,12 +1024,8 @@ async function cancelActiveTurn() {
       () => activeRuntime?.close?.(),
     );
   } finally {
-    if (runtime === activeRuntime) {
-      runtime = null;
+    if (commandGeneration === generation) {
       emit({ type: "status", status: "idle" });
-    }
-    if (promptController === activePromptController) {
-      promptController = null;
     }
   }
 }
@@ -1282,24 +1323,34 @@ function emitChangedFiles() {
 
 async function handleCommand(command) {
   if (command.type === "send_turn") {
-    if (turnFileFlush) await turnFileFlush();
-    cancelRequested = false;
-    if (planCaptured && command.mode !== "plan") {
-      await closeRuntimeForPlanBoundary();
+    const generation = ++commandGeneration;
+    const stale = () => generation !== commandGeneration;
+    try {
+      if (turnFileFlush) await turnFileFlush();
+      if (stale()) return;
+      cancelRequested = false;
+      if (planCaptured && command.mode !== "plan") {
+        await closeRuntimeForPlanBoundary();
+      }
+      if (stale()) return;
+      planCaptured = false;
+      capturedPlanKeys.clear();
+      activeTurnId = randomUUID();
+      turnDirectChanges = new Map();
+      turnObservedChanges = new Map();
+      toolMutationBaselines = new Map();
+      commandDiffBaselines = new Map();
+      turnFileFlush = null;
+      pendingMutationTasks = new Set();
+      await ensureRuntime(command);
+      if (stale()) return;
+      turnFileBaseline = await readChangedFileSnapshot();
+      if (stale()) return;
+      emit({ type: "status", status: "running" });
+      promptController?.enqueue(command.text || "");
+    } catch (error) {
+      if (!stale()) throw error;
     }
-    planCaptured = false;
-    capturedPlanKeys.clear();
-    activeTurnId = randomUUID();
-    turnDirectChanges = new Map();
-    turnObservedChanges = new Map();
-    toolMutationBaselines = new Map();
-    commandDiffBaselines = new Map();
-    turnFileFlush = null;
-    pendingMutationTasks = new Set();
-    await ensureRuntime(command);
-    turnFileBaseline = await readChangedFileSnapshot();
-    emit({ type: "status", status: "running" });
-    promptController?.enqueue(command.text || "");
   } else if (command.type === "submit_user_input") {
     const pending = pendingUserInputs.get(command.request_id);
     if (pending) {
@@ -1313,6 +1364,7 @@ async function handleCommand(command) {
       pending.resolve(command.approved === true);
     }
   } else if (command.type === "cancel_turn") {
+    commandGeneration++;
     await cancelActiveTurn();
   } else if (command.type === "shutdown") {
     closing = true;
@@ -1322,19 +1374,17 @@ async function handleCommand(command) {
   }
 }
 
+// Async setup/preflight failures must reach the host, not become an unhandled
+// rejection on stderr that silently kills this bridge.
+export async function handleCommandLine(line, dispatch = handleCommand, report = emitError) {
+  if (!line.trim()) return;
+  try { await dispatch(JSON.parse(line)); }
+  catch (error) { report(error); }
+}
+
 if (resolve(process.argv[1] || "") === resolve(fileURLToPath(import.meta.url))) {
-  readline
-    .createInterface({ input: process.stdin, crlfDelay: Infinity })
-    .on("line", (line) => {
-      if (!line.trim()) {
-        return;
-      }
-      try {
-        void handleCommand(JSON.parse(line));
-      } catch (error) {
-        emitError(error);
-      }
-    });
+  readline.createInterface({ input: process.stdin, crlfDelay: Infinity })
+    .on("line", line => { void handleCommandLine(line); });
 }
 
 export {

@@ -40,6 +40,8 @@ impl ClaudeBridgeRuntime {
                 return Err(anyhow!("Claude bridge force-stopped"));
             }
             ChatBackendCommand::CancelTurn => {
+                self.studio_review.cancel();
+                ide_core::studio::revoke_agent_scope(&self.agent);
                 self.assistant_stream.flush(&self.events);
                 self.events
                     .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
@@ -88,6 +90,7 @@ impl ClaudeBridgeRuntime {
         mode: AgentInteractionMode,
         read_only: bool,
     ) -> anyhow::Result<()> {
+        let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
         let system_prompt = if self.agent.hidden_doc_assistant {
             format!(
@@ -103,6 +106,8 @@ impl ClaudeBridgeRuntime {
             system_prompt,
             self.visualization_dir.as_deref(),
         );
+        self.studio_review
+            .begin(self.agent.studio_context.is_some());
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.events
@@ -129,6 +134,7 @@ impl ClaudeBridgeRuntime {
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
             "designAssistant": is_design_assistant(&self.agent),
+            "studioAssistant": self.agent.studio_context.is_some(),
             "designPreviewReview": design_preview_review,
             "readOnly": read_only,
         }))
@@ -328,7 +334,7 @@ impl ClaudeBridgeRuntime {
                 }
             }
             "status" => {
-                let status = match message.get("status").and_then(Value::as_str) {
+                let mut status = match message.get("status").and_then(Value::as_str) {
                     Some("running") => AgentChatStatus::Running,
                     Some("cancelling") => AgentChatStatus::Cancelling,
                     Some("idle") => AgentChatStatus::Idle,
@@ -340,6 +346,18 @@ impl ClaudeBridgeRuntime {
                     Some("failed") => AgentChatStatus::Failed,
                     _ => return Ok(()),
                 };
+                if status == AgentChatStatus::Idle && self.studio_review.complete() {
+                    if let Err(error) = ide_core::studio::verify_agent_completion(&self.agent) {
+                        self.events
+                            .send_blocking(ChatBackendEvent::Error(format!("{error:#}")))
+                            .ok();
+                        status = AgentChatStatus::Failed;
+                    }
+                }
+                if matches!(status, AgentChatStatus::Idle | AgentChatStatus::Failed) {
+                    self.studio_review.cancel();
+                    ide_core::studio::revoke_agent_scope(&self.agent);
+                }
                 if status == AgentChatStatus::Idle {
                     self.emit_code_review_from_buffer();
                 }
@@ -490,6 +508,7 @@ mod usage_tests {
 
 impl Drop for ClaudeBridgeRuntime {
     fn drop(&mut self) {
+        ide_core::studio::revoke_agent_scope(&self.agent);
         let _ = self.write_json(&json!({ "type": "shutdown" }));
         terminate_child_process(&mut self.child);
     }

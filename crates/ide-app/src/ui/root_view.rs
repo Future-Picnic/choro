@@ -533,6 +533,10 @@ impl RootView {
             .detach();
             cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
                 .detach();
+            if let Some(tour) = onboarding.as_ref() {
+                cx.observe(tour, |_: &mut Self, _, cx| cx.notify())
+                    .detach();
+            }
             cx.observe(&app_update, |this: &mut Self, updates, cx| {
                 if this.shutdown_purpose == ShutdownPurpose::InstallUpdate
                     && matches!(

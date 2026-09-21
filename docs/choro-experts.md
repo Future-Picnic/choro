@@ -93,6 +93,13 @@ Bandmate in the user's request. There is no persistent Delegate button. A lead d
 not automatically assemble a team for an ordinary request: the selected or named
 Bandmates define the task's authorized team.
 
+Before submission, a compact recipient chip opens a native searchable popover,
+with **On-demand teammate** first and saved Bandmates below. Each option shows
+its description, and a checkmark identifies the current recipient. The chip
+supports keyboard opening; arrow keys navigate, Enter selects, and Escape closes
+the picker. A separate **×** cancels delegation. Changing the recipient or
+cancelling delegation preserves the draft and does not submit it.
+
 Each originating request has a compact chat card with one row per assignment,
 its real activity, dependencies and Open/Stop/Resume actions. The composer chip
 opens the **Band side panel**, listing Active and Finished assignments. Selecting

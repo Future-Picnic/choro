@@ -30,6 +30,7 @@ mod agent_launcher;
 mod experts;
 mod experts_cards;
 mod experts_dialogs;
+mod experts_picker;
 use ide_core::local_store::LocalStore;
 mod agent_naming;
 mod agent_panel;
@@ -60,6 +61,10 @@ mod quick_ask_history;
 mod remote_bridge;
 mod services;
 mod shutdown;
+mod studio;
+mod studio_canvas;
+mod studio_editor;
+mod studio_systems;
 mod tasks;
 mod time;
 mod voice;
@@ -350,7 +355,7 @@ struct NewAgentComposer {
     source_task: Option<TaskRef>,
     /// Design whose implementation action opened this composer. Its browser
     /// surface is opened only after the user actually starts the agent.
-    implementation_design: Option<Uuid>,
+    implementation_target: Option<ImplementationTarget>,
     /// Guards the confirmation recursion when Start is resumed from the
     /// external-browser explanation dialog.
     design_browser_open_confirmed: bool,
@@ -432,6 +437,12 @@ fn should_defer_agent_chat_submission_for_resume(
     has_loaded_history: bool,
 ) -> bool {
     has_resume_id && (is_hydrating || (!has_backend && !has_loaded_history))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImplementationTarget {
+    Penpot(Uuid),
+    Studio(Uuid),
 }
 
 #[derive(Clone, Debug)]
@@ -1925,6 +1936,10 @@ struct ProjectPreviewNavigationBarrier {
 /// files) and a separate terminals section below it.
 pub struct CenterArea {
     delegation_selection: HashMap<Uuid, Option<Uuid>>,
+    delegation_picker: Option<(
+        Uuid,
+        Entity<gpui_component::list::ListState<experts_picker::DelegatePicker>>,
+    )>,
     delegated_panel: Option<Uuid>,
     delegated_overview: Option<Uuid>,
     delegated_preview: bool,
@@ -1995,6 +2010,11 @@ pub struct CenterArea {
     /// the project-level Designs hub is visible; selection remains persisted
     /// independently so linked docs/tasks keep their existing relationships.
     penpot_open_design: Option<(ProjectId, Uuid)>,
+    studio: Option<studio::StudioWorkspace>,
+    studio_system_library: Option<ProjectId>,
+    studio_system_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioSystemRecord>>,
+    studio_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioDesignManifest>>,
+    studio_catalog_previews: HashMap<ProjectId, HashMap<uuid::Uuid, PathBuf>>,
     /// A lightweight Figma link opened from the project Design hub. Unlike a
     /// Choro design, this owns only an embedded viewer and no assistant state.
     figma_open_design: Option<(ProjectId, Uuid)>,

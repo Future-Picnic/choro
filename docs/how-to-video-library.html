@@ -238,6 +238,20 @@
     }
 
     .flow-arrow { color: var(--accent); }
+    .completion-badge {
+      display: inline-block;
+      margin: 7px 0 0 6px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: rgba(143, 198, 163, 0.12);
+      color: var(--success);
+      font-size: 11px;
+      font-weight: 640;
+    }
+
+    .completion-summary { color: var(--success); }
+    .summary { flex-wrap: wrap; justify-content: flex-end; }
+    .playlist-progress { margin: 0 2px 15px; color: var(--success); font-size: 13px; }
     .value-text { color: #c3c9d2; }
 
     .footer-note {
@@ -328,6 +342,57 @@
     }
 
     .modal-body { padding: 22px 24px 24px; }
+
+    .finished-video { margin-bottom: 24px; }
+    .finished-video[hidden] { display: none; }
+    .finished-video video {
+      display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 60vh;
+      background: #08090b; border: 1px solid var(--line); border-radius: 10px;
+    }
+    .video-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+    .video-action {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 40px; padding: 8px 13px; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--panel); color: var(--text); font: inherit; font-size: 13px;
+      text-decoration: none; cursor: pointer;
+    }
+    .video-action:hover { background: var(--accent-soft); border-color: var(--accent-line); }
+    .video-action:focus-visible, .finished-video video:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .video-action:disabled { opacity: .55; cursor: wait; }
+    .video-file, .video-help { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+    .video-file { margin: 12px 0 4px; }
+    .video-help { margin: 4px 0; }
+    .video-help code { color: var(--text); }
+    .video-status { margin: 8px 0 0; color: var(--success); font-size: 13px; line-height: 1.5; }
+    .video-status:empty { display: none; }
+
+    /* Storyboards reuse the library palette/type; give narration the widest column. */
+    .recording-modal.has-scenes { width: min(1120px, 100%); }
+    .has-scenes .modal-header {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--panel-raised);
+    }
+    .recording-steps[hidden], .scene-review[hidden] { display: none; }
+    .scene-guidance { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .scene-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    .scene-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .scene-table { min-width: 680px; background: var(--panel); }
+    .scene-table col:nth-child(1) { width: 17%; }
+    .scene-table col:nth-child(2) { width: 35%; }
+    .scene-table col:nth-child(3) { width: 48%; }
+    .scene-table thead th { text-transform: none; letter-spacing: 0; font-size: 13px; }
+    .scene-table tbody th {
+      height: auto; padding: 16px; vertical-align: top; color: var(--text);
+      font-size: 14px; line-height: 1.5; text-transform: none; letter-spacing: 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .scene-table td { padding: 16px; line-height: 1.6; overflow-wrap: anywhere; }
+    .scene-table td:last-child { color: var(--text); }
+    .scene-table tbody tr { cursor: default; }
+    .scene-table tbody tr:hover { background: transparent; box-shadow: none; }
+    .scene-table tbody tr:last-child th { border-bottom: 0; }
 
     .modal-intro {
       margin: 0 0 18px;
@@ -459,7 +524,7 @@
   <main>
     <header>
       <h1>Choro how-to video library</h1>
-      <div class="summary" aria-label="Library summary"><strong id="playlist-count">10</strong> playlists · <strong id="video-count">61</strong> short videos</div>
+      <div class="summary" aria-label="Library summary"><span><strong id="playlist-count">10</strong> playlists · <strong id="video-count">63</strong> short videos</span><span class="completion-summary">· <strong id="completed-count">14</strong> completed</span><span>· <strong id="draft-count">0</strong> review drafts</span></div>
     </header>
 
     <div class="tabs-shell">
@@ -478,21 +543,24 @@
     </div>
 
     <section role="tabpanel" id="panel-start" aria-labelledby="tab-start" data-slug="start">
-      <div class="panel-heading"><h2>Choro Getting Started Crash Course</h2><p>Beginner playlist · about 26 min. Follow one project from setup to parallel agents, context, design, review, shipping, Orbit, Solo, and mobile.</p></div>
+      <div class="panel-heading"><h2>Choro Getting Started Crash Course</h2><p>Beginner playlist · about 28 min. Follow one project from setup to agents, context, design, review, shipping, Orbit, specialist teamwork with Band, Solo, and mobile.</p></div>
+      <p class="playlist-progress" id="start-progress">14 of 15 completed · Updated intro and outro.</p>
       <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Lesson</th><th>User flow</th><th>Value</th></tr></thead><tbody>
-        <tr><td><span class="video-title">Meet Choro and the Core Workflow</span><span class="duration">1:30</span></td><td>Projects <span class="flow-arrow">→</span> multiple agents <span class="flow-arrow">→</span> project home <span class="flow-arrow">→</span> center workspace</td><td class="value-text">Builds the mental model for managing several projects and agents from one place.</td></tr>
-        <tr><td><span class="video-title">Projects Are More Than Repositories</span><span class="duration">1:45</span></td><td>Add Project <span class="flow-arrow">→</span> choose folder <span class="flow-arrow">→</span> explore its dedicated workspace</td><td class="value-text">Shows a project as a durable home for its work and context, not just a repository shortcut.</td></tr>
-        <tr><td><span class="video-title">Complete Your First Agent Flow</span><span class="duration">2:00</span></td><td>New Agent <span class="flow-arrow">→</span> simple request <span class="flow-arrow">→</span> result <span class="flow-arrow">→</span> Changed Files <span class="flow-arrow">→</span> What to Check</td><td class="value-text">Teaches the pure agent loop before adding advanced tools or setup.</td></tr>
-        <tr><td><span class="video-title">Work from Context: Tasks and Docs</span><span class="duration">2:15</span></td><td>Task or Doc <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> linked agent <span class="flow-arrow">→</span> Changed Files <span class="flow-arrow">→</span> Verification</td><td class="value-text">Keeps the original brief attached from implementation through a verified result.</td></tr>
-        <tr><td><span class="video-title">Plan the Work Before Building</span><span class="duration">2:15</span></td><td>Plan mode <span class="flow-arrow">→</span> questions <span class="flow-arrow">→</span> persistent plan <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> result</td><td class="value-text">Shows how uncertain work becomes a clear plan that stays visible while the agent builds.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Meet Choro and the Core Workflow</span><span class="duration">1:46</span><span class="completion-badge">Completed</span></td><td>Why Choro exists <span class="flow-arrow">→</span> connected projects and context <span class="flow-arrow">→</span> agents at work <span class="flow-arrow">→</span> inspect and ship</td><td class="value-text">Explains the philosophy first, then shows how the core capabilities keep you in control.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Projects Are More Than Repositories</span><span class="duration">1:04</span><span class="completion-badge">Completed</span></td><td>Add Project <span class="flow-arrow">→</span> choose folder <span class="flow-arrow">→</span> explore its dedicated workspace</td><td class="value-text">Shows a project as a durable home for its work and context, not just a repository shortcut.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Complete Your First Agent Flow</span><span class="duration">1:30</span><span class="completion-badge">Completed</span></td><td>Agent in project A <span class="flow-arrow">→</span> agent in project B <span class="flow-arrow">→</span> follow both <span class="flow-arrow">→</span> Changed Files <span class="flow-arrow">→</span> What to Check</td><td class="value-text">Runs agents across different projects in parallel, then inspects and tries their results.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Shape an Idea with Docs</span><span class="duration">1:25</span><span class="completion-badge">Completed</span></td><td>Rough idea <span class="flow-arrow">→</span> document assistant <span class="flow-arrow">→</span> refine scope <span class="flow-arrow">→</span> edit directly <span class="flow-arrow">→</span> next steps</td><td class="value-text">Builds a clear feature document with the assistant before starting design or implementation.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Work from Context: Tasks and Docs</span><span class="duration">2:15</span><span class="completion-badge">Completed</span></td><td>Task or Doc <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> linked agent <span class="flow-arrow">→</span> Changed Files <span class="flow-arrow">→</span> Verification</td><td class="value-text">Keeps the original brief attached from implementation through a verified result.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Plan the Work Before Building</span><span class="duration">2:15</span><span class="completion-badge">Completed</span></td><td>Plan mode <span class="flow-arrow">→</span> questions <span class="flow-arrow">→</span> persistent plan <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> result</td><td class="value-text">Shows how uncertain work becomes a clear plan that stays visible while the agent builds.</td></tr>
         <tr><td><span class="video-title">Go from Task to Design to Preview</span><span class="duration">2:30</span></td><td>Task <span class="flow-arrow">→</span> Design <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> Preview feedback</td><td class="value-text">Connects the brief, visual direction, implementation, and live refinement in one fast story.</td></tr>
-        <tr><td><span class="video-title">Run Scripts and Fix Backend Work</span><span class="duration">2:30</span></td><td>Saved script <span class="flow-arrow">→</span> backend request by dictation <span class="flow-arrow">→</span> Code Review <span class="flow-arrow">→</span> Fix All</td><td class="value-text">Combines repeatable commands, hands-free prompting, and review into a practical backend loop.</td></tr>
-        <tr><td><span class="video-title">Explore Code, Files, Terminal, and Database</span><span class="duration">1:30</span></td><td>Code <span class="flow-arrow">→</span> Files <span class="flow-arrow">→</span> editor <span class="flow-arrow">→</span> Terminal <span class="flow-arrow">→</span> Database</td><td class="value-text">Maps the technical workspace for the moments when users want direct control.</td></tr>
-        <tr><td><span class="video-title">Ask and Add Context Without an Agent</span><span class="duration">1:45</span></td><td>Customize project <span class="flow-arrow">→</span> add Assets <span class="flow-arrow">→</span> Quick Ask <span class="flow-arrow">→</span> tag a reference</td><td class="value-text">Uses project context for quick answers, then reuses the same context in agent work.</td></tr>
-        <tr><td><span class="video-title">Explore Orbit's Project Intelligence</span><span class="duration">2:00</span></td><td>Environment <span class="flow-arrow">→</span> integrations <span class="flow-arrow">→</span> custom Analytics view</td><td class="value-text">Shows built-in project knowledge and a custom structured view without a deep setup lesson.</td></tr>
-        <tr><td><span class="video-title">Ship the Completed Work</span><span class="duration">2:15</span></td><td>Agent result <span class="flow-arrow">→</span> Git overview <span class="flow-arrow">→</span> Ship <span class="flow-arrow">→</span> branch, push, and PR</td><td class="value-text">Turns finished work into a traceable branch and pull request through one guided flow.</td></tr>
-        <tr><td><span class="video-title">Try Parallel Work with Solo</span><span class="duration">2:00</span></td><td>Start Solo <span class="flow-arrow">→</span> separate lane <span class="flow-arrow">→</span> switch work <span class="flow-arrow">→</span> bring home</td><td class="value-text">Shows how to run isolated work in parallel without mixing branches.</td></tr>
-        <tr><td><span class="video-title">Take Choro with You on Mobile</span><span class="duration">1:15</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> respond remotely</td><td class="value-text">Ends with the simple mobile promise: the Mac does the work while the phone keeps you connected.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Run Scripts and Fix Backend Work</span><span class="duration">2:30</span><span class="completion-badge">Completed</span></td><td>Saved script <span class="flow-arrow">→</span> backend request by dictation <span class="flow-arrow">→</span> Code Review <span class="flow-arrow">→</span> Fix All</td><td class="value-text">Combines repeatable commands, hands-free prompting, and review into a practical backend loop.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Explore Code, Files, Terminal, and Database</span><span class="duration">1:30</span><span class="completion-badge">Completed</span></td><td>Code <span class="flow-arrow">→</span> Files <span class="flow-arrow">→</span> editor <span class="flow-arrow">→</span> Terminal <span class="flow-arrow">→</span> Database</td><td class="value-text">Maps the technical workspace for the moments when users want direct control.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Ask and Add Context Without an Agent</span><span class="duration">1:45</span><span class="completion-badge">Completed</span></td><td>Customize project <span class="flow-arrow">→</span> add Assets <span class="flow-arrow">→</span> Quick Ask <span class="flow-arrow">→</span> tag a reference</td><td class="value-text">Uses project context for quick answers, then reuses the same context in agent work.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Explore Orbit's Project Intelligence</span><span class="duration">2:00</span><span class="completion-badge">Completed</span></td><td>Environment <span class="flow-arrow">→</span> services <span class="flow-arrow">→</span> Analytics <span class="flow-arrow">→</span> agent adds an event</td><td class="value-text">Shows project knowledge and how an agent keeps a custom Orbit view in sync with its code changes.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Ship the Completed Work</span><span class="duration">2:15</span><span class="completion-badge">Completed</span></td><td>Agent result <span class="flow-arrow">→</span> Git overview <span class="flow-arrow">→</span> Ship <span class="flow-arrow">→</span> branch, push, and PR</td><td class="value-text">Turns finished work into a traceable branch and pull request through one guided flow.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Work in Parallel with Specialist Agents</span><span class="duration">2:00</span><span class="completion-badge">Completed</span></td><td>Meet Band <span class="flow-arrow">→</span> one shared goal <span class="flow-arrow">→</span> parallel assignments <span class="flow-arrow">→</span> combined result</td><td class="value-text">Introduces specialist teamwork: one lead coordinates the bandmates and checks their contributions together.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Try Parallel Work with Solo</span><span class="duration">2:00</span><span class="completion-badge">Completed</span></td><td>Start Solo <span class="flow-arrow">→</span> separate lane <span class="flow-arrow">→</span> switch work <span class="flow-arrow">→</span> bring home</td><td class="value-text">Shows how to run isolated work in parallel without mixing branches.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Take Choro with You on Mobile</span><span class="duration">0:50</span><span class="completion-badge">Completed</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> respond remotely</td><td class="value-text">Ends with the simple mobile promise: the Mac does the work while the phone keeps you connected.</td></tr>
       </tbody></table></div>
     </section>
 
@@ -513,11 +581,11 @@
       <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
         <tr><td><span class="video-title">Build a Feature with Your Band</span><span class="duration">3:00</span></td><td>Name two bandmates <span class="flow-arrow">→</span> lead assigns work <span class="flow-arrow">→</span> follow both chats <span class="flow-arrow">→</span> verified result</td><td class="value-text">Combines different specialists in one task while the lead coordinates and checks the result.</td></tr>
         <tr><td><span class="video-title">Set Up a Bandmate</span><span class="duration">2:00</span></td><td>Settings <span class="flow-arrow">→</span> Band <span class="flow-arrow">→</span> Edit or New <span class="flow-arrow">→</span> model and instructions <span class="flow-arrow">→</span> save</td><td class="value-text">Saves a reusable specialist setup without repeating the same brief in every chat.</td></tr>
+        <tr><td><span class="video-title">Create Specialists on Demand</span><span class="duration">1:45</span></td><td>Ask for focused help <span class="flow-arrow">→</span> on-demand teammates <span class="flow-arrow">→</span> distinct briefs <span class="flow-arrow">→</span> lead combines results</td><td class="value-text">Creates task-specific specialist help without configuring saved Bandmates first.</td></tr>
         <tr><td><span class="video-title">Give a Bandmate the Right Skills</span><span class="duration">2:15</span></td><td>Skills <span class="flow-arrow">→</span> inspect guidance <span class="flow-arrow">→</span> add or write a skill <span class="flow-arrow">→</span> apply <span class="flow-arrow">→</span> save</td><td class="value-text">Combines focused guidance with reusable skills and Riffs in one specialist.</td></tr>
         <tr><td><span class="video-title">Start a Chat with a Bandmate</span><span class="duration">1:30</span></td><td>New Agent <span class="flow-arrow">→</span> / <span class="flow-arrow">→</span> Bandmates <span class="flow-arrow">→</span> task <span class="flow-arrow">→</span> send</td><td class="value-text">Uses a specialist directly when the task does not need a coordinating lead.</td></tr>
         <tr><td><span class="video-title">Bring a Bandmate into Work Already Started</span><span class="duration">1:45</span></td><td>Existing chat <span class="flow-arrow">→</span> /delegate <span class="flow-arrow">→</span> choose bandmate <span class="flow-arrow">→</span> brief <span class="flow-arrow">→</span> assignment</td><td class="value-text">Adds specialist help midway through a task without manually copying the conversation.</td></tr>
         <tr><td><span class="video-title">Follow Your Band and Give Feedback</span><span class="duration">2:00</span></td><td>Band panel <span class="flow-arrow">→</span> assignment chat <span class="flow-arrow">→</span> correction <span class="flow-arrow">→</span> summary <span class="flow-arrow">→</span> lead result</td><td class="value-text">Keeps every assignment accessible while the lead remains the main conversation.</td></tr>
-        <tr><td><span class="video-title">Stop Your Band and Resume When Ready</span><span class="duration">2:00</span></td><td>Stop <span class="flow-arrow">→</span> lead-only conversation <span class="flow-arrow">→</span> restart <span class="flow-arrow">→</span> explicit Resume</td><td class="value-text">Lets users pause delegated work without losing chats, drafts, or working files.</td></tr>
       </tbody></table></div>
       <p class="footer-note">Recording setup: use a disposable Git project and existing Codex or Claude authentication. Enable Settings → Beta features → Delegation for managed assignments; standalone bandmate chats do not need the toggle. Durations are edited recording targets, not promised task runtimes.</p>
     </section>
@@ -538,7 +606,7 @@
         <tr><td><span class="video-title">Review What the Agent Changed</span><span class="duration">2:15</span></td><td>Agent result <span class="flow-arrow">→</span> changed files <span class="flow-arrow">→</span> diff <span class="flow-arrow">→</span> verification</td><td class="value-text">Shows whether the result matches the request before shipping.</td></tr>
         <tr><td><span class="video-title">Run Code Review</span><span class="duration">1:45</span></td><td>Review <span class="flow-arrow">→</span> findings <span class="flow-arrow">→</span> checklist <span class="flow-arrow">→</span> ask for fixes</td><td class="value-text">Adds a focused quality gate without leaving the conversation.</td></tr>
         <tr><td><span class="video-title">Ship Completed Work</span><span class="duration">2:30</span></td><td>Ship <span class="flow-arrow">→</span> choose changes <span class="flow-arrow">→</span> generate details <span class="flow-arrow">→</span> commit, push, PR</td><td class="value-text">Turns reviewed work into a clean pull request in one guided flow.</td></tr>
-        <tr><td><span class="video-title">Track PRs and Workflows</span><span class="duration">1:45</span></td><td>Git <span class="flow-arrow">→</span> PRs <span class="flow-arrow">→</span> checks <span class="flow-arrow">→</span> merge status</td><td class="value-text">Keeps delivery status visible beside the work that created it.</td></tr>
+        <tr><td><span class="video-title">Save a Git Workflow: Dev to Main</span><span class="duration">1:45</span></td><td>Save dev → main <span class="flow-arrow">→</span> run <span class="flow-arrow">→</span> review PR <span class="flow-arrow">→</span> confirm merge</td><td class="value-text">Reuses a common branch-to-branch workflow without repeating setup or leaving Choro.</td></tr>
       </tbody></table></div>
     </section>
 
@@ -616,14 +684,1838 @@
         </button>
       </div>
       <div class="modal-body">
+        <section class="finished-video" id="finished-video" aria-label="Video preview" hidden>
+          <video id="video-preview" controls playsinline preload="metadata" aria-label="Tutorial preview"></video>
+          <div class="video-actions">
+            <a class="video-action" id="video-link" target="_blank" rel="noopener">Open video ↗</a>
+            <button class="video-action" id="video-folder" type="button">Open folder</button>
+            <button class="video-action" id="video-copy" type="button">Copy video link</button>
+          </div>
+          <p class="video-file" id="video-file"></p>
+          <p class="video-help" id="video-local-help" hidden>For inline playback and Finder access, run <code>python3 docs/serve-video-library.py</code> from the project, then open the printed address.</p>
+          <p class="video-help" id="video-error" hidden>This browser could not play the video, or the file is unavailable. Try Safari or open it from its folder in QuickTime.</p>
+          <p class="video-status" id="video-status" role="status" aria-live="polite"></p>
+        </section>
+        <p class="video-status" id="draft-production-note" role="status" hidden></p>
         <p class="modal-intro" id="recording-intro">Record these screen actions in order. No narration script.</p>
         <ol class="recording-steps" id="recording-steps"></ol>
+        <div class="scene-review" id="scene-review" hidden>
+          <p class="scene-guidance">Alex narrates in the bottom-right circle. Pause after the greeting. Use the subtle ribbon background, clear cursor taps and focused zooms. Cut waiting; durations are edit targets, not agent runtimes. No subtitles or bottom labels. Screen directions are not spoken.</p>
+          <div class="scene-scroll" tabindex="0" role="region" aria-label="Scene and narration table, scroll horizontally on smaller screens">
+            <table class="scene-table" aria-label="Draft scenes for review">
+              <colgroup><col><col><col></colgroup>
+              <thead><tr><th scope="col">Scene</th><th scope="col">What’s shown / actions</th><th scope="col">Narration — exact draft text</th></tr></thead>
+              <tbody id="recording-scenes"></tbody>
+            </table>
+          </div>
+        </div>
         <div class="modal-outcome"><span>Finish on</span><strong id="recording-outcome"></strong></div>
         <div class="modal-footer"><button class="modal-done" type="button">Done</button></div>
       </div>
     </section>
   </div>
 
+  <!-- local-video-library-bridge -->
+  <script type="application/json" id="draft-video-files">
+[
+  {
+    "id": "draft-agents-cards",
+    "title": "Agent Cards: What They Mean and What to Check",
+    "folder": "playlist-drafts-20260920/agents-cards",
+    "file": "draft-cues.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 83,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-agents-follow",
+    "title": "Follow and Manage Your Agents",
+    "folder": "playlist-drafts-20260920/agents-follow",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 78,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-agents-plan",
+    "title": "Plan Before You Build",
+    "folder": "playlist-drafts-20260920/agents-plan",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 91,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-agents-resume",
+    "title": "Continue a Saved Conversation",
+    "folder": "playlist-drafts-20260920/agents-resume",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 77,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-agents-setup",
+    "title": "Set Up an Agent for the Task",
+    "folder": "playlist-drafts-20260920/agents-setup",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 79,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-agents-solo",
+    "title": "Work in Parallel with Solo",
+    "folder": "playlist-drafts-20260920/agents-solo",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 102,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-band-chat",
+    "title": "Start a Chat with a Bandmate",
+    "folder": "playlist-drafts-20260920/band-chat",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 72,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-band-feature",
+    "title": "Build a Feature with Your Band",
+    "folder": "playlist-drafts-20260920/band-feature",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 99,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-band-setup",
+    "title": "Set Up a Bandmate",
+    "folder": "playlist-drafts-20260920/band-setup",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 84,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-band-skills",
+    "title": "Give a Bandmate the Right Skills",
+    "folder": "playlist-drafts-20260920/band-skills",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 67,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-code-inspect",
+    "title": "Inspect Code, Files, and Terminal Together",
+    "folder": "playlist-drafts-20260920/code-inspect",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 69,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-context-create-doc",
+    "title": "Create a Doc for a New Feature",
+    "folder": "playlist-drafts-20260920/context-create-doc",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 93,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-context-doc-agent",
+    "title": "Turn a Doc into Agent Work",
+    "folder": "playlist-drafts-20260920/context-doc-agent",
+    "file": "draft-cues.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 89,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-context-task",
+    "title": "Turn a Task into Agent Work",
+    "folder": "playlist-drafts-20260920/context-task",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 81,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-mobile-continue",
+    "title": "Start or Continue Agent Work on Mobile",
+    "folder": "playlist-drafts-20260920/mobile-continue",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 70,
+    "note": "Demonstrates continuing an existing agent, not new-agent configuration. Uses genuine earlier phone reply and matching Mac result."
+  },
+  {
+    "id": "draft-mobile-meet",
+    "title": "Meet Choro Remote",
+    "folder": "playlist-drafts-20260920/mobile-meet",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 55,
+    "note": "Uses genuine earlier Simulator and Mac footage. Current mobile reconnection needs recovery for the remaining fresh mobile lessons."
+  },
+  {
+    "id": "draft-mobile-progress",
+    "title": "Check Agent Progress from Your Phone",
+    "folder": "playlist-drafts-20260920/mobile-progress",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 56,
+    "note": "Uses genuine earlier Simulator footage. Focuses on reading the existing thread and deciding whether to respond."
+  },
+  {
+    "id": "draft-orbit-meet",
+    "title": "Meet Orbit",
+    "folder": "playlist-drafts-20260920/orbit-meet",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 87,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-orbit-services",
+    "title": "See Project Services and Integrations",
+    "folder": "playlist-drafts-20260920/orbit-services",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 62,
+    "note": "Focused inspection draft. The current UI calls this view Integrations; it detects dependencies, not service health or authenticated connectivity."
+  },
+  {
+    "id": "draft-orbit-use",
+    "title": "Use an Orbit Module in a Project",
+    "folder": "playlist-drafts-20260920/orbit-use",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 83,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-productivity-ask",
+    "title": "Ask Without Starting an Agent",
+    "folder": "playlist-drafts-20260920/productivity-ask",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 71,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-productivity-dictate",
+    "title": "Dictate Prompts and Messages",
+    "folder": "playlist-drafts-20260920/productivity-dictate",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 66,
+    "note": "The microphone active state is genuine; the example composer text was staged after dictation, as approved for the original take. This is not an accuracy test of live speech recognition."
+  },
+  {
+    "id": "draft-productivity-find",
+    "title": "Find Anything in a Project",
+    "folder": "playlist-drafts-20260920/productivity-find",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 74,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-productivity-settings",
+    "title": "Customize Shortcuts and Notifications",
+    "folder": "playlist-drafts-20260920/productivity-settings",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 78,
+    "note": "Review draft with a known test issue: the custom Quick Open binding saved, but did not invoke the action in this capture. The default was restored. Final approval requires a successful shortcut check."
+  },
+  {
+    "id": "draft-review-changes",
+    "title": "Review What the Agent Changed",
+    "folder": "playlist-drafts-20260920/review-changes",
+    "file": "draft-cues.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 78,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-review-code",
+    "title": "Run Code Review",
+    "folder": "playlist-drafts-20260920/review-code",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 91,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-review-ship",
+    "title": "Ship Completed Work",
+    "folder": "playlist-drafts-20260920/review-ship",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 115,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-run-preview",
+    "title": "Open Your Running Project in Preview",
+    "folder": "playlist-drafts-20260920/run-preview",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 69,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  },
+  {
+    "id": "draft-run-scripts",
+    "title": "Run Saved Project Scripts",
+    "folder": "playlist-drafts-20260920/run-scripts",
+    "file": "draft-review.mp4",
+    "poster": "draft-preview.png",
+    "draft": true,
+    "duration": 74,
+    "note": "Watchable review draft, not final approval. Free local AI voice; no avatar. Please review narration, pacing and screen actions."
+  }
+]
+  </script>
+  <script type="application/json" id="draft-video-scripts">
+{
+  "Set Up an Agent for the Task": {
+    "title": "Set Up an Agent for the Task",
+    "playlist": "agents",
+    "stage": "script-reviewed",
+    "voice": "Screenify built-in local English narrator; no clone or avatar",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Choose model, effort, access and work mode deliberately, then start one scoped task.",
+      "overlap": "Getting Started already shows sending a first prompt. This lesson explains setup tradeoffs; it does not repeat diffs, verification or shipping.",
+      "critique": "Avoid ranking models or promising that more effort is always better. Explain that authority and reasoning effort are different choices. Keep planning distinct from execution.",
+      "revision": "Replaced a catalogue of options with four task-based decisions and a final scope check. Omitted greeting that claims a temporary stock voice is Alex.",
+      "evidenceGate": "Capture actual available controls and revise wording if the build differs. Do not narrate an option that is not visible."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Approved blue Agents title for 3 seconds, then New Agent in Harbor Notes.",
+        "text": "Before you send a task, a few choices decide how the agent will work. Let's set those up so the model, the amount of reasoning, and the access fit what you need."
+      },
+      {
+        "id": "model",
+        "shown": "Open model picker; select an available model using existing authentication.",
+        "text": "Start with the model. Pick from the providers you've connected. You can use a lighter model for a focused change, or choose a stronger one when the task needs more reasoning. The choice belongs to this agent."
+      },
+      {
+        "id": "effort",
+        "shown": "Open effort picker; choose Medium if supported.",
+        "text": "Effort is a separate setting. It tells a supported model how much reasoning to spend. More isn't automatically better for every request. For a small, well-defined change, we don't need the highest setting."
+      },
+      {
+        "id": "access",
+        "shown": "Open access picker, show choices, choose the Demo-appropriate option.",
+        "text": "Access is about permission, not intelligence. Check what the agent is allowed to do, and use the level you're comfortable granting. A more capable model still needs the right authority for the work."
+      },
+      {
+        "id": "mode",
+        "shown": "Show Chat/Plan control and switch using Shift+Tab with a large centered shortcut card.",
+        "text": "If the approach still needs discussion, switch to Plan first. Shift plus Tab changes the mode in the composer. For this small change, we'll return to Chat and give the agent a clear request."
+      },
+      {
+        "id": "send",
+        "shown": "Enter a small request, send it, show genuine starting state and selected controls. Do not wait for completion.",
+        "text": "Before sending, check the project and keep the scope specific. Now the agent starts with the setup we chose. That's the habit to keep: match the setup to the task, rather than changing every option every time."
+      }
+    ]
+  },
+  "Plan Before You Build": {
+    "title": "Plan Before You Build",
+    "playlist": "agents",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Plan before",
+      "you build"
+    ],
+    "subtitle": "Agree on the approach before implementation",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Use questions and a saved plan to make a clear implementation decision.",
+      "overlap": "Getting Started introduces Plan. This lesson explains what to check in the proposal and how to preserve the agreed scope.",
+      "critique": "Avoid implying planning guarantees correctness or that implementation is automatic. Separate answering a question from approving the whole plan.",
+      "revision": "Added concrete review criteria: goal, boundaries, assumptions and checks. Removed repeated model setup and shipping.",
+      "evidenceGate": "Use genuine recorded Plan, question, saved-plan and Implement actions; no generated UI."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Agents title, then composer before Plan is enabled.",
+        "text": "When a request has more than one sensible approach, agreeing on the approach first can save a lot of back and forth. Plan mode gives you that conversation before you ask the agent to implement."
+      },
+      {
+        "id": "setup",
+        "shown": "Switch with Shift+Tab and send the planning request. Large centered shortcut cue.",
+        "text": "In the composer, press Shift plus Tab to switch to Plan. Describe the outcome and any boundaries that matter. You can be specific about what you want to achieve without deciding every implementation detail yourself."
+      },
+      {
+        "id": "question",
+        "shown": "Answer the actual agent clarification modal.",
+        "text": "If the agent needs a decision, answer the question here. A useful answer removes an assumption: which behavior you want, which constraint matters, or what's outside the scope. This helps shape the proposal; it's not the final approval."
+      },
+      {
+        "id": "plan",
+        "shown": "Expand the completed plan and inspect sections.",
+        "text": "Read the plan before you implement it. Does it solve the right problem? Does it respect your boundaries? Look at the steps and how the result will be checked. If something is missing, ask for a revision now."
+      },
+      {
+        "id": "persistent",
+        "shown": "Saved Plan remains available in the agent panel.",
+        "text": "The plan stays attached to the agent, so the agreed approach doesn't disappear into the conversation. You can come back to it while the work is happening."
+      },
+      {
+        "id": "implement",
+        "shown": "Click Implement at the spoken instruction.",
+        "text": "When the approach is right, choose Implement. The agent moves from discussing the work to carrying it out. You still review the result; approving a plan doesn't replace checking what was built."
+      },
+      {
+        "id": "result",
+        "shown": "Actual result and saved Plan tab.",
+        "text": "At the end, compare the result with that saved plan. You're checking the original goal, not just whether the agent finished its steps. That's the value of planning first: a shared direction you can return to."
+      }
+    ]
+  },
+  "Work in Parallel with Solo": {
+    "title": "Work in Parallel with Solo",
+    "playlist": "agents",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Work in parallel",
+      "with Solo"
+    ],
+    "subtitle": "Separate worktrees, one project",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Distinguish base and Solo worktrees, inspect both previews and rejoin a reviewed change.",
+      "overlap": "Adds the operational distinction between isolated files and shared external services to the Getting Started overview.",
+      "critique": "Do not claim a worktree isolates databases, ports or credentials, or that rejoining can never conflict.",
+      "revision": "State isolation boundaries and require reviewing a diff before rejoining. Show actual separate and combined previews.",
+      "evidenceGate": "Use real Solo recording and rejoin pickup, not simulated combined UI."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Agents title, then the original project's preview.",
+        "text": "Two changes can belong to the same project without needing to share the same working files. Solo gives an agent its own Git worktree, so it can work alongside the main project in a separate checkout."
+      },
+      {
+        "id": "start",
+        "shown": "New agent and Solo switch.",
+        "text": "Start a new agent and enable Solo for this task. Give it a focused request. You're choosing a separate workspace for the change, not creating a completely unrelated project."
+      },
+      {
+        "id": "send",
+        "shown": "Send the actual Solo task.",
+        "text": "Send the request. The agent works in its own worktree while the original project remains available for other work."
+      },
+      {
+        "id": "base",
+        "shown": "Open the base preview.",
+        "text": "Here's the base preview. It shows the main project's files. Notice that it hasn't picked up the change happening in Solo. Always check which workspace you're previewing before deciding whether a change worked."
+      },
+      {
+        "id": "solo",
+        "shown": "Open the visually different Solo preview.",
+        "text": "Now switch to the Solo preview. This is the separate version with the new change. A worktree separates project files; it doesn't automatically give every external service or database an isolated copy."
+      },
+      {
+        "id": "review",
+        "shown": "Open the Solo diff.",
+        "text": "Before bringing the work back, review the diff. Confirm that it contains the intended change and doesn't include unrelated edits. Isolation helps you work in parallel, but you still decide what should join the project."
+      },
+      {
+        "id": "rejoin",
+        "shown": "Open and confirm Rejoin.",
+        "text": "When you're ready, choose Rejoin and confirm the destination. If the changes conflict with other work, resolve that before continuing. In this example, the changes can be brought together."
+      },
+      {
+        "id": "combined",
+        "shown": "Real combined preview after successful rejoin.",
+        "text": "Open the base preview again and check the combined result. The original work and the Solo change are now together. That's the full loop: separate the work, inspect it in isolation, then bring back the part you're ready to keep."
+      }
+    ]
+  },
+  "Create a Doc for a New Feature": {
+    "title": "Create a Doc for a New Feature",
+    "playlist": "context",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Shape a feature",
+      "in a document"
+    ],
+    "subtitle": "Develop the idea before handing it to an agent",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Create a focused feature document, improve it with the document assistant, and keep control of the final requirements.",
+      "overlap": "Getting Started shows the concept; this explains how to give the assistant useful constraints and review the document before handoff.",
+      "critique": "A generated document is a proposal, not verified product truth. Avoid implying that every idea is ready for implementation.",
+      "revision": "Emphasize boundaries, open questions and one acceptance check; end before launching Design or Implement.",
+      "evidenceGate": "Use genuine document creation, assistant drafting, refinement and manual-edit footage."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Context playlist title then the saved feature document.",
+        "text": "An idea doesn't have to become an agent prompt immediately. A document gives you space to work out the feature first: what it should do, what's outside the scope, and how you'll know it's right."
+      },
+      {
+        "id": "create",
+        "shown": "Create a document in the project's Docs area and name it.",
+        "text": "Open Docs in the project and create a new document. Give it a name that describes the feature. Start with the outcome you're aiming for, so the document has a purpose beyond collecting notes."
+      },
+      {
+        "id": "assistant",
+        "shown": "Open the document assistant and send a drafting request.",
+        "text": "Use the document assistant to turn that starting point into a useful draft. Include the constraints you already know. If you only want to shape the idea for now, say so; you don't need to ask for implementation."
+      },
+      {
+        "id": "draft",
+        "shown": "Read the assistant's actual structured draft.",
+        "text": "Read what it produced. Are the requirements specific enough to act on? Has it invented a decision you haven't made? Keep open questions visible instead of letting a polished document hide uncertainty."
+      },
+      {
+        "id": "refine",
+        "shown": "Ask the assistant for a focused revision, then show the revised document.",
+        "text": "Ask for a focused revision where needed. For example, tighten the scope or make a requirement easier to check. You're refining the source of truth here, not asking the agent to guess later."
+      },
+      {
+        "id": "edit",
+        "shown": "Enter manual editing and adjust the document directly.",
+        "text": "You can also edit the document yourself. Keep the goal, the important requirements and at least one acceptance check easy to find. The assistant helps write it; you decide what the document says."
+      },
+      {
+        "id": "next",
+        "shown": "Finished document with Design and Implement actions visible; do not launch either.",
+        "text": "Once the document is ready, you can use it as the starting point for design or implementation. We won't start either here. The result of this step is a clearer feature document that the next piece of work can use as context."
+      }
+    ]
+  },
+  "Turn a Doc into Agent Work": {
+    "title": "Turn a Doc into Agent Work",
+    "playlist": "context",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Turn a document",
+      "into agent work"
+    ],
+    "subtitle": "Keep the work connected to its requirements",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Launch implementation from a reviewed document, follow the linked agent and verify the result against the source.",
+      "overlap": "Skip explaining how to draft documents; concentrate on handoff, two-way navigation and requirement checks.",
+      "critique": "Do not claim attaching a document proves every requirement is implemented. Verification cards are evidence to inspect, not automatic sign-off.",
+      "revision": "Explicitly distinguish the connection from correctness and keep the user's review in the flow.",
+      "evidenceGate": "Real Implement action, document-agent header links, changed files, checklist and verification result."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Context title then a prepared document.",
+        "text": "Once a feature document is ready, the next step is turning it into work without losing the context. Starting from the document keeps the implementation connected to the requirements you already shaped."
+      },
+      {
+        "id": "document",
+        "shown": "Scan the document before handoff.",
+        "text": "First, check the document itself. Make sure the goal and scope are current. If there are unresolved decisions, settle those or make them explicit before asking the agent to implement."
+      },
+      {
+        "id": "implement",
+        "shown": "Click Implement and show the agent starting with the document attached.",
+        "text": "Choose Implement from the document. The new agent starts with this document as context. You don't need to copy the whole thing into a fresh conversation, and you can still add a specific instruction for this piece of work."
+      },
+      {
+        "id": "linked",
+        "shown": "Show the link in both the document header and the agent header.",
+        "text": "Notice the connection in the headers. From the document, you can get back to its agent. From the agent, you can return to the document. That makes it easier to check the source while the work is happening."
+      },
+      {
+        "id": "review",
+        "shown": "Actual completed work and Changed Files card.",
+        "text": "When the agent finishes, inspect the changed files. Compare the scope of the change with the document, rather than treating a confident summary as proof that everything is done."
+      },
+      {
+        "id": "check",
+        "shown": "What to Check items and the Verify action.",
+        "text": "Use What to Check to guide your review, and run verification where it's available. Look for missed requirements and behavior that needs a human check, not just whether the files changed."
+      },
+      {
+        "id": "result",
+        "shown": "Verification result and linked document still available.",
+        "text": "Read the verification result and return to the document if you need to compare a requirement. You now have the source, the implementation conversation and the review in one connected flow."
+      }
+    ]
+  },
+  "Review What the Agent Changed": {
+    "title": "Review What the Agent Changed",
+    "playlist": "review",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Review what",
+      "actually changed"
+    ],
+    "subtitle": "Compare the result with the request",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Inspect a changed-file diff and turn the request into a concrete human check.",
+      "overlap": "Unlike the document handoff lesson, this is about evaluating output regardless of where the task started.",
+      "critique": "Do not present generated checklists or passing verification as sufficient proof of correctness.",
+      "revision": "Separate scope review, behavior checks and evidence. Keep publishing out of this lesson.",
+      "evidenceGate": "Real diff, What to Check, Verify and its actual result."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Review playlist title, then completed agent output.",
+        "text": "The agent finishing is the start of your review, not the end of it. Let's look at what changed and decide whether it matches the request, before you move on to shipping."
+      },
+      {
+        "id": "files",
+        "shown": "Changed Files card; open the diff.",
+        "text": "Start with Changed Files. Check the scope first: are these the files you expected to change? Then open the diff and read the actual additions and removals. A summary is useful, but the diff shows what was really edited."
+      },
+      {
+        "id": "scope",
+        "shown": "Keep the real diff visible while inspecting its changes.",
+        "text": "Look for unrelated changes as well as missing ones. If the request was small, a much larger change deserves a question. You don't have to understand every line to notice that the scope has drifted."
+      },
+      {
+        "id": "checks",
+        "shown": "What to Check card and its concrete items.",
+        "text": "Next, use What to Check as a starting point for checking behavior. Compare those items with the original request. Add your own checks when a requirement or an important edge case isn't covered."
+      },
+      {
+        "id": "verify",
+        "shown": "Run the actual available verification action.",
+        "text": "Run verification where it's available, then read the result. A passed check tells you something specific was tested; it doesn't prove every possible behavior is correct."
+      },
+      {
+        "id": "result",
+        "shown": "Verification output and changed files.",
+        "text": "If something is wrong, give the agent a precise follow-up: what you expected, what happened, and where you saw it. The goal is a result you're comfortable accepting, not just a row of green checks."
+      }
+    ]
+  },
+  "Run Code Review": {
+    "title": "Run Code Review",
+    "playlist": "review",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Find issues",
+      "before you ship"
+    ],
+    "subtitle": "Review, fix and check the result",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Run a scoped code review, inspect a genuine finding, request fixes and verify the correction.",
+      "overlap": "Getting Started combines scripts and review. This isolates review scope, actionable findings and checking the fix.",
+      "critique": "Do not imply AI review always finds every bug or that Fix All needs no judgment. The demonstrated bug must be real.",
+      "revision": "Explain why reviewing the right scope matters and tell the viewer to inspect findings before requesting changes.",
+      "evidenceGate": "Use actual recorded discount-validation finding, Fix All action, corrected file and test output."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Review title then agent with completed backend work.",
+        "text": "A change can look finished and still miss an edge case. Code review gives you another pass over the work before you ship. Here's how to turn a finding into a checked correction."
+      },
+      {
+        "id": "review",
+        "shown": "Click Code Review in the agent.",
+        "text": "Open Code Review from the agent. Be clear about the work you're reviewing. If there's a particular area you want checked, name it rather than assuming the review is looking at everything you care about."
+      },
+      {
+        "id": "scope",
+        "shown": "Actual focused review request.",
+        "text": "In this example, we ask for a focused check of the backend change. That keeps the review on the behavior we touched and gives the reviewer a useful question to investigate."
+      },
+      {
+        "id": "findings",
+        "shown": "Real finding and its code reference.",
+        "text": "Read the finding before asking for a fix. Here, the review identifies a real validation problem. Check the explanation, the affected code and the consequence. A useful finding tells you what can go wrong, not just that something could be cleaner."
+      },
+      {
+        "id": "fix",
+        "shown": "Choose Fix All on the reviewed findings.",
+        "text": "Once you've checked the findings, choose Fix All to ask the agent to address them. If you disagree with part of the review, clarify that first. You remain responsible for the scope of the change."
+      },
+      {
+        "id": "result",
+        "shown": "Open the corrected file after the real fix completes.",
+        "text": "Now inspect the correction. Make sure it addresses the reported problem without introducing unrelated work. A fix request isn't the evidence; the changed code and the behavior are."
+      },
+      {
+        "id": "tests",
+        "shown": "Actual successful checks after the fix.",
+        "text": "Run the relevant checks and read their output. The review helped us find an issue, and the checks helped us evaluate the fix. Neither replaces your judgment, but together they make the handoff much clearer."
+      }
+    ]
+  },
+  "Run Saved Project Scripts": {
+    "title": "Run Saved Project Scripts",
+    "playlist": "preview",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Run your",
+      "project scripts"
+    ],
+    "subtitle": "Start, follow and inspect a saved command",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Run a saved project command and find its active state and output.",
+      "overlap": "Keep dictation and code review in their own lessons; focus on the running process and where to inspect it.",
+      "critique": "Do not call a running process healthy just because it started. Do not claim script configuration is demonstrated if the recording only runs a saved one.",
+      "revision": "Make the distinction between active status and useful output explicit; introduce the command shortcut only with a visible callout.",
+      "evidenceGate": "Actual script menu, launch, sidebar indicator and output."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Run & Preview title then Scripts menu.",
+        "text": "Most projects have commands you run again and again: a local server, a test suite, or a small utility. Saved scripts keep those commands with the project, so you can start them without retyping the setup."
+      },
+      {
+        "id": "menu",
+        "shown": "Open Scripts and inspect the saved service command.",
+        "text": "Open Scripts in the project header and choose the saved command you need. Check its name and purpose before you run it. In this example, the command starts our local demo service."
+      },
+      {
+        "id": "run",
+        "shown": "Run the saved script.",
+        "text": "Run the script. This is a project process alongside your agent work, not a new conversation with the agent. You can keep working while the command runs."
+      },
+      {
+        "id": "sidebar",
+        "shown": "Active script indicator on the left sidebar.",
+        "text": "Look at the left sidebar. The active script is visible there, so you can tell which project has a process running without keeping its output open the whole time."
+      },
+      {
+        "id": "output",
+        "shown": "Open the actual running process output.",
+        "text": "Open its output when you need to inspect it. Read the startup message or any errors; an active indicator alone doesn't tell you that the service is ready or that a check passed."
+      },
+      {
+        "id": "checks",
+        "shown": "Run the saved checks and inspect output.",
+        "text": "The same idea works for a saved check command. Choose the relevant script and read the result. Keeping these commands with the project makes the routine work easier to repeat and easier to find."
+      }
+    ]
+  },
+  "Inspect Code, Files, and Terminal Together": {
+    "title": "Inspect Code, Files, and Terminal Together",
+    "playlist": "preview",
+    "stage": "script-reviewed",
+    "titleLines": [
+      "Inspect the",
+      "working project"
+    ],
+    "subtitle": "Code, files and terminal in the same workspace",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Move from the agent to a source file and terminal, then return without losing the project context.",
+      "overlap": "Do not repeat the database connection flow; this lesson is deliberately files and terminal only.",
+      "critique": "Avoid presenting a terminal command as universally safe or using a command that mutates unrelated work.",
+      "revision": "Use the recorded read-only status inspection and explain that the terminal operates on the real project.",
+      "evidenceGate": "Real Code view, file tree, source file, terminal output and split return."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Run & Preview title then the project's Code area.",
+        "text": "Sometimes you want to look directly at the project instead of asking the agent another question. Choro keeps code, files and terminal close to the conversation, so you can inspect the work yourself."
+      },
+      {
+        "id": "code",
+        "shown": "Open Code from the right rail.",
+        "text": "Open Code for the current project. This is where you can move through the actual source files. Keep an eye on the project name so you're inspecting the workspace you intended."
+      },
+      {
+        "id": "files",
+        "shown": "Expand src and open quote.js.",
+        "text": "Use the file tree to open the file you want to understand. Read the relevant section in context, not just the line mentioned in the agent's summary. This is useful for checking assumptions or following a change a little further."
+      },
+      {
+        "id": "terminal",
+        "shown": "Open Terminal and inspect the recorded project status command.",
+        "text": "Open the terminal when you need to run a command directly. Here we're inspecting the project state. The terminal operates on the real workspace, so check the command and the working directory before running anything that changes files."
+      },
+      {
+        "id": "return",
+        "shown": "Return to the agent, then to the Code split view.",
+        "text": "Move back to the agent when you want to discuss what you found, or keep the source view beside the work. You can switch between delegating and inspecting without treating them as separate projects."
+      }
+    ]
+  },
+  "Agent Cards: What They Mean and What to Check": {
+    "title": "Agent Cards: What They Mean and What to Check",
+    "playlist": "agents",
+    "titleLines": [
+      "Read the result,",
+      "not just the reply"
+    ],
+    "subtitle": "Changed files, checks, verification and review",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Distinguish cards that show edits, manual checks, requirements verification and code-review findings.",
+      "critique": "No card alone proves correctness; verification is not the same as code review.",
+      "overlap": "Introduce how to read the cards rather than repeat the full shipping or review flows.",
+      "revision": "Remove generic feature praise; connect each control to a useful user decision.",
+      "evidenceGate": "Real recorded Demo UI only. No paid generation."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Completed work with result cards.",
+        "text": "The agent’s reply is only part of the result. The cards around it help you inspect what changed and what still needs checking. Let’s separate those jobs so you know what each card is telling you."
+      },
+      {
+        "id": "files",
+        "shown": "Files changed and expanded diff.",
+        "text": "Files changed tells you which files the agent touched. Open the diff to inspect the actual edits. A short summary can explain intent, but the diff is where you check whether the implementation matches it."
+      },
+      {
+        "id": "checks",
+        "shown": "What to check list.",
+        "text": "What to check is a practical handoff for you. Read the suggested checks and perform the ones that matter for this change. The checklist being present does not mean those checks have already passed."
+      },
+      {
+        "id": "verify",
+        "shown": "Verify this work control.",
+        "text": "Verification checks the finished work against its written requirements. Use it when you want that additional pass, and inspect what it actually checked. It is a different question from simply asking whether the agent has stopped working."
+      },
+      {
+        "id": "verified",
+        "shown": "Verified requirements result.",
+        "text": "Read the verification result rather than treating its label as a guarantee. It should give you evidence related to the task. You still need judgment about anything that was outside that check."
+      },
+      {
+        "id": "review",
+        "shown": "Code review finding with suggested fix.",
+        "text": "Code review looks for problems in the implementation. Here the card has a concrete finding and suggested fix. Inspect the issue before applying a correction, then check the resulting change. That is why these cards have different jobs."
+      }
+    ]
+  },
+  "Follow and Manage Your Agents": {
+    "title": "Follow and Manage Your Agents",
+    "playlist": "agents",
+    "titleLines": [
+      "Follow the work",
+      "that needs you"
+    ],
+    "subtitle": "Questions, progress and completion in one place",
+    "audioRevision": "-v2",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Answer a genuine clarification, inspect the result and mark reviewed work Done.",
+      "overlap": "No repeat of model setup or a full review tutorial.",
+      "critique": "The provider asked its question in chat, not a multiple-choice modal. Working status and task completion are different.",
+      "revision": "Match the actual capture: answer in the same conversation and use sidebar/search to find completed work.",
+      "evidenceGate": "Actual question, reply, changed file and Done status recorded. Diff panel returned zero files in this non-Git demo; not presented as verified diff behavior."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Needs attention sidebar beside the conversation.",
+        "text": "When several agents are open, you need to know which one needs you. Use the sidebar to find the relevant conversation, then check whether it is working, waiting for a decision, or ready for you to review."
+      },
+      {
+        "id": "question",
+        "shown": "Agent asks which heading to use in the conversation.",
+        "text": "Here the agent needs a choice before it can continue. Read the question and answer it in the same thread. Keeping the decision here means the request and your clarification stay together."
+      },
+      {
+        "id": "answer",
+        "shown": "Reply with the chosen wording and send.",
+        "text": "Give a direct answer and keep the scope clear. Once you send it, the agent can continue with that decision. You don’t need another conversation just to clarify the work already underway."
+      },
+      {
+        "id": "result",
+        "shown": "Actual response and Files changed card.",
+        "text": "When the result arrives, read what changed and the suggested checks. A finished response is not the same as your approval. Check the result against what you asked for before you consider the task complete."
+      },
+      {
+        "id": "done",
+        "shown": "Change task status to Done.",
+        "text": "Once you’re satisfied, mark the task Done. This is your workflow decision, separate from whether the model is currently working. It helps keep finished work out of the way of the tasks you still need to follow."
+      },
+      {
+        "id": "history",
+        "shown": "Quick Open shows the completed conversation with Done status.",
+        "text": "The conversation is still available afterward. You can find it again and read the decisions that led to the result. That gives you a cleaner active workspace without losing the history of the work."
+      }
+    ]
+  },
+  "Continue a Saved Conversation": {
+    "title": "Continue a Saved Conversation",
+    "playlist": "agents",
+    "titleLines": [
+      "Pick up where",
+      "you left off"
+    ],
+    "subtitle": "Resume saved history and keep related work together",
+    "audioRevision": "-v2",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Resume saved history, add a related follow-up and keep the earlier result intact.",
+      "overlap": "No model setup or full code-review tour; focus on continuity.",
+      "critique": "Resume loads history and reconnects; it is not a task-status change. Do not promise unlimited model recall.",
+      "revision": "Corrected the earlier completed-only framing: saved conversations may still be In progress.",
+      "evidenceGate": "Actual Resume screen, follow-up, resulting change and Done action are recorded."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Saved conversation with Resume control.",
+        "text": "Coming back to a piece of work doesn’t have to mean starting from scratch. If your next change belongs to an earlier conversation, reopen that thread and keep the request, decisions and result together."
+      },
+      {
+        "id": "resume",
+        "shown": "Click Resume and restore the saved conversation.",
+        "text": "Choose Resume to load the saved chat history and reconnect the agent. This restores the conversation; it is separate from whether you’ve marked the task in progress or done."
+      },
+      {
+        "id": "followup",
+        "shown": "Write and send a closely related follow-up.",
+        "text": "Read the earlier work, then add a specific follow-up. Say what should change and what must stay the same. The thread provides useful context, but a clear request still matters."
+      },
+      {
+        "id": "result",
+        "shown": "The genuine response confirms the new heading and preserved page title.",
+        "text": "The new result stays in the same conversation. Check it against both parts of the request: the thing you wanted changed, and the earlier work you wanted to keep. That is how you make a continuation safe to review."
+      },
+      {
+        "id": "history",
+        "shown": "Agent board shows earlier work and its status.",
+        "text": "Use the project’s agent board to find the conversation again. Keeping related work in one thread gives you a history you can follow. For a different goal, a fresh agent is usually easier to understand."
+      },
+      {
+        "id": "done",
+        "shown": "Mark the checked task Done, then show the Done group.",
+        "text": "Once you’ve checked the result, mark the task Done. You’re organizing your work, not deleting the conversation. It remains available if another related follow-up comes up later."
+      }
+    ]
+  },
+  "Start a Chat with a Bandmate": {
+    "title": "Start a Chat with a Bandmate",
+    "playlist": "band",
+    "titleLines": [
+      "Talk directly",
+      "to a specialist"
+    ],
+    "subtitle": "Use a saved role without creating a whole Band",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Choose a saved bandmate in a new composer, send a request and inspect its response.",
+      "overlap": "Skip profile creation; use the saved role and show its practical effect.",
+      "critique": "Direct specialist chat is different from lead-managed delegation; do not call it parallel work.",
+      "revision": "Natural benefit-led explanation, no paid-avatar greeting, match claims to actual recorded outcomes.",
+      "evidenceGate": "Fresh Demo capture; inspect final scene/narration alignment before marking the draft ready."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "The selected bandmate appears in the new composer.",
+        "text": "You don’t always need a whole team of agents. Sometimes you just want one specialist for a focused question. Start a direct chat with a bandmate and use its saved setup for that conversation."
+      },
+      {
+        "id": "picker",
+        "shown": "Type slash, filter by name and select bandmate.",
+        "text": "In a new agent composer, type a slash and find the bandmate by name. Choose it from the Bandmates results. This is how you select a saved specialist, rather than merely mentioning its name in ordinary text."
+      },
+      {
+        "id": "setup",
+        "shown": "Selected profile and Medium effort visible.",
+        "text": "Check the bandmate label in the composer. The conversation now uses that profile, including its model and instructions. You still need to give it the specific job and any context it needs."
+      },
+      {
+        "id": "request",
+        "shown": "Send a narrow read-only review request.",
+        "text": "Send a focused request. Here we ask for wording advice and explicitly say not to edit files. The profile gives the specialist its working approach; your request defines what you want from this particular chat."
+      },
+      {
+        "id": "result",
+        "shown": "Read genuine specialist reply.",
+        "text": "Read the response against the role you chose. We get a short review and a suggested alternative, without a code change. For one specialist’s advice, this is enough; coordinated work with several bandmates belongs in a lead-managed Band."
+      }
+    ]
+  },
+  "Build a Feature with Your Band": {
+    "title": "Build a Feature with Your Band",
+    "playlist": "band",
+    "titleLines": [
+      "Build a feature",
+      "with your Band"
+    ],
+    "subtitle": "Specialists in parallel, coordinated by one lead",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Match specialists to a shared task, follow their parallel work and inspect the lead’s integrated result.",
+      "overlap": "Go deeper than the Getting Started overview by making role suitability, shared brief and checking the combined result explicit.",
+      "critique": "Do not present parallelism as guaranteed speed or imply separate specialists remove integration responsibility.",
+      "revision": "Benefit first; use plain spoken language, then real controls and a visible outcome. Remove unsupported claims and keep this lesson distinct.",
+      "evidenceGate": "Only existing real Choro Demo footage; inspect rendered scene frames before library publication."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Band panel beside the lead.",
+        "text": "A feature often needs different kinds of attention: the interface, the backend, and the checks that tie them together. With a Band, specialists can work in parallel while a lead coordinates one shared goal."
+      },
+      {
+        "id": "roles",
+        "shown": "Inspect specialist profile, model and skills.",
+        "text": "Choose specialists for the work they’re actually good at. A bandmate has its own direction, model and skills. That’s more specific than opening several general agents and giving each one a vague slice of the problem."
+      },
+      {
+        "id": "brief",
+        "shown": "Send a scoped shared request to the lead.",
+        "text": "Give the lead the overall goal and the boundaries. Explain the outcome you want, not just a list of files to change. The lead can split the work and keep the specialists pointed at the same result."
+      },
+      {
+        "id": "parallel",
+        "shown": "Lead assignments and Band status panel.",
+        "text": "Open the Band indicator to follow the assignments. Specialists can work at the same time, while the lead manages the path through the task. You’re not responsible for carrying every message between separate conversations."
+      },
+      {
+        "id": "inspect",
+        "shown": "Open specialist conversation and brief.",
+        "text": "When you need detail, open a specialist and inspect its brief and conversation. Check that its responsibility is clear. Then return to the lead for decisions that affect the whole feature."
+      },
+      {
+        "id": "integrate",
+        "shown": "Completed specialists and lead verification.",
+        "text": "The specialists finishing is not the end of the job. The lead brings their work together and checks the combined result. Read that result with the original goal in mind, especially where one specialist’s change depends on another’s."
+      },
+      {
+        "id": "result",
+        "shown": "Real combined feature in Preview.",
+        "text": "Finally, inspect the working feature. The benefit is coordinated specialization: the right agents, working in parallel, with one lead responsible for the whole path. You still review the outcome before you consider the task finished."
+      }
+    ]
+  },
+  "Set Up a Bandmate": {
+    "title": "Set Up a Bandmate",
+    "playlist": "band",
+    "titleLines": [
+      "Set up a",
+      "useful specialist"
+    ],
+    "subtitle": "A clear role, model and expected result",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Create and save a reusable bandmate profile.",
+      "overlap": "Do not rerun a complete feature; this lesson ends with a saved reusable profile.",
+      "critique": "Settings apply to new chats and tasks; existing chats retain their setup. Distinguish role instructions from optional skills.",
+      "revision": "Natural benefit-led explanation, no paid-avatar greeting, match claims to actual recorded outcomes.",
+      "evidenceGate": "Fresh Demo capture; inspect final scene/narration alignment before marking the draft ready."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Open the Band catalogue.",
+        "text": "If you keep giving agents the same kind of work, turn that role into a bandmate. The aim is not a clever name. It’s a clear responsibility, a suitable model, and a result you know how to review."
+      },
+      {
+        "id": "new",
+        "shown": "Create a new profile and name it.",
+        "text": "In Settings, open Band and choose New bandmate. Give it a recognizable name and describe when it should help. That description makes it easier to choose the right specialist later."
+      },
+      {
+        "id": "direction",
+        "shown": "Fill job instructions and expected result.",
+        "text": "Write the job instructions: how it should approach the work, what it should preserve, and where its responsibility ends. Then describe the expected result. In this example, the reviewer suggests wording without editing files."
+      },
+      {
+        "id": "model",
+        "shown": "Choose Codex, a model and effort.",
+        "text": "Choose a provider you already use, then the model and effort appropriate to the role. A narrow review may not need the largest model. The important thing is making this a deliberate setup rather than accepting every default."
+      },
+      {
+        "id": "skills",
+        "shown": "An optional focused skill is attached.",
+        "text": "You can also attach skills for reusable guidance. Keep them relevant to the specialist’s job. We’ve added a small writing guideline here; the separate skills lesson shows that setup in detail."
+      },
+      {
+        "id": "save",
+        "shown": "Save profile and confirm it appears enabled.",
+        "text": "Save the bandmate and check it appears in the list. It’s now available for new work. Notice that existing chats keep their original setup, so changing a profile is not a way to rewrite a conversation already in progress."
+      }
+    ]
+  },
+  "Give a Bandmate the Right Skills": {
+    "title": "Give a Bandmate the Right Skills",
+    "playlist": "band",
+    "titleLines": [
+      "Give specialists",
+      "the right skills"
+    ],
+    "subtitle": "Useful expertise, not a longer prompt",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Inspect and assign relevant skills in the specialist profile.",
+      "overlap": "Focus on skills and applicability, not repeat the whole Band workflow.",
+      "critique": "Must show actual skills selector; no invented guarantees that attaching a skill ensures correct behavior.",
+      "revision": "Benefit first; use plain spoken language, then real controls and a visible outcome. Remove unsupported claims and keep this lesson distinct.",
+      "evidenceGate": "Only existing real Choro Demo footage; inspect rendered scene frames before library publication."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Bandmate catalogue.",
+        "text": "A specialist needs more than a name. If the task depends on a particular workflow or set of conventions, give the bandmate the relevant skills so it has guidance it can use when that work comes up."
+      },
+      {
+        "id": "profile",
+        "shown": "Open backend specialist profile.",
+        "text": "Open the bandmate’s profile. Check its role and direction first. Skills should support that responsibility; they’re not a substitute for making the role clear."
+      },
+      {
+        "id": "skills",
+        "shown": "Inspect skills selector.",
+        "text": "Open the skills control and choose what applies to this specialist’s work. Keep the selection relevant. A backend specialist and an interface specialist may need different guidance, even when they’re building the same feature."
+      },
+      {
+        "id": "compare",
+        "shown": "Inspect another specialist profile.",
+        "text": "Compare the responsibilities across your Band. You want useful differences: the right model, direction and skills for each job. Giving every specialist the same setup misses much of the point."
+      },
+      {
+        "id": "work",
+        "shown": "Lead assigns actual work.",
+        "text": "When the lead delegates, those profiles give the work a more deliberate starting point. Check the result afterward, as you would with any agent. A skill provides guidance; it does not guarantee the output is correct."
+      }
+    ]
+  },
+  "Turn a Task into Agent Work": {
+    "title": "Turn a Task into Agent Work",
+    "playlist": "context",
+    "titleLines": [
+      "Turn a task",
+      "into agent work"
+    ],
+    "subtitle": "Keep the request connected to its implementation",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Start from a personal task, carry its requirements into an agent and return through the source link.",
+      "overlap": "Unlike document planning, this starts with a defined task that already says what should happen.",
+      "critique": "Show the prepared composer and Send; do not imply Implement immediately executes. Do not claim external-board setup is demonstrated.",
+      "revision": "Natural benefit-led explanation, no paid-avatar greeting, match claims to actual recorded outcomes.",
+      "evidenceGate": "Fresh Demo capture; inspect final scene/narration alignment before marking the draft ready."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Saved task with description and acceptance criteria.",
+        "text": "When the work is already written as a task, you shouldn’t have to retype it into an agent. Start from the task itself, so the request and the implementation stay connected. We’ll use a personal task for this example."
+      },
+      {
+        "id": "requirements",
+        "shown": "Read task scope and completion criteria.",
+        "text": "Open the task and check the description before you implement it. A useful task says what should change, what should stay the same, and how you’ll know it is finished. Clear context is still your starting point."
+      },
+      {
+        "id": "implement",
+        "shown": "Click Implement to prepare a linked composer.",
+        "text": "Choose Implement. Choro prepares the agent request with the task context. Review that request and the project before sending it. You can see where the work came from without copying the task by hand."
+      },
+      {
+        "id": "send",
+        "shown": "Send prepared request; TASK-2 appears in the header.",
+        "text": "Send the request to start the work. Notice the task reference in the agent header. That link keeps the source available while the conversation and the implementation develop."
+      },
+      {
+        "id": "result",
+        "shown": "Real completed change, Files changed and What to check.",
+        "text": "When the agent finishes, compare the result with the task’s completion criteria. Read the changed files and the checks it suggests. Starting from a task gives you context; it doesn’t remove the need to review the work."
+      },
+      {
+        "id": "source",
+        "shown": "Open source task from agent header.",
+        "text": "Use the header link to return to the task. You can read the original request again instead of searching another thread for it. That connection is the benefit: the task and the work remain part of the same story."
+      }
+    ]
+  },
+  "Start or Continue Agent Work on Mobile": {
+    "title": "Start or Continue Agent Work on Mobile",
+    "playlist": "mobile",
+    "titleLines": [
+      "Give the next",
+      "direction from mobile"
+    ],
+    "subtitle": "Continue the same agent conversation",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Send a follow-up from the phone and see it continue on the Mac.",
+      "critique": "Choose the continue branch of this lesson; do not pretend new-agent configuration was captured.",
+      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
+      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
+      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Open a connected project on iPhone.",
+        "text": "A small follow-up doesn’t always need to wait until you’re back at your desk. With control enabled for your phone, you can continue an existing agent conversation in Choro Remote."
+      },
+      {
+        "id": "context",
+        "shown": "Read existing conversation.",
+        "text": "Choose the project and open the conversation that already holds the relevant work. Read the latest context first. A continuation belongs in this thread when it builds on the same goal and earlier decisions."
+      },
+      {
+        "id": "write",
+        "shown": "Compose the genuine follow-up.",
+        "text": "Write the next instruction with a clear boundary: what should happen now, and what should remain unchanged. The phone gives you a smaller screen, but the request still deserves the same care as it would on the Mac."
+      },
+      {
+        "id": "send",
+        "shown": "Tap Send on the phone and show continuation.",
+        "text": "Check the message, then send it. Wait for the conversation to show that the work has continued. If the device does not have permission for the action, change that deliberately on the Mac rather than assuming every phone can act."
+      },
+      {
+        "id": "mac",
+        "shown": "Show the resulting Mac conversation.",
+        "text": "On the Mac, the follow-up and result are in that same conversation. You can inspect the changed files there when you return. The handoff is between devices, not between two disconnected versions of the task."
+      }
+    ]
+  },
+  "Meet Choro Remote": {
+    "title": "Meet Choro Remote",
+    "playlist": "mobile",
+    "titleLines": [
+      "Your project,",
+      "away from the desk"
+    ],
+    "subtitle": "Follow the Mac from your iPhone",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Understand the phone as a companion to a connected Mac, not a replacement execution environment.",
+      "critique": "Do not imply the phone runs local development tools or demonstrate pairing without footage.",
+      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
+      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
+      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Projects on the connected phone.",
+        "text": "Stepping away from your desk shouldn’t mean losing track of the work. Choro Remote gives you a way to follow your projects and agent conversations from your iPhone."
+      },
+      {
+        "id": "place",
+        "shown": "Open an existing conversation.",
+        "text": "The project and the agent work stay on the Mac. The phone is your connection to that workspace, so the Mac needs to be available. You’re continuing the same work, not copying it into a separate mobile project."
+      },
+      {
+        "id": "respond",
+        "shown": "Type and send an actual phone reply.",
+        "text": "When a conversation needs you, read the context and respond from the phone. The actions available depend on the access you’ve granted that device. You don’t have to give every phone the same level of control."
+      },
+      {
+        "id": "result",
+        "shown": "Matching continuation on the Mac.",
+        "text": "Back on the Mac, that reply is part of the same conversation. That’s the useful idea: check in, give the next direction when needed, and return to your existing workspace. Pairing and access choices have their own lessons."
+      }
+    ]
+  },
+  "Check Agent Progress from Your Phone": {
+    "title": "Check Agent Progress from Your Phone",
+    "playlist": "mobile",
+    "titleLines": [
+      "Check in without",
+      "starting over"
+    ],
+    "subtitle": "Read the project and conversation before responding",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Find the relevant phone conversation and distinguish reading progress from approving results.",
+      "critique": "Do not show internal review prompt leaked later in the old mobile take. Only use clean early conversation ranges.",
+      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
+      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
+      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Connected phone project list.",
+        "text": "If you’ve stepped away while an agent is working, start by finding the right project. The phone lets you check the conversation without starting another task just to ask what happened."
+      },
+      {
+        "id": "thread",
+        "shown": "Open the existing agent thread.",
+        "text": "Open the agent and read the latest messages. Check the request as well as the reply, so you understand what the agent is trying to do. A status tells you where to look; the conversation gives you the reason."
+      },
+      {
+        "id": "decision",
+        "shown": "Conversation and composer.",
+        "text": "Decide whether you need to respond. If a choice is waiting on you, answer it clearly. If you only wanted an update, you can leave the conversation as it is. Checking progress does not require giving another instruction."
+      },
+      {
+        "id": "continue",
+        "shown": "Actual continuation after phone reply.",
+        "text": "When you do respond, keep following that same thread. Look for the new activity after your message, and review the result when it’s ready. Sending a reply and approving the finished work are separate decisions."
+      }
+    ]
+  },
+  "Meet Orbit": {
+    "title": "Meet Orbit",
+    "playlist": "orbit",
+    "titleLines": [
+      "Meet Orbit"
+    ],
+    "subtitle": "See the project beyond its code",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Understand Orbit as project context for environments, services and custom structured modules.",
+      "overlap": "Introduce the mental model; leave module creation and environment editing to focused lessons.",
+      "critique": "Do not imply analytics is a live dashboard or automatic discovery when this is a maintained event catalogue.",
+      "revision": "Benefit first; use plain spoken language, then real controls and a visible outcome. Remove unsupported claims and keep this lesson distinct.",
+      "evidenceGate": "Only existing real Choro Demo footage; inspect rendered scene frames before library publication."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Open Orbit overview.",
+        "text": "A project is more than its files. It also has environments, services, and details that are easy to lose between tools. Orbit gives those details a home inside the project, where you and your agents can find them."
+      },
+      {
+        "id": "environment",
+        "shown": "Show demo environment entries.",
+        "text": "Environments keep configuration organized by where the project runs. Open an environment to inspect its entries. This demo uses sample values; in a real project, keep secrets out of screenshots and shared recordings."
+      },
+      {
+        "id": "services",
+        "shown": "Open Services.",
+        "text": "Services show the systems this project depends on. Instead of remembering which integration does what, you can keep that context with the project and inspect it before making a change."
+      },
+      {
+        "id": "modules",
+        "shown": "Open Analytics module and event.",
+        "text": "Orbit can also hold your own structured modules. Here, Analytics is a catalogue of events: what an event means, where it belongs, and the properties it uses. This is project knowledge, not a chart of live traffic."
+      },
+      {
+        "id": "agent",
+        "shown": "Reference the Analytics module in an agent.",
+        "text": "You can bring that knowledge into an agent’s work. Reference the relevant module and explain the change. The agent has a concrete place to read the existing conventions instead of inventing a new one in isolation."
+      },
+      {
+        "id": "result",
+        "shown": "Inspect the added event row and details.",
+        "text": "After the work, check the module again. The new event is recorded alongside the others, so the context can stay useful for the next change. That’s the idea of Orbit: keep project knowledge connected to the work."
+      }
+    ]
+  },
+  "See Project Services and Integrations": {
+    "title": "See Project Services and Integrations",
+    "playlist": "orbit",
+    "titleLines": [
+      "Know what your",
+      "project connects to"
+    ],
+    "subtitle": "Inspect service context before you change code",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Locate and read project service entries before asking an agent to change an integration.",
+      "overlap": "Focus on service context; no repeated tour of environments or analytics.",
+      "critique": "The footage shows inspection, not connection authentication or live health checks. Do not promise these.",
+      "revision": "Match current UI label Integrations; distinguish detected dependency context from authenticated service health.",
+      "evidenceGate": "Only existing real Choro Demo footage; inspect rendered scene frames before library publication."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Services list.",
+        "text": "Before changing an integration, it helps to know what the project already uses. Orbit brings that service context into the workspace, so you can inspect the dependency before touching the implementation."
+      },
+      {
+        "id": "open",
+        "shown": "Open and read the services view.",
+        "text": "Open Orbit and choose Integrations. This view groups detected dependencies by their role in the project. Here, payment, analytics and observability tools are listed separately, making it easier to find the system involved in your task."
+      },
+      {
+        "id": "read",
+        "shown": "Hold service entries in view.",
+        "text": "Use these entries as project context. A listed service is not, by itself, proof that credentials are valid or that the service is healthy. Those are things to verify through the actual integration and its checks."
+      },
+      {
+        "id": "apply",
+        "shown": "Service context remains visible.",
+        "text": "When you ask for a change, be specific about the service involved and the behavior you want to preserve. Keeping this information with the project makes the handoff clearer, especially when someone else worked on the integration before you."
+      }
+    ],
+    "audioRevision": "-v2"
+  },
+  "Use an Orbit Module in a Project": {
+    "title": "Use an Orbit Module in a Project",
+    "playlist": "orbit",
+    "titleLines": [
+      "Bring Orbit context",
+      "into agent work"
+    ],
+    "subtitle": "Use a real event catalogue and check the result",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Reference an existing module in an agent request and confirm its data reflects the implementation.",
+      "overlap": "Skip custom schema creation; explain reading, referencing and checking an installed module.",
+      "critique": "Ground both the code edit and module row in genuine results; not automatic telemetry ingestion.",
+      "revision": "Benefit first; use plain spoken language, then real controls and a visible outcome. Remove unsupported claims and keep this lesson distinct.",
+      "evidenceGate": "Only existing real Choro Demo footage; inspect rendered scene frames before library publication."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Analytics module list.",
+        "text": "Some changes need more than code context. If your project tracks analytics events, you also need to know how those events are named and what they mean. Let’s use an Orbit module to keep that information involved in the work."
+      },
+      {
+        "id": "read",
+        "shown": "Inspect an existing event and its properties.",
+        "text": "Open the module and inspect an existing entry first. Notice the structure and conventions already in use. In this example, the module records events and their properties, so a new event should fit the same pattern."
+      },
+      {
+        "id": "reference",
+        "shown": "Select module context in the agent composer.",
+        "text": "Reference the module in the agent request. This makes the context explicit: the agent should use this catalogue, not just add a tracking call somewhere and leave the documentation behind."
+      },
+      {
+        "id": "request",
+        "shown": "Send request to add an event to code and Orbit.",
+        "text": "Ask for both sides of the change: implement the event where the behavior happens, and record it in the module. Keep the request narrow enough that you can check the code and the entry together."
+      },
+      {
+        "id": "code",
+        "shown": "Inspect genuine changed code.",
+        "text": "When the work is ready, inspect the code change. Confirm the event is attached to the intended behavior. A new row in a catalogue is useful, but it doesn’t replace checking the implementation."
+      },
+      {
+        "id": "entry",
+        "shown": "Open the new Orbit event and properties.",
+        "text": "Now return to the module and open the new entry. Check that its name, meaning and properties match the code. You’ve kept the implementation and the project context connected, which makes the next change easier to understand."
+      }
+    ]
+  },
+  "Ask Without Starting an Agent": {
+    "title": "Ask Without Starting an Agent",
+    "playlist": "productivity",
+    "titleLines": [
+      "Ask a question,",
+      "keep your place"
+    ],
+    "subtitle": "Quick answers with project context",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Choose Quick Ask scope, ask a question and inspect the answer without creating a task agent.",
+      "critique": "Do not claim read-only behavior means answers are guaranteed accurate; inspect stated evidence.",
+      "overlap": "Focus only on Quick Ask; no repeated tour of assets and doc implementation.",
+      "revision": "Remove generic feature praise; connect each control to a useful user decision.",
+      "evidenceGate": "Real recorded Demo UI only. No paid generation."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Quick Ask panel.",
+        "text": "Sometimes you need an answer, not another agent task. Quick Ask lets you ask a focused question with project context, while keeping your place in the work you were already doing."
+      },
+      {
+        "id": "scope",
+        "shown": "Select the project scope.",
+        "text": "Open Quick Ask and check the scope before you type. Choose the project you mean, especially if you have several open. A clear question in the wrong project can still lead to an unhelpful answer."
+      },
+      {
+        "id": "question",
+        "shown": "Ask a small question about the project.",
+        "text": "Ask one concrete question. You can use this to understand existing behavior or find the relevant context before deciding what to change. You’re asking for information here, not handing over an implementation task."
+      },
+      {
+        "id": "answer",
+        "shown": "Read the real answer.",
+        "text": "Read the answer and check any references it gives you. If it changes your understanding of the project, inspect the relevant source before acting. Quick access to an answer is useful; it does not replace checking important details."
+      },
+      {
+        "id": "return",
+        "shown": "Close Quick Ask and return to project context.",
+        "text": "Close the panel and carry on where you were. If the next step is actual work, start an agent with the context you’ve clarified. Quick Ask is the lighter option when the immediate need is simply to understand something."
+      }
+    ]
+  },
+  "Dictate Prompts and Messages": {
+    "title": "Dictate Prompts and Messages",
+    "playlist": "productivity",
+    "titleLines": [
+      "Say the request,",
+      "then check it"
+    ],
+    "subtitle": "Dictation into the composer",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Locate dictation, show its active state, review composer text and distinguish dictation from sending.",
+      "critique": "Existing take uses staged text after real active dictation, explicitly approved by user. Do not claim the recording proves exact speech-recognition accuracy.",
+      "overlap": "Skip scripts and code review; focus on input and correction before sending.",
+      "revision": "Remove generic feature praise; connect each control to a useful user decision.",
+      "evidenceGate": "Real recorded Demo UI only. No paid generation."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Composer and top microphone control.",
+        "text": "A quick request can be easier to say than to type. Dictation puts spoken input into the composer, so you can review the wording before it becomes an agent request."
+      },
+      {
+        "id": "start",
+        "shown": "Click top microphone and show active state.",
+        "text": "Use the microphone control to start dictation. Watch the active indicator so you know when it is listening. Microphone access needs to be available for the app; the control itself is not a substitute for that permission."
+      },
+      {
+        "id": "speak",
+        "shown": "Hold actual active dictation state.",
+        "text": "Speak one clear request at a time. Include the important boundaries, just as you would in a typed message: what should change and what should stay the same. You do not need to dictate a long specification in one go."
+      },
+      {
+        "id": "stop",
+        "shown": "Stop dictation.",
+        "text": "Stop dictation when you finish the thought. Keep dictation and sending as separate decisions, so you have a chance to check the text before the agent acts on it."
+      },
+      {
+        "id": "check",
+        "shown": "Prepared example text in composer after cut.",
+        "text": "Here is the kind of request you want in the composer. Check names, file paths and technical terms carefully, and correct anything that is wrong. Then send only when the message says what you meant."
+      }
+    ]
+  },
+  "Find Anything in a Project": {
+    "title": "Find Anything in a Project",
+    "playlist": "productivity",
+    "titleLines": [
+      "Find the context",
+      "you need"
+    ],
+    "subtitle": "Files, documents, conversations and projects",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Use Quick Open, filter results and open actual file/document results.",
+      "overlap": "Keep this about navigation, not asking AI a question or editing the file.",
+      "critique": "Search scope and result types should be visible; do not claim semantic content search when this demonstrates Quick Open.",
+      "revision": "Natural benefit-led explanation, no paid-avatar greeting, match claims to actual recorded outcomes.",
+      "evidenceGate": "Fresh Demo capture; inspect final scene/narration alignment before marking the draft ready."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Quick Open with file and chat results.",
+        "text": "When a project has files, documents and several agent conversations, finding the right thing should not mean opening every panel. Quick Open gives you one place to start."
+      },
+      {
+        "id": "search",
+        "shown": "Open Search and type a filename.",
+        "text": "Open Search in the sidebar, or use Command P with the default shortcut. Type part of the name you’re looking for. Check the active project and the result type so you open the right item."
+      },
+      {
+        "id": "filter",
+        "shown": "Choose Files filter.",
+        "text": "Narrow the results when you know what kind of item you need. Here, the Files filter removes the conversation matches and leaves the matching file. It’s a simple way to reduce the noise."
+      },
+      {
+        "id": "file",
+        "shown": "Open index.html in Code.",
+        "text": "Open the result and you land in the file itself. You can inspect it immediately, without first walking through the folder tree. Search is a shortcut to the item, not a separate copy of it."
+      },
+      {
+        "id": "doc",
+        "shown": "Search Launch Plan and open the document result.",
+        "text": "The same search can find a project document. Choose the document result rather than the underlying file when you want its document view. Use the result labels to tell the difference."
+      },
+      {
+        "id": "finish",
+        "shown": "Loaded document in Docs.",
+        "text": "Now the context you needed is open in its usual place. That is the habit: search for the item, narrow by type when needed, and carry on in the right part of the project."
+      }
+    ]
+  },
+  "Customize Shortcuts and Notifications": {
+    "title": "Customize Shortcuts and Notifications",
+    "playlist": "productivity",
+    "titleLines": [
+      "Make Choro fit",
+      "your workflow"
+    ],
+    "subtitle": "Inspect key bindings and choose useful interruptions",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Locate shortcut capture, restore a binding and understand notification options.",
+      "overlap": "Not a catalogue of every shortcut; show one setting and explain notification tradeoffs.",
+      "critique": "Custom binding saved but did not invoke action in this recording. Keep the draft explicitly flagged; do not claim verified shortcut execution.",
+      "revision": "Natural benefit-led explanation, no paid-avatar greeting, match claims to actual recorded outcomes.",
+      "evidenceGate": "Fresh Demo capture; inspect final scene/narration alignment before marking the draft ready."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Keyboard shortcuts page.",
+        "text": "Small interruptions and awkward shortcuts can add up during a day of work. Choro puts these preferences in Settings, so you can inspect the controls and choose a workflow that fits you."
+      },
+      {
+        "id": "find",
+        "shown": "Filter shortcuts by action name.",
+        "text": "Open Keyboard shortcuts and search for the action, not just the key combination. The list shows what the action does and its current binding. That makes it easier to change the right thing."
+      },
+      {
+        "id": "capture",
+        "shown": "Capture a different combination; Modified badge appears.",
+        "text": "Click the keycap and press the combination you want to assign. The Modified badge shows a custom setting. Test the action afterward; seeing the new keycap is not the same as confirming the shortcut works."
+      },
+      {
+        "id": "restore",
+        "shown": "Restore the single binding to default.",
+        "text": "If you want the original binding back, use the reset control for that action. You don’t need to reset all your shortcuts just to undo one experiment."
+      },
+      {
+        "id": "notify",
+        "shown": "Notification controls and explanatory copy.",
+        "text": "In Notifications, look at questions and approvals separately from turn completion. A question may need your decision, while a completed turn can often wait. You can also inspect the sound setting and the macOS permission note."
+      },
+      {
+        "id": "finish",
+        "shown": "Hold options without changing permissions.",
+        "text": "Choose interruptions that help you notice important work without announcing every update. This is a personal preference, so start with the events you actually need and adjust as you learn how you work."
+      }
+    ]
+  },
+  "Ship Completed Work": {
+    "title": "Ship Completed Work",
+    "playlist": "review",
+    "titleLines": [
+      "Ship completed",
+      "work"
+    ],
+    "subtitle": "From a reviewed change to a merged pull request",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Choose a shipping scope, inspect the branch and PR details, ship and merge inside Choro.",
+      "overlap": "Skip the implementation, verification and code-review walkthroughs covered earlier.",
+      "critique": "Shipping is not deployment. Only promise commit, push, PR and merge states actually recorded; explain merge is a separate decision.",
+      "revision": "Benefit first; use plain spoken language, then real controls and a visible outcome. Remove unsupported claims and keep this lesson distinct.",
+      "evidenceGate": "Only existing real Choro Demo footage; inspect rendered scene frames before library publication."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Completed work and project Git header.",
+        "text": "You have a change ready, but it still needs to reach the shared project. Shipping brings the Git steps into the same workspace. We’ll choose what to include, check the pull request, and merge it from Choro."
+      },
+      {
+        "id": "git",
+        "shown": "Inspect Git panel and tabs.",
+        "text": "Open the Git panel for the project. This gives you a wider view of the repository, including changes and branches. Before shipping, make sure you’re in the right project and understand the changes you’re about to send."
+      },
+      {
+        "id": "scope",
+        "shown": "Open Ship and inspect scope.",
+        "text": "Choose Ship from the agent. Review the scope here rather than assuming every local change belongs in this delivery. This step connects the completed agent work to the Git operation you’re about to run."
+      },
+      {
+        "id": "branch",
+        "shown": "Read the proposed new branch.",
+        "text": "Check the new branch and its destination. A separate branch lets you share this piece of work without immediately merging it into the base branch. Choose a name that makes the change recognizable."
+      },
+      {
+        "id": "details",
+        "shown": "Review commit and pull-request text.",
+        "text": "Read the generated commit and pull-request details. They’re a starting point, not something to accept blindly. Make sure the description explains the change and that the listed work is what you intended to ship."
+      },
+      {
+        "id": "ship",
+        "shown": "Click Ship.",
+        "text": "Now ship the work. Choro runs the steps for this flow: committing the change, pushing the branch, and opening the pull request. We’ll skip the waiting and check the actual result."
+      },
+      {
+        "id": "shipped",
+        "shown": "Shipped modal confirms the pull request.",
+        "text": "The shipped result shows where the work landed. The pull request is open, but that does not mean it has been merged or deployed. You still have a separate decision to make."
+      },
+      {
+        "id": "merge",
+        "shown": "Merge PR inside Choro.",
+        "text": "When the review requirements are satisfied and you’re ready, choose Merge PR here in Choro. Keep the process in the workspace and wait for the merge result, rather than treating the button click as success."
+      },
+      {
+        "id": "done",
+        "shown": "Merged confirmation and mark Done.",
+        "text": "The confirmation now shows the pull request merged. You can mark the agent task Done and close the loop. The useful distinction is simple: finish the change, ship it for review, then merge when it’s ready."
+      }
+    ]
+  },
+  "Open Your Running Project in Preview": {
+    "title": "Open Your Running Project in Preview",
+    "playlist": "preview",
+    "titleLines": [
+      "See the product",
+      "beside the work"
+    ],
+    "subtitle": "Use the live project Preview",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Open the already-running project and use real controls inside Preview.",
+      "critique": "This cut starts with an already-running script; don't invent URL detection or show a static screenshot as an interactive preview.",
+      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
+      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
+      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "shown": "Actual working product inside Choro Preview.",
+        "text": "Reading code tells you what changed. Preview lets you see how the product behaves, right beside the agent conversation. You can check the result without losing the context of the work."
+      },
+      {
+        "id": "running",
+        "shown": "Running Preview script appears in sidebar and toolbar.",
+        "text": "Start with your project’s development service running. Here the saved Preview script is already active. Preview displays the app; it does not replace the process that serves it, so check that process if the page cannot load."
+      },
+      {
+        "id": "open",
+        "shown": "Open Preview from the toolbar.",
+        "text": "Open Preview in the project toolbar. The page appears beside the conversation, and its address identifies the running app. Check you’re viewing the intended project before judging the result."
+      },
+      {
+        "id": "interact",
+        "shown": "Choose Espresso in Preview; selection changes while stored preference remains separate.",
+        "text": "Try a control and watch its state change. Here, choosing a different preference changes the selected option. That is a useful first check, but a visual change alone does not prove the new value was saved."
+      },
+      {
+        "id": "finish",
+        "shown": "Result remains beside implementation conversation.",
+        "text": "Keep the preview and the conversation together while you review. If something needs changing, you can give specific feedback with the visible result in front of you. The separate visual-feedback lesson goes into that workflow."
+      }
+    ],
+    "audioRevision": "-v2"
+  }
+}
+  </script>
+  <script type="application/json" id="completed-video-files">
+[
+  {
+    "id": "meet",
+    "title": "Meet Choro and the Core Workflow",
+    "folder": "meet-choro-alex-d-20260919",
+    "file": "meet-choro-philosophy-first-alex-d-4k.mp4"
+  },
+  {
+    "id": "projects",
+    "title": "Projects Are More Than Repositories",
+    "folder": "projects-have-a-home-alex-d-20260919",
+    "file": "projects-have-a-home-alex-d-final-4k.mp4"
+  },
+  {
+    "id": "first-agents",
+    "title": "Complete Your First Agent Flow",
+    "folder": "first-agents-across-projects-alex-d-20260919",
+    "file": "first-agents-across-projects-alex-d-final-4k.mp4"
+  },
+  {
+    "id": "docs-idea",
+    "title": "Shape an Idea with Docs",
+    "folder": "shape-an-idea-with-docs-alex-d-20260919",
+    "file": "shape-an-idea-with-docs-alex-d-clear-controls-4k.mp4"
+  },
+  {
+    "id": "context",
+    "title": "Work from Context: Tasks and Docs",
+    "folder": "context-to-work-alex-d-20260918",
+    "file": "work-from-context-alex-d-4k-new-endcards.mp4"
+  },
+  {
+    "id": "plan",
+    "title": "Plan the Work Before Building",
+    "folder": "plan-before-you-build-alex-d-20260918",
+    "file": "plan-before-you-build-alex-d-4k-new-endcards-shortcuts.mp4"
+  },
+  {
+    "id": "scripts",
+    "title": "Run Scripts and Fix Backend Work",
+    "folder": "scripts-dictation-review-alex-d-20260919",
+    "file": "scripts-and-code-review-alex-d-greeting-fixed-4k-new-endcards-shortcuts.mp4"
+  },
+  {
+    "id": "code",
+    "title": "Explore Code, Files, Terminal, and Database",
+    "folder": "code-files-terminal-database-20260919",
+    "file": "explore-code-files-terminal-database-alex-d-4k-new-endcards.mp4"
+  },
+  {
+    "id": "quick-ask",
+    "title": "Ask and Add Context Without an Agent",
+    "folder": "quick-ask-and-context-alex-d-20260919",
+    "file": "quick-ask-and-context-alex-d-4k-new-endcards-shortcuts.mp4"
+  },
+  {
+    "id": "orbit",
+    "title": "Explore Orbit's Project Intelligence",
+    "folder": "orbit-project-intelligence-20260919",
+    "file": "orbit-project-intelligence-alex-d-final-4k-new-endcards.mp4"
+  },
+  {
+    "id": "ship",
+    "title": "Ship the Completed Work",
+    "folder": "ship-completed-work-20260919",
+    "file": "ship-completed-work-alex-d-final-4k-new-endcards.mp4"
+  },
+  {
+    "id": "band",
+    "title": "Work in Parallel with Specialist Agents",
+    "folder": "band-parallel-specialists-20260919",
+    "file": "band-parallel-specialists-alex-d-aligned-4k-new-endcards.mp4"
+  },
+  {
+    "id": "solo",
+    "title": "Try Parallel Work with Solo",
+    "folder": "solo-worktrees-and-previews-20260919",
+    "file": "solo-worktrees-and-previews-alex-d-final-4k-new-endcards.mp4"
+  },
+  {
+    "id": "mobile",
+    "title": "Take Choro with You on Mobile",
+    "folder": "mobile-remote-overview-20260919",
+    "file": "take-choro-with-you-on-mobile-alex-d-clear-layout-4k.mp4"
+  }
+]
+  </script>
   <script>
     const recordingFlows = {
       "Build a Feature with Your Band": {
@@ -636,6 +2528,15 @@
           "Finish on the lead’s verification and the working app in Preview; distinguish a bandmate finishing from the whole task being complete."
         ],
         "outcome": "The working to-do app, both contributions, and the lead’s combined verification visible."
+      },
+      "Create Specialists on Demand": {
+        "steps": [
+          "Use a disposable Git project with Delegation enabled and open a regular lead chat.",
+          "Select On-demand teammate in the composer and ask for two narrow roles: review the wording and inspect the page structure. Do not select a saved profile.",
+          "Show the actual assignments and distinct briefs. Explain that on-demand teammates inherit the lead setup; do not imply automatic custom models or skills.",
+          "Open both assignment chats to inspect their work, then return to the lead's real combined result."
+        ],
+        "outcome": "Focused specialist assignments created for the current task without configuring reusable Bandmates beforehand."
       },
       "Set Up a Bandmate": {
         "steps": [
@@ -683,25 +2584,16 @@
         ],
         "outcome": "The correction delivered to the right assignment and the result traceable back to the lead."
       },
-      "Stop Your Band and Resume When Ready": {
-        "steps": [
-          "Stop a prepared active run from the lead and show that the bandmates stop while their chats and files remain.",
-          "Send a follow-up to the lead and show that the conversation continues without restarting the bandmates.",
-          "Restart the demo app and reopen the stopped run; show that delegated work has not resumed automatically.",
-          "Choose Resume bandmates explicitly and show the saved assignments continuing after recovery checks.",
-          "Point out End delegation · Keep files as the alternative when the user wants to leave the run stopped and move on."
-        ],
-        "outcome": "Saved assignments resume only after the user chooses, with their earlier work intact."
-      },
       "Meet Choro and the Core Workflow": {
         steps: [
-          "Start with several projects and agent statuses visible in the shared navigation.",
-          "Move between two projects and their agents to establish the multi-project view.",
-          "Open the demo project and pause on its project home and right-side activities.",
-          "Use quick cuts to open an agent, a Task or Doc, and Preview in the center workspace.",
-          "Return to the wide view with navigation, project home, and active work visible together."
+          "Open with the approved short title and greeting, then explain the problem using separate work/context cards. Do not show the app yet.",
+          "Adapt the landing page's connected-project diagram: bring agents, documents, tasks, and tools together. Explain why Choro exists and that the user still steers.",
+          "Reveal real Choro footage only after the philosophy opening: project home, then the different ways to start work.",
+          "Show actual agents across projects and the Band lead coordinating specialists; keep this a high-level overview.",
+          "Show changed files, a working Preview, code, terminal, services, and the shipped result inside Choro.",
+          "Return to the connected-project idea and close with the approved logo outro. No subtitles or bottom labels."
         ],
-        outcome: "The complete Choro mental model: many projects and agents, one project home, and a center workspace where work happens."
+        outcome: "Understand why Choro exists: keep projects, context, and agents connected while the user stays in control; then see the core capabilities in real work."
       },
       "Projects Are More Than Repositories": {
         steps: [
@@ -722,6 +2614,17 @@
           "Open What to Check and show what passed and what still deserves attention."
         ],
         outcome: "A complete, uncomplicated agent loop from request to result, changed files, and the checks the user should make."
+      },
+      "Shape an Idea with Docs": {
+        steps: [
+          "Create a new document in Choro Demo and give it a clear feature name.",
+          "Write a few rough sentences explaining the goal and undecided scope.",
+          "Open the document assistant and ask it to turn the idea into a small feature plan in the document.",
+          "Cut waiting; show the actual document changes, then ask the assistant to simplify the first release and move extras to Later.",
+          "Edit a sentence directly and scan the goal, scope, and expected behavior.",
+          "Point to Design and Implement without activating either. End on the finished document."
+        ],
+        outcome: "A clearer feature document created with the assistant, ready for the next lesson's context-to-agent workflow."
       },
       "Work from Context: Tasks and Docs": {
         steps: [
@@ -769,7 +2672,9 @@
           "Open Code in the same demo project.",
           "Expand Files and open one representative source file in the editor.",
           "Use Terminal for one short read-only command.",
-          "Open Database and show a prepared table or query surface without changing data.",
+          "Briefly show Manage with Database enabled; it is an optional area, not shown by default.",
+          "Show the local SQLite connection setup and test it with read-only access; use the existing connection if already prepared, without adding a duplicate.",
+          "Open the connected demo database and inspect its orders table without changing data.",
           "Return to the combined technical workspace view."
         ],
         outcome: "The files, editor, terminal, and database surfaces mapped as one direct technical workspace."
@@ -789,10 +2694,11 @@
           "Open Orbit and show the Environment view with sensitive demo values hidden.",
           "Open Integrations or Services and scan the detected project inventory.",
           "Briefly show the Add to Orbit or custom-view concept.",
-          "Open the pre-made Analytics view and show its sample records and fields.",
-          "Point out that a record can start an agent job, but do not run it."
+          "Open the prepared Analytics view and show two records matching real event calls in the local demo code.",
+          "Select /Analytics in an agent composer and ask it to add one small event in code and update the Orbit entry in the same job.",
+          "Cut the waiting; show the actual code change and Orbit update, then open the new event row and its properties."
         ],
-        outcome: "Orbit's built-in project knowledge and a useful custom Analytics view shown at a high level."
+        outcome: "Environment and detected services are visible, and a real agent change adds an Analytics event to both the code and Orbit."
       },
       "Ship the Completed Work": {
         steps: [
@@ -803,6 +2709,17 @@
           "Complete the prepared flow and show the new branch, commit, push, pull request, and checks."
         ],
         outcome: "The completed work delivered as a traceable branch and pull request without repeating earlier review lessons."
+      },
+      "Work in Parallel with Specialist Agents": {
+        steps: [
+          "Prepare a disposable demo project with Delegation enabled in Settings → Beta features. Confirm UI Designer and Backend Engineer are ready with existing Codex or Claude access; do not record a setup tutorial.",
+          "Briefly show Settings → Band and one bandmate’s model, instructions, and skills without editing them.",
+          "Start a lead chat with one small goal and explicitly request UI Designer for the interface and Backend Engineer for persistence. Prepare independent file scopes and a shared contract so useful work can genuinely overlap.",
+          "Show the lead’s assignments and open the Band panel. Capture both specialists actually active in parallel; do not present sequential work as simultaneous.",
+          "Visit each assignment chat to show its brief and progress, then return to the lead. Cut execution waits and skip advanced feedback, recovery, and configuration controls.",
+          "Show the completed contributions, the lead’s integration and real verification, then the working feature in Choro Preview. Keep narration about the capability, not the demo’s implementation details."
+        ],
+        outcome: "Two specialist contributions brought into one working, verified result, with the lead and assignment chats still accessible."
       },
       "Try Parallel Work with Solo": {
         steps: [
@@ -943,14 +2860,14 @@
         ],
         outcome: "The new pull request open with its summary and checks visible."
       },
-      "Track PRs and Workflows": {
+      "Save a Git Workflow: Dev to Main": {
         steps: [
-          "Open Git and switch to Pull Requests.",
-          "Open a prepared pull request linked to recent agent work.",
-          "Inspect its checks or workflow runs and open one status detail.",
-          "Return to the pull request overview and show its merge state."
+          "Open Git → Workflows in the private Demo repository, with a real dev branch ahead of main.",
+          "Create a named workflow with source dev, destination main, and Confirm before merge.",
+          "Run the saved workflow, review the remote comparison, and create or reuse the pull request inside Choro.",
+          "Confirm the merge when repository requirements allow it, show completion, and point out that the saved workflow remains available for next time."
         ],
-        outcome: "The pull request overview with checks and merge readiness visible."
+        outcome: "A reusable dev-to-main workflow and its completed PR merge, with the local working branch and files left untouched."
       },
       "Run Saved Project Scripts": {
         steps: [
@@ -1201,20 +3118,312 @@
       }
     };
 
+    // Each tuple is [scene, visible actions / edit direction, spoken draft].
+    // Approval happens with the user, not in localStorage. Nothing is marked approved here.
+    const gettingStartedScenes = {
+"Meet Choro and the Core Workflow": [
+        ["1 · Welcome","Approved short title and Alex; no app.","Hey, I'm Alex from Choro."],
+        ["2 · The problem","Separate agent, document, code and task cards; focus shifts between work, progress and outcome.","Working with AI agents makes it easier to build things. But once a few things are moving, keeping track gets harder. What's changed? What's still running? And does the result actually match what you wanted?"],
+        ["3 · Why Choro","Landing-page project diagram connects agents, code, documents and tasks to their projects.","That's why we built Choro. We wanted a place where the whole project stays together—not just the code, but the thinking, the conversations, and the work happening around it."],
+        ["4 · You steer","Connected diagram settles; You steer remains the focus. Reveal the real app only after this.","The idea is simple: let agents help you move faster, without losing your understanding of what you're building. You still steer the work. Let me show you how that comes together."],
+        ["5 · A project home","Real project home: document, task, then agent conversation.","You start with your project. And here, a project isn't just a folder you point an agent at. It has its own tasks, documents, conversations, and tools. So when you come back, the context is still there."],
+        ["6 · Ways to start","Direct request, prepared document, task, then existing plan. Overview only; no shortcut demonstration.","Sometimes you know exactly what you want, and you can just ask an agent. Other times, you want to think through an idea in a document, start from a task, or make a plan first. You don't have to approach every piece of work the same way."],
+        ["7 · Work in parallel","Two agents in separate projects; then Band lead with specialists.","And you don't have to sit in one conversation waiting. You can have agents working on different things—even in different projects. For work that needs a few specialties, a lead agent can coordinate specialists working in parallel."],
+        ["8 · Inspect the result","Changed files, actual diff, working preview; pointer follows demonstrated preview click.","As the work comes back, you can see what changed, try the result, and give feedback. You're not just taking an agent's word for it. You can look at the actual work and decide what needs another pass."],
+        ["9 · Get hands-on and ship","Code, terminal, Orbit services, shipped/merged result inside Choro.","When you want to get hands-on, the code and terminal are here too. You can explore the services your project uses, review a change, and take it through to shipping—all in the same workspace."],
+        ["10 · Bring it together","Return to connected project diagram, then approved logo outro.","That's the idea behind Choro: your projects, their context, and the agents helping you build—all connected. Start with one small request, and bring in more of the tools as you need them. Let's get your first project set up."]
+      ],
+      "Projects Are More Than Repositories": [
+        ["1 · Why a project","Keep the short approved pause after the greeting. Populated project overview after the short title card.","Hey, I’m Alex from Choro. Your project is more than the code in its folder. There are things you want to build, decisions you’ve made, and work already happening. In Choro, the project is where all of that comes together."],
+        ["2 · Add it","Add a new prepared disposable project folder through the actual Add Project flow. Exclude personal filesystem paths from edit.","We’ll start by adding the folder we want to work in. That connects Choro to the project’s files and gives us a workspace we can keep coming back to."],
+        ["3 · Keep context together","Open an actual prepared task and document in the selected project. If populated later, use an honest cut, not a claim of automatic creation.","Tasks give us somewhere to keep the work we want to do. Documents give us room to think through an idea or write down what matters. They stay with the project, so we don’t have to explain everything again from scratch."],
+        ["4 · Work and tools","Show its agents, then Code and Orbit. No Design controls.","The agents working on the project belong here too. And when we need to look at the code, or understand the project’s environment and services, those are part of the same workspace."],
+        ["5 · Come back to it","Switch to a different project with distinct content, then return.","Each project has its own context. When we switch, we’re moving into that project’s work—not mixing everything into one long conversation. And when we come back, we can pick up where we left off."],
+        ["6 · Close","Return to project home, then the approved new outro.","So the folder is the starting point. The project becomes the home for everything around it. From here, we’re ready to start working with an agent."]
+      ],
+      "Complete Your First Agent Flow": [
+        ["1 · Start simply","Keep the short approved pause after the greeting. Wide demo workspace with two clearly different project names.","Hey, I’m Alex from Choro. You don’t need a detailed plan or a big setup to get started. Sometimes you just know what you want changed. Let’s give an agent a small request, then start another in a different project while the first one is still working."],
+        ["2 · First project","Project A: New Agent, simple scoped HTML request, existing defaults, Send. Log actual start time.","Start a new agent in your project and describe what you want. Give it enough detail to understand the result you’re after. We’ll keep this one small and leave the settings as they are."],
+        ["3 · Second project","Before A finishes, switch to Project B and submit a different small scoped request. Both must genuinely overlap.","Now, we don’t have to wait here. Let’s switch to another project and start a second agent. This is separate work, with its own files and context. Both agents can keep going at the same time."],
+        ["4 · Follow both","Show both real active sidebar entries and switch between their actual conversations. Cut waits, never fabricate working states.","You can follow both from the sidebar and move into whichever conversation needs you. If an agent asks a question, answer it there. You’re not limited to one project or one conversation at a time."],
+        ["5 · Inspect the changes","Return to A's completed result; Changed Files; readable diff with no unrelated edits.","Once an agent finishes, the summary tells us what it did. Changed Files lets us look at the actual changes. That’s useful for checking whether the work matches what we asked for."],
+        ["6 · What to check","Open A's actual What to Check and try one suggested behavior in its Preview. Do not treat checklist items as automatic passes.","What to Check gives us specific things to try ourselves. These aren’t automatic passes. We’ll take one of the suggestions, try it in the app, and see whether the result behaves the way we expected."],
+        ["7 · The other result","Switch to B's genuine completed result and briefly show its own changed file or Preview. Avoid repeating the whole review lesson.","And here’s the result in our other project. Its conversation and changes stay with that project, so it’s clear which work we’re looking at."],
+        ["8 · Close the loop","Wide workspace with both agents, then approved outro.","That’s the basic flow: ask, inspect, and try the result. And while one piece of work is moving, you can start another somewhere else. Each project keeps its own context, and you can follow it all from here."]
+      ],
+      "Shape an Idea with Docs": [
+        ["1 · Welcome","Approved short title and greeting.","Hey, I'm Alex from Choro."],
+        ["2 · Why a document","Open Docs; new document. No implementation.","Sometimes you know what you want to build, but the idea isn't quite ready yet. There are a few things to figure out before you ask an agent to change anything. A document gives you somewhere to work through that."],
+        ["3 · Put the idea down","Create and name Quick Capture for Harbor Notes. Enter the prepared three-sentence rough idea.","You don't need to start with a finished specification. Just put down the idea—what you want to improve, who it's for, and anything you already know matters. A few rough sentences are enough to get going."],
+        ["4 · Build it together","Open Assistant, submit the feature-plan prompt, cut real waiting, and show actual changes inside the document.","Then bring in the document assistant. We can ask it to help organize the idea, work out the requirements, and point out decisions we haven't made yet. We're shaping the document together, before starting implementation."],
+        ["5 · Refine the scope","Ask the assistant to simplify the first release and move extras to Later. Show the updated document, not just chat.","This is where we can push back a little. Maybe the first version has become too big, or something important is missing. We can ask for a change and keep refining until the document says what we actually mean."],
+        ["6 · Make it yours","Edit one sentence directly; scan goal, scope and expected behavior. Use pointer clicks, no keyboard shortcut tutorial.","And we can edit it ourselves, too. The assistant helps us get there, but we still make the decisions. The useful result isn't a longer document—it's a clearer idea of what we're building, and what we're leaving out."],
+        ["7 · Where it goes next","Point to existing Design and Implement actions without activating them; no actual design/agent creation.","Once the direction feels right, we have somewhere to go from here. We can take the document into design, or start an agent to implement it. We won't do either just yet—the document is our starting point for that next step."],
+        ["8 · Close","Finished document then approved outro. Next lesson is Work from Context: Tasks and Docs.","So you don't have to figure everything out inside an implementation request. Start with the idea, work through it with the assistant, and move into building when you're ready. Next, we'll use that document to start the work."]
+      ],
+      "Work from Context: Tasks and Docs": [
+        ["1 · Work already has context", "Show the project with Tasks and Docs available; Alex greets, then a clear beat. Briefly show a prepared imported Jira task and a personal task without teaching import setup.", "Hey, I’m Alex from Choro. Sometimes the work is already there—a task from Jira, or something on your own list. Other times, you want to work through an idea in a document before asking an agent to build it. You can start from either one, without copying everything into a new conversation."],
+        ["2 · Start from a document", "Open the prepared document and scan its goal and requirements. Keep the example secondary to the feature.", "Let me show you with a document. We’ve already written down what we want here. We’ll take that context into the work, keep the two connected, and then check what the agent did."],
+        ["3 · Implement with context", "Click Implement. Show the source attached in the new agent. Briefly open the context picker to show an additional reference can be tagged; close it and send.", "Clicking Implement opens an agent with this document attached. We can add another reference if it helps, or just start from what’s already here. The point is that the agent starts with the context we’ve been working on."],
+        ["4 · Connected both ways", "In the same agent, click the document link in its header. In that same document’s header, open the linked-agent control and return. Record matching source and agent, not unrelated seeded examples.", "And they stay connected. We can jump back to the document from the agent’s header, or find the agent from the document. So it’s easy to move between the original context and the work happening from it."],
+        ["5 · Look at the result", "Cut past implementation. Open Changed Files and one diff, then briefly show What to Check.", "Once the agent finishes, we can inspect the changed files and try the suggested checks ourselves. We’re checking the result against what we wanted, not just reading the agent’s summary."],
+        ["6 · Verify against the context", "Request Verify. Cut the wait and show actual met, unclear or missed requirements. Don’t present unclear items as passed.", "We can also ask the agent to verify its work against the requirements. That can surface something missed or still unclear. It’s another check alongside trying the result ourselves."],
+        ["7 · Bring it together", "Finish on the document with its linked agent and result accessible.", "So whether the starting point is a task or a document, the context comes with the work—and stays connected while we review it. We don’t have to start from a blank conversation every time."]
+      ],
+      "Plan the Work Before Building": [
+        ["1 · When you need a plan", "Show a new agent in the same project. Pause after the greeting; don’t start implementation yet.", "Hey, I’m Alex from Choro. Sometimes you know what you want to achieve, but you haven’t worked out how to get there yet. That’s a good moment to plan with the agent before asking it to build."],
+        ["2 · Start in Plan", "Select Plan mode in Agent 3. Type a small feature request with one genuine open decision and send.", "We’ll switch to Plan and describe the goal. We don’t need to arrive with every answer. This is where we can work through the approach and make the important choices before implementation starts."],
+        ["3 · Answer the questions", "Cut to a real question modal. Read the choices, select an answer and submit; show where free-text clarification can go if available.", "The agent can ask about decisions that affect the work. We’ll answer the question here so the plan reflects what we actually want, rather than leaving that choice to an assumption."],
+        ["4 · Read and refine", "Cut to the completed plan. Scan its main steps and send one short refinement; cut to the revised plan.", "Now we have an approach we can look over. If something feels off, we can change it while it’s still a plan. That’s much easier than noticing a different expectation after the work is done."],
+        ["5 · Keep the plan close", "Show the persistent plan area at the bottom of the agent. Move within the conversation, then reopen the plan from there.", "The plan stays available in the agent, too. We can come back to it as the conversation moves on, without searching through the chat for the version we agreed on."],
+        ["6 · Implement", "Click Implement on the ready plan. Briefly show work starting, cut to completion and the visible result. No repeat Verify sequence.", "When the approach looks right, click Implement. We’ll skip the build time and look at the result. The useful part is that we made the decisions first, and the plan is still there when we need to refer back to it."]
+      ],
+      "Go from Task to Design to Preview": [
+        ["1 · See the idea first", "Show a small prepared UI task. Pause after the greeting. Use a simple screen, not a large design project.", "Hey, I’m Alex from Choro. When the work is visual, it helps to see the idea before you build it. Let’s take a task through design, turn it into working code, and make a small change in Preview."],
+        ["2 · Task to design", "Open the task, choose Design and show the initial request. Cut directly to the completed design; omit generation and exploration waits.", "We’ll start from this task and open Design. The task gives us the context for what we’re making. We’ll skip ahead to a prepared direction so we can focus on how it fits into the workflow."],
+        ["3 · A quick orientation", "Briefly point to the linked task, canvas, Design Assistant and Implement action. No tool-by-tool tour.", "Here’s the design, with the original task still connected. We can work on the direction with the assistant and look at it on the canvas. For this walkthrough, we’ll use the version that’s ready to build."],
+        ["4 · Implement the direction", "Click Implement, show the design attached to Agent 4, send, then cut to the completed result.", "Implement takes that design into an agent. So we’re not trying to describe the whole screen again from memory—the visual direction is part of the context for the work."],
+        ["5 · Try it in Preview", "Run the prepared app if needed, open Preview and use one relevant control in the implemented screen.", "Now we can open Preview and try the actual result. A design gives us a direction; this is where we see how it feels when it’s working."],
+        ["6 · Review a visible detail", "Select one element through Preview review and submit a small change. Cut all waiting; show the refreshed preview and the same element afterward.", "If a detail needs adjusting, we can point to it in Preview and explain the change. Once the update is ready, we can see it here. That keeps the feedback close to the thing we’re looking at."],
+        ["7 · The connected flow", "Hold on the updated working screen, then briefly reveal the connected task or design.", "That’s the loop: task, design, implementation, then feedback on the working result. We’ll go deeper into Design separately. For now, you’ve seen how it connects to the rest of the project."]
+      ],
+      "Run Scripts and Fix Backend Work": [
+        ["1 · Beyond the interface", "Show Run in a prepared demo project with saved backend/test scripts. Pause after greeting.", "Hey, I’m Alex from Choro. Not every change is something you can see on a screen. Let’s look at a backend workflow: run a saved script, ask for a small change, then use Code Review to look for things we missed."],
+        ["2 · Run a saved script", "Open Run, scan the saved commands and launch a short, safe test script. Show output alongside the agent workspace.", "These scripts are commands we’ve already set up for the project. We can run one here without typing it from scratch every time. It’s useful for things we repeat while working, like starting a service or running tests."],
+        ["3 · Make a backend change", "Open Agent 5, type a small request about input validation or an API response, then send. Cut to completion; keep example details out of narration.", "We’ll ask the agent for a small backend change. The script output stays available while we work, so we can use it to understand what’s happening rather than relying only on a chat summary."],
+        ["4 · Dictate a follow-up", "Use dictation for a simple follow-up about one edge case. Show the transcript, correct it if necessary and send. Do not dictate the first task in the course.", "And if it’s easier to say the follow-up, we can dictate it. I’ll check the text before sending. It’s the same conversation—just another way to get the request in."],
+        ["5 · Review the code", "Cut to the completed change, run Code Review, then open real prepared findings. Hold on one finding and its code location.", "Now let’s review the code. The findings give us specific things to inspect, rather than just a general feeling that the work is done. We can read what was flagged and decide what needs fixing."],
+        ["6 · Fix and check", "After inspecting the relevant findings, choose Fix All. Cut the wait, show the corrected diff and rerun the same test script. Use genuine output.", "For these findings, we’ll use Fix All and then look at the changes. We’ll run the checks again, too. A fix still needs checking; clicking the button isn’t the end of the review."],
+        ["7 · Close", "Finish with test output and the corrected agent result visible.", "So that’s a practical backend loop: saved commands, agent work, review and a check of the fixes. It’s the same project workspace, even when the change isn’t visual."]
+      ],
+      "Explore Code, Files, Terminal, and Database": [
+        ["1 · Direct control", "Open the project’s Code area. Pause after greeting. Use only disposable demo code and database data.", "Hey, I’m Alex from Choro. Working with an agent doesn’t mean you have to stay in the conversation. Sometimes you want to look at a file, run a command, or inspect the data yourself. Let’s find those tools."],
+        ["2 · Files and editor", "Expand Files, open a representative source file, navigate to a relevant function. Don’t change code.", "In Code, we can browse the project’s files and open them in the editor. That’s useful when we want to understand a change in its surrounding code, or just look something up directly."],
+        ["3 · Terminal", "Open Terminal in the project and run one short read-only command, such as git status. Leave its output visible.", "The terminal is here when we want to run a command ourselves. We can inspect the project’s state without asking the agent to act as the middleman for every small thing."],
+        ["4 · Enable and connect Database", "Briefly show Manage with Database already enabled. Show the local SQLite connection settings, read-only access and connection test. Use the prepared connection rather than adding a duplicate. Then open the orders table with fictional records only.", "Database is optional. If it isn’t in your sidebar, add it through Manage. Then connect your database—here, we’re using a local demo database. Once connected, we can open a table and inspect its records without leaving the project."],
+        ["5 · Back to the work", "Return to the agent with the file or terminal still easy to access. End on the combined technical workspace.", "You can move between agent help and direct inspection as the work needs it. The files, terminal and database are part of the project, so you don’t have to leave its context whenever you want to get hands-on."]
+      ],
+      "Ask and Add Context Without an Agent": [
+        ["1 · A quick question", "Show the project home. Pause after greeting. Keep this separate from the document-to-Implement workflow.", "Hey, I’m Alex from Choro. Sometimes you just want an answer about the project, not a whole new piece of agent work. Let’s use the context that’s already here, then see how we can bring it into an agent when we need to."],
+        ["2 · Make room for context", "Open Customize, enable the prepared Assets area and open one safe example asset. Do not repeat the database tour.", "We can customize the project to show the areas we use. Here, we’ll bring in Assets. The idea is to keep useful project material nearby, instead of hunting for it each time we need a reference."],
+        ["3 · Ask with context", "Open Quick Ask, attach or select the supported project reference, ask one concise question and show the answer. Don’t launch an agent.", "Quick Ask is for that smaller question. We can give it the relevant project context and get an answer without opening an agent conversation to do a task."],
+        ["4 · Read the answer", "Hold on the concise answer and the reference used. Open the source if the UI exposes it; do not imply citations when none are shown.", "Here’s the answer. Because we’ve made the context clear, we can compare it with the source rather than treating it as a guess about our project."],
+        ["5 · Reuse the reference", "Open New Agent, use the context picker to tag a document or asset, then stop before sending.", "When we do want an agent to work on something, we can tag that context in the request. So we have both options: ask a quick question, or bring the reference into a piece of work."],
+        ["6 · Close", "End on the unsent composer with the reference attached.", "Not everything needs a new agent. Keep the project context handy, use Quick Ask for the smaller questions, and attach what matters when you’re ready to build."]
+      ],
+      "Explore Orbit's Project Intelligence": [
+        ["1 · The project around the code", "Open Orbit’s overview in the demo project. Pause after greeting; no configuration walkthrough.", "Hey, I’m Alex from Choro. There’s usually more to a project than its files. There are environments, services, and information you want to keep track of. Orbit gives that side of the project a place too."],
+        ["2 · Environment", "Open Environment with names visible and all sensitive values hidden. Use safe demo entries only.", "We’ll start with Environment. This gives us a view of the project’s environment information. We’re keeping values hidden here—the useful thing for this tour is seeing where that information lives."],
+        ["3 · Services", "Open Services or Integrations, using the actual label in this build. Show the isolated demo dependency inventory. Do not imply live cloud connections or open external dashboards.", "Then there’s the services view. Choro identifies these from the project files, so we can see what the project uses. These are demo dependencies—not connected cloud accounts."],
+        ["4 · Your own views", "Briefly show Add to Orbit, then the prepared Analytics module with two existing events. Open one row to show its firing condition and properties; this is an event reference, not a live traffic dashboard.", "And you can add your own views too. Here, we’re using Analytics to keep track of our events: what they’re called, when they fire, and what data they send."],
+        ["5 · Add an event through an agent", "Select the actual /Analytics module in the composer. Ask the agent to add order_validation_failed with reason_count to the local demo code, test it, and update Orbit. Send in time with the narration; cut idle waiting.", "Now, say we need another event. We can ask an agent to add it in the code and update Analytics as part of the same job. We select Analytics here so the agent has the module’s context and instructions."],
+        ["6 · The view follows the work", "Show the real completed change and Orbit update card. Return to Analytics and open the new event row, confirming its firing condition and reason_count property match the code.", "There it is. The event is in the code, and its entry is here in Orbit too. We can see when it fires and what it sends, without writing that documentation a second time."],
+        ["7 · Close", "End on the new Analytics row with Environment and Services still accessible, then the established outro. No bottom text or subtitles.", "That’s the idea with Orbit. A place for the information around your project, that can stay connected to the work as the project changes."]
+      ],
+      "Ship the Completed Work": [
+        ["1 · Ready to hand off", "Show Agent 6 with a small, meaningful completed change in a disposable remote-connected demo repository. Pause after greeting.", "Hey, I’m Alex from Choro. We’ve seen how to make a change and check the result. Now let’s take a finished piece of work and get it ready to share, with a branch and a pull request we can follow."],
+        ["2 · Finish the change", "Briefly show the request, then cut directly to the result. Establish that review is already complete; don’t repeat Verify or Code Review.", "We’ll pick up after the agent has finished and we’ve checked the work. This lesson is about the handoff, so we won’t go through those review steps again."],
+        ["3 · Git at a glance", "Open Git, inspect the changed-file list and briefly visit the main available tabs. No separate commit/stash/branch tutorials.", "The Git panel gives us a place to inspect the repository state and the changes we’re about to deliver. There are more controls here when we need them. For this flow, we’ll use Ship from the agent."],
+        ["4 · Prepare Ship", "Return to the agent, click Ship, inspect selected files, branch, commit and pull-request details. Choose only the intended demo changes.", "Before we continue, we’ll check what’s included and review the proposed details. This matters especially when other work is happening in the same project—we only want to ship the changes intended for this handoff."],
+        ["5 · Deliver", "Complete the prepared Ship flow to the demo remote. Cut network waits; show the actual branch, commit, push and PR result. No production repository.", "Now we can let the flow create the branch, commit the selected work and push it for the pull request. We’ll skip the waiting and look at the result, so we can see what was actually delivered."],
+        ["6 · Follow the result", "Open the resulting PR and check its files and check status. Show pending/failed truthfully; do not merge.", "Here’s the pull request and its checks. Shipping the work doesn’t mean it’s merged or every check has passed. It gives us a traceable handoff that we can review and follow from here."]
+      ],
+      "Work in Parallel with Specialist Agents": [
+        ["1 · Different kinds of work", "Use the established Getting Started title for about 2.5 seconds, then the demo project. Alex in the bottom-right circle; only a short natural pause after the greeting.", "Hey, I’m Alex from Choro. You know how one feature can involve a few different kinds of work? There’s the interface, the logic behind it, maybe how the data gets saved. Instead of managing a separate conversation for every part, we can bring specialist agents into one task. Let me show you."],
+        ["2 · Meet your Band", "Briefly open Settings → Band. Show UI Designer and Backend Engineer, then one existing bandmate’s model, instructions and Skills tab. No setup or model comparison.", "This is Band—your team of specialist agents. Each bandmate can have its own model, instructions, and skills. So we can give different parts of the work to agents set up for those jobs. We’ll use two that are already ready to go."],
+        ["3 · Give the lead one goal", "In a new lead chat, submit a small feature request naming UI Designer for interface work and Backend Engineer for persistence. Show the lead’s resulting assignments; keep the example secondary to the workflow.", "We start with one request to the lead agent. Here, we’re asking it to bring in UI Designer for the interface and Backend Engineer for saving the data. The lead breaks that into assignments and coordinates how the pieces fit together."],
+        ["4 · Follow the parallel work", "Open the Band panel with both assignments genuinely running. Visit each chat to show its brief and activity, then return to the lead. Cut waiting; do not imply dependent work always runs at once.", "Now both specialists are working on their parts. We can open either conversation and see what it’s doing, without losing the main thread. When the work is independent, it can happen in parallel. If one part needs another first, the lead can sequence it instead."],
+        ["5 · Bring the result together", "Cut to the completed assignment reports, then the lead integrating and checking the combined change. Show real verification and open the working feature in Choro Preview; no extra review lesson.", "Once the bandmates finish, the lead brings their contributions together and checks the result. That’s an important distinction: two agents finishing isn’t the same as the whole feature working. Here, we can see the combined change running in the project."],
+        ["6 · Close", "Return briefly to the lead with both finished assignments visible, then the established outro. No subtitles or bottom labels.", "That’s the idea with Band: specialist help, parallel work where it makes sense, and one conversation to follow the result. You’re setting the direction, without having to coordinate every handoff yourself."]
+      ],
+      "Try Parallel Work with Solo": [
+        ["1 · A second piece of work", "Show one normal agent active in the demo project. Pause after greeting.", "Hey, I’m Alex from Choro. Say you’ve already got work going, and there’s something else you want to try. You don’t necessarily want both changes mixed together while they’re still in progress. That’s where Solo comes in."],
+        ["2 · Start Solo", "Create a separate small task with Solo enabled. Show the project and Solo choice before sending.", "We’ll start this task in Solo. It gives the work its own lane, so we can explore the change separately from the work already happening in the project."],
+        ["3 · See the separation", "Show the Solo branch or worktree indicator and its files. Compare the main agent’s lane without altering either.", "Notice that this work has its own working area. That separation is the important part—it isn’t just another conversation making changes in the same place."],
+        ["4 · Follow both", "Switch between the original agent and Solo. Show actual progress or prepared completed states; cut waiting.", "We can move between the two and follow each one. That makes it easier to try a separate idea while another task is still moving, without having to finish everything in a single sequence."],
+        ["5 · Review and bring home", "Cut to Solo completion, inspect its diff and use the available bring-home/review action. Use a prepared conflict-free example; show confirmation before applying.", "When the Solo result is ready, we’ll review it and bring the work back. Separate lanes still need a deliberate handoff. If changes overlap, that’s something to resolve, not something isolation makes disappear."],
+        ["6 · Close", "Show the integrated change in the main project and return to the agent list.", "So Solo lets us separate work while it’s happening, then bring it together when we’re ready. It’s a useful way to keep parallel work manageable, without mixing every experiment into the same lane."]
+      ],
+      "Take Choro with You on Mobile": [
+        ["1 · Away from the desk", "Show the Mac running Choro and a connected iPhone. Pause after greeting. Connection is prepared; don’t teach pairing here.", "Hey, I’m Alex from Choro. Sometimes the agent is still working, but you don’t want to stay at your desk just to keep an eye on it. Choro Remote lets you follow that work from your phone."],
+        ["2 · Your projects on the phone", "Open Choro Remote on the iPhone, choose the same project and show its agent statuses.", "Here are our projects and agents on the phone. The work is still running on the Mac. The phone gives us a way to check in without sitting in front of it."],
+        ["3 · Follow the conversation", "Open the same agent shown on the Mac. Scroll a short distance to its current progress, using a phone-sized close-up.", "We can open the conversation and see where things are. It’s the same piece of work, not a second agent we have to keep in sync ourselves."],
+        ["4 · Respond remotely", "Show one genuine question or request for input. Answer from the phone; cut to the corresponding update on the Mac.", "And when the agent needs a decision, we can respond here and let the work continue. The Mac needs to stay available for this—the phone isn’t taking over the build."],
+        ["5 · Close the course", "Show the matching phone reply and Mac continuation side by side, then the real result on the Mac before the approved outro. Don’t add setup steps or unrelated mobile features.", "That’s the basic mobile idea: the Mac does the work, and you can stay connected from somewhere else. We’ll cover connecting your devices in its own walkthrough. For now, you’ve seen the core Choro flow, from starting a project to following it on the go."]
+      ]
+    };
+
     const tabs = [...document.querySelectorAll('[role="tab"]')];
     const panels = [...document.querySelectorAll('[role="tabpanel"]')];
     const count = panels.reduce((total, panel) => total + panel.querySelectorAll('tbody tr').length, 0);
     document.querySelector('#playlist-count').textContent = panels.length;
     document.querySelector('#video-count').textContent = count;
+    const completedRows = document.querySelectorAll('[role="tabpanel"] tr[data-status="completed"]');
+    document.querySelector('#completed-count').textContent = completedRows.length;
+    const startRows = [...document.querySelectorAll('#panel-start tbody tr')];
+    document.querySelector('#start-progress').textContent =
+      `${startRows.filter(row => row.dataset.status === 'completed').length} of ${startRows.length} completed · Updated intro and outro.`;
 
     const modal = document.querySelector('#recording-flow-modal');
     const modalTitle = document.querySelector('#recording-title');
     const modalCategory = document.querySelector('#recording-category');
     const modalSteps = document.querySelector('#recording-steps');
+    const modalIntro = document.querySelector('#recording-intro');
+    const sceneReview = document.querySelector('#scene-review');
+    const modalScenes = document.querySelector('#recording-scenes');
+    const modalDialog = document.querySelector('.recording-modal');
     const modalOutcome = document.querySelector('#recording-outcome');
     const modalClose = document.querySelector('.modal-close');
     const modalDone = document.querySelector('.modal-done');
     let previousFocus = null;
+
+    // Drafts are deliberately separate from completed/publish-ready videos.
+    // Add concrete product blockers here; never mark a lesson finished without an export.
+    const draftProduction = {
+      "Create Specialists on Demand": {
+        "status": "Recording blocked",
+        "note": "New separate lesson requested. Script prepared; needs genuine on-demand roles, assignment briefs and combined results. Demo rebuilt on 2026-09-21, but startup is waiting for macOS Keychain approval before recording can continue. No video exported yet."
+      },
+      "Bring a Bandmate into Work Already Started": {
+        "status": "Needs investigation",
+        "note": "Demo rebuilt on 2026-09-21 with the composer delegation picker fix. Build and bundle signature checks pass. Runtime retry is blocked at startup by macOS Keychain approval for the saved Demo relay identity; the earlier failed assignment is not yet retested."
+      },
+      "Follow Your Band and Give Feedback": {
+        "status": "Recording blocked",
+        "note": "Have genuine Band inspection footage, but no successful fresh feedback-and-response sequence. The new specialist run failed before producing a report. Do not replace this with an unrecorded success."
+      },
+      "Connect an External Task Board": {
+        "status": "Recording blocked",
+        "note": "Dedicated Demo board credentials are available, but source connection, filtering and task opening still need a genuine capture. Desktop mouse targeting is failing. No new account or credentials were created."
+      },
+      "Save a Git Workflow: Dev to Main": {
+        "status": "Recording blocked",
+        "note": "Reframed as a saved dev-to-main merge workflow, not a CI lesson. The private Demo repo now has dev one documentation commit ahead of main; main is unchanged. Needs UI recording after Demo's macOS Keychain startup prompt is approved."
+      },
+      "Give Visual Feedback in Preview": {
+        "status": "Recording blocked",
+        "note": "Needs an actual Review selection, feedback submission and visible result. Mouse targeting fails. Preview MCP can open the Demo page, but snapshot/control requires selecting its agent, which UI control cannot currently do."
+      },
+      "Manage Environment Variables in Orbit": {
+        "status": "Recording blocked",
+        "note": "Existing footage shows inspecting sample environment entries only. Editing, saving and reopening a harmless Demo variable still require fresh UI capture; mouse targeting is failing."
+      },
+      "Create a Reusable Orbit Module": {
+        "status": "Recording blocked",
+        "note": "Existing footage shows using Analytics, not creating a module. Template or blank creation, field setup and saved grouped view still need capture. Mouse targeting is failing."
+      },
+      "Pair Your iPhone with Choro": {
+        "status": "Connection blocked",
+        "note": "Simulator currently says Could not connect to Choro Desktop. Demo's local remote listener is running, but the relay requires its explicit Connect control. Mouse targeting blocks that recovery and a fresh pairing take. Pairing secrets must be masked."
+      },
+      "Choose What Your Phone Can Do": {
+        "status": "Connection blocked",
+        "note": "Requires a connected Simulator and a real permission-change comparison. Simulator cannot reach Demo, and desktop mouse targeting blocks the Remote access controls. No permission change was fabricated."
+      },
+      "Respond to Questions, Plans, and Approvals": {
+        "status": "Connection blocked",
+        "note": "Have a clean real phone reply to a question, but no complete Plan or approval capture. Simulator currently cannot reach Demo; record those distinct decisions after reconnecting."
+      },
+      "Review Results and Ask for Fixes on Mobile": {
+        "status": "Connection blocked",
+        "note": "Needs a clean result/checks screen and a genuine fix request. Earlier mobile footage exposes an internal review-checklist message later in the take; those ranges are excluded. Simulator reconnection is also blocked."
+      },
+      "Quick Ask, Project Talk, or Agent?": {
+        "status": "Recording blocked",
+        "note": "Quick Ask and agent footage are ready. Still need the real Project Talk/Assistant surface to demonstrate the third choice accurately. Desktop mouse targeting and command navigation are currently unreliable."
+      },
+      "Think Through a Project by Voice": {
+        "status": "Recording blocked",
+        "note": "Needs a genuine Project Talk/Assistant conversation, not dictation footage relabeled as a conversation. Opening and operating the voice surface is blocked by unreliable desktop UI control."
+      }
+    };
+    const completedVideos = JSON.parse(document.querySelector('#completed-video-files').textContent);
+    const draftVideos = JSON.parse(document.querySelector('#draft-video-files').textContent);
+    const draftScripts = JSON.parse(document.querySelector('#draft-video-scripts').textContent);
+    const availableVideos = [...completedVideos, ...draftVideos];
+    document.querySelector('#draft-count').textContent = draftVideos.length;
+    for (const panel of document.querySelectorAll('[role="tabpanel"]')) {
+      const count = [...panel.querySelectorAll('.video-title')].filter(title => draftVideos.some(video => video.title === title.textContent.trim())).length;
+      if (!count) continue;
+      const progress = document.createElement('p');
+      progress.className = 'playlist-progress';
+      progress.textContent = `${count} review ${count === 1 ? 'draft' : 'drafts'} available · Free local AI voice · No avatar · Click a lesson to watch.`;
+      panel.querySelector('.panel-heading').after(progress);
+    }
+    const localLibrary = window.CHORO_VIDEO_LIBRARY;
+    const videoSection = document.querySelector('#finished-video');
+    const player = document.querySelector('#video-preview');
+    const videoLink = document.querySelector('#video-link');
+    const folderButton = document.querySelector('#video-folder');
+    const copyButton = document.querySelector('#video-copy');
+    const videoStatus = document.querySelector('#video-status');
+    let activeVideo = null;
+
+    function resetVideo() {
+      activeVideo = null;
+      player.pause();
+      player.removeAttribute('src');
+      player.removeAttribute('poster');
+      player.load();
+      videoSection.hidden = true;
+      videoLink.removeAttribute('href');
+      videoStatus.textContent = '';
+      document.querySelector('#video-error').hidden = true;
+      folderButton.disabled = false;
+    }
+
+    function showVideo(title) {
+      resetVideo();
+      const video = availableVideos.find(item => item.title === title);
+      if (!video) return;
+      activeVideo = video;
+      const fileURL = new URL('file:///Users/lirangabai/Movies/Choro%20Tutorials/');
+      fileURL.pathname += `${video.folder}/${video.file}`;
+      videoLink.href = localLibrary ? `/media/${video.id}` : fileURL.href;
+      videoSection.hidden = false;
+      document.querySelector('#video-file').textContent = video.draft
+        ? `${video.file} · 1080p review draft · Free local AI voice · No avatar`
+        : `${video.file} · 4K · Updated intro + outro`;
+      document.querySelector('#video-local-help').hidden = Boolean(localLibrary);
+      // HTTP-hosted copies cannot request arbitrary local file:// resources.
+      if (localLibrary || location.protocol === 'file:') {
+        player.src = videoLink.href;
+        if (localLibrary) player.poster = `/poster/${video.id}`;
+      }
+    }
+
+    player.addEventListener('error', () => {
+      if (activeVideo && player.hasAttribute('src')) document.querySelector('#video-error').hidden = false;
+    });
+    folderButton.addEventListener('click', async () => {
+      const video = activeVideo;
+      if (!video) return;
+      if (!localLibrary) {
+        videoStatus.textContent = 'Use the local launcher above to open this folder in Finder.';
+        return;
+      }
+      folderButton.disabled = true;
+      try {
+        const response = await fetch(`/open-folder/${video.id}`, {
+          method: 'POST', headers: { 'X-Choro-Library-Token': localLibrary.token }
+        });
+        if (!response.ok) throw new Error('Folder unavailable');
+        if (activeVideo === video) videoStatus.textContent = 'Opened in Finder.';
+      } catch {
+        if (activeVideo === video) videoStatus.textContent = 'Could not open the folder. Check that the local launcher is still running and the video folder exists.';
+      } finally { if (activeVideo === video) folderButton.disabled = false; }
+    });
+    copyButton.addEventListener('click', async () => {
+      const video = activeVideo;
+      if (!video) return;
+      const link = videoLink.href;
+      try {
+        await navigator.clipboard.writeText(link);
+        if (activeVideo === video) videoStatus.textContent = 'Video link copied. This link is local to this Mac.';
+      } catch {
+        if (activeVideo === video) videoStatus.textContent = `Copy this local link: ${link}`;
+      }
+    });
 
     function openRecordingFlow(row) {
       const title = row.querySelector('.video-title').textContent.trim();
@@ -1227,7 +3436,40 @@
 
       previousFocus = row;
       modalTitle.textContent = title;
-      modalCategory.textContent = `${category} · ${duration}`;
+      const completed = row.dataset.status === 'completed';
+      const isDraftScope = !completed && panel.id !== 'panel-design' && panel.id !== 'panel-start';
+      const draft = draftVideos.find(item => item.title === title);
+      const production = draft ? {status: 'Draft ready', note: draft.note} : draftProduction[title];
+      const productionNote = document.querySelector('#draft-production-note');
+      productionNote.hidden = !isDraftScope;
+      productionNote.textContent = isDraftScope
+        ? `${production?.status || 'Queued for draft'} · ${production?.note || 'Script review, genuine screen recording and local AI narration. No avatar. Product adjustments will be noted here.'}`
+        : '';
+      showVideo(title);
+      const previewDuration = draft ? `${Math.floor(draft.duration / 60)}:${String(draft.duration % 60).padStart(2, '0')}` : duration;
+      modalCategory.textContent = `${category} · ${previewDuration}${completed ? ' · Completed' : draft ? ' · Review draft' : ''}`;
+      const scenes = panel.id === 'panel-start' ? gettingStartedScenes[title] : draftScripts[title]?.scenes.map(s => [s.id, s.shown, s.text]);
+      document.querySelector('.scene-guidance').textContent = panel.id === 'panel-start'
+        ? 'Alex narrates in the bottom-right circle. Pause after the greeting. Use the subtle ribbon background, clear cursor taps and focused zooms. Cut waiting; durations are edit targets, not agent runtimes. No subtitles or bottom labels. Screen directions are not spoken.'
+        : 'Review draft: free local AI narration, no avatar. Approved playlist intro and shared outro. Keyboard shortcuts appear in the center. No subtitles or bottom labels. Screen directions are not spoken.';
+      modalDialog.classList.toggle('has-scenes', Boolean(scenes));
+      sceneReview.hidden = !scenes;
+      modalSteps.hidden = Boolean(scenes);
+      modalIntro.textContent = completed
+        ? 'Video completed · Updated intro and outro. The planning storyboard below may differ from the final edit.'
+        : scenes
+        ? `Draft for your review · ${scenes.length} scenes · Read the screen action alongside the narration. Nothing is approved yet.`
+        : 'Record these screen actions in order. No narration script.';
+      modalScenes.replaceChildren(...(scenes || []).map((scene) => {
+        const sceneRow = document.createElement('tr');
+        scene.forEach((text, index) => {
+          const cell = document.createElement(index === 0 ? 'th' : 'td');
+          if (index === 0) cell.scope = 'row';
+          cell.textContent = text;
+          sceneRow.append(cell);
+        });
+        return sceneRow;
+      }));
       modalSteps.replaceChildren(...flow.steps.map((step) => {
         const item = document.createElement('li');
         item.textContent = step;
@@ -1235,23 +3477,37 @@
       }));
       modalOutcome.textContent = flow.outcome;
       modal.hidden = false;
+      modalDialog.scrollTop = 0;
+      sceneReview.querySelector('.scene-scroll').scrollLeft = 0;
       document.body.classList.add('modal-open');
+      document.querySelector('main').inert = true;
       requestAnimationFrame(() => modalClose.focus());
     }
 
     function closeRecordingFlow() {
       if (modal.hidden) return;
+      resetVideo();
       modal.hidden = true;
       document.body.classList.remove('modal-open');
+      document.querySelector('main').inert = false;
       previousFocus?.focus();
     }
 
-    document.querySelectorAll('tbody tr').forEach((row) => {
+    document.querySelectorAll('[role="tabpanel"] tbody tr').forEach((row) => {
       const title = row.querySelector('.video-title').textContent.trim();
+      const panel = row.closest('[role="tabpanel"]');
+      if (row.dataset.status !== 'completed' && panel.id !== 'panel-design' && panel.id !== 'panel-start') {
+        const badge = document.createElement('span');
+        badge.className = 'completion-badge';
+        badge.style.background = 'rgba(132, 159, 208, 0.12)';
+        badge.style.color = '#b6c9eb';
+        badge.textContent = draftVideos.some(v => v.title === title) ? 'Draft ready' : draftProduction[title]?.status || 'Draft queued';
+        row.querySelector('td').append(badge);
+      }
       row.tabIndex = 0;
       row.setAttribute('role', 'button');
       row.setAttribute('aria-haspopup', 'dialog');
-      row.setAttribute('aria-label', `Open recording flow for ${title}`);
+      row.setAttribute('aria-label', `Open recording flow for ${title}${row.dataset.status === 'completed' ? ' — Completed' : draftVideos.some(v => v.title === title) ? ' — Review draft available' : ''}`);
       row.addEventListener('click', () => openRecordingFlow(row));
       row.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -1276,7 +3532,9 @@
       }
       if (event.key !== 'Tab') return;
 
-      const focusable = [modalClose, modalDone];
+      const focusable = [...modal.querySelectorAll('button:not(:disabled), a[href], video[controls], [tabindex="0"]')]
+        .filter(element => element.getClientRects().length && !element.closest('[hidden]'))
+        .sort((a, b) => a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
       const index = focusable.indexOf(document.activeElement);
       if (event.shiftKey && index <= 0) {
         event.preventDefault();

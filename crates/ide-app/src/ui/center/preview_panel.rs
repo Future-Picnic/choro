@@ -444,6 +444,25 @@ fn resized_project_preview_ratio(
 }
 
 impl CenterArea {
+    fn design_compare_review_agent(
+        &mut self,
+        project: ProjectId,
+        cx: &mut Context<Self>,
+    ) -> Option<AgentRecord> {
+        if self.studio.as_ref().is_some_and(|s| s.project == project) {
+            let owner = self.active_project_preview_choice(project, cx)
+                .and_then(|choice| choice.solo_owner().map(|owner| owner.agent_id));
+            let studio = self.studio.as_ref()?;
+            // A Solo preview must never send changes to a different worktree.
+            return self.agents.read(cx).records_for_project(project).into_iter()
+                .filter(|agent| studio.implementation_agents.contains(&agent.id)
+                    && !agent.hidden_doc_assistant
+                    && owner.is_none_or(|id| agent.id == id))
+                .max_by_key(|agent| (agent.created_at, agent.id));
+        }
+        self.penpot_design_assistant_agent(project, cx)
+    }
+
     fn project_preview_host(&self) -> Entity<web_preview::WebPreviewHost> {
         if self.penpot_compare_open && self.view_mode == CenterMode::Design {
             self.compare_web_host.clone()
@@ -1157,7 +1176,11 @@ impl CenterArea {
             return;
         }
 
-        let selected_agent = self.agents.read(cx).selected_agent(project);
+        let selected_agent = if let Some(studio) = self.studio.as_ref().filter(|s| s.project == project && self.penpot_compare_open) {
+            self.agents.read(cx).records_for_project(project).into_iter()
+                .filter(|agent| studio.implementation_agents.contains(&agent.id) && !agent.hidden_doc_assistant)
+                .max_by_key(|agent| (agent.created_at, agent.id))
+        } else { self.agents.read(cx).selected_agent(project) };
         let next = selected_agent
             .as_ref()
             .and_then(solo_preview_owner)
@@ -1391,7 +1414,7 @@ impl CenterArea {
                     }
                     let agent = if self.penpot_compare_open && self.view_mode == CenterMode::Design
                     {
-                        self.penpot_design_assistant_agent(project_id, cx)
+                        self.design_compare_review_agent(project_id, cx)
                     } else {
                         self.agents.read(cx).selected_agent(project_id)
                     };
@@ -1495,9 +1518,6 @@ impl CenterArea {
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    self.project_preview_host().update(cx, |host, _| {
-                        host.finish_project_preview_submission(project_id, true)
-                    });
                     if let Some(agent) = agent_context.as_ref() {
                         self.set_project_preview_status(
                             project_id,
@@ -1508,9 +1528,10 @@ impl CenterArea {
                             project_id,
                             Some("The selected agent is no longer available".to_string()),
                         );
+                        self.project_preview_host().update(cx, |host, _| host.finish_project_preview_submission(project_id, false));
                         continue;
                     }
-                    self.enqueue_inline_preview_review(
+                    let accepted = self.enqueue_inline_preview_review(
                         ide_core::visual_review::VisualReviewSubmission {
                             id: Uuid::new_v4(),
                             project_id,
@@ -1527,6 +1548,7 @@ impl CenterArea {
                         agent_context,
                         cx,
                     );
+                    self.project_preview_host().update(cx, |host, _| host.finish_project_preview_submission(project_id, accepted));
                 }
                 web_preview::ProjectPreviewMessage::CaptureFailed {
                     project_id,
@@ -1814,7 +1836,7 @@ impl CenterArea {
             .unwrap_or_else(|| "Choose preview".to_string());
         let active_solo = active.as_ref().and_then(PreviewChoice::solo_owner).cloned();
         let selected_agent = if self.penpot_compare_open && self.view_mode == CenterMode::Design {
-            self.penpot_design_assistant_agent(project, cx)
+            self.design_compare_review_agent(project, cx)
         } else {
             self.agents.read(cx).selected_agent(project)
         };
@@ -1884,13 +1906,7 @@ impl CenterArea {
             .disabled(choices.is_empty())
             .tooltip(selector_tooltip)
             .dropdown_menu(move |mut menu, window, menu_cx| {
-                preview_host.update(menu_cx, |host, _| host.set_overlay_suspended(true));
-                let host_after_menu = preview_host.clone();
-                menu_cx
-                    .on_release(move |_, cx| {
-                        host_after_menu.update(cx, |host, _| host.set_overlay_suspended(false));
-                    })
-                    .detach();
+                web_preview::suspend_for_menu(preview_host.clone(), menu_cx);
                 let mut section_started = false;
                 if has_project_choices {
                     menu = menu.item(PopupMenuItem::label("Web"));

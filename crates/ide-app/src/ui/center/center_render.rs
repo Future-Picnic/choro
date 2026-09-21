@@ -16,6 +16,13 @@ impl Render for CenterArea {
             return self.render_quick_ask_history(window, cx);
         }
         let Some((project, _)) = self.active_project(cx) else {
+            let torn_down = self.web_host.update(cx, |host, _| host.set_intent(None));
+            let compare_torn_down = self
+                .compare_web_host
+                .update(cx, |host, _| host.set_intent(None));
+            if torn_down || compare_torn_down {
+                web_preview::restore_focus(window);
+            }
             return v_flex()
                 .size_full()
                 .items_center()
@@ -107,9 +114,10 @@ impl Render for CenterArea {
         let penpot_compare_active = !overlay_open
             && effective_mode == CenterMode::Design
             && self.penpot_compare_open
-            && self
+            && (self
                 .penpot_open_design
-                .is_some_and(|(open_project, _)| open_project == project);
+                .is_some_and(|(open_project, _)| open_project == project)
+                || self.studio.as_ref().is_some_and(|s| s.project == project && !s.design.manifest.system_workspace));
         let selected_parent = (effective_mode == CenterMode::Agents)
             .then(|| self.agents.read(cx).selected_agent_id(project))
             .flatten();
@@ -139,7 +147,28 @@ impl Render for CenterArea {
         } else {
             None
         };
-        let web_preview_intent = if !penpot_compare_active && project_preview_intent.is_some() {
+        self.process_studio_messages(window, cx);
+        let studio_active = effective_mode == CenterMode::Design
+            && self.studio.as_ref().is_some_and(|s| s.project == project);
+        if !studio_active && self.studio.as_ref().is_some_and(|s|s.screen.is_none()&&s.canvas.html.is_some()) {self.flush_studio_canvas();}
+        self.process_studio_canvas(studio_active && !overlay_open, cx);
+        self.refresh_studio_canvas(cx);
+        // Native overlays hide Studio without discarding its editing buffer.
+        // Actual navigation still selects another intent (or None), dropping it.
+        let web_preview_intent = if studio_active {
+            self.studio.as_ref().and_then(|s| {
+                if s.screen.is_none()&&!s.design.manifest.system_workspace {
+                    if !s.canvas.active(){return None;}
+                    return s.canvas.html.as_ref().map(|document|web_preview::WebPreviewIntent::StudioCanvas{session:s.canvas.session,document:document.clone()});
+                }
+                s.editor_html
+                    .as_ref()
+                    .map(|document| web_preview::WebPreviewIntent::Studio {
+                        session: s.editor_session,
+                        document: document.clone(),
+                    })
+            })
+        } else if !penpot_compare_active && project_preview_intent.is_some() {
             project_preview_intent
         } else if !overlay_open
             && effective_mode == CenterMode::Docs
@@ -292,6 +321,15 @@ impl Render for CenterArea {
                 && (composer_has_linked_design || selected_agent_has_linked_design)
                 && !external_browser_owns_mcp);
         let web_preview_torn_down = self.web_host.update(cx, |host, _| {
+            host.set_modal_suspended(
+                overlay_open
+                    || (studio_active
+                        && self
+                            .studio
+                            .as_ref()
+                            .is_some_and(|s| s.tab == studio::StudioTab::Agent)
+                        && self.composer_model_expanded),
+            );
             host.set_penpot_assistant_open(penpot_assistant_open);
             host.set_penpot_compare_open(penpot_compare_active);
             host.set_penpot_keepalive(keep_penpot_connected);
@@ -344,7 +382,15 @@ impl Render for CenterArea {
             CenterMode::Db => self.render_db_section(project, cx),
             CenterMode::Services => self.render_services_section(project, cx),
             CenterMode::Docs => self.render_context_section(project, window, cx),
-            CenterMode::Design => self.render_penpot_section(project, window, cx),
+            CenterMode::Design => {
+                if self.studio_system_library == Some(project) {
+                    self.render_system_library(project, window, cx)
+                } else if self.studio.as_ref().is_some_and(|s| s.project == project) {
+                    self.render_studio(project, window, cx)
+                } else {
+                    self.render_penpot_section(project, window, cx)
+                }
+            }
             CenterMode::Split => {
                 let editor_section = self.render_editor_section(project, cx);
                 let terminal_section = self.render_terminal_section(project, cx);
