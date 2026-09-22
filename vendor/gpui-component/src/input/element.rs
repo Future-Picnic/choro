@@ -929,9 +929,27 @@ impl Element for TextElement {
         let font = style.font();
         let text_size = style.font_size.to_pixels(window.rem_size());
 
+        let state = self.state.read(cx);
+        let (line_number_width, line_number_len) =
+            Self::layout_line_numbers(&state, &state.text, text_size, &style, window);
+        let wrap_width = if state.mode.is_multi_line() && state.soft_wrap {
+            Some((bounds.size.width - line_number_width - RIGHT_MARGIN).max(px(1.)))
+        } else {
+            None
+        };
+
         self.state.update(cx, |state, cx| {
+            // Wrap against this frame's width before selecting and shaping lines.
+            // Updating only from set_input_bounds during paint leaves the first
+            // frame (and a resize frame) painting unwrapped or stale-width text.
+            let previous_rows = state.mode.rows();
             state.text_wrapper.set_font(font, text_size, cx);
+            state.text_wrapper.set_wrap_width(wrap_width, cx);
             state.text_wrapper.prepare_if_need(&state.text, cx);
+            state.mode.update_auto_grow(&state.text_wrapper);
+            if state.mode.rows() != previous_rows {
+                cx.notify();
+            }
         });
 
         let state = self.state.read(cx);
@@ -952,7 +970,6 @@ impl Element for TextElement {
         );
 
         let state = self.state.read(cx);
-        let multi_line = state.mode.is_multi_line();
         let text = state.text.clone();
         let is_empty = text.len() == 0;
         let placeholder = self.placeholder.clone();
@@ -976,16 +993,6 @@ impl Element for TextElement {
         };
 
         let text_style = window.text_style();
-
-        // Calculate the width of the line numbers
-        let (line_number_width, line_number_len) =
-            Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
-
-        let wrap_width = if multi_line && state.soft_wrap {
-            Some(bounds.size.width - line_number_width - RIGHT_MARGIN)
-        } else {
-            None
-        };
 
         let mut last_layout = LastLayout {
             visible_range,

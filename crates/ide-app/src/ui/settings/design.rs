@@ -2,6 +2,20 @@ use super::*;
 
 impl SettingsView {
     pub(super) fn render_design_section(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let penpot_enabled = self.workspace.read(cx).beta_features.penpot;
+        v_flex().w_full().gap_4()
+            .child(v_flex().gap_2().p_4().rounded(crate::ui::design::r_lg())
+                .bg(crate::ui::design::surface(cx))
+                .child(div().text_size(crate::ui::design::text_body()).font_weight(FontWeight::SEMIBOLD).child("Studio"))
+                .child(div().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::t3(cx))
+                    .child("Your default design workspace. Create and edit screens in Choro, prototype interactions, and implement saved designs. No design account or browser connection is needed.")))
+            .when(penpot_enabled, |page| page.child(self.render_penpot_settings(cx)))
+            .when(!penpot_enabled, |page| page.child(div().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::t3(cx))
+                .child("Penpot is optional and can be enabled in Beta features.")))
+            .into_any_element()
+    }
+
+    fn render_penpot_settings(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let penpot = self.penpot.read(cx);
         let status = penpot.status().clone();
         let active_provider = penpot.provider();
@@ -12,22 +26,22 @@ impl SettingsView {
         let selected_provider_is_active = active_provider == self.design_provider;
         let status_text = match (selected_provider_is_active, &status, self.design_provider) {
             (false, _, DesignProvider::Choro) => {
-                "Penpot Cloud stays active until you choose Use Choro Design.".to_string()
+                "Penpot Cloud stays active until you choose Use Managed Penpot.".to_string()
             }
             (false, _, DesignProvider::PenpotCloud) => {
-                "Choro Design stays active until you save and connect the cloud account."
+                "Managed Penpot stays active until you save and connect the cloud account."
                     .to_string()
             }
             (true, PenpotConnectionStatus::NotChecked, _) => {
                 "Connection has not been checked.".to_string()
             }
             (true, PenpotConnectionStatus::Provisioning, _) => {
-                "Preparing your Choro Design workspace…".to_string()
+                "Preparing your Managed Penpot workspace…".to_string()
             }
             (true, PenpotConnectionStatus::Checking, _) => {
                 "Checking the Design connection…".to_string()
             }
-            (true, PenpotConnectionStatus::Reachable, _) => "Design is connected.".to_string(),
+            (true, PenpotConnectionStatus::Reachable, _) => "Penpot is connected.".to_string(),
             (true, PenpotConnectionStatus::Error(error), _) => error.clone(),
         };
         let status_color = if !selected_provider_is_active {
@@ -69,14 +83,14 @@ impl SettingsView {
                                     .text_size(crate::ui::design::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(crate::ui::design::t1(cx))
-                                    .child("Design provider"),
+                                    .child("Penpot connection"),
                             )
                             .child(
                                 div()
                                     .text_size(crate::ui::design::text_ui())
                                     .text_color(crate::ui::design::t3(cx))
                                     .child(
-                                        "Choro Design is automatic. Penpot Cloud uses your own account and credentials.",
+                                        "Managed Penpot is automatic. Penpot Cloud uses your own account and credentials.",
                                     ),
                             ),
                     )
@@ -162,7 +176,7 @@ impl SettingsView {
                             } else {
                                 crate::ui::style::primary_button_compact(
                                     "settings-design-use-managed",
-                                    "Use Choro Design",
+                                    "Use Managed Penpot",
                                     cx,
                                 )
                                 .on_click({

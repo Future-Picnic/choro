@@ -15,6 +15,7 @@ mod mcp;
 mod tools;
 
 fn main() {
+    let mut studio = false;
     let mut project_id = None;
     let mut agent_id = None;
     let mut data_root = None;
@@ -22,6 +23,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--studio" => studio = true,
             "--project-id" => {
                 project_id = args
                     .next()
@@ -64,6 +66,7 @@ fn main() {
         );
     }
     let mut server = mcp::Server::new(project_id, agent_id, data_root);
+    server.set_studio(studio);
     if let Err(error) = server.run() {
         eprintln!("ide-mcp: fatal: {error:#}");
         std::process::exit(1);

@@ -107,7 +107,7 @@ impl SettingsSection {
     fn description(self) -> &'static str {
         match self {
             Self::Design => {
-                "Use Choro’s managed Design workspace or connect an existing Penpot Cloud account."
+                "Studio is your default design workspace. Configure optional Penpot connections when enabled."
             }
             Self::Generation => {
                 "Choose defaults for agents, Quick Ask, and generated content, plus review behavior."
@@ -124,7 +124,7 @@ impl SettingsSection {
                 "Create Choro Riffs for every project and review skills discovered from your coding agents."
             }
             Self::Experts => "Your bandmates are AI specialists. Start a chat with one or ask your lead to bring them into a task.",
-            Self::BetaFeatures => "Try optional features still in development, including delegation.",
+            Self::BetaFeatures => "Try optional features, including delegation and Penpot.",
             Self::Orbit => {
                 "Create reusable project modules with structured views and an agent job."
             }

@@ -31,7 +31,7 @@ pub use git_state::{GitState, GitStates};
 pub use open_code::{OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel};
 pub use orbit::{OrbitEvent, OrbitState};
 pub use penpot::{
-    DesignProvider, PenpotConnectionStatus, PenpotDesign, PenpotDesignSource, PenpotEvent,
+    DesignProvider, PenpotConnectionStatus, PenpotDesign, PenpotEvent,
     PenpotState,
 };
 pub use quick_ask::{QuickAskEvent, QuickAskPhase, QuickAskScope, QuickAskState};

@@ -221,6 +221,18 @@ impl CenterArea {
     }
 
     pub fn set_view_mode(&mut self, mode: CenterMode, cx: &mut Context<Self>) {
+        if self.view_mode == CenterMode::Design && mode != CenterMode::Design {
+            if self.defer_canvas_navigation(move|this,cx|this.set_view_mode(mode,cx),cx){return;}
+            if let Some(studio) = self.studio.as_mut().filter(|s| s.dirty || (s.saving&&s.screen.is_some())) {
+                studio.pending_mode = Some(mode);
+                let reply = serde_json::json!({"session":studio.editor_session,"type":"flush"});
+                self.web_host
+                    .update(cx, |host, _| host.studio_reply(&reply));
+                cx.notify();
+                return;
+            }
+        }
+        if self.view_mode==CenterMode::Design&&mode!=CenterMode::Design {self.flush_studio_canvas();}
         self.sync_project_navigation(cx);
         if self.view_mode == mode {
             return;
@@ -372,9 +384,12 @@ impl CenterArea {
     }
 
     pub fn show_design(&mut self, cx: &mut Context<Self>) {
+        if let Some((project, _)) = self.active_project(cx) {
+            self.refresh_studio_catalog(project, cx);
+        }
         let active_project = self.active_project(cx).map(|(project, _)| project);
         let has_open_design = active_project.is_some_and(|project| {
-            self.penpot_open_design
+            self.studio.as_ref().is_some_and(|studio| studio.project == project) || self.penpot_open_design
                 .is_some_and(|(open_project, _)| open_project == project)
                 || self
                     .figma_open_design

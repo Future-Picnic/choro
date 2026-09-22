@@ -1,0 +1,564 @@
+{
+  "status": "local_draft",
+  "source": "docs/how-to-video-library.html",
+  "playlists": [
+    {
+      "title": "Choro Getting Started Crash Course",
+      "description": "Beginner playlist · about 26 min. Follow one project from setup to parallel agents, context, design, review, shipping, Orbit, Solo, and mobile.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Meet Choro and the Core Workflow",
+          "planned_duration": "1:30",
+          "flow": "Projects → multiple agents → project home → center workspace",
+          "viewer_value": "Builds the mental model for managing several projects and agents from one place.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Projects Are More Than Repositories",
+          "planned_duration": "1:45",
+          "flow": "Add Project → choose folder → explore its dedicated workspace",
+          "viewer_value": "Shows a project as a durable home for its work and context, not just a repository shortcut.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Complete Your First Agent Flow",
+          "planned_duration": "2:00",
+          "flow": "New Agent → simple request → result → Changed Files → What to Check",
+          "viewer_value": "Teaches the pure agent loop before adding advanced tools or setup.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Work from Context: Tasks and Docs",
+          "planned_duration": "2:15",
+          "flow": "Task or Doc → Implement → linked agent → Changed Files → Verification",
+          "viewer_value": "Keeps the original brief attached from implementation through a verified result.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Plan the Work Before Building",
+          "planned_duration": "2:15",
+          "flow": "Plan mode → questions → persistent plan → Implement → result",
+          "viewer_value": "Shows how uncertain work becomes a clear plan that stays visible while the agent builds.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Go from Task to Design to Preview",
+          "planned_duration": "2:30",
+          "flow": "Task → Design → Implement → Preview feedback",
+          "viewer_value": "Connects the brief, visual direction, implementation, and live refinement in one fast story.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Run Scripts and Fix Backend Work",
+          "planned_duration": "2:30",
+          "flow": "Saved script → backend request by dictation → Code Review → Fix All",
+          "viewer_value": "Combines repeatable commands, hands-free prompting, and review into a practical backend loop.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Explore Code, Files, Terminal, and Database",
+          "planned_duration": "1:30",
+          "flow": "Code → Files → editor → Terminal → Database",
+          "viewer_value": "Maps the technical workspace for the moments when users want direct control.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Ask and Add Context Without an Agent",
+          "planned_duration": "1:45",
+          "flow": "Customize project → add Assets → Quick Ask → tag a reference",
+          "viewer_value": "Uses project context for quick answers, then reuses the same context in agent work.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Explore Orbit's Project Intelligence",
+          "planned_duration": "2:00",
+          "flow": "Environment → integrations → custom Analytics view",
+          "viewer_value": "Shows built-in project knowledge and a custom structured view without a deep setup lesson.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Ship the Completed Work",
+          "planned_duration": "2:15",
+          "flow": "Agent result → Git overview → Ship → branch, push, and PR",
+          "viewer_value": "Turns finished work into a traceable branch and pull request through one guided flow.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Try Parallel Work with Solo",
+          "planned_duration": "2:00",
+          "flow": "Start Solo → separate lane → switch work → bring home",
+          "viewer_value": "Shows how to run isolated work in parallel without mixing branches.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Take Choro with You on Mobile",
+          "planned_duration": "1:15",
+          "flow": "Mac runs Choro → iPhone follows → respond remotely",
+          "viewer_value": "Ends with the simple mobile promise: the Mac does the work while the phone keeps you connected.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Agents",
+      "description": "Start the right kind of work, follow it clearly, and coordinate parallel tasks.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Set Up an Agent for the Task",
+          "planned_duration": "1:45",
+          "flow": "Choose model → effort → access → Build or Plan",
+          "viewer_value": "Helps users make the important setup decisions together.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Plan Before You Build",
+          "planned_duration": "2:00",
+          "flow": "Plan mode → review proposal → refine → implement",
+          "viewer_value": "Reduces wrong turns on larger or uncertain work.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Follow and Manage Your Agents",
+          "planned_duration": "1:45",
+          "flow": "Board → status → questions or approvals → completion",
+          "viewer_value": "Makes several active conversations easy to supervise.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Agent Cards: What They Mean and What to Check",
+          "planned_duration": "2:45",
+          "flow": "Progress → decisions → outputs → verification → delivery",
+          "viewer_value": "Shows which cards need attention, what evidence to inspect, and the next safe action.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Work in Parallel with Solo",
+          "planned_duration": "2:15",
+          "flow": "Start Solo → independent lane → review → bring home",
+          "viewer_value": "Lets users run parallel work without mixing branches.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Continue a Saved Conversation",
+          "planned_duration": "1:30",
+          "flow": "Open completed agent → Resume → continue with context",
+          "viewer_value": "Keeps previous decisions and work available when a task returns.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Band & Delegation",
+      "description": "Give one lead a team of specialists. Set up bandmates, delegate by name, and follow their work through one verified result.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Build a Feature with Your Band",
+          "planned_duration": "3:00",
+          "flow": "Name two bandmates → lead assigns work → follow both chats → verified result",
+          "viewer_value": "Combines different specialists in one task while the lead coordinates and checks the result.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Set Up a Bandmate",
+          "planned_duration": "2:00",
+          "flow": "Settings → Band → Edit or New → model and instructions → save",
+          "viewer_value": "Saves a reusable specialist setup without repeating the same brief in every chat.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Give a Bandmate the Right Skills",
+          "planned_duration": "2:15",
+          "flow": "Skills → inspect guidance → add or write a skill → apply → save",
+          "viewer_value": "Combines focused guidance with reusable skills and Riffs in one specialist.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Start a Chat with a Bandmate",
+          "planned_duration": "1:30",
+          "flow": "New Agent → / → Bandmates → task → send",
+          "viewer_value": "Uses a specialist directly when the task does not need a coordinating lead.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Bring a Bandmate into Work Already Started",
+          "planned_duration": "1:45",
+          "flow": "Existing chat → /delegate → choose bandmate → brief → assignment",
+          "viewer_value": "Adds specialist help midway through a task without manually copying the conversation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Follow Your Band and Give Feedback",
+          "planned_duration": "2:00",
+          "flow": "Band panel → assignment chat → correction → summary → lead result",
+          "viewer_value": "Keeps every assignment accessible while the lead remains the main conversation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Stop Your Band and Resume When Ready",
+          "planned_duration": "2:00",
+          "flow": "Stop → lead-only conversation → restart → explicit Resume",
+          "viewer_value": "Lets users pause delegated work without losing chats, drafts, or working files.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Tasks & Docs",
+      "description": "Capture the brief once, then hand the complete context to an agent.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Create a Doc for a New Feature",
+          "planned_duration": "1:45",
+          "flow": "Docs → write brief → organize decisions",
+          "viewer_value": "Creates one durable source of truth before implementation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Turn a Doc into Agent Work",
+          "planned_duration": "1:45",
+          "flow": "Open Doc → Implement → review context → send",
+          "viewer_value": "Avoids rewriting the feature brief in chat.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Turn a Task into Agent Work",
+          "planned_duration": "1:45",
+          "flow": "Open task → Implement → linked agent → result",
+          "viewer_value": "Keeps the ticket, requirements, and agent work attached.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Connect an External Task Board",
+          "planned_duration": "2:15",
+          "flow": "Add source → connect board → filter tasks → implement",
+          "viewer_value": "Brings existing team work into the same Choro flow.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Review & Ship",
+      "description": "Understand what changed, catch issues, and turn finished work into a pull request.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Review What the Agent Changed",
+          "planned_duration": "2:15",
+          "flow": "Agent result → changed files → diff → verification",
+          "viewer_value": "Shows whether the result matches the request before shipping.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Run Code Review",
+          "planned_duration": "1:45",
+          "flow": "Review → findings → checklist → ask for fixes",
+          "viewer_value": "Adds a focused quality gate without leaving the conversation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Ship Completed Work",
+          "planned_duration": "2:30",
+          "flow": "Ship → choose changes → generate details → commit, push, PR",
+          "viewer_value": "Turns reviewed work into a clean pull request in one guided flow.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Track PRs and Workflows",
+          "planned_duration": "1:45",
+          "flow": "Git → PRs → checks → merge status",
+          "viewer_value": "Keeps delivery status visible beside the work that created it.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Run & Preview",
+      "description": "Run the project, inspect output, and send precise visual feedback.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Run Saved Project Scripts",
+          "planned_duration": "1:30",
+          "flow": "Choose script → run → inspect terminal → stop or rerun",
+          "viewer_value": "Makes repeated build, test, and server commands one click away.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Open Your Running Project in Preview",
+          "planned_duration": "1:45",
+          "flow": "Run service → detected URL → Preview → navigate",
+          "viewer_value": "Keeps the live product beside the code and agent conversation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Give Visual Feedback in Preview",
+          "planned_duration": "1:45",
+          "flow": "Review mode → select element or area → comment → agent",
+          "viewer_value": "Sends exact visual evidence instead of a vague description.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Inspect Code, Files, and Terminal Together",
+          "planned_duration": "1:45",
+          "flow": "Code → Files → editor → terminal",
+          "viewer_value": "Keeps everyday project inspection inside one workspace.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Design",
+      "description": "Move from requirements to a design, implementation, and live comparison.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Create a Design from a Doc or Task",
+          "planned_duration": "2:15",
+          "flow": "Open brief → Design → choose model → generate",
+          "viewer_value": "Turns written requirements into a visual direction without re-briefing.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Refine a Design with the Assistant",
+          "planned_duration": "2:00",
+          "flow": "Open design → request changes → inspect canvas → iterate",
+          "viewer_value": "Keeps design decisions and revisions in one focused conversation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Implement a Design with an Agent",
+          "planned_duration": "2:15",
+          "flow": "Select design → Implement → agent builds → Preview",
+          "viewer_value": "Gives the coding agent the exact visual source of truth.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Compare the Design with the Live Result",
+          "planned_duration": "1:45",
+          "flow": "Open design → Compare → inspect result → refine",
+          "viewer_value": "Makes visual gaps easy to see before the feature is finished.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Use Visual References with an Agent",
+          "planned_duration": "1:45",
+          "flow": "Add image, file, or link → add notes → Use in Agent",
+          "viewer_value": "Keeps inspiration, brand files, and implementation context together.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Orbit",
+      "description": "See project environment and integrations, then create structured views that connect to agent work.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Meet Orbit",
+          "planned_duration": "1:30",
+          "flow": "Open Orbit → built-ins → custom modules → project view",
+          "viewer_value": "Explains when structured modules are more useful than a Doc or Task.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Manage Environment Variables in Orbit",
+          "planned_duration": "2:00",
+          "flow": "Environment → choose env file → search or filter → edit and save",
+          "viewer_value": "Finds and updates project variables across app areas without hunting through files.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "See Project Services and Integrations",
+          "planned_duration": "1:45",
+          "flow": "Integrations → choose project area → inspect detected services → open dashboard",
+          "viewer_value": "Creates a useful inventory of services detected from project dependencies and configuration.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Create a Reusable Orbit Module",
+          "planned_duration": "2:30",
+          "flow": "Analytics or blank → fields → grouped view → agent job",
+          "viewer_value": "Lets users shape repeatable project tools around their own workflow.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Use an Orbit Module in a Project",
+          "planned_duration": "2:00",
+          "flow": "Add module → create records → organize view → run agent job",
+          "viewer_value": "Turns structured project data into an actionable workflow.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Choro Mobile",
+      "description": "Pair an iPhone, follow agent work away from the Mac, and respond with the right level of access.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Meet Choro Remote",
+          "planned_duration": "1:30",
+          "flow": "Mac runs Choro → iPhone follows → monitor and respond away from the desk",
+          "viewer_value": "Explains what Choro Remote is, what stays on the Mac, and when the phone is useful.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Pair Your iPhone with Choro",
+          "planned_duration": "2:00",
+          "flow": "Remote access → Connect & pair → enter Mac ID and code → connected",
+          "viewer_value": "Securely connects Choro Remote to the correct Mac with a one-time code.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Choose What Your Phone Can Do",
+          "planned_duration": "1:45",
+          "flow": "Paired devices → View only, Control, or Full access → confirm",
+          "viewer_value": "Keeps remote actions limited to the authority the user actually wants.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Check Agent Progress from Your Phone",
+          "planned_duration": "1:30",
+          "flow": "Projects → active agent → timeline and status → result",
+          "viewer_value": "Lets users understand progress and see when an agent needs attention.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Start or Continue Agent Work on Mobile",
+          "planned_duration": "2:00",
+          "flow": "Choose project → new or existing agent → configure → send",
+          "viewer_value": "Starts useful work or adds a follow-up without returning to the desktop.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Respond to Questions, Plans, and Approvals",
+          "planned_duration": "2:15",
+          "flow": "Needs attention → review request → answer or approve → continue",
+          "viewer_value": "Unblocks agents remotely while keeping higher-risk approvals protected.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Review Results and Ask for Fixes on Mobile",
+          "planned_duration": "2:00",
+          "flow": "Completed agent → changed files and verification → Ask to fix",
+          "viewer_value": "Turns a phone check into a precise correction instead of simple acceptance.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    },
+    {
+      "title": "Productivity & Shortcuts",
+      "description": "Small tools that make everyday work faster without changing the main workflow.",
+      "visibility": "private",
+      "videos": [
+        {
+          "title": "Quick Ask, Project Talk, or Agent?",
+          "planned_duration": "2:00",
+          "flow": "Choose intent → ask, discuss, or implement",
+          "viewer_value": "Helps users pick the lightest tool that fits the job.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Ask Without Starting an Agent",
+          "planned_duration": "1:30",
+          "flow": "Quick Ask → choose scope → ask → continue from history",
+          "viewer_value": "Answers small questions without creating another work conversation.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Think Through a Project by Voice",
+          "planned_duration": "1:45",
+          "flow": "Project Talk → discuss context → create plan if needed",
+          "viewer_value": "Supports hands-free thinking without giving edit authority.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Dictate Prompts and Messages",
+          "planned_duration": "1:30",
+          "flow": "Hold shortcut → speak → edit transcript → send",
+          "viewer_value": "Speeds up longer prompts while keeping the user in control.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Find Anything in a Project",
+          "planned_duration": "1:30",
+          "flow": "Search → filter results → jump to item",
+          "viewer_value": "Reduces time spent hunting through files, tasks, Docs, and agents.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        },
+        {
+          "title": "Customize Shortcuts and Notifications",
+          "planned_duration": "1:45",
+          "flow": "Settings → shortcuts → notifications → preferred workflow",
+          "viewer_value": "Keeps Choro fast and appropriately quiet for each user.",
+          "upload_visibility": "private",
+          "status": "recording_brief_only"
+        }
+      ]
+    }
+  ]
+}

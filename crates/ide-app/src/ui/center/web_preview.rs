@@ -17,9 +17,47 @@ use crate::state::docs::ChoroDocument;
 
 const MAX_VISUALIZATION_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Popup lifetimes can overlap (including a menu opening a dialog).
+#[derive(Default)]
+struct NativeOverlays {
+    popups: usize,
+    modal: bool,
+}
+
+impl NativeOverlays {
+    fn hidden(&self) -> bool {
+        self.modal || self.popups > 0
+    }
+
+    fn begin_popup(&mut self) {
+        self.popups += 1;
+    }
+
+    fn end_popup(&mut self) {
+        self.popups = self.popups.saturating_sub(1);
+    }
+}
+
+/// Keep the editing document alive while GPUI paints a menu over its native view.
+pub(super) fn suspend_for_menu(
+    host: gpui::Entity<WebPreviewHost>,
+    cx: &mut gpui::Context<gpui_component::menu::PopupMenu>,
+) {
+    host.update(cx, |host, _| host.begin_popup());
+    cx.on_release(move |_, cx| {
+        host.update(cx, |host, _| host.end_popup());
+    })
+    .detach();
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebPreviewIntent {
     Url(String),
+    StudioCanvas { session:Uuid, document:String },
+    Studio {
+        session: Uuid,
+        document: String,
+    },
     PenpotUrl {
         url: String,
         theme: PenpotTheme,
@@ -454,7 +492,7 @@ mod imp {
     };
     use gpui::{Bounds, Pixels, Window};
     use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
+    use objc2::runtime::{AnyObject, MessageReceiver, NSObject, ProtocolObject};
     use objc2::{
         define_class, msg_send, sel, ClassType, DeclaredClass, MainThreadMarker, MainThreadOnly,
     };
@@ -1020,6 +1058,7 @@ mod imp {
         placed_since_reconcile: bool,
         suspended: bool,
         overlay_suspended: bool,
+        overlays: super::NativeOverlays,
         penpot_keepalive: bool,
         penpot_assistant_open: bool,
         penpot_compare_open: bool,
@@ -1068,7 +1107,7 @@ mod imp {
 
     struct WebKitSurface {
         webview: WebView,
-        paste_monitor: Option<Retained<AnyObject>>,
+        keyboard_monitor: Option<Retained<AnyObject>>,
         project_preview_handlers: Option<ProjectPreviewHandlers>,
         // Declared last so the exclusivity slot is released only after WebView drops.
         _lease: WebKitLease,
@@ -1076,10 +1115,14 @@ mod imp {
 
     impl WebKitSurface {
         fn new(webview: WebView, lease: WebKitLease) -> Self {
-            let paste_monitor = install_preview_paste_monitor(&webview);
+            Self::with_keyboard_routing(webview, lease, false)
+        }
+
+        fn with_keyboard_routing(webview: WebView, lease: WebKitLease, studio: bool) -> Self {
+            let keyboard_monitor = install_preview_keyboard_monitor(&webview, studio);
             Self {
                 webview,
-                paste_monitor,
+                keyboard_monitor,
                 project_preview_handlers: None,
                 _lease: lease,
             }
@@ -1099,7 +1142,7 @@ mod imp {
     impl Drop for WebKitSurface {
         fn drop(&mut self) {
             unsafe {
-                if let Some(monitor) = self.paste_monitor.take() {
+                if let Some(monitor) = self.keyboard_monitor.take() {
                     NSEvent::removeMonitor(&monitor);
                 }
                 if let Some(handlers) = self.project_preview_handlers.as_ref() {
@@ -1127,23 +1170,69 @@ mod imp {
         }
     }
 
-    fn is_preview_paste_shortcut(key: &str, flags: NSEventModifierFlags) -> bool {
+    fn preview_edit_action(key: &str, flags: NSEventModifierFlags, studio: bool) -> Option<objc2::runtime::Sel> {
+        // Studio owns document undo in JavaScript. Let keyDown reach that
+        // handler (and native field undo when it declines), instead of calling
+        // WebKit's unrelated text undo manager before the DOM sees the key.
+        if studio && (key.eq_ignore_ascii_case("z") || key.eq_ignore_ascii_case("y")) {
+            return None;
+        }
         let modifiers = flags
             & (NSEventModifierFlags::Command
                 | NSEventModifierFlags::Control
                 | NSEventModifierFlags::Option
                 | NSEventModifierFlags::Shift);
-        modifiers == NSEventModifierFlags::Command && key.eq_ignore_ascii_case("v")
+        if modifiers == (NSEventModifierFlags::Command | NSEventModifierFlags::Shift)
+            && key.eq_ignore_ascii_case("z")
+        {
+            return Some(sel!(redo:));
+        }
+        if modifiers != NSEventModifierFlags::Command {
+            return None;
+        }
+        match key.to_ascii_lowercase().as_str() {
+            "a" => Some(sel!(selectAll:)),
+            "c" => Some(sel!(copy:)),
+            "x" => Some(sel!(cut:)),
+            "v" => Some(sel!(paste:)),
+            "z" => Some(sel!(undo:)),
+            "y" => Some(sel!(redo:)),
+            _ => None,
+        }
     }
 
-    fn install_preview_paste_monitor(webview: &WebView) -> Option<Retained<AnyObject>> {
+    fn is_preview_editing_key(key: &str, flags: NSEventModifierFlags) -> bool {
+        // Text, navigation, Option dead keys and Control editing commands belong
+        // to the native first responder. Leave application Command shortcuts
+        // (Quit, Close, window switching, etc.) on AppKit's normal menu path.
+        !flags.contains(NSEventModifierFlags::Command)
+            || matches!(
+                key.to_ascii_lowercase().as_str(),
+                "a" | "c" | "x" | "v" | "z" | "y" | "s"
+            )
+            || matches!(
+                key,
+                "\r" | "\n" | "\t" | "\u{8}" | "\u{7f}" | "\u{f700}" | "\u{f701}" | "\u{f702}" | "\u{f703}"
+            )
+    }
+
+    fn install_preview_keyboard_monitor(webview: &WebView, studio: bool) -> Option<Retained<AnyObject>> {
         let view: Retained<NSView> = webview.webview().into_super().into_super();
         let handler = RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| unsafe {
             let native_event = event.as_ref();
-            let Some(key) = native_event.charactersIgnoringModifiers() else {
-                return event.as_ptr();
+            let key = native_event
+                .charactersIgnoringModifiers()
+                .map(|key| key.to_string())
+                .unwrap_or_default();
+            // Other surfaces retain their existing paste-only workaround;
+            // editors such as Docs own their own JavaScript shortcut handling.
+            let route = if studio {
+                is_preview_editing_key(&key, native_event.modifierFlags())
+            } else {
+                native_event.r#type() == NSEventType::KeyDown
+                    && preview_edit_action(&key, native_event.modifierFlags(), false) == Some(sel!(paste:))
             };
-            if !is_preview_paste_shortcut(&key.to_string(), native_event.modifierFlags())
+            if !route
                 || view.isHiddenOrHasHiddenAncestor()
             {
                 return event.as_ptr();
@@ -1164,18 +1253,40 @@ mod imp {
                 return event.as_ptr();
             }
 
-            // GPUIView handles key equivalents using its own focus state,
-            // which can still point at the composer while WebKit is focused.
-            // Dispatch native paste before GPUI sees Cmd-V so WebKit preserves
-            // clipboard formats and DOM paste events. Consume it even when
-            // the page cannot paste; it must never reach the stale composer.
-            if responder.respondsToSelector(sel!(paste:)) {
-                let _: () = msg_send![&*responder, paste: std::ptr::null::<AnyObject>()];
+            // AppKit offers key equivalents to GPUIView, whose logical focus
+            // can still point at the agent composer after a click in WebKit.
+            // Deliver the original event to the actual native first responder
+            // before that happens. Using keyDown (not insertText or JS) keeps
+            // selection, IME/dead keys, repeats and DOM keyboard events native.
+            if native_event.r#type() == NSEventType::KeyUp {
+                responder.keyUp(native_event);
+            } else if let Some(action) = preview_edit_action(&key, native_event.modifierFlags(), studio) {
+                // AppKit normally runs these through the Edit menu, after key
+                // equivalents. Use the native responder's action directly so
+                // GPUI's stale composer cannot claim them first.
+                if action == sel!(undo:) || action == sel!(redo:) {
+                    if let Some(manager) = responder.undoManager() {
+                        if action == sel!(undo:) {
+                            manager.undo();
+                        } else {
+                            manager.redo();
+                        }
+                    }
+                } else if responder.respondsToSelector(action) {
+                    // These standard editing actions take a nullable sender
+                    // and return void (not an ARC-retained object).
+                    let _: () = (&*responder).send_message(action, (std::ptr::null::<AnyObject>(),));
+                }
+            } else {
+                responder.keyDown(native_event);
             }
             std::ptr::null_mut()
         });
         unsafe {
-            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::KeyDown | NSEventMask::KeyUp,
+                &handler,
+            )
         }
     }
 
@@ -1563,6 +1674,31 @@ mod imp {
         }
 
         impl LifeSpanHandler {
+            fn do_close(&self, browser: Option<&mut Browser>) -> i32 {
+                // CEF's default return value sends performClose: to the top-level
+                // NSWindow. This is a child of Choro, so that would quit the app.
+                // Destroy only CefBrowserHostView; its dealloc notifies CEF's
+                // WindowDestroyed and ultimately invokes on_before_close below.
+                // Defer removal until DoClose returns to avoid reentrant teardown.
+                if let Some(host) = browser.and_then(|browser| browser.host()) {
+                    let view = host.window_handle() as *mut NSView;
+                    if !view.is_null() {
+                        unsafe {
+                            let view = &*view;
+                            view.setHidden(true);
+                            clear_native_tooltips(view);
+                            let _: () = msg_send![view,
+                                performSelector: sel!(removeFromSuperview),
+                                withObject: std::ptr::null::<AnyObject>(),
+                                afterDelay: 0.0_f64
+                            ];
+                        }
+                    }
+                }
+                // Always suppress CEF's parent-window close notification.
+                1
+            }
+
             fn on_after_created(&self, browser: Option<&mut Browser>) {
                 let Some(browser) = browser else {
                     return;
@@ -1750,6 +1886,7 @@ mod imp {
                 placed_since_reconcile: false,
                 suspended: false,
                 overlay_suspended: false,
+                overlays: super::NativeOverlays::default(),
                 penpot_keepalive: false,
                 penpot_assistant_open: false,
                 penpot_compare_open: false,
@@ -1770,10 +1907,9 @@ mod imp {
             }
             self.suspended = suspended;
             if let Some(active) = self.active.as_ref() {
-                let _ = active.webview.set_visible(surface_visible(
-                    self.suspended || self.overlay_suspended,
-                    active.doc_editor_ready,
-                ));
+                let _ = active
+                    .webview
+                    .set_visible(surface_visible(self.is_hidden(), active.doc_editor_ready));
             }
         }
 
@@ -1786,11 +1922,43 @@ mod imp {
             }
             self.overlay_suspended = suspended;
             if let Some(active) = self.active.as_ref() {
-                let _ = active.webview.set_visible(surface_visible(
-                    self.suspended || self.overlay_suspended,
-                    active.doc_editor_ready,
-                ));
+                let _ = active
+                    .webview
+                    .set_visible(surface_visible(self.is_hidden(), active.doc_editor_ready));
             }
+        }
+
+        pub fn is_route_suspended(&self) -> bool {
+            self.suspended
+        }
+
+        fn is_hidden(&self) -> bool {
+            self.suspended || self.overlay_suspended || self.overlays.hidden()
+        }
+
+        fn update_overlay_visibility(&self) {
+            if let Some(active) = self.active.as_ref() {
+                let _ = active
+                    .webview
+                    .set_visible(surface_visible(self.is_hidden(), active.doc_editor_ready));
+            }
+        }
+
+        pub fn set_modal_suspended(&mut self, suspended: bool) {
+            if self.overlays.modal != suspended {
+                self.overlays.modal = suspended;
+                self.update_overlay_visibility();
+            }
+        }
+
+        pub fn begin_popup(&mut self) {
+            self.overlays.begin_popup();
+            self.update_overlay_visibility();
+        }
+
+        pub fn end_popup(&mut self) {
+            self.overlays.end_popup();
+            self.update_overlay_visibility();
         }
 
         /// Select the single web surface for this frame. If an active chat row
@@ -1862,7 +2030,7 @@ mod imp {
                         active.intent = intent.clone();
                     }
                 }
-                if self.placed_since_reconcile {
+                if self.placed_since_reconcile || self.is_hidden() {
                     self.placed_since_reconcile = false;
                     return false;
                 }
@@ -1919,7 +2087,7 @@ mod imp {
                         }
                     }
                     DocEditorMessage::Ready { path } => {
-                        let visible = !(self.suspended || self.overlay_suspended);
+                        let visible = !self.is_hidden();
                         if let Some(active) = self.active.as_mut() {
                             let matches_active_document = matches!(
                                 &active.intent,
@@ -2678,7 +2846,7 @@ mod imp {
         /// rectangle. Only a visible chat row calls this method.
         pub fn place(&mut self, bounds: Bounds<Pixels>, window: &Window) {
             self.placed_since_reconcile = true;
-            if self.suspended || self.overlay_suspended {
+            if self.is_hidden() {
                 if let Some(active) = self.active.as_ref() {
                     let _ = active.webview.set_visible(false);
                 }
@@ -2776,6 +2944,22 @@ mod imp {
         /// Copy the visible pixels of the live visualization to the macOS
         /// image clipboard. WKWebView performs the snapshot asynchronously and
         /// copies the completion block for the duration of the request.
+        pub fn studio_reply(&self, value: &serde_json::Value) {
+            if let Some(active) = self
+                .active
+                .as_ref()
+                .filter(|a| matches!(a.intent, WebPreviewIntent::Studio { .. } | WebPreviewIntent::StudioCanvas { .. }))
+            {
+                let _ = active
+                    .webview
+                    .evaluate_script(&format!("window.choroStudioReply?.({value})"));
+            }
+        }
+        pub fn canvas_reply(&self,value:&serde_json::Value){
+            if let Some(active)=self.active.as_ref().filter(|a|matches!(a.intent,WebPreviewIntent::StudioCanvas{..})){
+                let _=active.webview.evaluate_script(&format!("window.choroCanvasReply?.({value})"));
+            }
+        }
         pub fn copy_active_visualization_image(&self) -> Result<(), String> {
             let Some(active) = self.active.as_ref() else {
                 return Err("The visualization is not ready yet.".to_string());
@@ -2884,6 +3068,11 @@ mod imp {
             return true;
         }
         match (left, right) {
+            (WebPreviewIntent::StudioCanvas{session:left,..},WebPreviewIntent::StudioCanvas{session:right,..})=>left==right,
+            (
+                WebPreviewIntent::Studio { session: left, .. },
+                WebPreviewIntent::Studio { session: right, .. },
+            ) => left == right,
             (
                 WebPreviewIntent::PenpotUrl { url: left, .. },
                 WebPreviewIntent::PenpotUrl { url: right, .. },
@@ -3850,6 +4039,65 @@ mod imp {
                     .map(|webview| WebSurface::WebKit(WebKitSurface::new(webview, lease)))
                     .map_err(|error| error.to_string())
             }
+            WebPreviewIntent::StudioCanvas { session, document } => {
+                let lease=WebKitLease::acquire()?;
+                let session=*session;let html=document.clone();let ipc_app=app.clone();
+                WebViewBuilder::new()
+                    .with_custom_protocol("choro-canvas".into(),move |_,request|{
+                        if request.uri().to_string()!="choro-canvas://localhost/index.html" {return Response::builder().status(404).body(Cow::Owned(Vec::new())).unwrap();}
+                        Response::builder().header("Content-Type","text/html; charset=utf-8").body(Cow::Owned(html.as_bytes().to_vec())).unwrap()
+                    })
+                    .with_custom_protocol("choro-canvas-image".into(),move |_,request|{
+                        let bytes=(||{
+                            if request.method().as_str()!="GET"||request.uri().host()!=Some("localhost")||request.uri().query().is_some(){return None;}
+                            let path=request.uri().path().strip_prefix('/')?;let (owner,key)=path.split_once('/')?;
+                            let owner=owner.parse::<Uuid>().ok()?;if owner!=session{return None;}
+                            let key=key.strip_suffix(".png")?.parse::<Uuid>().ok()?;
+                            super::super::studio_canvas::image_bytes(owner,key)
+                        })();
+                        match bytes{Some(bytes)=>Response::builder().header("Content-Type","image/png").header("Cache-Control","no-store").body(Cow::Owned((*bytes).clone())).unwrap(),None=>Response::builder().status(404).body(Cow::Owned(Vec::new())).unwrap()}
+                    })
+                    .with_ipc_handler(move|request|{
+                        if request.uri().to_string()=="choro-canvas://localhost/index.html" && (super::super::studio_canvas::enqueue(request.body(),session) || super::super::studio_editor::enqueue_inline(session,request.body())) {let _=ipc_app.refresh();}
+                    })
+                    .with_url("choro-canvas://localhost/index.html")
+                    .with_bounds(rect).with_transparent(false).with_accept_first_mouse(true)
+                    .with_navigation_handler(move |url|url=="choro-canvas://localhost/index.html" || url=="about:srcdoc" || url=="about:blank")
+                    .build_as_child(window).map(|webview|WebSurface::WebKit(WebKitSurface::with_keyboard_routing(webview,lease,true))).map_err(|e|e.to_string())
+            }
+            WebPreviewIntent::Studio { session, document } => {
+                let lease = WebKitLease::acquire()?;
+                let html = document.clone();
+                let session = *session;
+                let ipc_app = app.clone();
+                WebViewBuilder::new()
+                    .with_custom_protocol("choro-studio".into(), move |_, request| {
+                        if request.uri().path() != "/index.html" {
+                            return Response::builder().status(404).body(Cow::Owned(Vec::new())).unwrap();
+                        }
+                        Response::builder().header("Content-Type", "text/html; charset=utf-8").body(Cow::Owned(html.as_bytes().to_vec())).unwrap()
+                    })
+                    .with_ipc_handler(move |request| {
+                        // The sandboxed design frame must never reach native mutations.
+                        if request.uri().to_string() != "choro-studio://localhost/index.html" { return; }
+                        if request.body().len() > 12 * 1024 * 1024 {
+                            super::super::studio_editor::enqueue(serde_json::json!({"session":session,"type":"render-error","error":"This edit is too large to save. Your editing buffer is still open; reduce its size and retry."}));
+                            let _=ipc_app.refresh();return;
+                        }
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(request.body()) {
+                            if value.get("session").and_then(|v|v.as_str()).and_then(|s|s.parse::<Uuid>().ok()) == Some(session) {
+                                super::super::studio_editor::enqueue(value);
+                                let _ = ipc_app.refresh();
+                            }
+                        }
+                    })
+                    .with_url("choro-studio://localhost/index.html")
+                    .with_bounds(rect).with_transparent(false).with_accept_first_mouse(true)
+                    .with_navigation_handler(|url| url == "choro-studio://localhost/index.html" || url == "about:srcdoc" || url == "about:blank")
+                    .build_as_child(window)
+                    .map(|webview|WebSurface::WebKit(WebKitSurface::with_keyboard_routing(webview,lease,true)))
+                    .map_err(|error|error.to_string())
+            }
             WebPreviewIntent::Visualization { path, theme, .. } => {
                 let html =
                     visualization_document(path, theme).map_err(|error| error.to_string())?;
@@ -4184,6 +4432,62 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
     mod tests {
         use ide_core::project::ProjectId;
         use uuid::Uuid;
+
+        #[test]
+        fn preview_keyboard_routes_text_and_editing_without_consuming_app_shortcuts() {
+            use super::{is_preview_editing_key, preview_edit_action};
+            use objc2::sel;
+            use objc2_app_kit::NSEventModifierFlags as Flags;
+
+            for key in ["a", "A", " ", "\r", "\t", "\u{7f}", "\u{f702}", "é", "א", ""] {
+                assert!(is_preview_editing_key(key, Flags::empty()), "{key:?}");
+                assert!(is_preview_editing_key(key, Flags::Shift), "{key:?}");
+                assert!(is_preview_editing_key(key, Flags::Option), "{key:?}");
+            }
+            for key in ["a", "c", "x", "v", "z", "s", "\r", "\u{f702}", "\u{7f}"] {
+                assert!(is_preview_editing_key(key, Flags::Command), "{key:?}");
+                assert!(is_preview_editing_key(key, Flags::Command | Flags::Shift), "{key:?}");
+            }
+            assert!(is_preview_editing_key("\r", Flags::Control));
+            for key in ["q", "w", "m", "h", "`"] {
+                assert!(!is_preview_editing_key(key, Flags::Command), "{key:?}");
+            }
+            assert_eq!(preview_edit_action("v", Flags::Command, false), Some(sel!(paste:)));
+            assert_eq!(preview_edit_action("a", Flags::Command, false), Some(sel!(selectAll:)));
+            assert_eq!(preview_edit_action("z", Flags::Command, false), Some(sel!(undo:)));
+            assert_eq!(preview_edit_action("z", Flags::Command | Flags::Shift, false), Some(sel!(redo:)));
+            assert!(preview_edit_action("v", Flags::empty(), false).is_none());
+            assert!(preview_edit_action("v", Flags::Command | Flags::Shift, false).is_none());
+            for key in ["z", "Z", "y"] {
+                for flags in [Flags::Command, Flags::Control, Flags::Command | Flags::Shift, Flags::Control | Flags::Shift] {
+                    assert!(is_preview_editing_key(key, flags));
+                    assert!(preview_edit_action(key, flags, true).is_none(), "Studio history must reach DOM keyDown");
+                }
+            }
+            assert_eq!(preview_edit_action("v", Flags::Command, true), Some(sel!(paste:)));
+        }
+
+        #[test]
+        fn overlapping_native_overlays_only_reveal_after_last_dismissal() {
+            let mut overlays = super::super::NativeOverlays::default();
+            overlays.begin_popup();
+            overlays.begin_popup();
+            overlays.end_popup();
+            assert!(overlays.hidden());
+            overlays.modal = true;
+            overlays.end_popup();
+            assert!(
+                overlays.hidden(),
+                "closing Rename's menu must not reveal beneath its dialog"
+            );
+            overlays.modal = false;
+            assert!(!overlays.hidden());
+            overlays.end_popup();
+            assert!(
+                !overlays.hidden(),
+                "a late release must not underflow the count"
+            );
+        }
 
         use super::{
             bind_project_preview_message, decode_project_preview_console_entry,
@@ -4722,6 +5026,12 @@ mod imp {
         }
         pub fn set_suspended(&mut self, _suspended: bool) {}
         pub fn set_overlay_suspended(&mut self, _suspended: bool) {}
+        pub fn set_modal_suspended(&mut self, _suspended: bool) {}
+        pub fn begin_popup(&mut self) {}
+        pub fn end_popup(&mut self) {}
+        pub fn is_route_suspended(&self) -> bool {
+            false
+        }
         pub fn place(&mut self, _bounds: Bounds<Pixels>, _window: &Window) {}
         pub fn take_doc_editor_messages(&mut self) -> Vec<DocEditorMessage> {
             Vec::new()
@@ -4841,6 +5151,8 @@ mod imp {
         pub fn doc_editor_ready_for(&self, _path: &Path) -> bool {
             false
         }
+        pub fn studio_reply(&self, _value: &serde_json::Value) {}
+        pub fn canvas_reply(&self, _value: &serde_json::Value) {}
         pub fn copy_active_visualization_image(&self) -> Result<(), String> {
             Err("Copy image is only available on macOS.".to_string())
         }

@@ -33,7 +33,7 @@ impl CenterArea {
             }
             ComposerMentionKind::File => (IconName::File, crate::ui::design::sage(cx)),
             ComposerMentionKind::Folder => (IconName::FolderOpen, crate::ui::design::sage(cx)),
-            ComposerMentionKind::PenpotDesign => (
+            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => (
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),
@@ -1561,7 +1561,21 @@ impl CenterArea {
                                                         ),
                                                 )
                                             })
-                                            .when_some(selected_expert, |col,name|col.child(crate::ui::style::dialog_neutral_button("new-agent-expert-chip",format!("Bandmate · {name} · Remove"),cx).on_click(cx.listener(|this,_,_,cx|{if let Some(c)=&mut this.new_agent_composer{c.expert_snapshot=None;}cx.notify();}))))
+                                            .when_some(selected_expert, |col, name| {
+                                                col.child(
+                                                    h_flex().min_w(px(0.)).gap_1().items_center()
+                                                        .child(crate::ui::style::bandmate_profile_chip(name, cx))
+                                                        .child(crate::ui::style::header_icon_button(
+                                                            "new-agent-remove-bandmate", IconName::Close, cx,
+                                                        ).tooltip("Remove bandmate").on_click(cx.listener(|this, _, window, cx| {
+                                                            if let Some(composer) = &mut this.new_agent_composer {
+                                                                composer.expert_snapshot = None;
+                                                                composer.prompt.update(cx, |input, cx| input.focus(window, cx));
+                                                            }
+                                                            cx.notify();
+                                                        }))),
+                                                )
+                                            })
                                             .when_some(selected_command.clone(), |col, command| {
                                                 let command_for_remove = command.clone();
                                                 let prompt_for_remove = prompt.clone();

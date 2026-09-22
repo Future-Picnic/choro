@@ -1361,6 +1361,7 @@ impl CenterArea {
                     }),
             );
         }
+        designs.splice(0..0, self.studio_design_references(composer.project, &query));
         designs.truncate(COMPOSER_PICKER_VISIBLE_LIMIT / 2);
         matches.truncate(COMPOSER_PICKER_VISIBLE_LIMIT.saturating_sub(designs.len()));
         let total = designs.len() + matches.len();
@@ -1455,8 +1456,8 @@ impl CenterArea {
             .children(designs.iter().enumerate().map(|(index, reference)| {
                 let is_active = index == selected;
                 let kind = reference.kind;
-                let is_penpot = project_reference_is_penpot(reference);
-                let accent = if is_penpot {
+                let is_native_design = project_reference_is_native_design(reference);
+                let accent = if is_native_design {
                     crate::ui::design::accent(cx)
                 } else {
                     crate::ui::designs_panel::design_kind_color(kind, cx)
@@ -1481,7 +1482,7 @@ impl CenterArea {
                         gpui::transparent_black()
                     })
                     .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.46)))
-                    .child(if is_penpot {
+                    .child(if is_native_design {
                         gpui_component::Icon::new(crate::ui::design::design_icon())
                             .size(crate::ui::design::icon_md())
                             .text_color(accent)
@@ -1521,7 +1522,7 @@ impl CenterArea {
                             .py_0p5()
                             .text_size(crate::ui::design::text_label())
                             .text_color(accent)
-                            .child(if is_penpot {
+                            .child(if is_native_design {
                                 "Design"
                             } else {
                                 crate::ui::designs_panel::design_kind_label(kind)

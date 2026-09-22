@@ -1,0 +1,1402 @@
+[
+  {
+    "key": "sample",
+    "id": "e0523286-fea8-429d-83bb-737cbeadf642",
+    "title": "Get started with Choro — sample guide",
+    "url": "https://choro.usergist.com/choro/help/articles/e0523286-fea8-429d-83bb-737cbeadf642-get-started-with-choro-sample-guide",
+    "state": "published",
+    "revision": 9,
+    "quality": "Needs completion or quality review"
+  },
+  {
+    "key": "1.1",
+    "id": "b7f752a9-2fce-43d6-aace-d8fde79ef7d5",
+    "title": "What is Choro?",
+    "url": "https://choro.usergist.com/choro/help/articles/b7f752a9-2fce-43d6-aace-d8fde79ef7d5-what-is-choro",
+    "state": "published",
+    "revision": 7,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "1.4",
+    "id": "3e53fcff-83de-4f55-9d61-0a3a211b05fe",
+    "title": "Add your first project",
+    "url": "https://choro.usergist.com/choro/help/articles/3e53fcff-83de-4f55-9d61-0a3a211b05fe-add-your-first-project",
+    "state": "published",
+    "revision": 8,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "1.5",
+    "id": "3623383c-49e7-4b56-be27-ec9363c265ef",
+    "title": "Complete your first agent task",
+    "url": "https://choro.usergist.com/choro/help/articles/3623383c-49e7-4b56-be27-ec9363c265ef-complete-your-first-agent-task",
+    "state": "published",
+    "revision": 7,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "1.7",
+    "id": "951bbd36-f1f1-49cb-b280-e5de98a10b7a",
+    "title": "Choose between Quick Ask, Project Talk, and an agent",
+    "url": "https://choro.usergist.com/choro/help/articles/951bbd36-f1f1-49cb-b280-e5de98a10b7a-choose-between-quick-ask-project-talk-and-an-agent",
+    "state": "published",
+    "revision": 7,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "1.3",
+    "id": "d5816eca-3cef-48d7-bfa3-a4c15eadcecc",
+    "title": "Connect your coding provider",
+    "url": "https://choro.usergist.com/choro/help/articles/d5816eca-3cef-48d7-bfa3-a4c15eadcecc-connect-your-coding-provider",
+    "state": "published",
+    "revision": 7,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "1.6",
+    "id": "00b55b21-9c1e-436c-9309-04ef4d1b71e8",
+    "title": "Find your way around the workspace",
+    "url": "https://choro.usergist.com/choro/help/articles/00b55b21-9c1e-436c-9309-04ef4d1b71e8-find-your-way-around-the-workspace",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "1.2",
+    "id": "fa9fc9fb-1d6b-4264-897f-2c75ee7ac184",
+    "title": "Install Choro and complete setup",
+    "url": "https://choro.usergist.com/choro/help/articles/fa9fc9fb-1d6b-4264-897f-2c75ee7ac184-install-choro-and-complete-setup",
+    "state": "published",
+    "revision": 3,
+    "quality": "Needs completion or quality review",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.4",
+    "id": "7f30afad-cbca-4800-8428-7de96c0e00fa",
+    "title": "Plan a task before implementation",
+    "url": "https://choro.usergist.com/choro/help/articles/7f30afad-cbca-4800-8428-7de96c0e00fa-plan-a-task-before-implementation",
+    "state": "published",
+    "revision": 7,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.5",
+    "id": "cdf99252-aa1b-443c-bcf7-0bbfe9fcf475",
+    "title": "Understand agent statuses and activity cards",
+    "url": "https://choro.usergist.com/choro/help/articles/cdf99252-aa1b-443c-bcf7-0bbfe9fcf475-understand-agent-statuses-and-activity-cards",
+    "state": "published",
+    "revision": 7,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.6",
+    "id": "bcef0b7e-574b-4a68-ac23-8503475ed8a6",
+    "title": "Answer questions and approve a plan",
+    "url": "https://choro.usergist.com/choro/help/articles/bcef0b7e-574b-4a68-ac23-8503475ed8a6-answer-questions-and-approve-a-plan",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.1",
+    "id": "7b99d0db-8421-4535-bca7-6845f5591ef5",
+    "title": "Set default models and generation preferences",
+    "url": "https://choro.usergist.com/choro/help/articles/7b99d0db-8421-4535-bca7-6845f5591ef5-set-default-models-and-generation-preferences",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.2",
+    "id": "e9c93981-d1e5-4238-bccb-3455477c0651",
+    "title": "Customize keyboard shortcuts",
+    "url": "https://choro.usergist.com/choro/help/articles/e9c93981-d1e5-4238-bccb-3455477c0651-customize-keyboard-shortcuts",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.3",
+    "id": "8d2329a2-086b-45f2-bdb8-f11453a907f0",
+    "title": "Configure notifications",
+    "url": "https://choro.usergist.com/choro/help/articles/8d2329a2-086b-45f2-bdb8-f11453a907f0-configure-notifications",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.6",
+    "id": "ca20d673-cb30-4723-8f7a-f60ca87f168e",
+    "title": "Enable or disable beta features",
+    "url": "https://choro.usergist.com/choro/help/articles/ca20d673-cb30-4723-8f7a-f60ca87f168e-enable-or-disable-beta-features",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.7",
+    "id": "5a525ab7-1f5b-4521-baa6-709835da337e",
+    "title": "Export a backup",
+    "url": "https://choro.usergist.com/choro/help/articles/5a525ab7-1f5b-4521-baa6-709835da337e-export-a-backup",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.8",
+    "id": "4e8acbdf-33d0-468e-9be3-c6854ef28839",
+    "title": "Import a backup",
+    "url": "https://choro.usergist.com/choro/help/articles/4e8acbdf-33d0-468e-9be3-c6854ef28839-import-a-backup",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.4",
+    "id": "6f005847-b2c5-4827-8201-b3542d80cc5d",
+    "title": "Set up voice input",
+    "url": "https://choro.usergist.com/choro/help/articles/6f005847-b2c5-4827-8201-b3542d80cc5d-set-up-voice-input",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.8",
+    "id": "a09638e4-ef23-4a5e-acba-e79fea7c6923",
+    "title": "Manage provider skills",
+    "url": "https://choro.usergist.com/choro/help/articles/a09638e4-ef23-4a5e-acba-e79fea7c6923-manage-provider-skills",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.5",
+    "id": "389e730a-1299-4dd1-a148-c46d3305363c",
+    "title": "Open a running app in Preview",
+    "url": "https://choro.usergist.com/choro/help/articles/389e730a-1299-4dd1-a148-c46d3305363c-open-a-running-app-in-preview",
+    "state": "published",
+    "revision": 6,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.4",
+    "id": "ab082ba7-d1f7-41be-9320-1d6ed1749ecb",
+    "title": "Change appearance and workspace preferences",
+    "url": "https://choro.usergist.com/choro/help/articles/ab082ba7-d1f7-41be-9320-1d6ed1749ecb-change-appearance-and-workspace-preferences",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.2",
+    "id": "f7a3d632-0535-44e5-b873-ed193266684d",
+    "title": "Create or customize a Bandmate",
+    "url": "https://choro.usergist.com/choro/help/articles/f7a3d632-0535-44e5-b873-ed193266684d-create-or-customize-a-bandmate",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.3",
+    "id": "ea4ef3f0-65ed-4fe7-b974-19c6c0bfa146",
+    "title": "Add skills and Riffs to a Bandmate",
+    "url": "https://choro.usergist.com/choro/help/articles/ea4ef3f0-65ed-4fe7-b974-19c6c0bfa146-add-skills-and-riffs-to-a-bandmate",
+    "state": "published",
+    "revision": 5,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.4",
+    "id": "457acff7-98c7-4ad4-a722-175f0857b85b",
+    "title": "Start a standalone chat with a Bandmate",
+    "url": "https://choro.usergist.com/choro/help/articles/457acff7-98c7-4ad4-a722-175f0857b85b-start-a-standalone-chat-with-a-bandmate",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.5",
+    "id": "6bc40e86-93e1-4caf-863f-03db4bb21682",
+    "title": "Enable delegation and set its limits",
+    "url": "https://choro.usergist.com/choro/help/articles/6bc40e86-93e1-4caf-863f-03db4bb21682-enable-delegation-and-set-its-limits",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.1",
+    "id": "295a5467-b041-466d-b322-5d06dc824da4",
+    "title": "Understand leads, Bandmates, and delegation",
+    "url": "https://choro.usergist.com/choro/help/articles/295a5467-b041-466d-b322-5d06dc824da4-understand-leads-bandmates-and-delegation",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.6",
+    "id": "cffed430-2bef-48fe-bbdc-3ad258e7c6c9",
+    "title": "Delegate to saved Bandmates",
+    "url": "https://choro.usergist.com/choro/help/articles/cffed430-2bef-48fe-bbdc-3ad258e7c6c9-delegate-to-saved-bandmates",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.8",
+    "id": "3456fa47-fd36-4e8e-839c-cbee3d036e6d",
+    "title": "Follow assignments and give feedback",
+    "url": "https://choro.usergist.com/choro/help/articles/3456fa47-fd36-4e8e-839c-cbee3d036e6d-follow-assignments-and-give-feedback",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.9",
+    "id": "fbec2056-10e3-452c-b418-698de857f885",
+    "title": "Review Bandmate results",
+    "url": "https://choro.usergist.com/choro/help/articles/fbec2056-10e3-452c-b418-698de857f885-review-bandmate-results",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.1",
+    "id": "a6d25857-12c6-4e52-aef4-0ad43afa6771",
+    "title": "Create and organize personal tasks",
+    "url": "https://choro.usergist.com/choro/help/articles/a6d25857-12c6-4e52-aef4-0ad43afa6771-create-and-organize-personal-tasks",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.2",
+    "id": "50355ea9-9759-4f07-a676-62990a370e54",
+    "title": "Connect an external task source",
+    "url": "https://choro.usergist.com/choro/help/articles/50355ea9-9759-4f07-a676-62990a370e54-connect-an-external-task-source",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.4",
+    "id": "3d28ffcd-dad1-47ac-ad19-13f04e772119",
+    "title": "Start agent work from a task",
+    "url": "https://choro.usergist.com/choro/help/articles/3d28ffcd-dad1-47ac-ad19-13f04e772119-start-agent-work-from-a-task",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.5",
+    "id": "9f20661a-909b-4aca-8d80-23e7d1b7e25c",
+    "title": "Create and edit a project doc",
+    "url": "https://choro.usergist.com/choro/help/articles/9f20661a-909b-4aca-8d80-23e7d1b7e25c-create-and-edit-a-project-doc",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.6",
+    "id": "248383d9-00b6-48a2-8329-80c898ab87c3",
+    "title": "Start agent work from a doc",
+    "url": "https://choro.usergist.com/choro/help/articles/248383d9-00b6-48a2-8329-80c898ab87c3-start-agent-work-from-a-doc",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.7",
+    "id": "f6c23c80-9f71-4d54-8d84-ac147876f14a",
+    "title": "Follow the work linked to a task or doc",
+    "url": "https://choro.usergist.com/choro/help/articles/f6c23c80-9f71-4d54-8d84-ac147876f14a-follow-the-work-linked-to-a-task-or-doc",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.1",
+    "id": "3ba40dba-199c-45ff-b8e6-65928b810408",
+    "title": "Start and configure an agent",
+    "url": "https://choro.usergist.com/choro/help/articles/3ba40dba-199c-45ff-b8e6-65928b810408-start-and-configure-an-agent",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.2",
+    "id": "056f7b35-97b3-4eac-a138-4594a2713b76",
+    "title": "Choose a provider, model, and reasoning effort",
+    "url": "https://choro.usergist.com/choro/help/articles/056f7b35-97b3-4eac-a138-4594a2713b76-choose-a-provider-model-and-reasoning-effort",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.3",
+    "id": "b2e8305e-b7eb-4bac-8be2-cf9179cfcf7d",
+    "title": "Understand agent access and approvals",
+    "url": "https://choro.usergist.com/choro/help/articles/b2e8305e-b7eb-4bac-8be2-cf9179cfcf7d-understand-agent-access-and-approvals",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.1",
+    "id": "f6b2e92f-d8c8-4bd6-9143-530d673a082e",
+    "title": "Browse and edit project files",
+    "url": "https://choro.usergist.com/choro/help/articles/f6b2e92f-d8c8-4bd6-9143-530d673a082e-browse-and-edit-project-files",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.2",
+    "id": "85c09dfc-cbe9-4c50-a765-aebab54d6ec8",
+    "title": "Use the integrated terminal",
+    "url": "https://choro.usergist.com/choro/help/articles/85c09dfc-cbe9-4c50-a765-aebab54d6ec8-use-the-integrated-terminal",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.3",
+    "id": "8fbce9ce-9dc2-4722-8438-9143e6e5dd8b",
+    "title": "Create and run saved scripts",
+    "url": "https://choro.usergist.com/choro/help/articles/8fbce9ce-9dc2-4722-8438-9143e6e5dd8b-create-and-run-saved-scripts",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.4",
+    "id": "c56d6643-3748-458c-956f-8defa7293db5",
+    "title": "Stop and restart a project service",
+    "url": "https://choro.usergist.com/choro/help/articles/c56d6643-3748-458c-956f-8defa7293db5-stop-and-restart-a-project-service",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.7",
+    "id": "01ed4c73-2cca-47e5-938d-5688592904cd",
+    "title": "Send visual feedback to an agent",
+    "url": "https://choro.usergist.com/choro/help/articles/01ed4c73-2cca-47e5-938d-5688592904cd-send-visual-feedback-to-an-agent",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.1",
+    "id": "ab7ec779-91bb-4f24-aa37-adac42375646",
+    "title": "Ask a project question with Quick Ask",
+    "url": "https://choro.usergist.com/choro/help/articles/ab7ec779-91bb-4f24-aa37-adac42375646-ask-a-project-question-with-quick-ask",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.2",
+    "id": "fa795c0b-1618-4d90-967c-c085b4c3b10b",
+    "title": "Continue a Quick Ask conversation",
+    "url": "https://choro.usergist.com/choro/help/articles/fa795c0b-1618-4d90-967c-c085b4c3b10b-continue-a-quick-ask-conversation",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.3",
+    "id": "6a8706b9-f438-4e2f-b77d-6f4c1a68f96c",
+    "title": "Turn a Quick Ask answer into an agent task",
+    "url": "https://choro.usergist.com/choro/help/articles/6a8706b9-f438-4e2f-b77d-6f4c1a68f96c-turn-a-quick-ask-answer-into-an-agent-task",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.7",
+    "id": "61806925-4655-4a18-90f0-8845109a44fe",
+    "title": "Create and use a Riff",
+    "url": "https://choro.usergist.com/choro/help/articles/61806925-4655-4a18-90f0-8845109a44fe-create-and-use-a-riff",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.5",
+    "id": "4e26c9df-79d9-4e30-aaf7-0a5666e5a243",
+    "title": "Create and manage project memories",
+    "url": "https://choro.usergist.com/choro/help/articles/4e26c9df-79d9-4e30-aaf7-0a5666e5a243-create-and-manage-project-memories",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.6",
+    "id": "1c5bce14-25f9-4654-b0fa-c8e58d8fdacb",
+    "title": "Manage memories that apply across projects",
+    "url": "https://choro.usergist.com/choro/help/articles/1c5bce14-25f9-4654-b0fa-c8e58d8fdacb-manage-memories-that-apply-across-projects",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.7",
+    "id": "ef723997-b736-49f3-96d5-5f0706f57725",
+    "title": "Use Knowledge to find previous decisions",
+    "url": "https://choro.usergist.com/choro/help/articles/ef723997-b736-49f3-96d5-5f0706f57725-use-knowledge-to-find-previous-decisions",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.1",
+    "id": "6b568f89-9349-49f1-b64f-18226b5782ae",
+    "title": "Organize and customize your projects",
+    "url": "https://choro.usergist.com/choro/help/articles/6b568f89-9349-49f1-b64f-18226b5782ae-organize-and-customize-your-projects",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.2",
+    "id": "2c9ef863-7df1-45a3-941e-f8b1aa178e74",
+    "title": "Find files, tasks, docs, and conversations",
+    "url": "https://choro.usergist.com/choro/help/articles/2c9ef863-7df1-45a3-941e-f8b1aa178e74-find-files-tasks-docs-and-conversations",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.3",
+    "id": "a6e62b35-c13e-4c8e-8afe-39c7b4d0f337",
+    "title": "Add project assets and references",
+    "url": "https://choro.usergist.com/choro/help/articles/a6e62b35-c13e-4c8e-8afe-39c7b4d0f337-add-project-assets-and-references",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "2.4",
+    "id": "67e91ce6-8b90-4450-87fb-7e8f1d7c0e7d",
+    "title": "Attach files, images, and links to a request",
+    "url": "https://choro.usergist.com/choro/help/articles/67e91ce6-8b90-4450-87fb-7e8f1d7c0e7d-attach-files-images-and-links-to-a-request",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.1",
+    "id": "d984f781-6082-47d4-8d7f-96f43cca42e2",
+    "title": "Inspect an agent’s changed files",
+    "url": "https://choro.usergist.com/choro/help/articles/d984f781-6082-47d4-8d7f-96f43cca42e2-inspect-an-agent-s-changed-files",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.2",
+    "id": "84b3f604-7a03-4e8a-b300-a7daaaf79b13",
+    "title": "Use the What to check checklist",
+    "url": "https://choro.usergist.com/choro/help/articles/84b3f604-7a03-4e8a-b300-a7daaaf79b13-use-the-what-to-check-checklist",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.4",
+    "id": "0b9987aa-8431-4b44-a050-75fbc716631a",
+    "title": "Run Code Review and resolve findings",
+    "url": "https://choro.usergist.com/choro/help/articles/0b9987aa-8431-4b44-a050-75fbc716631a-run-code-review-and-resolve-findings",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.1",
+    "id": "c9ed6e54-3273-435a-bb70-b60de43a33ce",
+    "title": "Coding provider unavailable or signed out",
+    "url": "https://choro.usergist.com/choro/help/articles/c9ed6e54-3273-435a-bb70-b60de43a33ce-coding-provider-unavailable-or-signed-out",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.2",
+    "id": "dbeca07a-d1fa-4b8d-afdb-abf86faf1d88",
+    "title": "An agent is stuck, interrupted, or failing",
+    "url": "https://choro.usergist.com/choro/help/articles/dbeca07a-d1fa-4b8d-afdb-abf86faf1d88-an-agent-is-stuck-interrupted-or-failing",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.3",
+    "id": "507b8a3b-de7e-4d8f-bc68-2f0eab1bb3e8",
+    "title": "A Bandmate cannot start or resume",
+    "url": "https://choro.usergist.com/choro/help/articles/507b8a3b-de7e-4d8f-bc68-2f0eab1bb3e8-a-bandmate-cannot-start-or-resume",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.4",
+    "id": "df470e76-7127-4769-a1de-150ff67f313a",
+    "title": "A project or file cannot be accessed",
+    "url": "https://choro.usergist.com/choro/help/articles/df470e76-7127-4769-a1de-150ff67f313a-a-project-or-file-cannot-be-accessed",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.5",
+    "id": "834b225d-e570-4ecf-94b6-cf9bb6e103f1",
+    "title": "A script fails or Preview will not load",
+    "url": "https://choro.usergist.com/choro/help/articles/834b225d-e570-4ecf-94b6-cf9bb6e103f1-a-script-fails-or-preview-will-not-load",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.7",
+    "id": "e5b368bb-6490-4a71-a031-89aa843290f7",
+    "title": "A task source will not connect or refresh",
+    "url": "https://choro.usergist.com/choro/help/articles/e5b368bb-6490-4a71-a031-89aa843290f7-a-task-source-will-not-connect-or-refresh",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.8",
+    "id": "270d51a0-e986-481a-925d-6c241dbab311",
+    "title": "Voice input is not working",
+    "url": "https://choro.usergist.com/choro/help/articles/270d51a0-e986-481a-925d-6c241dbab311-voice-input-is-not-working",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.7",
+    "id": "55e2fa8a-c96f-4521-834d-b1b6239b4583",
+    "title": "Stop, resume, or continue a conversation",
+    "url": "https://choro.usergist.com/choro/help/articles/55e2fa8a-c96f-4521-834d-b1b6239b4583-stop-resume-or-continue-a-conversation",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.1",
+    "id": "44c82590-cfe9-405a-b3e6-468adb2fea78",
+    "title": "Choose a design workflow: Studio, Penpot, or Figma",
+    "url": "https://choro.usergist.com/choro/help/articles/44c82590-cfe9-405a-b3e6-468adb2fea78-choose-a-design-workflow-studio-penpot-or-figma",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.4",
+    "id": "5f6b64ae-6333-41a3-929f-8d89002ef732",
+    "title": "Add and organize screens",
+    "url": "https://choro.usergist.com/choro/help/articles/5f6b64ae-6333-41a3-929f-8d89002ef732-add-and-organize-screens",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.5",
+    "id": "42cbe93b-a7fb-49a8-a868-e9a41d629237",
+    "title": "Edit text and styles with the visual inspector",
+    "url": "https://choro.usergist.com/choro/help/articles/42cbe93b-a7fb-49a8-a868-e9a41d629237-edit-text-and-styles-with-the-visual-inspector",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.8",
+    "id": "a6f85dd4-c8ac-4578-890b-ba7bddd267a5",
+    "title": "Preview desktop and mobile layouts",
+    "url": "https://choro.usergist.com/choro/help/articles/a6f85dd4-c8ac-4578-890b-ba7bddd267a5-preview-desktop-and-mobile-layouts",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.6",
+    "id": "1706956c-5b69-467a-980f-2a3cd0f6f032",
+    "title": "Studio changes are not appearing or saving",
+    "url": "https://choro.usergist.com/choro/help/articles/1706956c-5b69-467a-980f-2a3cd0f6f032-studio-changes-are-not-appearing-or-saving",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.2",
+    "id": "34856a49-472a-4b1c-b4ca-e53d7d887a3f",
+    "title": "Create your first Studio design",
+    "url": "https://choro.usergist.com/choro/help/articles/34856a49-472a-4b1c-b4ca-e53d7d887a3f-create-your-first-studio-design",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.6",
+    "id": "5e78d414-b2c9-472b-8f29-96fd2521a564",
+    "title": "Refine a design with an agent",
+    "url": "https://choro.usergist.com/choro/help/articles/5e78d414-b2c9-472b-8f29-96fd2521a564-refine-a-design-with-an-agent",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.7",
+    "id": "dc61def6-8bec-4d7b-b0c2-be5b24a67a1a",
+    "title": "Manage design conversations and history",
+    "url": "https://choro.usergist.com/choro/help/articles/dc61def6-8bec-4d7b-b0c2-be5b24a67a1a-manage-design-conversations-and-history",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.12",
+    "id": "84718943-80b9-42a3-ae18-1c92c13a733b",
+    "title": "Implement a design or selected screens",
+    "url": "https://choro.usergist.com/choro/help/articles/84718943-80b9-42a3-ae18-1c92c13a733b-implement-a-design-or-selected-screens",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.5",
+    "id": "6ab27528-156f-4d1e-b70c-9b0cad8c77f2",
+    "title": "Use the process monitor",
+    "url": "https://choro.usergist.com/choro/help/articles/6ab27528-156f-4d1e-b70c-9b0cad8c77f2-use-the-process-monitor",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "13.9",
+    "id": "76f2f6ab-8eb6-42c7-bfb6-b3a1486bd689",
+    "title": "Understand where Choro stores data and what providers receive",
+    "url": "https://choro.usergist.com/choro/help/articles/76f2f6ab-8eb6-42c7-bfb6-b3a1486bd689-understand-where-choro-stores-data-and-what-providers-receive",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.10",
+    "id": "71cb69ec-1c49-4504-88e7-9314ae6ba7d7",
+    "title": "Report a problem with useful diagnostic details",
+    "url": "https://choro.usergist.com/choro/help/articles/71cb69ec-1c49-4504-88e7-9314ae6ba7d7-report-a-problem-with-useful-diagnostic-details",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "14.11",
+    "id": "20cb22f9-db75-402a-93e4-6cc28f348318",
+    "title": "Request a feature and follow the roadmap",
+    "url": "https://choro.usergist.com/choro/help/articles/20cb22f9-db75-402a-93e4-6cc28f348318-request-a-feature-and-follow-the-roadmap",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.9",
+    "id": "2859197c-2ddc-4f3b-876e-24ca0b5c4f2e",
+    "title": "Create a reusable design system",
+    "url": "https://choro.usergist.com/choro/help/articles/2859197c-2ddc-4f3b-876e-24ca0b5c4f2e-create-a-reusable-design-system",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.10",
+    "id": "e0d5f7fa-826a-445a-8401-ab889326f0c0",
+    "title": "Review and apply design-system changes",
+    "url": "https://choro.usergist.com/choro/help/articles/e0d5f7fa-826a-445a-8401-ab889326f0c0-review-and-apply-design-system-changes",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.11",
+    "id": "153b7aaa-9c23-4bd6-bee7-9092198c99c1",
+    "title": "Change a design’s system and manage local overrides",
+    "url": "https://choro.usergist.com/choro/help/articles/153b7aaa-9c23-4bd6-bee7-9092198c99c1-change-a-design-s-system-and-manage-local-overrides",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.13",
+    "id": "772bca32-aaec-443f-99f9-469cf1b52aed",
+    "title": "Review the implementation against the design",
+    "url": "https://choro.usergist.com/choro/help/articles/772bca32-aaec-443f-99f9-469cf1b52aed-review-the-implementation-against-the-design",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "9.3",
+    "id": "a81dcf0e-fdd4-4bbf-be2c-4f643618440d",
+    "title": "Create a design from a task or doc",
+    "url": "https://choro.usergist.com/choro/help/articles/a81dcf0e-fdd4-4bbf-be2c-4f643618440d-create-a-design-from-a-task-or-doc",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "5.3",
+    "id": "a533bece-485d-4aeb-b5cd-e76f7d3ed6d8",
+    "title": "Filter an external task board",
+    "url": "https://choro.usergist.com/choro/help/articles/a533bece-485d-4aeb-b5cd-e76f7d3ed6d8-filter-an-external-task-board",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.1",
+    "id": "f395ab53-e0c3-44b4-9d05-4344df29154d",
+    "title": "Understand Orbit and its built-in views",
+    "url": "https://choro.usergist.com/choro/help/articles/f395ab53-e0c3-44b4-9d05-4344df29154d-understand-orbit-and-its-built-in-views",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.2",
+    "id": "777cb3b9-3da7-4a94-9381-53ad9c8037b4",
+    "title": "Find and edit environment variables",
+    "url": "https://choro.usergist.com/choro/help/articles/777cb3b9-3da7-4a94-9381-53ad9c8037b4-find-and-edit-environment-variables",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.3",
+    "id": "6d5db1a8-6455-4233-8031-b84ef9512eff",
+    "title": "Inspect detected services and integrations",
+    "url": "https://choro.usergist.com/choro/help/articles/6d5db1a8-6455-4233-8031-b84ef9512eff-inspect-detected-services-and-integrations",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.4",
+    "id": "405ac7db-6968-4db4-b4cc-5cf3a4872a13",
+    "title": "Create a reusable Orbit module",
+    "url": "https://choro.usergist.com/choro/help/articles/405ac7db-6968-4db4-b4cc-5cf3a4872a13-create-a-reusable-orbit-module",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.5",
+    "id": "2e27a885-85bc-4620-9aea-271065dc27ad",
+    "title": "Add a module to a project",
+    "url": "https://choro.usergist.com/choro/help/articles/2e27a885-85bc-4620-9aea-271065dc27ad-add-a-module-to-a-project",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.6",
+    "id": "3b21e788-2ed1-47ae-9818-3f91eb11a1e6",
+    "title": "Create records and organize module views",
+    "url": "https://choro.usergist.com/choro/help/articles/3b21e788-2ed1-47ae-9818-3f91eb11a1e6-create-records-and-organize-module-views",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "10.7",
+    "id": "9ce531fe-ca07-41a9-bb7d-dc032adeb033",
+    "title": "Start agent work from an Orbit record",
+    "url": "https://choro.usergist.com/choro/help/articles/9ce531fe-ca07-41a9-bb7d-dc032adeb033-start-agent-work-from-an-orbit-record",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.5",
+    "id": "42b6168f-141b-4e7e-b358-b638c389c3e1",
+    "title": "Select changes and create a commit",
+    "url": "https://choro.usergist.com/choro/help/articles/42b6168f-141b-4e7e-b358-b638c389c3e1-select-changes-and-create-a-commit",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.6",
+    "id": "cf662ba0-f535-4ca9-a1de-f4f0c3caa7fc",
+    "title": "Ship work to a branch and pull request",
+    "url": "https://choro.usergist.com/choro/help/articles/cf662ba0-f535-4ca9-a1de-f4f0c3caa7fc-ship-work-to-a-branch-and-pull-request",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.7",
+    "id": "4fa12de0-6365-4a70-926e-a08767933de5",
+    "title": "Track pull requests and workflow checks",
+    "url": "https://choro.usergist.com/choro/help/articles/4fa12de0-6365-4a70-926e-a08767933de5-track-pull-requests-and-workflow-checks",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "7.1",
+    "id": "9c5e0c42-1378-47bd-b6e5-a24e4312bdde",
+    "title": "Understand when to use Solo",
+    "url": "https://choro.usergist.com/choro/help/articles/9c5e0c42-1378-47bd-b6e5-a24e4312bdde-understand-when-to-use-solo",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "7.2",
+    "id": "f7cfde3b-3923-4859-b6fe-eddfde9115f0",
+    "title": "Start an isolated Solo workspace",
+    "url": "https://choro.usergist.com/choro/help/articles/f7cfde3b-3923-4859-b6fe-eddfde9115f0-start-an-isolated-solo-workspace",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "7.3",
+    "id": "bf56eb2d-b46b-46c7-978e-f08fb6095f6c",
+    "title": "Switch between your main project and Solo work",
+    "url": "https://choro.usergist.com/choro/help/articles/bf56eb2d-b46b-46c7-978e-f08fb6095f6c-switch-between-your-main-project-and-solo-work",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "7.4",
+    "id": "6c16a09f-fa87-4c10-82a5-5b2610599d7c",
+    "title": "Review changes in a Solo workspace",
+    "url": "https://choro.usergist.com/choro/help/articles/6c16a09f-fa87-4c10-82a5-5b2610599d7c-review-changes-in-a-solo-workspace",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "7.5",
+    "id": "f7021092-6589-49f9-899a-a8dc2af64b88",
+    "title": "Rejoin Solo work with your target branch",
+    "url": "https://choro.usergist.com/choro/help/articles/f7021092-6589-49f9-899a-a8dc2af64b88-rejoin-solo-work-with-your-target-branch",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "7.6",
+    "id": "fa811144-acb6-4b36-aa4b-b57444200eaf",
+    "title": "Resolve a conflict during Rejoin",
+    "url": "https://choro.usergist.com/choro/help/articles/fa811144-acb6-4b36-aa4b-b57444200eaf-resolve-a-conflict-during-rejoin",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "3.8",
+    "id": "ed109228-0cc5-4e0f-be14-9cea5a331312",
+    "title": "Manage several active agents",
+    "url": "https://choro.usergist.com/choro/help/articles/ed109228-0cc5-4e0f-be14-9cea5a331312-manage-several-active-agents",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.8",
+    "id": "f73920bc-7b6c-4b74-880d-a30199f48165",
+    "title": "Connect and inspect a project database",
+    "url": "https://choro.usergist.com/choro/help/articles/f73920bc-7b6c-4b74-880d-a30199f48165-connect-and-inspect-a-project-database",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.5",
+    "id": "e50a3996-e5b7-4b03-a2f9-715af65522f1",
+    "title": "Discuss your project with Project Talk",
+    "url": "https://choro.usergist.com/choro/help/articles/e50a3996-e5b7-4b03-a2f9-715af65522f1-discuss-your-project-with-project-talk",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "11.6",
+    "id": "842c3ee4-ec19-4efd-9bb7-f6bf9a4f4a76",
+    "title": "Dictate and edit a message",
+    "url": "https://choro.usergist.com/choro/help/articles/842c3ee4-ec19-4efd-9bb7-f6bf9a4f4a76-dictate-and-edit-a-message",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "8.6",
+    "id": "dd37f244-4c28-4ffa-a0e9-53ef67135315",
+    "title": "Preview a local HTML file",
+    "url": "https://choro.usergist.com/choro/help/articles/dd37f244-4c28-4ffa-a0e9-53ef67135315-preview-a-local-html-file",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.7",
+    "id": "db0b6898-5a94-4a7e-85b4-6d1e88cb0bdf",
+    "title": "Delegate with an on-demand teammate",
+    "url": "https://choro.usergist.com/choro/help/articles/db0b6898-5a94-4a7e-85b4-6d1e88cb0bdf-delegate-with-an-on-demand-teammate",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "4.10",
+    "id": "ed06b86f-e8d4-4435-a513-9868c0d44b35",
+    "title": "Pause, resume, or end delegation",
+    "url": "https://choro.usergist.com/choro/help/articles/ed06b86f-e8d4-4435-a513-9868c0d44b35-pause-resume-or-end-delegation",
+    "state": "published",
+    "revision": 4,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  },
+  {
+    "key": "6.3",
+    "id": "894d07c5-7304-4478-807f-be539cdd570e",
+    "title": "Run work verification and request fixes",
+    "url": "https://choro.usergist.com/choro/help/articles/894d07c5-7304-4478-807f-be539cdd570e-run-work-verification-and-request-fixes",
+    "state": "published",
+    "revision": 6,
+    "quality": "Illustrated guide; live content and image verified",
+    "latestAvailabilityCheck": {
+      "date": "2026-09-17",
+      "status": "HTTP 500 during Usergist outage; publication and earlier verification preserved"
+    }
+  }
+]

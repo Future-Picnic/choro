@@ -1,0 +1,125 @@
+@import "@xyflow/react/dist/style.css";
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  /* The stage is the deepest plane, shared with the screen editor. */
+  background: var(--stage, #111013);
+  color: var(--text, #ede9ea);
+  color-scheme: var(--scheme, dark);
+  font:
+    12.5px -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+}
+* {
+  box-sizing: border-box;
+}
+.react-flow {
+  --xy-background-color: var(--stage, #111013);
+  --xy-node-boxshadow-hover: none;
+  --xy-node-boxshadow-selected: none;
+  --xy-selection-border: 1px solid var(--ink, #cac9ee);
+  --xy-selection-background-color: color-mix(in srgb, var(--ink, #cac9ee) 10%, transparent);
+}
+.artboard {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--surface, #1f1e23);
+  /* A ring and shadow keep the artboard edge outside the authored screen bounds. */
+  box-shadow:
+    0 0 0 1px var(--line2, #322f38),
+    0 2px 4px #0000001f,
+    0 18px 44px -12px #00000059;
+}
+.react-flow__node:hover .artboard:not(.selected) {
+  box-shadow:
+    0 0 0 1px var(--faint, #8b8691),
+    0 18px 44px -12px #00000059;
+}
+.artboard.selected {
+  box-shadow:
+    0 0 0 2px var(--ink, #cac9ee),
+    0 18px 44px -12px #00000059;
+}
+.artboard-image {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+.artboard img {
+  display: block;
+  max-width: none;
+  pointer-events: none;
+}
+.artboard-title {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted, #b9b2b4);
+  cursor: grab;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 26px;
+}
+.artboard.selected .artboard-title {
+  color: var(--text);
+}
+.artboard-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint, #8b8691);
+  font-size: 22px;
+  pointer-events: none;
+}
+.artboard-size {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint, #8b8691);
+  white-space: nowrap;
+}
+.react-flow__node:focus-visible {
+  outline: 2px solid var(--ink, #cac9ee);
+  outline-offset: 6px;
+}
+.react-flow__resize-control.handle {
+  width: 9px;
+  height: 9px;
+  background: var(--stage, #111013);
+  border-color: var(--ink, #cac9ee);
+  border-radius: 2px;
+}
+.react-flow__resize-control.line {
+  border-color: var(--ink, #cac9ee);
+}
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint, #8b8691);
+  font-size: 13px;
+  pointer-events: none;
+}
+.react-flow__attribution {
+  display: none;
+}
+
+/* A single unscaled editor shell; only the exposed artboard and chrome hit-test. */
+.inline-editor { position:fixed; inset:0; width:100%; height:100%; border:0; background:transparent; z-index:10; }

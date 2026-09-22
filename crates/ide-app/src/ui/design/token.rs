@@ -113,6 +113,48 @@ pub fn focus(cx: &App) -> Hsla {
     cx.theme().popover
 }
 
+// ---- choice tracks and stages ----------------------------------------------
+//
+// Every either/or choice (sidebar tabs, Edit/Preview, Desktop/Mobile) sits in
+// one recessed track with the chosen segment rising out of it. Native builders
+// and Studio's embedded web chrome resolve the same roles from here.
+
+/// Recessed track behind a set of choices — a small step below [`base`].
+pub fn track(cx: &App) -> Hsla {
+    let base = base(cx);
+    Hsla {
+        l: (base.l - 0.035).clamp(0.0, 1.0),
+        ..base
+    }
+}
+
+/// The chosen segment inside a [`track`]. It must rise out of the track: dark
+/// themes lift to [`surface_2`]; light themes use [`surface`], because their
+/// `surface_2` lands on the track's own lightness and the choice disappears.
+pub fn track_choice(cx: &App) -> Hsla {
+    if cx.theme().is_dark() {
+        surface_2(cx)
+    } else {
+        surface(cx)
+    }
+}
+
+/// The plane a design artboard rests on. It is the deepest plane in the
+/// workspace, so authored content stays the brightest object on screen.
+pub fn stage(cx: &App) -> Hsla {
+    sink(cx)
+}
+
+/// Fill for an input well on a chrome plane. Wells sink in dark themes; light
+/// themes use the paper-bright [`surface`] so a field never reads as disabled.
+pub fn field_well(cx: &App) -> Hsla {
+    if cx.theme().is_dark() {
+        sink(cx)
+    } else {
+        surface(cx)
+    }
+}
+
 // ---- control fills (fill-first buttons) -----------------------------------
 //
 // Buttons carry no resting stroke: a control reads as a button because its fill

@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Choro’s weekly publishing plan: tutorials, real builds, product updates and vertical clips across Choro’s own channels.">
+  <title>Choro — Weekly social plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #10141e;
+      --surface: #181e2b;
+      --raised: #202838;
+      --line: #323c4f;
+      --text: #eef1f8;
+      --muted: #b0bbcf;
+      --purple: #b7a8fa;
+      --green: #a0d5b8;
+      --blue: #9fcafa;
+      --peach: #f0bc9f;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 24px; }
+    body { margin: 0; background: var(--canvas); color: var(--text); font: 15px/1.55 "Avenir Next", Avenir, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: var(--purple); text-underline-offset: 4px; }
+    a:hover { color: var(--text); }
+    button, select, input { font: inherit; }
+    button, select, label { -webkit-tap-highlight-color: transparent; }
+    :focus-visible { outline: 3px solid var(--blue); outline-offset: 4px; }
+    [hidden] { display: none !important; }
+    .skip { position: absolute; top: -70px; left: 20px; z-index: 5; padding: 12px 18px; background: var(--raised); }
+    .skip:focus { top: 12px; }
+    .page { max-width: 1220px; margin: auto; padding: 28px 34px 70px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 27px; }
+    .brand { display: flex; gap: 11px; align-items: center; font-size: 19px; font-weight: 700; letter-spacing: -.6px; }
+    .brand svg { width: 29px; height: 29px; color: var(--purple); }
+    .topbar nav { display: flex; gap: 24px; font-size: 13px; }
+    .topbar a { color: var(--muted); text-decoration: none; }
+    .topbar a:hover { color: var(--text); }
+    .intro { padding: 24px 0 30px; }
+    .intro-line { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    h1 { margin: 0; font-size: clamp(34px, 5vw, 56px); line-height: 1.12; font-weight: 650; letter-spacing: -2px; }
+    .intro p { max-width: 760px; margin: 17px 0 0; color: var(--muted); font-size: 16px; }
+    .scope { flex: none; padding: 7px 12px; background: #22293c; color: var(--purple); border: 1px solid #454360; border-radius: 100px; font-size: 12px; }
+    .output { display: flex; flex-wrap: wrap; gap: 8px 20px; padding: 17px 0 25px; align-items: center; }
+    .output-item { display: flex; align-items: baseline; gap: 8px; }
+    .output-item strong { font-size: 24px; font-weight: 650; }
+    .output-item span { color: var(--muted); font-size: 14px; }
+    .plus { color: #8896af; font-size: 20px; }
+    .tutorial-color { color: var(--purple); }
+    .build-color { color: var(--green); }
+    .update-color { color: var(--blue); }
+    .clip-color { color: var(--peach); }
+    h2 { font-size: 23px; letter-spacing: -.6px; line-height: 1.25; margin: 0; font-weight: 650; }
+    h3 { margin: 0 0 8px; font-size: 16px; font-weight: 650; }
+    p { margin: 0 0 12px; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 18px; }
+    .section-head p { color: var(--muted); margin: 6px 0 0; font-size: 14px; max-width: 720px; }
+    .section { margin-top: 42px; }
+    .schedule-shell { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .toolbar { padding: 17px 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; background: #1e2636; border-bottom: 1px solid var(--line); }
+    .filter { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .control { min-height: 39px; padding: 8px 13px; color: var(--text); background: var(--raised); border: 1px solid #4a566d; border-radius: 7px; font-size: 13px; cursor: pointer; }
+    select.control { padding-right: 32px; }
+    .control:hover { border-color: var(--purple); }
+    .optional-control { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; color: var(--muted); }
+    input[type="checkbox"] { width: 17px; height: 17px; margin: 0; accent-color: var(--purple); }
+    table { border-collapse: collapse; text-align: left; width: 100%; }
+    .calendar { table-layout: fixed; }
+    th { font-size: 12px; font-weight: 600; color: var(--muted); }
+    th, td { padding: 17px 20px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    thead th { padding-top: 12px; padding-bottom: 12px; background: #151b27; }
+    tbody tr:last-child > * { border-bottom: 0; }
+    .calendar .day-col { width: 125px; }
+    .calendar tbody th { color: var(--text); font-size: 14px; font-weight: 600; }
+    .calendar .day-short { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; font-weight: 400; }
+    .release { position: relative; padding-left: 14px; }
+    .release::before { content: ""; position: absolute; left: 0; width: 3px; top: 4px; bottom: 4px; background: var(--purple); border-radius: 3px; }
+    .release.build::before { background: var(--green); }
+    .release.update::before { background: var(--blue); }
+    .release.clip::before { background: var(--peach); }
+    .release-title { display: block; font-weight: 600; font-size: 14px; }
+    .release small { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .release .destination { color: #c6d0e4; margin-top: 7px; font-size: 11px; line-height: 1.6; }
+    .empty-slot { font-size: 13px; color: #9ba8bd; }
+    .optional-label { color: var(--peach); font-size: 11px; font-weight: 500; margin-left: 6px; }
+    .schedule-caption { padding: 14px 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .schedule-caption strong { color: var(--text); font-weight: 600; }
+    .schedule-caption p:last-child { margin-bottom: 0; }
+    .table-frame { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+    .channels { min-width: 700px; }
+    .channels th:first-child { width: 21%; }
+    .channels td { font-size: 13px; }
+    .channels td strong { display: block; font-size: 14px; font-weight: 600; }
+    .channels small { display: block; color: var(--muted); margin-top: 3px; font-size: 12px; }
+    .note { color: var(--muted); font-size: 12px; margin-top: 12px; max-width: 900px; }
+    .guide-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 42px; }
+    .guidance { margin-top: 22px; padding-left: 21px; }
+    .guidance li { padding-left: 5px; margin: 0 0 16px; font-size: 14px; }
+    .guidance li::marker { color: var(--purple); font-weight: 600; }
+    .guidance span { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .example { margin-top: 20px; background: var(--surface); border-radius: 10px; padding: 19px 21px; }
+    .example table { font-size: 13px; }
+    .example td, .example th { padding: 10px 9px; }
+    .example th { background: transparent; }
+    .example td:first-child, .example th:first-child { padding-left: 0; }
+    .example p { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+    .formats { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 21px; }
+    .format { display: flex; align-items: flex-start; gap: 19px; padding: 23px; background: var(--surface); border-radius: var(--radius); }
+    .format p { color: var(--muted); font-size: 13px; }
+    .format p:last-child { margin-bottom: 0; }
+    .frame-wide, .frame-tall { flex: none; display: grid; place-items: center; border: 1px solid #716798; background: #29293f; border-radius: 6px; color: var(--purple); font-size: 12px; font-weight: 600; }
+    .frame-wide { width: 80px; aspect-ratio: 16 / 9; margin-top: 5px; }
+    .frame-tall { width: 48px; aspect-ratio: 9 / 16; border-color: #9a7764; background: #352c2b; color: var(--peach); }
+    .bottom-notes { margin-top: 34px; }
+    details { border-top: 1px solid var(--line); padding: 17px 0; }
+    summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+    details p, details ul { color: var(--muted); font-size: 13px; max-width: 820px; margin-top: 14px; }
+    details li { margin-bottom: 8px; }
+    footer { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 38px; padding-top: 23px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+    footer p { margin: 0; max-width: 730px; }
+    @media (max-width: 760px) {
+      .page { padding: 20px 18px 42px; }
+      .topbar { padding-bottom: 16px; }
+      .topbar nav { gap: 13px; font-size: 12px; }
+      .topbar nav a:first-child { display: none; }
+      .intro-line { align-items: start; flex-direction: column-reverse; gap: 16px; }
+      h1 { letter-spacing: -1.3px; }
+      .intro p { font-size: 14px; }
+      .output { gap: 10px 14px; }
+      .output-item strong { font-size: 21px; }
+      .output-item span { font-size: 12px; }
+      .plus { font-size: 15px; }
+      .section-head { align-items: start; }
+      h2 { font-size: 21px; }
+      .toolbar { padding: 14px; }
+      .calendar .day-col { width: 80px; }
+      .calendar th, .calendar td { padding: 15px 10px; }
+      .calendar tbody th { font-size: 12px; }
+      .calendar .day-short { display: none; }
+      .release { padding-left: 10px; }
+      .release-title { font-size: 12px; }
+      .release small, .release .destination { font-size: 11px; }
+      .optional-label { display: block; margin: 3px 0 0; }
+      .guide-layout, .formats { grid-template-columns: 1fr; gap: 24px; }
+      .section { margin-top: 32px; }
+      .format { padding: 19px; }
+      footer { align-items: start; }
+    }
+    @media (max-width: 390px) {
+      .calendar .day-col { width: 64px; }
+      .calendar th, .calendar td { padding-left: 7px; padding-right: 7px; }
+      .output .plus { display: none; }
+      .output { display: grid; grid-template-columns: 1fr 1fr; }
+    }
+    @media print {
+      :root { color-scheme: light; --canvas: #fff; --surface: #fff; --raised: #f3f4f7; --line: #ccc; --text: #171b24; --muted: #4c5260; --purple: #574194; --green: #246546; --blue: #255786; --peach: #865132; }
+      body { font-size: 11px; }
+      .page { padding: 0; max-width: none; }
+      .topbar nav, .toolbar, .no-print, .skip { display: none !important; }
+      .topbar { padding-bottom: 10px; }
+      .intro { padding: 12px 0; }
+      h1 { font-size: 33px; }
+      .scope { background: #fff; border-color: #bbb; }
+      .section { margin-top: 24px; }
+      .output { padding: 8px 0 20px; }
+      .output-item strong { font-size: 20px; }
+      .section-head { margin-bottom: 10px; }
+      thead th, .toolbar { background: #f3f4f7; }
+      th, td { padding: 10px 12px; }
+      .release .destination, .empty-slot { color: var(--muted); }
+      .channels { min-width: 0; }
+      .table-frame { overflow: visible; }
+      tr, .format, details { break-inside: avoid; }
+      .guide-layout { gap: 25px; }
+      .frame-wide, .frame-tall { background: #fff; }
+      footer { margin-top: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#weekly">Skip to weekly schedule</a>
+  <main class="page">
+    <div class="topbar">
+      <div class="brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 13v6m7-12v18m8-22v26m7-19v12" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/></svg>Choro</div>
+      <nav aria-label="Plan sections"><a href="#channels">Channels</a><a href="#release-order">Release order</a><a href="how-to-video-library.html" target="_top">Content marketing</a></nav>
+    </div>
+
+    <header class="intro">
+      <div class="intro-line"><h1>A week of Choro.</h1><span class="scope">Choro’s own channels</span></div>
+      <p>A repeatable social plan built around the videos we already have, one real build, and what’s new. Getting Started is already public in this plan.</p>
+    </header>
+
+    <div class="output" aria-label="Weekly content production">
+      <div class="output-item"><strong class="tutorial-color">2</strong><span>tutorials</span></div><span class="plus" aria-hidden="true">+</span>
+      <div class="output-item"><strong class="build-color">1</strong><span>build showcase</span></div><span class="plus" aria-hidden="true">+</span>
+      <div class="output-item"><strong class="update-color">1</strong><span>product update*</span></div><span class="plus" aria-hidden="true">+</span>
+      <div class="output-item"><strong class="clip-color">4–6</strong><span>vertical clips total</span></div>
+    </div>
+
+    <section id="weekly" aria-labelledby="weekly-title">
+      <div class="section-head"><div><h2 id="weekly-title">The weekly schedule</h2><p>Reuse the same assets across channels. A and B are that week’s two existing tutorials.</p></div><button class="control no-print" id="print-plan" type="button" hidden>Print plan</button></div>
+      <div class="schedule-shell">
+        <div class="toolbar" id="toolbar" hidden>
+          <div class="filter"><label for="channel-filter">Show channel</label><select class="control" id="channel-filter"><option value="all">All Choro channels</option><option value="youtube">YouTube</option><option value="x">X</option><option value="facebook">Facebook</option><option value="linkedin">LinkedIn</option><option value="reddit">r/chorodev</option><option value="instagram">Instagram Reels</option><option value="tiktok">TikTok</option></select></div>
+          <label class="optional-control"><input id="include-extras" type="checkbox">Include 2 optional clips</label>
+        </div>
+        <table class="calendar">
+          <caption class="skip">Recurring schedule by day, full release and vertical highlight</caption>
+          <colgroup><col class="day-col"><col><col></colgroup>
+          <thead><tr><th scope="col">Day</th><th scope="col">Full release</th><th scope="col">Vertical highlight</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Monday<span class="day-short">Teach</span></th><td>
+              <div class="release tutorial" data-channels="youtube x facebook linkedin reddit"><span class="release-title">Tutorial A</span><small>Existing widescreen video · 1–2 min</small><small class="destination">YouTube · X · Facebook · LinkedIn · r/chorodev</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td><td>
+              <div class="release clip" data-channels="youtube instagram tiktok"><span class="release-title">Tutorial A — strongest moment</span><small>One benefit, one clear result · 20–45 sec</small><small class="destination">YouTube Shorts · Instagram Reels · TikTok</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td></tr>
+            <tr><th scope="row">Tuesday<span class="day-short">Follow up</span></th><td><span class="empty-slot">Reply to questions and comments.</span></td><td>
+              <div class="release clip" data-optional data-channels="youtube instagram tiktok" hidden><span class="release-title">Tutorial A — another useful moment <span class="optional-label">Optional</span></span><small>A distinct takeaway, with its own opening.</small><small class="destination">YouTube Shorts · Instagram Reels · TikTok</small></div><span class="empty-slot">Optional extra clip. Otherwise, no scheduled video.</span>
+            </td></tr>
+            <tr><th scope="row">Wednesday<span class="day-short">Show a build</span></th><td>
+              <div class="release build" data-channels="youtube x facebook linkedin reddit"><span class="release-title">Built with Choro</span><small>Your real project or feature · 3–6 min</small><small class="destination">YouTube · X · Facebook · LinkedIn · r/chorodev</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td><td>
+              <div class="release clip" data-channels="youtube instagram tiktok"><span class="release-title">The build’s best reveal</span><small>Show the finished result first · 20–45 sec</small><small class="destination">YouTube Shorts · Instagram Reels · TikTok</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td></tr>
+            <tr><th scope="row">Thursday<span class="day-short">Teach</span></th><td>
+              <div class="release tutorial" data-channels="youtube x facebook linkedin reddit"><span class="release-title">Tutorial B</span><small>Next video from a different category · 1–2 min</small><small class="destination">YouTube · X · Facebook · LinkedIn · r/chorodev</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td><td>
+              <div class="release clip" data-channels="youtube instagram tiktok"><span class="release-title">Tutorial B — strongest moment</span><small>Show why this workflow helps · 20–45 sec</small><small class="destination">YouTube Shorts · Instagram Reels · TikTok</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td></tr>
+            <tr><th scope="row">Friday<span class="day-short">What’s new</span></th><td>
+              <div class="release update" data-channels="youtube x facebook linkedin reddit"><span class="release-title">What’s new in Choro*</span><small>A visible improvement · 30–90 sec</small><small class="destination">YouTube · X · Facebook · LinkedIn · r/chorodev</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td><td>
+              <div class="release clip" data-channels="youtube instagram tiktok"><span class="release-title">The update’s main benefit*</span><small>A vertical adaptation · 20–45 sec</small><small class="destination">YouTube Shorts · Instagram Reels · TikTok</small></div><span class="empty-slot" hidden>No release on this channel</span>
+            </td></tr>
+            <tr><th scope="row">Saturday<span class="day-short">Optional</span></th><td><span class="empty-slot">No scheduled full video.</span></td><td>
+              <div class="release clip" data-optional data-channels="youtube instagram tiktok" hidden><span class="release-title">Another tutorial or build highlight <span class="optional-label">Optional</span></span><small>Choose a second distinct moment from B or the build.</small><small class="destination">YouTube Shorts · Instagram Reels · TikTok</small></div><span class="empty-slot">Optional extra clip. Otherwise, no scheduled video.</span>
+            </td></tr>
+            <tr><th scope="row">Sunday<span class="day-short">Prepare</span></th><td><span class="empty-slot">Choose next week’s two tutorials.</span></td><td><span class="empty-slot">Review results and prepare the next clips.</span></td></tr>
+          </tbody>
+        </table>
+        <div class="schedule-caption"><p id="schedule-count" role="status" aria-live="polite"><strong>4 full releases + 4 vertical clips.</strong> Unique assets, reused across channels; includes the conditional update.</p><p>* Publish the update when there’s something meaningful to show. For a fixes-only week, use a text update and replace Friday’s vertical with another useful build or tutorial highlight.</p></div>
+      </div>
+      <noscript><p class="note">The full weekly plan is available without JavaScript. Optional extras: a second Tutorial A clip on Tuesday, and a second tutorial or build clip on Saturday.</p></noscript>
+    </section>
+
+    <section class="section" id="channels" aria-labelledby="channels-title">
+      <div class="section-head"><div><h2 id="channels-title">Where everything goes</h2><p>Only Choro’s accounts and community. Each upload gets a short caption and one relevant next step.</p></div></div>
+      <div class="table-frame" tabindex="0" role="region" aria-label="Channel distribution table, scroll horizontally on small screens">
+        <table class="channels"><thead><tr><th scope="col">Our channel</th><th scope="col">Weekly publishing</th><th scope="col">Format</th><th scope="col">Next step for the viewer</th></tr></thead><tbody>
+          <tr><td><strong>YouTube</strong><small>Choro channel</small></td><td>4 full releases* + 4–6 Shorts<small>Full: Mon, Wed, Thu, Fri<br>Shorts: same days; optional Tue, Sat</small></td><td>Original widescreen + separate vertical edits</td><td>Try Choro from the full video. Link each Short to its full video.</td></tr>
+          <tr><td><strong>X</strong><small>Choro account</small></td><td>4 full releases*<small>Mon, Wed, Thu, Fri</small></td><td>Native widescreen video</td><td>Try the demonstrated workflow in Choro.</td></tr>
+          <tr><td><strong>Facebook</strong><small>Choro Page</small></td><td>4 full releases*<small>Mon, Wed, Thu, Fri</small></td><td>Native widescreen video in the feed</td><td>Visit Choro and see how to get started.</td></tr>
+          <tr><td><strong>LinkedIn</strong><small>Choro Page, once active</small></td><td>4 full releases*<small>Mon, Wed, Thu, Fri</small></td><td>Native widescreen video + practical context</td><td>Try Choro for your next feature or project.</td></tr>
+          <tr><td><strong>r/chorodev</strong><small>Choro’s own community</small></td><td>4 posts*<small>Mon, Wed, Thu, Fri</small></td><td>Full demonstration + written summary; release notes on Friday</td><td>Try it, ask a question, share a build or give feedback.</td></tr>
+          <tr><td><strong>Instagram Reels</strong><small><a href="https://www.instagram.com/choro.dev/">@choro.dev</a> · Business account ready</small></td><td>4–6 vertical clips<small>Mon, Wed, Thu, Fri; optional Tue, Sat</small></td><td>9:16 with focused screen details and captions</td><td>Visit the Choro link in the profile.</td></tr>
+          <tr><td><strong>TikTok</strong><small>Choro account</small></td><td>4–6 vertical clips<small>Mon, Wed, Thu, Fri; optional Tue, Sat</small></td><td>9:16 with focused screen details and captions</td><td>Visit the Choro profile; use a website link where available.</td></tr>
+        </tbody></table>
+      </div>
+      <p class="note">* Three full videos plus a product-update video when warranted. The <a href="social-launch/README.md">saved channel setup record</a> records Instagram @choro.dev as configured on September 22, 2026, with its clickable website link still requiring the mobile app. LinkedIn remains paused; its row describes the plan once active.</p>
+    </section>
+
+    <section class="section guide-layout" id="release-order" aria-labelledby="order-title">
+      <div><h2 id="order-title">Rotate topics. Grow the playlists.</h2>
+        <ol class="guidance">
+          <li>Pick two existing tutorials each week.<span>Use different categories. Keep a category’s introductory and setup videos ahead of its advanced lessons.</span></li>
+          <li>Create the category playlists at the start.<span>Make each playlist public with its first video, then add each new release. Keep Getting Started available throughout.</span></li>
+          <li>Return to categories before they go cold.<span>Rotate a few subjects at a time. There’s no need to finish one category or cycle through every category before returning.</span></li>
+          <li>Move useful follow-ups forward.<span>Use questions, website visits and activated users to choose what comes next. Keep prerequisite videos available.</span></li>
+        </ol>
+      </div>
+      <div><h2>An example rotation</h2><div class="example"><table><thead><tr><th scope="col">Week</th><th scope="col">Monday</th><th scope="col">Thursday</th></tr></thead><tbody>
+        <tr><th scope="row">1</th><td>Agents · first lesson</td><td>Tasks & Docs · first lesson</td></tr>
+        <tr><th scope="row">2</th><td>Review & Ship · first lesson</td><td>Band · first lesson</td></tr>
+        <tr><th scope="row">3</th><td>Agents · next lesson</td><td>Mobile · first lesson</td></tr>
+        <tr><th scope="row">4</th><td>Tasks & Docs · next lesson</td><td>Review & Ship · next lesson</td></tr>
+      </tbody></table><p>This is a rotation example, not a locked queue. Choose final videos from the <a href="how-to-video-library.html#start" target="_top">existing library</a> as they’re ready to publish.</p></div><p class="note">Around 50 tutorials at two per week gives roughly 25 weeks of releases. Builds and updates are new weekly material, separate from that library.</p></div>
+    </section>
+
+    <section class="section" aria-labelledby="formats-title"><h2 id="formats-title">One source. Two versions.</h2>
+      <div class="formats">
+        <div class="format"><div class="frame-wide" aria-hidden="true">16:9</div><div><h3>The full demonstration</h3><p>Keep the existing 1–2-minute tutorials widescreen. The build showcase can run 3–6 minutes; the product update is usually 30–90 seconds.</p><p>Show a clear result, make the screen readable, and add captions. Give each upload a title that explains the benefit.</p></div></div>
+        <div class="format"><div class="frame-tall" aria-hidden="true">9:16</div><div><h3>The vertical highlight</h3><p>Make a separate 20–45-second edit. Zoom into the relevant conversation, action or result. Reframe as the action moves and add readable captions.</p><p>Start with a benefit or reveal. Don’t shrink the entire desktop into a small strip. Reuse this edit on all three vertical channels.</p></div></div>
+      </div>
+    </section>
+
+    <div class="bottom-notes">
+      <details open><summary>What goes into the two new weekly videos?</summary><ul><li><strong>Built with Choro:</strong> show the finished result, explain the goal, show key steps and one correction, then demonstrate that it works. A feature, useful fix or project improvement is enough; a new app every week isn’t required.</li><li><strong>What’s new:</strong> show what changed, why it helps and how to try it. Add a link to release notes. Meaningful improvements deserve a demonstration; invisible fixes can be a text update.</li></ul></details>
+      <details><summary>How to know whether the plan is working</summary><p>Run the schedule for 6–8 weeks. Compare website visits, signups or downloads, first successful agent tasks and return use by channel and topic. Use viewing retention and questions to improve the next edit. Give more space to topics that bring actual users.</p><p>Use a distinct campaign link per channel and release. The schedule is a starting point to test; the weekdays and quantities are not a guaranteed optimum.</p></details>
+      <details><summary>Guidance behind the plan</summary><ul><li><a href="https://support.google.com/youtube/answer/141805?hl=en">YouTube’s performance guidance</a>: viewer response matters; there is no required daily or weekly upload interval.</li><li><a href="https://support.google.com/youtube/answer/14075157?hl=en">YouTube Shorts related videos</a>: connect a Short to the full demonstration using the related-video feature, which requires advanced feature access.</li><li><a href="https://ads.tiktok.com/business/en/guides/what-is-ad-creative-guide">TikTok’s creative guidance</a>: vertical presentation and captions inform our edits. This is advertising guidance, not proof of an organic posting frequency.</li></ul></details>
+    </div>
+    <footer><p>A publishing plan for Choro’s own channels. Prepared September 21, 2026.<br>Getting Started is treated as already published; this page does not change publication status.</p><a href="#weekly">Back to the schedule</a></footer>
+  </main>
+  <script>
+    (() => {
+      const filter = document.getElementById('channel-filter');
+      const extras = document.getElementById('include-extras');
+      const releases = Array.from(document.querySelectorAll('.release[data-channels]'));
+      const summary = document.getElementById('schedule-count');
+      const cells = Array.from(document.querySelectorAll('.calendar td')).filter(cell => cell.querySelector('.release'));
+      function update() {
+        const channel = filter.value;
+        for (const release of releases) {
+          const matches = channel === 'all' || release.dataset.channels.split(' ').includes(channel);
+          release.hidden = !matches || (release.hasAttribute('data-optional') && !extras.checked);
+        }
+        for (const cell of cells) {
+          const release = cell.querySelector('.release');
+          const empty = cell.querySelector('.empty-slot');
+          empty.hidden = !release.hidden;
+          empty.textContent = release.hasAttribute('data-optional') && channel === 'all' && !extras.checked
+            ? 'Optional extra clip. Otherwise, no scheduled video.'
+            : 'No scheduled video on this channel.';
+        }
+        const visible = releases.filter(release => !release.hidden);
+        const clips = visible.filter(release => release.classList.contains('clip')).length;
+        const full = visible.length - clips;
+        const scope = channel === 'all' ? 'Unique assets, reused across channels.' : filter.options[filter.selectedIndex].text + ' publishing view.';
+        summary.textContent = full + ' full releases + ' + clips + ' vertical clips. ' + scope + ' Includes the conditional Friday update.';
+      }
+      filter.addEventListener('change', update);
+      extras.addEventListener('change', update);
+      document.getElementById('print-plan').addEventListener('click', () => window.print());
+      document.getElementById('print-plan').hidden = false;
+      document.getElementById('toolbar').hidden = false;
+      update();
+    })();
+  </script>
+</body>
+</html>

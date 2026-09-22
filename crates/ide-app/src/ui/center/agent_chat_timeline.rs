@@ -6,7 +6,222 @@ fn should_show_ship_action(has_project_changed_files: bool, is_rejoined: bool) -
     has_project_changed_files && !is_rejoined
 }
 
+/// The transcript has its own render boundary so input/caret redraws do not
+/// rebuild history, parse Markdown, or lay out unchanged message rows.
+pub(super) struct AgentChatTranscript {
+    owner: gpui::WeakEntity<CenterArea>,
+    agent: AgentRecord,
+    session: Rc<AgentChatSession>,
+    searchable: bool,
+    top_down: bool,
+}
+
+impl Render for AgentChatTranscript {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.owner
+            .update(cx, |center, cx| {
+                center.render_agent_chat_transcript(
+                    &self.agent,
+                    &self.session,
+                    self.searchable,
+                    self.top_down,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 impl CenterArea {
+    fn agent_chat_transcript_view(
+        &mut self,
+        agent: &AgentRecord,
+        session: Rc<AgentChatSession>,
+        searchable: bool,
+        top_down: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyView {
+        let view = self
+            .agent_chat_transcript_views
+            .entry(agent.id)
+            .or_insert_with(|| {
+                let owner = cx.entity();
+                cx.new(|cx| {
+                    // Navigation, search, streaming, expansion, and other center
+                    // actions invalidate the transcript. Draft edits notify only
+                    // InputState, whose ancestors still redraw the composer.
+                    cx.observe(&owner, |_, _, cx| cx.notify()).detach();
+                    AgentChatTranscript {
+                        owner: owner.downgrade(),
+                        agent: agent.clone(),
+                        session: session.clone(),
+                        searchable,
+                        top_down,
+                    }
+                })
+            });
+        view.update(cx, |view, cx| {
+            let changed = !Rc::ptr_eq(&view.session, &session)
+                || view.searchable != searchable
+                || view.top_down != top_down;
+            view.agent = agent.clone();
+            view.session = session;
+            view.searchable = searchable;
+            view.top_down = top_down;
+            if changed {
+                cx.notify();
+            }
+        });
+        gpui::AnyView::from(view.clone()).cached(
+            gpui::StyleRefinement::default()
+                .flex_1()
+                .w_full()
+                .min_w(px(0.))
+                .min_h(px(0.)),
+        )
+    }
+
+    fn render_agent_chat_transcript(
+        &mut self,
+        agent: &AgentRecord,
+        session: &Rc<AgentChatSession>,
+        searchable: bool,
+        top_down: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
+        let is_running = matches!(
+            session.status,
+            AgentChatStatus::Running | AgentChatStatus::Cancelling
+        );
+        self.sync_agent_chat_reveal(agent.id, session, is_running, cx);
+        let has_saved_session = session.chat_session_id.is_some()
+            || session.cli_session_id.is_some()
+            || agent.chat_session_id.is_some()
+            || agent.cli_session_id.is_some();
+        let is_hydrating = self.agent_chat_hydrating.contains(&agent.id)
+            && session.messages.is_empty()
+            && session.timeline.is_empty();
+        // Automatic Brain maintenance is background-only. Its persisted turn
+        // is filtered from the timeline, and its synthetic running row must not
+        // displace a completion card (notably the PR card created by Ship).
+        let show_activity = chat_shows_activity(
+            session.status,
+            agent.status.is_finished(),
+            self.agent_transcript_is_fresh(agent.id, cx),
+        ) && !self.agent_summary_silent_requests.contains(&agent.id);
+        let rows = agent_chat_rows(&session, show_activity, has_saved_session, &artifact_filter);
+        let (display_order, newest_turn_len) = agent_chat_display_order(&rows, &session, top_down);
+        // When the resume prompt is the only content, it's rendered as a
+        // full-height centered panel (like the tab empty states) rather than a
+        // top-aligned list row.
+        let is_resume_only = matches!(rows.as_slice(), [AgentChatRow::ResumeSavedSession]);
+        let row_count = rows.len();
+        // A page can contain many adjacent tool events that collapse into only
+        // a handful of display rows. Keep prepending until there is enough
+        // content to scroll; otherwise the user could never reach the top
+        // threshold that requests the next page.
+        if row_count <= 12
+            && self
+                .agent_chat_history
+                .get(&agent.id)
+                .is_some_and(|history| history.has_more && !history.loading && !history.failed)
+        {
+            self.load_older_agent_chat_history(agent.id, cx);
+        }
+        let row_fingerprints = display_order
+            .iter()
+            .filter_map(|index| rows.get(*index))
+            .map(|row| {
+                agent_chat_row_fingerprint(row, &session, self.agent_chat_active_reveal.as_ref())
+            })
+            .collect::<Vec<_>>();
+        let list_state = self.agent_chat_list_state(
+            agent.id,
+            row_count,
+            newest_turn_len,
+            top_down,
+            &row_fingerprints,
+            cx,
+        );
+        if searchable {
+            self.reconcile_agent_chat_search_navigation(
+                agent,
+                &session,
+                &rows,
+                &display_order,
+                &list_state,
+                top_down,
+                cx,
+            );
+        }
+        let search_bar = searchable
+            .then(|| self.render_agent_chat_search(agent.id, cx))
+            .flatten();
+        let list_agent = agent.clone();
+        let list_session = session.clone();
+        let scrolled_up = !is_hydrating
+            && !is_resume_only
+            && self
+                .agent_chat_scrolled_up
+                .get(&agent.id)
+                .copied()
+                .unwrap_or(false);
+        let scroll_button = scrolled_up.then(|| {
+            self.render_agent_chat_scroll_to_latest(
+                agent.id,
+                list_state.clone(),
+                row_count,
+                top_down,
+                cx,
+            )
+        });
+
+        v_flex()
+            .size_full()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .overflow_hidden()
+            .when_some(search_bar, |area, search_bar| area.child(search_bar))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .w_full()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .overflow_hidden()
+                    .child(if is_hydrating {
+                        self.render_agent_chat_resume_loader(agent, cx)
+                    } else if is_resume_only {
+                        self.render_agent_resume_saved_session(agent, cx)
+                    } else {
+                        list(
+                            list_state,
+                            cx.processor(move |this, index: usize, window, cx| {
+                                let source_index =
+                                    display_order.get(index).copied().unwrap_or(index);
+                                this.render_agent_chat_list_row(
+                                    &list_agent,
+                                    &list_session,
+                                    index,
+                                    rows.get(source_index).copied(),
+                                    window,
+                                    cx,
+                                )
+                            }),
+                        )
+                        .size_full()
+                        .py_5()
+                        .into_any_element()
+                    })
+                    .when_some(scroll_button, |area, button| area.child(button)),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_agent_chat_body(
         &mut self,
         agent: &AgentRecord,
@@ -37,10 +252,15 @@ impl CenterArea {
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
         let searchable = matches!(&surface, AgentChatSurface::Standard);
-        let compact_design_surface = surface.is_design();
+        let compact_design_surface = surface.is_design() || agent.studio_context.is_some();
         let compact_assistant_controls = surface.is_document();
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
-        let input = self.agent_chat_input(agent, surface.input_placeholder(), window, cx);
+        let placeholder = if agent.studio_context.is_some() {
+            "Describe this screen or ask for a design change"
+        } else {
+            surface.input_placeholder()
+        };
+        let input = self.agent_chat_input(agent, placeholder, window, cx);
         let voice_transcribing = self
             .voice
             .read(cx)
@@ -83,10 +303,11 @@ impl CenterArea {
                 AgentChatTimelineItem::ChangedFiles(summary) => {
                     summary.remove_visualization_artifacts(agent.id, agent.runtime_path());
                     summary.remove_provider_private_artifacts();
-                    !summary.is_empty()
+                    summary.conversation_files().next().is_some()
                 }
-                AgentChatTimelineItem::FileChangeActivity(activity) => !artifact_filter
-                    .is_artifact(&activity.file.path)
+                AgentChatTimelineItem::FileChangeActivity(activity) => !activity.observed
+                    && !activity.file.clears_projection
+                    && !artifact_filter.is_artifact(&activity.file.path)
                     && !crate::state::agent_chat::ChangedFilesSummary::is_provider_private_artifact(
                         &activity.file.path,
                     ),
@@ -172,14 +393,8 @@ impl CenterArea {
             has_pending_approval || has_pending_user_input || has_actionable_plan;
         let has_changed_files = session
             .changed_files
-            .files
-            .iter()
-            .any(|file| !artifact_filter.is_artifact(&file.path))
-            || session
-                .changed_files
-                .observed_files
-                .iter()
-                .any(|file| !artifact_filter.is_artifact(&file.path));
+            .conversation_files()
+            .any(|file| !artifact_filter.is_artifact(&file.path));
         let project_gits = self.git_states.read(cx).repositories(agent.project_id);
         let active_git = if let Some(repository_path) = agent.repository_path.as_deref() {
             self.git_states
@@ -231,9 +446,6 @@ impl CenterArea {
             session.status,
             AgentChatStatus::Running | AgentChatStatus::Cancelling
         );
-        // Advance the paced reveal for the streaming message and, while it is
-        // still typing or cooling, schedule the next repaint.
-        self.sync_agent_chat_reveal(agent.id, &session, is_running, cx);
         let chat_view = cx.entity().clone();
         let has_saved_session = session.chat_session_id.is_some()
             || session.cli_session_id.is_some()
@@ -247,88 +459,22 @@ impl CenterArea {
             provider_switch_locked,
             !session.messages.is_empty(),
         );
-        let is_hydrating = self.agent_chat_hydrating.contains(&agent.id)
-            && session.messages.is_empty()
-            && session.timeline.is_empty();
-        // Automatic Brain maintenance is background-only. Its persisted turn
-        // is filtered from the timeline, and its synthetic running row must not
-        // displace a completion card (notably the PR card created by Ship).
-        let show_activity = chat_shows_activity(
-            session.status,
-            agent.status.is_finished(),
-            self.agent_transcript_is_fresh(agent.id, cx),
-        ) && !self.agent_summary_silent_requests.contains(&agent.id);
-        let rows = agent_chat_rows(&session, show_activity, has_saved_session, &artifact_filter);
-        let (display_order, newest_turn_len) = agent_chat_display_order(&rows, &session, top_down);
-        // When the resume prompt is the only content, it's rendered as a
-        // full-height centered panel (like the tab empty states) rather than a
-        // top-aligned list row.
-        let is_resume_only = matches!(rows.as_slice(), [AgentChatRow::ResumeSavedSession]);
-        let row_count = rows.len();
-        // A page can contain many adjacent tool events that collapse into only
-        // a handful of display rows. Keep prepending until there is enough
-        // content to scroll; otherwise the user could never reach the top
-        // threshold that requests the next page.
-        if row_count <= 12
-            && self
-                .agent_chat_history
-                .get(&agent.id)
-                .is_some_and(|history| history.has_more && !history.loading && !history.failed)
-        {
-            self.load_older_agent_chat_history(agent.id, cx);
-        }
-        let row_fingerprints = display_order
-            .iter()
-            .filter_map(|index| rows.get(*index))
-            .map(|row| {
-                agent_chat_row_fingerprint(row, &session, self.agent_chat_active_reveal.as_ref())
-            })
-            .collect::<Vec<_>>();
-        let list_state = self.agent_chat_list_state(
-            agent.id,
-            row_count,
-            newest_turn_len,
-            top_down,
-            &row_fingerprints,
-            cx,
-        );
-        if searchable {
-            self.reconcile_agent_chat_search_navigation(
-                agent,
-                &session,
-                &rows,
-                &display_order,
-                &list_state,
-                top_down,
-                cx,
-            );
-        }
-        let search_bar = searchable
-            .then(|| self.render_agent_chat_search(agent.id, cx))
-            .flatten();
-        let list_agent = agent.clone();
-        let list_session = session.clone();
-        let scrolled_up = !is_hydrating
-            && !is_resume_only
-            && self
-                .agent_chat_scrolled_up
-                .get(&agent.id)
-                .copied()
-                .unwrap_or(false);
-        let scroll_button = scrolled_up.then(|| {
-            self.render_agent_chat_scroll_to_latest(
-                agent.id,
-                list_state.clone(),
-                row_count,
-                top_down,
-                cx,
-            )
-        });
 
         let chat = v_flex()
             .size_full()
             .min_w(px(0.))
             .bg(crate::ui::design::base(cx))
+            .when_some(
+                self.agent_start_errors.get(&agent.id).cloned().filter(|_| agent.studio_context.is_some()),
+                |layout, error| layout.child(
+                    div().flex_none().mx_2().my_2().px_2().py_2()
+                        .rounded(crate::ui::design::r_sm())
+                        .bg(crate::ui::design::rose(cx).opacity(0.08))
+                        .text_color(crate::ui::design::rose(cx))
+                        .text_size(crate::ui::design::text_ui())
+                        .child(error)
+                ),
+            )
             // Treat the conversation and composer as one drop surface. Users
             // naturally release files over the transcript, especially when the
             // composer is compact, so limiting this listener to the frame made
@@ -345,47 +491,7 @@ impl CenterArea {
             }))
             .when(top_down, |layout| layout.flex_col_reverse())
             .child(
-                v_flex()
-                    .flex_1()
-                    .w_full()
-                    .min_w(px(0.))
-                    .min_h(px(0.))
-                    .overflow_hidden()
-                    .when_some(search_bar, |area, search_bar| area.child(search_bar))
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .w_full()
-                            .min_w(px(0.))
-                            .min_h(px(0.))
-                            .overflow_hidden()
-                            .child(if is_hydrating {
-                                self.render_agent_chat_resume_loader(agent, cx)
-                            } else if is_resume_only {
-                                self.render_agent_resume_saved_session(agent, cx)
-                            } else {
-                                list(
-                                    list_state,
-                                    cx.processor(move |this, index: usize, window, cx| {
-                                        let source_index =
-                                            display_order.get(index).copied().unwrap_or(index);
-                                        this.render_agent_chat_list_row(
-                                            &list_agent,
-                                            &list_session,
-                                            index,
-                                            rows.get(source_index).copied(),
-                                            window,
-                                            cx,
-                                        )
-                                    }),
-                                )
-                                .size_full()
-                                .py_5()
-                                .into_any_element()
-                            })
-                            .when_some(scroll_button, |area, button| area.child(button)),
-                        )
+                self.agent_chat_transcript_view(agent, session.clone(), searchable, top_down, cx)
             )
             .child(
                 v_flex()
@@ -444,6 +550,7 @@ impl CenterArea {
                     .child(
                         crate::ui::style::composer_frame(cx)
                             .relative()
+                            .flex_shrink_0()
                             .w_full()
                             .min_w(px(0.))
                             .max_w(crate::ui::design::agent_chat_content_max_w())
@@ -807,12 +914,9 @@ impl CenterArea {
                                             )
                                         })
                                         .child(
-                                            div().flex_1().min_h(px(0.)).child(
-                                                crate::ui::style::composer_text_input(&input)
-                                                    .disabled(
-                                                        handoff_preparing || handoff_sending,
-                                                    )
-                                                    .h_full(),
+                                            crate::ui::style::composer_draft_editor(
+                                                &input,
+                                                handoff_preparing || handoff_sending,
                                             ),
                                         ),
                                 )
@@ -912,7 +1016,9 @@ impl CenterArea {
                                                 let current_effort = agent.effort;
                                                 let model_view = chat_view.clone();
                                                 let surface = surface.clone();
+                                                let menu_host = self.web_host.clone();
                                                 move |mut menu, window, cx| {
+                                                    web_preview::suspend_for_menu(menu_host.clone(), cx);
                                                     let workspace = model_view.read(cx).workspace.clone();
                                                     let favorites = workspace.read(cx).favorite_models.clone();
                                                     let choices = crate::ui::model_favorites::grouped_choices(
@@ -980,7 +1086,9 @@ impl CenterArea {
                                                     let effort_options = supported_efforts.clone();
                                                     let effort_view = chat_view.clone();
                                                     let surface = surface.clone();
-                                                    move |mut menu, window, _| {
+                                                    let menu_host = self.web_host.clone();
+                                                    move |mut menu, window, cx| {
+                                                        web_preview::suspend_for_menu(menu_host.clone(), cx);
                                                         for candidate in
                                                             effort_options.iter().copied()
                                                         {
@@ -1040,7 +1148,9 @@ impl CenterArea {
                                                     let current_access_mode = agent.access_mode;
                                                     let access_view = chat_view.clone();
                                                     let surface = surface.clone();
-                                                    move |mut menu, window, _| {
+                                                    let menu_host = self.web_host.clone();
+                                                    move |mut menu, window, cx| {
+                                                        web_preview::suspend_for_menu(menu_host.clone(), cx);
                                                         for candidate in AgentAccessMode::ALL {
                                                             let surface = surface.clone();
                                                             menu = menu.item(

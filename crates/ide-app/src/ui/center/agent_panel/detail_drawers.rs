@@ -406,24 +406,20 @@ impl CenterArea {
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
         let mut exact_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
-        let mut observed_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
             let reconciled = session
                 .changed_files
                 .reconciled_final_files(agent.runtime_path());
-            for file in &reconciled.files {
+            let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
+            for file in reconciled
+                .conversation_files()
+                .filter(|file| !filter.is_artifact(&file.path))
+            {
                 exact_files.insert(file.path.clone(), (file.additions, file.deletions));
-            }
-            for file in &reconciled.observed_files {
-                if !exact_files.contains_key(&file.path) {
-                    observed_files.insert(file.path.clone(), (file.additions, file.deletions));
-                }
             }
         }
         let exact_rows = exact_files.into_iter().collect::<Vec<_>>();
-        let observed_rows = observed_files.into_iter().collect::<Vec<_>>();
-        let row_count = exact_rows.len() + observed_rows.len();
-        let exact_count = exact_rows.len();
+        let row_count = exact_rows.len();
 
         let close = self
             .agent_drawer_close_button(
@@ -482,24 +478,7 @@ impl CenterArea {
                     .children(exact_rows.into_iter().enumerate().map(
                         |(index, (path, (add, del)))| {
                             self.render_agent_file_ledger_row(
-                                project, agent, index, path, add, del, false, cx,
-                            )
-                        },
-                    ))
-            })
-            .when(!observed_rows.is_empty(), |list| {
-                list.child(agent_files_section_label("Command changes (observed)", cx))
-                    .children(observed_rows.into_iter().enumerate().map(
-                        |(index, (path, (add, del)))| {
-                            self.render_agent_file_ledger_row(
-                                project,
-                                agent,
-                                exact_count + index,
-                                path,
-                                add,
-                                del,
-                                true,
-                                cx,
+                                project, agent, index, path, add, del, cx,
                             )
                         },
                     ))
@@ -525,7 +504,6 @@ impl CenterArea {
         path: PathBuf,
         add: usize,
         del: usize,
-        observed: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let absolute = agent.runtime_path().join(&path);
@@ -555,11 +533,7 @@ impl CenterArea {
                     .min_w(px(0.))
                     .truncate()
                     .text_size(crate::ui::design::text_body())
-                    .text_color(if observed {
-                        crate::ui::design::t2(cx)
-                    } else {
-                        crate::ui::design::t1(cx)
-                    })
+                    .text_color(crate::ui::design::t1(cx))
                     .child(label),
             )
             .child(

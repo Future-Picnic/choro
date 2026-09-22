@@ -960,6 +960,7 @@ mod tests {
         ledger.merge_turn(&restored);
         assert_eq!(ledger.files.len(), 24);
         assert_eq!(ledger.observed_files.len(), 64);
+        assert_eq!(ledger.conversation_files().count(), 24);
         assert!(ledger
             .observed_files
             .iter()
@@ -971,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_revert_receipt_clears_the_old_ledger_entry() {
+    fn restored_unattributed_reverts_cannot_erase_conversation_work() {
         let mut ledger = ChangedFilesSummary::default();
         ledger.merge_turn(&ChangedFilesSummary::attributed(
             "edit",
@@ -996,7 +997,8 @@ mod tests {
             panic!("expected receipt");
         };
         ledger.merge_turn(&restored);
-        assert!(ledger.is_empty());
+        assert_eq!(ledger.conversation_files().count(), 1);
+        assert_eq!(ledger.files[0], FileChangeStat::new("a.rs", 8, 0));
     }
 
     #[test]

@@ -99,6 +99,7 @@ fn agent_visualization_dir(agent: &AgentRecord) -> Option<PathBuf> {
 pub(crate) type EventSender = async_channel::Sender<ChatBackendEvent>;
 
 pub struct ChatBackendController {
+    studio_scope: Option<(PathBuf, uuid::Uuid)>,
     tx: Sender<ChatBackendCommand>,
     shutdown: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
@@ -238,15 +239,24 @@ impl ChatBackendController {
     }
 
     fn shutdown(&self) {
+        if let Some((root, agent)) = &self.studio_scope {
+            ide_core::studio::revoke_scope_at(root, *agent);
+        }
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = self.tx.send(ChatBackendCommand::Shutdown);
     }
 
     pub fn cancel_turn(&self) {
+        if let Some((root, agent)) = &self.studio_scope {
+            ide_core::studio::revoke_scope_at(root, *agent);
+        }
         let _ = self.tx.send(ChatBackendCommand::CancelTurn);
     }
 
     pub fn force_shutdown(&self) {
+        if let Some((root, agent)) = &self.studio_scope {
+            ide_core::studio::revoke_scope_at(root, *agent);
+        }
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = self.tx.send(ChatBackendCommand::ForceShutdown);
     }
@@ -284,6 +294,22 @@ pub fn spawn_chat_backend(
         crate::state::penpot::configured_mcp_url()
             .context("The Design MCP connection is unavailable")?;
     }
+    if let Some(context) = agent.studio_context.as_ref() {
+        anyhow::ensure!(
+            matches!(agent.provider, AgentKind::Codex | AgentKind::Claude),
+            "Studio supports your existing Codex or Claude account"
+        );
+        choro_mcp_binary_path().context("Build or install Choro MCP before using Studio Agent")?;
+        let store = ide_core::studio::StudioStore::for_project(&agent.project_path)?;
+        ide_core::studio::atomic(
+            &store.cache.join("roles").join(format!("{}.json", agent.id)),
+            &serde_json::to_vec(context)?,
+        )?;
+    }
+    let studio_scope = agent
+        .studio_context
+        .as_ref()
+        .map(|_| (agent.project_path.clone(), agent.id));
     let (command_tx, command_rx) = crossbeam_channel::unbounded();
     let (event_tx, event_rx) = async_channel::unbounded();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -316,6 +342,7 @@ pub fn spawn_chat_backend(
     }
     Ok((
         ChatBackendController {
+            studio_scope,
             tx: command_tx,
             shutdown,
             stopped,
@@ -370,6 +397,26 @@ fn spawn_codex_app_server(
     Ok(())
 }
 
+/// A stopped or failed turn is not a completed design edit. Shared by providers.
+#[derive(Default)]
+struct StudioReviewGate {
+    pending: bool,
+    cancelled: bool,
+}
+impl StudioReviewGate {
+    fn begin(&mut self, studio: bool) {
+        self.pending = studio;
+        self.cancelled = false;
+    }
+    fn cancel(&mut self) {
+        self.pending = false;
+        self.cancelled = true;
+    }
+    fn complete(&mut self) -> bool {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 struct CodexRuntime {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
@@ -381,6 +428,7 @@ struct CodexRuntime {
     thread_id: Option<String>,
     assistant_buffer: String,
     assistant_stream: StreamChunkBuffer,
+    studio_review: StudioReviewGate,
     plan_buffer: String,
     pending_changed_files: Option<ChangedFilesSummary>,
     pending_file_actions: std::collections::BTreeMap<String, Vec<FileChangeStat>>,
@@ -430,6 +478,7 @@ struct ClaudeBridgeRuntime {
     visualization_dir: Option<PathBuf>,
     assistant_buffer: String,
     assistant_stream: StreamChunkBuffer,
+    studio_review: StudioReviewGate,
 }
 
 struct StreamChunkBuffer {
@@ -533,6 +582,21 @@ fn run_claude_bridge(
         anyhow!("Claude Code executable was not found. Install Claude Code or add it to a standard location.")
     })?;
     ensure_claude_bridge_dependencies(bridge_dir, &npm_path, &event_tx)?;
+    if agent.studio_context.is_some() {
+        let sdk: Value = serde_json::from_slice(&fs::read(
+            bridge_dir.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"),
+        )?)?;
+        let output = Command::new(&claude_path).arg("--help").env("PATH",command_path_env()).output()
+            .context("Studio compatibility check could not start Claude. Repair Claude Code, then reconnect.")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "Studio compatibility check failed. Repair Claude Code, then reconnect."
+        );
+        validate_claude_studio_compatibility(
+            &String::from_utf8_lossy(&output.stdout),
+            sdk["version"].as_str().unwrap_or(""),
+        )?;
+    }
 
     let mut command = Command::new(&node_path);
     command
@@ -582,13 +646,13 @@ fn run_claude_bridge(
         visualization_dir,
         assistant_buffer: String::new(),
         assistant_stream: StreamChunkBuffer::new(),
+        studio_review: StudioReviewGate::default(),
     };
 
-    if runtime.agent.cli_session_id.is_none()
-        && !runtime.agent.hidden_doc_assistant
-        && !runtime.agent.doc.trim().is_empty()
+    if let Some(prompt) =
+        initial_chat_prompt(&runtime.agent, runtime.agent.cli_session_id.is_some())
     {
-        runtime.send_turn(runtime.agent.doc.clone(), initial_mode, false)?;
+        runtime.send_turn(prompt.to_owned(), initial_mode, false)?;
     }
     runtime.run_loop()
 }
@@ -657,11 +721,15 @@ fn choro_mcp_scope_args(project_id: &str, agent_id: &str, data_root: &Path) -> V
 }
 
 fn agent_choro_mcp_scope_args(agent: &AgentRecord) -> Vec<String> {
-    choro_mcp_scope_args(
+    let mut args = choro_mcp_scope_args(
         &agent.project_id.0.to_string(),
         &agent.id.to_string(),
         &AppConfig::config_root(),
-    )
+    );
+    if agent.studio_context.is_some() {
+        args.push("--studio".into());
+    }
+    args
 }
 
 fn codex_mcp_args_config_arg(name: &str, agent: &AgentRecord) -> String {
@@ -676,6 +744,23 @@ fn codex_penpot_approval_config_arg(name: &str) -> String {
     // `approvalPolicy=never` turns every Design tool invocation into
     // "user rejected MCP tool call" before Choro can run it.
     format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\"")
+}
+
+/// Managed children must report through Choro even when approvalPolicy is never.
+/// Grant only the scoped coordination protocol, not other MCP or shell tools.
+fn configure_codex_child_coordination(command: &mut Command, agent: &AgentRecord) {
+    if !managed::is_child(agent) {
+        return;
+    }
+    for tool in [
+        "delegation_read",
+        "delegation_message",
+        "delegation_complete",
+    ] {
+        command.arg("-c").arg(format!(
+            "mcp_servers.ide.tools.{tool}.approval_mode=\"approve\""
+        ));
+    }
 }
 
 fn is_design_assistant(agent: &AgentRecord) -> bool {
@@ -739,6 +824,82 @@ fn configured_codex_mcp_names(
         names.push(name.to_string());
     }
     Ok(names)
+}
+
+fn validate_codex_studio_features(output: &str) -> anyhow::Result<()> {
+    let features = output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            Some((parts.next()?, parts.last()?))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    // ShellTool is the outer gate for both exec_command and the legacy shell.
+    // New Codex builds keep UnifiedExec enabled; disabling the shell gate still
+    // omits both handlers. Do not require that implementation selector to be false.
+    // https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/spec_plan.rs
+    for name in ["shell_tool", "multi_agent"] {
+        anyhow::ensure!(
+            features.get(name) == Some(&"false"),
+            "Studio could not disable Codex {name}. Update or repair Codex, then reconnect."
+        );
+    }
+    for name in ["multi_agent_v2", "apps", "plugins"] {
+        if let Some(value) = features.get(name) {
+            anyhow::ensure!(*value == "false", "Studio could not disable Codex {name}. Reconnect with a compatible Codex installation.");
+        }
+    }
+    Ok(())
+}
+
+fn configure_codex_studio(
+    command: &mut Command,
+    codex: &Path,
+    agent: &AgentRecord,
+    path_env: &str,
+) -> anyhow::Result<()> {
+    let restrictions = [
+        "features.shell_tool=false",
+        "features.multi_agent=false",
+        "features.multi_agent_v2=false",
+        "agents.enabled=false",
+        "features.plugins=false",
+        "features.apps=false",
+    ];
+    let mut check = Command::new(codex);
+    for restriction in restrictions {
+        check.args(["-c", restriction]);
+        command.args(["-c", restriction]);
+    }
+    let output = check
+        .args(["features", "list"])
+        .env("PATH", path_env)
+        .output()?;
+    let features = String::from_utf8_lossy(&output.stdout);
+    anyhow::ensure!(
+        output.status.success(),
+        "Studio could not read Codex capabilities. Reconnect or repair the Codex installation."
+    );
+    validate_codex_studio_features(&features)?;
+    for name in configured_codex_mcp_names(codex, agent.runtime_path(), path_env)? {
+        command
+            .arg("-c")
+            .arg(format!("mcp_servers.{name}.enabled=false"));
+    }
+    let mcp = choro_mcp_binary_path().context("Choro MCP is unavailable")?;
+    let name = format!("studio_{}", agent.id.simple());
+    command
+        .arg("-c")
+        .arg(format!("mcp_servers.{name}.command={}", mcp.display()))
+        .arg("-c")
+        .arg(codex_mcp_args_config_arg(&name, agent))
+        .arg("-c")
+        .arg(format!("mcp_servers.{name}.enabled=true"))
+        .arg("-c")
+        .arg(format!("mcp_servers.{name}.required=true"))
+        .arg("-c")
+        .arg(codex_penpot_approval_config_arg(&name));
+    Ok(())
 }
 
 fn configure_codex_design_assistant(
@@ -895,6 +1056,20 @@ fn claude_bridge_script_path() -> anyhow::Result<PathBuf> {
     Err(anyhow!("Claude bridge script was not found"))
 }
 
+fn validate_claude_studio_compatibility(help: &str, sdk: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(sdk == "0.3.170", "Studio requires the bundled Claude Agent SDK 0.3.170. Repair Choro's Claude bridge dependencies, then reconnect.");
+    for flag in [
+        "--tools",
+        "--disallowedTools",
+        "--strict-mcp-config",
+        "--permission-mode",
+        "--setting-sources",
+    ] {
+        anyhow::ensure!(help.contains(flag), "Claude Code lacks {flag}, required for Studio restrictions. Update Claude Code, then reconnect Studio.");
+    }
+    Ok(())
+}
+
 fn ensure_claude_bridge_dependencies(
     bridge_dir: &Path,
     npm_path: &Path,
@@ -975,7 +1150,9 @@ fn run_codex_app_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(agent.runtime_path());
-    if is_design_assistant(&agent) {
+    if agent.studio_context.is_some() {
+        configure_codex_studio(&mut command, &codex_path, &agent, &path_env)?;
+    } else if is_design_assistant(&agent) {
         // Codex `-c` values merge with the user's config. A dedicated Design
         // Assistant must therefore disable every inherited explicit MCP server,
         // disable plugin/app MCP contributions, and require only Choro + the
@@ -1002,6 +1179,7 @@ fn run_codex_app_server(
             }
             if agent.delegation.is_some() {
                 command.args(["-c", "mcp_servers.ide.required=true"]);
+                configure_codex_child_coordination(&mut command, &agent);
             }
         }
         if agent_requires_design_mcp(&agent) {
@@ -1053,6 +1231,7 @@ fn run_codex_app_server(
         thread_id: None,
         assistant_buffer: String::new(),
         assistant_stream: StreamChunkBuffer::new(),
+        studio_review: StudioReviewGate::default(),
         plan_buffer: String::new(),
         pending_changed_files: None,
         pending_file_actions: Default::default(),
@@ -1086,7 +1265,7 @@ fn run_codex_app_server(
         }),
     )?;
     runtime.notify("initialized", Value::Null)?;
-    let design_assistant = is_design_assistant(&agent);
+    let design_assistant = is_design_assistant(&agent) || agent.studio_context.is_some();
     let approval_policy = if design_assistant {
         "never"
     } else {
@@ -1151,11 +1330,21 @@ fn run_codex_app_server(
             })
             .ok();
     }
-    if !is_resuming_existing_thread && !agent.hidden_doc_assistant && !agent.doc.trim().is_empty() {
-        runtime.send_turn(agent.doc.clone(), initial_mode, false)?;
+    if let Some(prompt) = initial_chat_prompt(&agent, is_resuming_existing_thread) {
+        runtime.send_turn(prompt.to_owned(), initial_mode, false)?;
     }
 
     runtime.run_loop()
+}
+
+/// Managed sessions are started by the durable delivery queue, including when
+/// a lead backend is reconfigured. Only ordinary fresh chats auto-send the doc.
+fn initial_chat_prompt(agent: &AgentRecord, resuming: bool) -> Option<&str> {
+    (!resuming
+        && agent.delegation.is_none()
+        && !agent.hidden_doc_assistant
+        && !agent.doc.trim().is_empty())
+    .then_some(agent.doc.as_str())
 }
 
 fn spawn_json_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<Value>) {
@@ -1210,7 +1399,110 @@ fn should_surface_stderr(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn studio_stop_then_send_uses_a_fresh_completion_review() {
+        let mut gate = super::StudioReviewGate::default();
+        gate.begin(true);
+        gate.cancel();
+        assert!(
+            !gate.complete(),
+            "Stop must not run completion review on revoked scope"
+        );
+        gate.begin(true);
+        assert!(
+            gate.complete(),
+            "The next Studio turn still requires review"
+        );
+        assert!(
+            !gate.complete(),
+            "Duplicate idle events must not re-review revoked scope"
+        );
+        gate.begin(false);
+        assert!(
+            !gate.complete(),
+            "Ordinary agents do not require Studio review"
+        );
+    }
     use super::*;
+
+    #[test]
+    fn studio_codex_checks_shell_gate_not_execution_backend_selector() {
+        let current="shell_tool stable false\nunified_exec stable true\nmulti_agent stable false\nmulti_agent_v2 stable false\napps stable false\nplugins stable false";
+        assert!(validate_codex_studio_features(current).is_ok());
+        assert!(validate_codex_studio_features(
+            "shell_tool stable false\nmulti_agent experimental false"
+        )
+        .is_ok());
+        for name in [
+            "shell_tool",
+            "multi_agent",
+            "multi_agent_v2",
+            "apps",
+            "plugins",
+        ] {
+            assert!(validate_codex_studio_features(&current.replace(
+                &format!("{name} stable false"),
+                &format!("{name} stable true")
+            ))
+            .is_err());
+        }
+        assert!(validate_codex_studio_features(
+            "unified_exec stable false\nmulti_agent stable false"
+        )
+        .is_err());
+        assert!(validate_codex_studio_features("garbled output").is_err());
+    }
+    #[test]
+    fn studio_claude_preflight_requires_the_pinned_sdk_and_every_policy_flag() {
+        let flags = [
+            "--tools",
+            "--disallowedTools",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "--setting-sources",
+        ];
+        assert!(validate_claude_studio_compatibility(&flags.join(" "), "0.3.170").is_ok());
+        assert!(validate_claude_studio_compatibility(&flags.join(" "), "0.3.169").is_err());
+        for missing in flags {
+            assert!(validate_claude_studio_compatibility(
+                &flags
+                    .into_iter()
+                    .filter(|f| *f != missing)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                "0.3.170"
+            )
+            .is_err());
+        }
+    }
+    #[test]
+    fn studio_mcp_scope_is_distinct_from_penpot_and_survives_full_access() {
+        let mut agent = AgentRecord::new(
+            ide_core::ProjectId(uuid::Uuid::new_v4()),
+            PathBuf::from("/tmp/project"),
+            "Studio",
+            "Design a screen",
+            AgentKind::Codex,
+            AgentModel::default_for(AgentKind::Codex),
+            AgentEffort::default(),
+            AgentAccessMode::FullAccess,
+        );
+        agent.studio_context = Some(ide_core::studio::StudioAgentContext {
+            target: ide_core::studio::StudioAgentTarget::Design,
+            design_id: uuid::Uuid::new_v4(),
+            conversation_id: uuid::Uuid::new_v4(),
+        });
+        assert!(agent_choro_mcp_scope_args(&agent).contains(&"--studio".to_string()));
+        assert!(!agent_requires_design_mcp(&agent));
+        let value = serde_json::to_value(&agent).unwrap();
+        assert_eq!(
+            serde_json::from_value::<AgentRecord>(value)
+                .unwrap()
+                .studio_context,
+            agent.studio_context
+        );
+    }
 
     #[test]
     fn visualization_instructions_are_provider_neutral() {
@@ -1255,6 +1547,109 @@ mod tests {
         });
         assert!(is_design_assistant(&dedicated));
         assert!(agent_requires_design_mcp(&dedicated));
+    }
+
+    #[test]
+    fn managed_startup_never_sends_an_implicit_assignment() {
+        for provider in [AgentKind::Codex, AgentKind::Claude] {
+            let mut agent = AgentRecord::new(
+                ide_core::ProjectId(uuid::Uuid::new_v4()),
+                PathBuf::from("/tmp/project"),
+                "Bandmate",
+                "Initial assignment",
+                provider,
+                AgentModel::default_for(provider),
+                AgentEffort::default(),
+                AgentAccessMode::FullAccess,
+            );
+            assert_eq!(
+                initial_chat_prompt(&agent, false),
+                Some("Initial assignment")
+            );
+            assert_eq!(initial_chat_prompt(&agent, true), None);
+            agent.hidden_doc_assistant = true;
+            assert_eq!(initial_chat_prompt(&agent, false), None);
+            agent.hidden_doc_assistant = false;
+            agent.delegation = Some(ide_core::delegation::DelegationBinding {
+                run_id: uuid::Uuid::new_v4(),
+                parent_agent_id: agent.id,
+                task_id: None,
+                attempt_id: None,
+                workspace: None,
+                task_kind: None,
+            });
+            for task_kind in [
+                None,
+                Some(ide_core::delegation::TaskKind::Implementation),
+                Some(ide_core::delegation::TaskKind::Consultation),
+            ] {
+                let binding = agent.delegation.as_mut().unwrap();
+                binding.task_id = task_kind.map(|_| uuid::Uuid::new_v4());
+                binding.task_kind = task_kind;
+                // Fresh children and restarted/reconfigured leads all wait for
+                // the coordinator's durable delivery instead of executing doc.
+                assert_eq!(initial_chat_prompt(&agent, false), None);
+                assert_eq!(initial_chat_prompt(&agent, true), None);
+            }
+            agent.delegation = None;
+            assert_eq!(
+                initial_chat_prompt(&agent, false),
+                Some("Initial assignment")
+            );
+            agent.doc = "  ".into();
+            assert_eq!(initial_chat_prompt(&agent, false), None);
+        }
+    }
+
+    #[test]
+    fn child_coordination_approval_is_scoped_to_reporting_tools() {
+        let mut agent = AgentRecord::new(
+            ide_core::ProjectId(uuid::Uuid::new_v4()),
+            PathBuf::from("/tmp/project"),
+            "Bandmate",
+            "Assigned task",
+            AgentKind::Codex,
+            AgentModel::default_for(AgentKind::Codex),
+            AgentEffort::default(),
+            AgentAccessMode::FullAccess,
+        );
+        let args = |agent: &AgentRecord| {
+            let mut command = Command::new("codex");
+            configure_codex_child_coordination(&mut command, agent);
+            command
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(args(&agent).is_empty());
+        agent.delegation = Some(ide_core::delegation::DelegationBinding {
+            run_id: uuid::Uuid::new_v4(),
+            parent_agent_id: agent.id,
+            task_id: None,
+            attempt_id: None,
+            workspace: None,
+            task_kind: None,
+        });
+        assert!(args(&agent).is_empty(), "lead policy must stay unchanged");
+        let binding = agent.delegation.as_mut().unwrap();
+        binding.task_id = Some(uuid::Uuid::new_v4());
+        binding.attempt_id = Some(uuid::Uuid::new_v4());
+        let expected = vec![
+            "-c",
+            "mcp_servers.ide.tools.delegation_read.approval_mode=\"approve\"",
+            "-c",
+            "mcp_servers.ide.tools.delegation_message.approval_mode=\"approve\"",
+            "-c",
+            "mcp_servers.ide.tools.delegation_complete.approval_mode=\"approve\"",
+        ];
+        for kind in [
+            ide_core::delegation::TaskKind::Implementation,
+            ide_core::delegation::TaskKind::Consultation,
+        ] {
+            agent.delegation.as_mut().unwrap().task_kind = Some(kind);
+            assert_eq!(args(&agent), expected);
+        }
+        assert_eq!(agent.access_mode, AgentAccessMode::FullAccess);
     }
 
     #[test]

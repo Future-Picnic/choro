@@ -570,6 +570,13 @@ impl CenterArea {
             })
             .unwrap_or_default()
     }
+
+    fn delegation_indicator(&self, parent: Uuid, cx: &App) -> Option<display::DelegationIndicator> {
+        let handle = cx.try_global::<DelegationHandle>()?;
+        display::delegation_indicator(&handle.0.read(cx).runs, parent, &|child| {
+            self.delegated_child_needs_user(child, cx)
+        })
+    }
     pub(super) fn delegated_preview_intent(
         &self,
         project: ProjectId,
@@ -641,106 +648,67 @@ impl CenterArea {
                     cx.notify();
                 })),
             );
-            if let Some(run) = self
-                .delegation_runs(parent, cx)
-                .into_iter()
-                .find(|r| r.id == binding.run_id)
-            {
-                let queued = run
-                    .deliveries
-                    .iter()
-                    .filter(|d| {
-                        d.target == id && d.status == ide_core::delegation::DeliveryStatus::Queued
-                    })
-                    .count();
-                if queued > 0 {
-                    row = row.child(crate::ui::design::indicator::indicator(
-                        IconName::Loader,
-                        format!(
-                            "{queued} queued message{}",
-                            if queued == 1 { "" } else { "s" }
-                        ),
-                        crate::ui::design::amber(cx),
-                        cx,
-                    ));
-                }
+            let queued = cx
+                .try_global::<DelegationHandle>()
+                .and_then(|handle| {
+                    handle
+                        .0
+                        .read(cx)
+                        .runs
+                        .iter()
+                        .find(|run| run.id == binding.run_id)
+                        .map(|run| {
+                            run.deliveries
+                                .iter()
+                                .filter(|delivery| {
+                                    delivery.target == id
+                                        && delivery.status
+                                            == ide_core::delegation::DeliveryStatus::Queued
+                                })
+                                .count()
+                        })
+                })
+                .unwrap_or(0);
+            if queued > 0 {
+                row = row.child(crate::ui::design::indicator::indicator(
+                    IconName::Loader,
+                    format!(
+                        "{queued} queued message{}",
+                        if queued == 1 { "" } else { "s" }
+                    ),
+                    crate::ui::design::amber(cx),
+                    cx,
+                ));
             }
         }
         if let Some(selection) = self.delegation_selection.get(&id).copied() {
-            let experts = profiles();
-            row = row.child(
-                div()
-                    .text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t3(cx))
-                    .child("Delegate to"),
-            );
-            let temporary = if selection.is_none() {
-                crate::ui::style::primary_button_compact(
-                    ("delegate-temporary", id.as_u128() as u64),
-                    "On-demand teammate",
-                    cx,
-                )
-            } else {
-                crate::ui::style::dialog_neutral_button(
-                    ("delegate-temporary", id.as_u128() as u64),
-                    "On-demand teammate",
-                    cx,
-                )
-            };
-            row = row.child(temporary.on_click(cx.listener(move |this, _, _, cx| {
-                this.delegation_selection.insert(id, None);
-                cx.notify();
-            })));
-            for (i, p) in experts.into_iter().enumerate() {
-                let selected = selection == Some(p.id);
-                let b = if selected {
-                    crate::ui::style::primary_button_compact(("delegate-expert", i), p.name, cx)
-                } else {
-                    crate::ui::style::dialog_neutral_button(("delegate-expert", i), p.name, cx)
-                };
-                row = row.child(b.on_click(cx.listener(move |this, _, _, cx| {
-                    this.delegation_selection.insert(id, Some(p.id));
-                    cx.notify();
-                })));
-            }
-            row = row.child(
-                crate::ui::style::ghost_button_compact(
-                    ("cancel-delegate", id.as_u128() as u64),
-                    "Cancel",
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.delegation_selection.remove(&id);
-                    cx.notify();
-                })),
-            );
-        }
-        if let Some(e) = &agent.expert_snapshot {
-            row = row.child(crate::ui::style::tag(
-                format!("Bandmate · {}", e.profile.name),
-                cx,
-            ));
+            row = row.child(self.render_delegation_recipient(id, selection, cx));
         }
         if let Some(chip) = self.render_delegation_activity_chip(id, cx) {
             row = row.child(chip);
         }
-        if let Some(run) = self
-            .delegation_runs(id, cx)
-            .iter()
-            .find(|r| r.status.stopped())
-        {
-            row = row.child(self.render_delegation_recovery(run, "composer", cx));
+        let stopped_run = cx.try_global::<DelegationHandle>().and_then(|handle| {
+            handle
+                .0
+                .read(cx)
+                .runs
+                .iter()
+                .find(|run| run.parent_agent_id == id && run.status.stopped())
+                .map(|run| run.id)
+        });
+        if let Some(run_id) = stopped_run {
+            row = row.child(self.render_delegation_recovery(run_id, id, "composer", cx));
         }
         row.into_any_element()
     }
 
     pub(super) fn render_delegation_recovery(
         &self,
-        run: &DelegationRun,
+        run_id: Uuid,
+        parent: Uuid,
         surface: &'static str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let run_id = run.id;
-        let parent = run.parent_agent_id;
         h_flex()
             .gap_2()
             .flex_wrap()
@@ -787,15 +755,74 @@ impl CenterArea {
             .into_any_element()
     }
 
+    /// A second entry point for the same Band panel, outside the composer.
+    /// It follows the coordinator's display state, never the lead's runtime.
+    pub(super) fn render_band_header_toggle(
+        &self,
+        agent: &AgentRecord,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !ide_core::delegation::enabled()
+            || agent.runtime != AgentRuntimeKind::Chat
+            || agent
+                .delegation
+                .as_ref()
+                .is_some_and(|b| b.task_id.is_some())
+        {
+            return None;
+        }
+        let parent = agent.id;
+        let indicator = self.delegation_indicator(parent, cx)?;
+        let active = self.delegated_overview == Some(parent)
+            || self.delegated_panel.is_some_and(|id| {
+                self.agents.read(cx).agent(id).is_some_and(|child| {
+                    child
+                        .delegation
+                        .as_ref()
+                        .is_some_and(|b| b.parent_agent_id == parent)
+                })
+            });
+        let leading = delegation_glyph(
+            indicator.activity,
+            indicator.status,
+            parent.as_u128() as usize,
+            cx,
+        );
+        Some(
+            crate::ui::style::header_activity_toggle_button(
+                ("agent-band-toggle", parent.as_u128() as u64),
+                leading,
+                SharedString::from(indicator.header_label().to_owned()),
+                active,
+                cx,
+            )
+            .tooltip(format!(
+                "{} — {} Band sidebar",
+                indicator.label,
+                if active { "Hide" } else { "Open" }
+            ))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if active {
+                    this.web_host.update(cx, |h, _| h.set_intent(None));
+                    this.delegated_overview = None;
+                    this.delegated_panel = None;
+                    this.delegated_preview = false;
+                    cx.notify();
+                } else {
+                    this.open_assignment_overview(parent, window, cx);
+                }
+            }))
+            .into_any_element(),
+        )
+    }
+
     /// The aggregate Expert status. Clicking always opens all assignments.
     fn render_delegation_activity_chip(
         &self,
         parent: Uuid,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let runs = self.delegation_runs(parent, cx);
-        let needs_user = |child: Uuid| self.delegated_child_needs_user(child, cx);
-        let indicator = display::delegation_indicator(&runs, parent, &needs_user)?;
+        let indicator = self.delegation_indicator(parent, cx)?;
         let leading = delegation_glyph(
             indicator.activity,
             indicator.status,

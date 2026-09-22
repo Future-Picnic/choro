@@ -30,3 +30,130 @@ impl Drop for UiOperationTimer {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-layout-tests"))]
+mod tests {
+    use gpui::{
+        div, px, AnyView, AppContext, Context, Entity, EntityInputHandler, IntoElement,
+        ParentElement, Render, StyleRefinement, Styled, Window,
+    };
+    use gpui_component::input::{Input, InputEvent, InputState};
+    use std::{cell::Cell, rc::Rc};
+
+    struct TranscriptFixture(Rc<Cell<usize>>);
+    impl Render for TranscriptFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.0.set(self.0.get() + 1);
+            div()
+                .size_full()
+                .child("A settled conversation stays cached while typing")
+        }
+    }
+
+    struct ComposerFixture {
+        input: Entity<InputState>,
+        transcript: Entity<TranscriptFixture>,
+        cached: bool,
+        changes: usize,
+        renders: Rc<Cell<usize>>,
+    }
+    impl Render for ComposerFixture {
+        fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            let transcript = AnyView::from(self.transcript.clone());
+            let transcript = if self.cached {
+                transcript.cached(StyleRefinement::default().flex_1().w_full().min_h(px(0.)))
+            } else {
+                transcript
+            };
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(transcript)
+                // This label stands for Send/mention/preview controls: it must
+                // update on InputState's notification without notifying the owner.
+                .child(format!("draft changes: {}", self.changes))
+                .child(Input::new(&self.input))
+        }
+    }
+
+    #[gpui::test]
+    fn composer_edits_repaint_controls_without_rebuilding_transcript(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        for cached in [false, true] {
+            let transcript_renders = Rc::new(Cell::new(0));
+            let composer_renders = Rc::new(Cell::new(0));
+            let mut fixture = None;
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    let input = cx.new(|cx| InputState::new(window, cx));
+                    cx.subscribe(
+                        &input,
+                        |this: &mut ComposerFixture, _, event: &InputEvent, _| {
+                            if matches!(event, InputEvent::Change) {
+                                this.changes += 1;
+                            }
+                        },
+                    )
+                    .detach();
+                    let owner = cx.entity();
+                    let transcript = cx.new(|cx| {
+                        cx.observe(&owner, |_, _, cx| cx.notify()).detach();
+                        TranscriptFixture(transcript_renders.clone())
+                    });
+                    ComposerFixture {
+                        input,
+                        transcript,
+                        cached,
+                        changes: 0,
+                        renders: composer_renders.clone(),
+                    }
+                });
+                fixture = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            });
+            let view = fixture.unwrap();
+            cx.run_until_parked();
+            let before_transcript = transcript_renders.get();
+            let before_composer = composer_renders.get();
+            for _ in 0..50 {
+                cx.update(|window, cx| {
+                    let input = view.read(cx).input.clone();
+                    input.update(cx, |input, cx| {
+                        input.replace_text_in_range(None, "a", window, cx)
+                    });
+                });
+                cx.run_until_parked();
+            }
+            let renders = transcript_renders.get() - before_transcript;
+            eprintln!("50 edits, cached={cached}: transcript renders={renders}");
+            assert!(
+                composer_renders.get() >= before_composer + 50,
+                "composer controls must still redraw"
+            );
+            cx.update(|_, cx| assert_eq!(view.read(cx).changes, 50));
+            if cached {
+                assert_eq!(renders, 0);
+            } else {
+                assert!(renders >= 50);
+            }
+
+            // A real chat change must invalidate the transcript immediately.
+            let before = transcript_renders.get();
+            cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+            cx.run_until_parked();
+            assert!(transcript_renders.get() > before);
+
+            let before = transcript_renders.get();
+            cx.simulate_resize(gpui::size(px(640.), px(720.)));
+            cx.run_until_parked();
+            assert!(
+                transcript_renders.get() > before,
+                "resizing must reflow the transcript"
+            );
+        }
+    }
+}

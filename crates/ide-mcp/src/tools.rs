@@ -19,6 +19,8 @@ use serde_json::{json, Value};
 
 #[path = "delegation.rs"]
 mod delegation_tools;
+#[path = "studio.rs"]
+mod studio_tools;
 
 use ide_core::local_store::{LocalStore, OrbitRecordInput};
 use ide_core::{
@@ -34,6 +36,7 @@ const MAX_STORED_PREVIEW_SNAPSHOTS_PER_AGENT: usize = 20;
 /// Shared state handed to every tool call. Holds the project scope and an open
 /// handle to the local store; credentials read from it never leave this process.
 pub struct ServerContext {
+    pub(crate) studio: bool,
     pub(crate) delegation_scope: Option<ide_core::delegation::DelegationBinding>,
     pub(crate) project_id: Option<uuid::Uuid>,
     pub(crate) agent_id: Option<uuid::Uuid>,
@@ -75,6 +78,7 @@ impl ServerContext {
                 .delegation
         });
         Self {
+            studio: false,
             delegation_scope,
             project_id,
             agent_id,
@@ -248,6 +252,7 @@ impl Default for ToolRegistry {
         if ide_core::delegation::enabled() {
             tools.extend(delegation_tools::tools());
         }
+        tools.extend(studio_tools::tools());
         Self { tools }
     }
 }
@@ -413,11 +418,24 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn list_for(&self, ctx: &ServerContext) -> Vec<Value> {
+        let studio = studio_tools::is_studio(ctx);
+        self.list()
+            .into_iter()
+            .filter(|tool| {
+                !studio || studio_tools::allowed(tool["name"].as_str().unwrap_or_default())
+            })
+            .collect()
+    }
+
     pub fn call(&self, ctx: &ServerContext, params: &Value) -> Value {
         let name = params
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if studio_tools::is_studio(ctx) && !studio_tools::allowed(name) {
+            return json!({"content":[text_content("This tool is unavailable to the Studio design agent")],"isError":true});
+        }
         let args = params
             .get("arguments")
             .cloned()
@@ -2691,6 +2709,7 @@ mod tests {
     #[test]
     fn coordinate_preview_clicks_require_the_matching_snapshot_token() {
         let ctx = ServerContext {
+            studio: false,
             delegation_scope: None,
             project_id: None,
             agent_id: None,
@@ -2707,6 +2726,7 @@ mod tests {
         let schema = MemorySaveTool.input_schema();
         assert!(schema["properties"].get("scope").is_none());
         let ctx = ServerContext {
+            studio: false,
             delegation_scope: None,
             project_id: None,
             agent_id: None,
@@ -2818,6 +2838,7 @@ mod tests {
     #[test]
     fn unknown_tool_reports_error() {
         let ctx = ServerContext {
+            studio: false,
             delegation_scope: None,
             project_id: None,
             agent_id: None,

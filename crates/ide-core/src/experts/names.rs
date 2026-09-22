@@ -77,21 +77,66 @@ fn typo_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
 /// Single-word role aliases must occur as recipients in a delegation request.
 /// “Build the frontend” or “delegate frontend implementation to UI Designer”
 /// must not authorize the Frontend Engineer merely by describing working scope.
-fn alias_recipient(text: &str, tokens: &[(usize, usize, &str)], i: usize) -> bool {
-    let prefix = &tokens[..i];
-    if !prefix
-        .iter()
-        .any(|(_, _, w)| matches!(*w, "delegate" | "delegation" | "delegating"))
-    {
-        return false;
+fn alias_recipient(
+    text: &str,
+    tokens: &[(usize, usize, &str)],
+    start: usize,
+    mentions: &[Mention],
+) -> bool {
+    // Walk a contiguous recipient list backwards. An arbitrary earlier
+    // “delegate” or an “and” in a later work description grants no authority.
+    let mut start = start;
+    loop {
+        let previous = mentions
+            .iter()
+            .filter(|m| {
+                if m.end > start {
+                    return false;
+                }
+                let gap = text[m.end..start].trim();
+                matches!(gap, "," | "and" | ", and" | "&")
+            })
+            .max_by_key(|m| m.end);
+        if let Some(previous) = previous {
+            start = previous.start;
+            continue;
+        }
+        break;
     }
-    let Some((_, end, previous)) = prefix.last() else {
+    let mut prefix: Vec<_> = tokens.iter().filter(|t| t.1 <= start).collect();
+    if prefix
+        .last()
+        .is_some_and(|t| matches!(t.2, "expert" | "experts" | "bandmate" | "bandmates"))
+    {
+        prefix.pop();
+    }
+    let Some(last) = prefix.last() else {
         return false;
     };
-    matches!(
-        *previous,
-        "to" | "and" | "expert" | "experts" | "bandmate" | "bandmates"
-    ) || text[*end..tokens[i].0].contains(',')
+    if matches!(last.2, "delegate" | "delegating") {
+        return matches!(
+            text[last.1..start].trim(),
+            "expert" | "experts" | "bandmate" | "bandmates"
+        );
+    }
+    if last.2 != "to" {
+        return false;
+    }
+    let Some(verb) = prefix
+        .iter()
+        .rposition(|t| matches!(t.2, "delegate" | "delegating" | "delegation"))
+    else {
+        return false;
+    };
+    // Scope may occur between delegate and to, but cannot cross a sentence or
+    // a new instruction. Conservative misses can use the full name or picker.
+    let clause = &prefix[verb..];
+    !text[clause[0].1..start]
+        .chars()
+        .any(|c| matches!(c, '.' | ';' | '!' | '?' | ',' | ':'))
+        && !clause
+            .iter()
+            .any(|t| matches!(t.2, "and" | "also" | "then" | "but" | "instead"))
 }
 
 pub fn named_experts(text: &str, profiles: &[ExpertProfile]) -> Result<Vec<Uuid>> {
@@ -148,18 +193,24 @@ pub fn named_experts(text: &str, profiles: &[ExpertProfile]) -> Result<Vec<Uuid>
                 }
             }
         }
-        for alias in expert_aliases(p) {
-            let alias = normalized_expert_name(&alias);
-            for (i, &(start, end, word)) in tokens.iter().enumerate() {
-                if alias_recipient(&text, &tokens, i) && typo_distance(word, &alias, 1).is_some() {
-                    // A real profile name wins over a product alias at this span.
-                    mentions.push(Mention {
-                        start,
-                        end,
-                        profile,
-                        exact: false,
-                    });
-                }
+    }
+    // Resolve aliases in text order so only an already-resolved, contiguous
+    // recipient can extend a list, regardless of catalog ordering.
+    for &(start, end, word) in &tokens {
+        if !alias_recipient(&text, &tokens, start, &mentions) {
+            continue;
+        }
+        for (profile, p) in profiles.iter().enumerate().filter(|(_, p)| !p.archived) {
+            if expert_aliases(p)
+                .iter()
+                .any(|alias| typo_distance(word, &normalized_expert_name(alias), 1).is_some())
+            {
+                mentions.push(Mention {
+                    start,
+                    end,
+                    profile,
+                    exact: false,
+                });
             }
         }
     }
@@ -212,7 +263,7 @@ mod tests {
     use crate::experts::tests::profile;
 
     #[test]
-    fn screenshot_request_resolves_only_the_three_named_roles() {
+    fn unclear_alias_after_work_description_requires_explicit_recipient() {
         let profiles: Vec<_> = catalog::catalog()
             .experts
             .iter()
@@ -226,7 +277,9 @@ mod tests {
             .map(|p| p.name.as_str())
             .collect();
         names.sort();
-        assert_eq!(names, ["Frontend Engineer", "UI Designer", "UX Writer"]);
+        // The two full names remain recognizable despite typos. “and frontend”
+        // after a work description is not an explicit recipient list.
+        assert_eq!(names, ["UI Designer", "UX Writer"]);
     }
 
     #[test]
@@ -269,6 +322,45 @@ mod tests {
         let ids =
             named_experts("Delegate frontend implementation to UI Designer", &profiles).unwrap();
         assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn aliases_only_extend_explicit_recipient_lists() {
+        let profiles: Vec<_> = catalog::catalog()
+            .experts
+            .iter()
+            .map(|p| p.profile())
+            .collect();
+        let ui = named_experts("UI Designer", &profiles).unwrap();
+        for request in [
+            "Delegate the layout to UI Designer. Also update the backend and frontend styling.",
+            "Delegate to UI Designer and update the backend and frontend.",
+            "Delegate to UI Designer; change the API to backend.",
+            "Delegate to UI Designer, then send logs to backend.",
+            "Delegate to UI Designer and keep frontend, backend working.",
+            "Delegate to UI Designer. I will delegate later; route to backend.",
+        ] {
+            assert_eq!(named_experts(request, &profiles).unwrap(), ui, "{request}");
+        }
+        let both = named_experts("Frontend Engineer and Backend Engineer", &profiles).unwrap();
+        assert_eq!(both.len(), 2);
+        for request in [
+            "Delegate to Frontend and Backend",
+            "Delegate to Backend, Frontend",
+            "Delegate to bandmates Frontend, and Backend",
+            "Delegate implementation to Frontend and Backend",
+            "Delegate to Frotnend and Backend",
+        ] {
+            let ids = named_experts(request, &profiles).unwrap();
+            assert_eq!(ids.len(), 2, "{request}");
+            assert!(both.iter().all(|id| ids.contains(id)), "{request}");
+        }
+        assert_eq!(
+            named_experts("Delegate to UI Designer and Backend", &profiles)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]

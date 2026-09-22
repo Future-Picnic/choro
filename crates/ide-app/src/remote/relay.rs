@@ -778,7 +778,7 @@ fn authorization_error(
                     .and_then(|mode| mode.as_str())
                     .map(str::to_owned)
             })
-            .is_some_and(|mode| mode == "full_access")
+            .is_some_and(|mode| mode.trim() == "full_access")
     });
     requests_full_access.then_some(
         "Full access was selected for the agent, but this iPhone has Control permission. Choose Approve for me, or grant the phone Full access in Desktop Settings → Remote access.",
@@ -1143,6 +1143,29 @@ mod tests {
             body: Some(r#"{"text":"hello"}"#.into()),
         };
         assert!(authorization_error(DevicePermission::Control, &message).is_none());
+    }
+
+    #[test]
+    fn relay_rejects_whitespace_full_access_for_control_devices() {
+        for path in ["/v1/agents", "/v1/agents/a/configuration"] {
+            for mode in [
+                "full_access",
+                " full_access ",
+                "\tfull_access\r\n",
+                "\u{2003}full_access\u{a0}",
+            ] {
+                let request = TunnelRequest {
+                    request_id: "permission-regression".into(),
+                    method: "POST".into(),
+                    path: path.into(),
+                    body: Some(json!({ "access_mode": mode }).to_string()),
+                };
+                assert!(valid_request(&request));
+                assert!(authorization_error(DevicePermission::Control, &request).is_some());
+                assert!(authorization_error(DevicePermission::ViewOnly, &request).is_some());
+                assert!(authorization_error(DevicePermission::FullAccess, &request).is_none());
+            }
+        }
     }
 
     #[test]

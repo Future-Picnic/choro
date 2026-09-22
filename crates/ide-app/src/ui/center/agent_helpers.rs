@@ -315,7 +315,7 @@ pub(super) fn agent_chat_rows(
                         ) || matches!(
                             item,
                             AgentChatTimelineItem::FileChangeActivity(activity)
-                                if !artifact_filter.is_artifact(&activity.file.path)
+                                if !activity.observed && !activity.file.clears_projection && !artifact_filter.is_artifact(&activity.file.path)
                         )
                     });
                     if has_visible_activity {
@@ -324,9 +324,7 @@ pub(super) fn agent_chat_rows(
                 }
                 AgentChatTimelineItem::ChangedFiles(summary)
                     if !summary
-                        .files
-                        .iter()
-                        .chain(&summary.observed_files)
+                        .conversation_files()
                         .any(|file| !artifact_filter.is_artifact(&file.path)) =>
                 {
                     index += 1;

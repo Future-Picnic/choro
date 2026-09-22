@@ -3,6 +3,9 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
 use ide_core::ProjectActivityId;
 
+const FEATURE_REQUESTS_URL: &str = "https://choro.usergist.com/choro/requests";
+const ROADMAP_URL: &str = "https://choro.usergist.com/choro/roadmap";
+
 enum RailIcon {
     Component(IconName),
     Lucide(lucide_icons::Icon),
@@ -288,8 +291,15 @@ impl RootView {
                 menu.item(
                     PopupMenuItem::new("Send feedback")
                         .icon(IconName::Inbox)
-                        .on_click(|_, window, cx| {
-                            crate::ui::feedback::FeedbackModal::open(window, cx);
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(FEATURE_REQUESTS_URL);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Roadmap")
+                        .icon(IconName::Map)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(ROADMAP_URL);
                         }),
                 )
                 .item(
@@ -322,8 +332,15 @@ impl RootView {
                 menu.item(
                     PopupMenuItem::new("Send feedback")
                         .icon(IconName::Inbox)
-                        .on_click(|_, window, cx| {
-                            crate::ui::feedback::FeedbackModal::open(window, cx);
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(FEATURE_REQUESTS_URL);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Roadmap")
+                        .icon(IconName::Map)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(ROADMAP_URL);
                         }),
                 )
                 .item(
@@ -695,12 +712,12 @@ impl RootView {
         let quick_ask_history_open = self.center.read(cx).is_quick_ask_history_view();
         let active_project = self.workspace.read(cx).active;
         let onboarding_project = active_project
-            .is_some_and(|project_id| crate::ui::onboarding::is_project(project_id, cx));
+            .is_some_and(|project_id| crate::ui::onboarding::is_touring_project(project_id, cx));
         let mut visible_activities = active_project
             .map(|project_id| self.workspace.read(cx).project_activities(project_id))
             .unwrap_or_else(ide_core::config::default_pinned_project_activities);
         if onboarding_project {
-            for required in ide_core::config::default_pinned_project_activities() {
+            for required in ProjectActivityId::ALL {
                 if !visible_activities.contains(&required) {
                     visible_activities.push(required);
                 }

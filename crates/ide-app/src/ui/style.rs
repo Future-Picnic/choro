@@ -17,12 +17,40 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     scroll::ScrollableElement,
+    tooltip::Tooltip,
     v_flex, Icon, IconName, Selectable, Sizable,
 };
 
 use crate::ui::design;
 
+#[cfg(all(test, feature = "ui-layout-tests"))]
+#[path = "composer_layout_tests.rs"]
+mod composer_layout_tests;
+
+#[cfg(all(test, feature = "ui-layout-tests"))]
+#[path = "studio_header_layout_tests.rs"]
+mod studio_header_layout_tests;
+
 // ---- sizing tokens: forwarded to the design scale (one source of truth) ----
+
+/// Shared clickable shell for Penpot, Figma and Studio entries in Designs.
+pub fn design_hub_card(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
+    v_flex()
+        .id(id)
+        .w(px(252.))
+        .h(px(190.))
+        .flex_none()
+        .overflow_hidden()
+        .rounded(design::r_lg())
+        .border_1()
+        .border_color(design::line(cx))
+        .bg(design::surface(cx))
+        .cursor_pointer()
+        .hover(|card| {
+            card.bg(design::surface_2(cx))
+                .border_color(design::accent(cx).opacity(0.42))
+        })
+}
 
 /// Main interactive control height. → [`design::CONTROL_H`].
 pub const CONTROL_H: f32 = design::CONTROL_H;
@@ -314,6 +342,43 @@ pub fn header_workspace_toggle_button(
                 .border(transparent)
                 .hover(design::hover(cx))
                 .active(design::hover(cx)),
+        )
+}
+
+/// A persistent header entry point for an activity panel. The glyph carries
+/// activity state; the quiet fill only indicates that its panel is open.
+pub fn header_activity_toggle_button(
+    id: impl Into<ElementId>,
+    leading: AnyElement,
+    label: impl Into<SharedString>,
+    active: bool,
+    cx: &App,
+) -> Button {
+    let transparent = design::base(cx).opacity(0.0);
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .h(design::control_h())
+        .px_2()
+        .rounded(design::r_sm())
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if active {
+                    design::surface_2(cx)
+                } else {
+                    transparent
+                })
+                .foreground(design::t2(cx))
+                .border(transparent)
+                .hover(design::hover(cx))
+                .active(design::hover(cx)),
+        )
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(leading)
+                .child(label.into()),
         )
 }
 
@@ -741,6 +806,27 @@ pub fn secondary_button_compact(
 
 pub fn ghost_button_compact(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     base_button_compact(id, label).ghost()
+}
+
+/// Bounded conversation picker for design sidebars. The title must never push
+/// the adjacent New agent action outside the sidebar or obscure its caret.
+pub fn design_conversation_picker(
+    id: impl Into<ElementId>,
+    title: impl Into<SharedString>,
+) -> Button {
+    let title = title.into();
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(px(CONTROL_H_COMPACT))
+        .w(px(190.))
+        .px_2p5()
+        .rounded(px(RADIUS_SM))
+        .justify_start()
+        .child(div().max_w(px(140.)).truncate().child(title.clone()))
+        .dropdown_caret(true)
+        .tooltip(title)
 }
 
 /// Independent star action inside model rows; it never selects the model.
@@ -1455,6 +1541,17 @@ pub fn composer_text_input(input: &Entity<InputState>) -> Input {
         .focus_bordered(false)
         .w_full()
         .min_w(px(0.))
+}
+
+/// Let the auto-growing draft determine its own height. A zero-basis flex
+/// wrapper with a percentage-height input makes the editor depend on its
+/// parent's content measurement, which also includes the pending-turn queue.
+pub fn composer_draft_editor(input: &Entity<InputState>, disabled: bool) -> Div {
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .flex_none()
+        .child(composer_text_input(input).disabled(disabled))
 }
 
 /// The canonical active-composer frame shared by agent chat and Quick Ask.
@@ -2734,11 +2831,7 @@ pub fn segment_text_button(
 /// design-tool tab rows while keeping their interaction treatment in Choro's
 /// shared design system.
 pub fn sidebar_mode_tabs(cx: &App) -> Div {
-    let base = design::base(cx);
-    let track = Hsla {
-        l: (base.l - 0.035).clamp(0.0, 1.0),
-        ..base
-    };
+    let track = design::track(cx);
     h_flex()
         .flex_1()
         .min_w(px(0.))
@@ -2748,6 +2841,31 @@ pub fn sidebar_mode_tabs(cx: &App) -> Div {
         .items_center()
         .rounded(design::r_sm())
         .bg(track)
+}
+
+/// Fixed native design-sidebar header, shared by Penpot and Studio. The tab
+/// track flexes horizontally within this row, never vertically in the panel.
+pub fn design_sidebar_tabs_header(tabs: impl IntoElement, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .w_full()
+        .px_2()
+        .pt_2()
+        .pb_0()
+        .border_b_1()
+        .border_color(design::line(cx).opacity(0.42))
+        .bg(design::nav(cx))
+        .child(
+            h_flex()
+                .w_full()
+                .h(px(30.))
+                .min_w(px(0.))
+                .relative()
+                .top(px(-8.))
+                .left(px(5.))
+                .items_center()
+                .child(tabs),
+        )
 }
 
 /// Compact icon action inside `sidebar_mode_tabs`. It shares the tab track and
@@ -2768,6 +2886,93 @@ pub fn sidebar_mode_icon_tab(id: impl Into<ElementId>, icon: IconName, cx: &App)
                 .size(px(22.))
                 .text_color(design::t3(cx)),
         )
+}
+
+/// Flat rows for native design-tool lists, matching the Penpot layers density.
+pub fn design_sidebar_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Button {
+    ghost_button_compact(id, "")
+        .w_full()
+        .h(px(28.))
+        .rounded(px(0.))
+        .px_3()
+        .justify_start()
+        .selected(selected)
+        .when(selected, |row| row.bg(design::surface_2(cx)))
+}
+
+/// Two-line inspector/token rows share one hit target and a quiet hover fill.
+pub fn design_property_row(id: impl Into<ElementId>, cx: &App) -> Button {
+    ghost_button_compact(id, "")
+        .w_full()
+        .h(px(48.))
+        .rounded(design::r_sm())
+        .px_2()
+        .justify_start()
+        .text_color(design::t1(cx))
+}
+
+pub fn design_sidebar_section(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    open: bool,
+    cx: &App,
+) -> Button {
+    ghost_button_compact(id, label)
+        .icon(if open {
+            IconName::ChevronDown
+        } else {
+            IconName::ChevronRight
+        })
+        .w_full()
+        .h(px(34.))
+        .rounded(px(0.))
+        .justify_start()
+        .px_2()
+        .text_size(design::text_label())
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(design::t3(cx))
+}
+
+/// A full-width field selector for an inspector sidebar. Long names truncate
+/// inside the field, leaving the caret and comfortable padding visible.
+pub fn sidebar_selector_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    width: gpui::Pixels,
+    cx: &App,
+) -> Button {
+    // Button's internal label row sizes to content. Bound our row explicitly
+    // so long names truncate and the caret stays at the field's trailing edge.
+    Button::new(id)
+        .xsmall()
+        .compact()
+        .w(width)
+        .h(px(36.))
+        .px_3()
+        .rounded(design::r_sm())
+        .justify_start()
+        .custom(chip_dropdown_variant(cx))
+        .child(
+            h_flex()
+                .w(width - px(26.))
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().min_w(px(0.)).truncate().child(label.into()))
+                .child(Icon::new(IconName::ChevronDown).size(px(14.)).flex_none()),
+        )
+}
+
+/// Content-sized sidebar tabs: longer names get their own padding instead of
+/// being squeezed into the same width as short labels.
+pub fn sidebar_named_tab(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    cx: &App,
+) -> Stateful<Div> {
+    sidebar_mode_tab(id, label, selected, cx)
+        .flex_auto()
+        .px_2p5()
 }
 
 /// One equal-width text tab inside `sidebar_mode_tabs`.
@@ -2794,11 +2999,173 @@ pub fn sidebar_mode_tab(
         .text_size(px(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(foreground)
-        .when(selected, |tab| tab.bg(design::surface_2(cx)))
+        .when(selected, |tab| tab.bg(design::track_choice(cx)))
         .when(!selected, |tab| {
             tab.hover(|tab| tab.bg(design::surface(cx)).text_color(design::t1(cx)))
         })
         .child(div().min_w(px(0.)).truncate().child(label.into()))
+}
+
+/// Bar that brackets a design stage — Studio's screen footer and overview
+/// toolbar. It matches the embedded editor toolbar: 44px, chrome plane, a
+/// hairline against the stage, 12px gutters.
+pub fn stage_bar(cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .h(px(44.))
+        .items_center()
+        .gap_2()
+        .px_3()
+        .bg(design::base(cx))
+        .border_t_1()
+        .border_color(design::line(cx))
+}
+
+/// Header band above a design stage — Studio's canvas header. The mirror of
+/// [`stage_bar`]: same height, plane and gutters, with its hairline below so it
+/// reads as a separate row from the project header and the stage.
+pub fn stage_header_bar(cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .w_full()
+        .min_w(px(0.))
+        .min_h(px(44.))
+        .flex_wrap()
+        .py_1()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .bg(design::base(cx))
+        .border_b_1()
+        .border_color(design::line(cx))
+}
+
+/// Project identity and its fixed action group share one row whenever they fit.
+/// At narrow widths the complete action group wraps, remaining right aligned.
+pub fn design_workspace_header(cx: &App) -> Div {
+    design::header::workspace_bar(cx).items_center().flex_wrap()
+        .border_b_1().border_color(design::line(cx))
+}
+
+pub fn design_workspace_identity() -> Div {
+    h_flex().flex_1().min_w(px(180.)).items_center().gap_2()
+}
+
+/// The flexible identity half of a stage header. On narrow stages the action
+/// group wraps as a unit; long screen names truncate inside this boundary.
+pub fn stage_header_context() -> Div {
+    h_flex()
+        .flex_1()
+        .flex_basis(px(240.))
+        .min_w(px(180.))
+        .items_center()
+        .gap_2()
+}
+
+/// Sidebar tabs line up with the neighboring stage header without the legacy
+/// embedded-tool header's positional offsets.
+pub fn stage_sidebar_header(tabs: impl IntoElement, cx: &App) -> Div {
+    h_flex().w_full().h(px(44.)).flex_none().items_center().px_2()
+        .bg(design::base(cx)).border_b_1().border_color(design::line(cx))
+        .child(tabs)
+}
+
+pub fn stage_header_status(label: impl Into<SharedString>, color: Hsla, cx: &App) -> Div {
+    h_flex().flex_none().items_center().gap_1p5().px_1()
+        .text_size(design::text_ui()).text_color(design::t3(cx))
+        .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
+        .child(label.into())
+}
+
+/// Content-width choice track for a [`stage_bar`]. Fill it with
+/// [`stage_bar_choice`] children; it is the same track as the sidebar tabs.
+/// `flex_none` leaves the sidebar track's zero basis in place, which collapses
+/// the track and lets its choices paint over neighbouring actions — size it
+/// from its content instead.
+pub fn stage_bar_choices(cx: &App) -> Div {
+    sidebar_mode_tabs(cx)
+        .flex_none()
+        .flex_basis(gpui::Length::Auto)
+}
+
+/// One choice inside [`stage_bar_choices`]. A real `Button`, so it keeps
+/// keyboard focus, Enter/Space activation, and selected semantics; the custom
+/// variant gives it the same fills and ink as `sidebar_mode_tab`.
+pub fn stage_bar_choice(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    tooltip: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    let choice = design::track_choice(cx);
+    base_button_compact(id, label)
+        .flex_none()
+        .h(px(26.))
+        .px_3()
+        .rounded(design::r_xs())
+        .font_weight(FontWeight::SEMIBOLD)
+        .selected(selected)
+        .tooltip(tooltip)
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(if selected {
+                    choice
+                } else {
+                    design::track(cx).opacity(0.)
+                })
+                .foreground(if selected {
+                    design::t1(cx)
+                } else {
+                    design::t3(cx)
+                })
+                .border(design::track(cx).opacity(0.))
+                .hover(if selected {
+                    choice
+                } else {
+                    design::surface(cx)
+                })
+                .active(choice),
+        )
+}
+
+/// Short divider between groups of controls in a [`stage_bar`].
+pub fn stage_bar_rule(cx: &App) -> Div {
+    div()
+        .flex_none()
+        .w(px(1.))
+        .h(px(16.))
+        .mx_1()
+        .bg(design::line_2(cx))
+}
+
+/// Quiet tabular read-out beside a control — dimensions, zoom percentage.
+pub fn stage_bar_readout(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .flex_none()
+        .text_size(design::text_ui())
+        .text_color(design::t3(cx))
+        .child(text.into())
+}
+
+/// Transient progress or result text inside a [`stage_bar`]. It takes the
+/// bar's free space and truncates, so a long path never pushes an action out.
+pub fn stage_bar_notice(text: Option<String>, cx: &App) -> Stateful<Div> {
+    let tooltip: Option<SharedString> = text.clone().map(Into::into);
+    div()
+        .id("stage-bar-notice")
+        .flex_1()
+        .min_w(px(0.))
+        .flex()
+        .justify_end()
+        .text_size(design::text_ui())
+        .text_color(design::t3(cx))
+        .when_some(text, |notice, text| {
+            notice.child(div().min_w(px(0.)).truncate().child(text))
+        })
+        .when_some(tooltip, |notice, tooltip| {
+            notice.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        })
 }
 
 /// Full-width agent detail strip uses this compact, borderless tab language.
@@ -3681,4 +4048,68 @@ pub fn chat_num_badge(n: impl Into<SharedString>, selected: bool, cx: &App) -> D
             }
         })
         .child(n.into())
+}
+
+/// Compact delegation recipient; the surrounding composer keeps its draft.
+pub fn delegation_recipient_chip(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    dialog_neutral_button(id, "", cx).max_w(px(340.)).child(
+        h_flex()
+            .min_w(px(0.))
+            .gap_1p5()
+            .child(crate::ui::design::indicator::lucide_icon(
+                lucide_icons::Icon::Blend,
+                design::amber(cx),
+                design::icon_sm(),
+            ))
+            .child(div().text_color(design::t3(cx)).child("Delegate to"))
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_color(design::t1(cx))
+                    .child(name.into()),
+            )
+            .child(
+                Icon::new(IconName::ChevronDown)
+                    .size(design::icon_sm())
+                    .text_color(design::t3(cx)),
+            ),
+    )
+}
+
+/// Saved profile identity, shared by the new-chat selection and chat header.
+/// Static context rather than an action: removal is a separate icon button.
+pub fn bandmate_profile_chip(name: impl Into<SharedString>, cx: &App) -> Div {
+    h_flex()
+        .min_w(px(0.))
+        .max_w(px(320.))
+        .h(design::control_h_sm())
+        .px_2()
+        .gap_1p5()
+        .rounded(design::r_sm())
+        .border_1()
+        .border_color(design::line_2(cx))
+        .text_size(design::text_ui())
+        .child(design::indicator::bandmate_icon(
+            1,
+            design::amber(cx),
+            design::icon_sm(),
+        ))
+        .child(
+            div()
+                .flex_none()
+                .text_color(design::t3(cx))
+                .child("Bandmate"),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .text_color(design::t1(cx))
+                .child(name.into()),
+        )
 }

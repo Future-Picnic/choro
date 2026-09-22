@@ -1,0 +1,386 @@
+{
+  "status": "six_public_profiles_configured_remaining_setup_pending",
+  "as_of": "2026-09-17",
+  "browser_permission": "authorized_by_user",
+  "external_changes": [
+    {
+      "platform": "youtube",
+      "action": "created_public_brand_channel_with_private_upload_default_and_ten_private_playlists",
+      "url": "https://www.youtube.com/@chorodev"
+    },
+    {
+      "platform": "facebook",
+      "action": "created_public_page_and_configured_bio_website_avatar",
+      "url": "https://www.facebook.com/profile.php?id=61594239040077"
+    },
+    {
+      "platform": "reddit",
+      "action": "created_public_community",
+      "url": "https://www.reddit.com/r/chorodev/"
+    },
+    {
+      "platform": "reddit",
+      "action": "retained_existing_private_community",
+      "url": "https://www.reddit.com/r/usechoro/"
+    },
+    {
+      "platform": "linkedin",
+      "action": "prepared_unsubmitted_creation_form"
+    },
+    {
+      "platform": "x",
+      "action": "configured_user_connected_profile",
+      "url": "https://x.com/Chorodev"
+    },
+    {
+      "platform": "tiktok",
+      "action": "configured_user_connected_profile_preserved_generated_username",
+      "url": "https://www.tiktok.com/@user5401420888198"
+    },
+    {
+      "platform": "instagram",
+      "action": "configured_public_business_profile_and_followed_seven_relevant_accounts",
+      "url": "https://www.instagram.com/choro.dev/",
+      "date": "2026-09-22"
+    }
+  ],
+  "platforms": {
+    "youtube": {
+      "status": "created_public_configured",
+      "url": "https://www.youtube.com/@chorodev",
+      "owner_display_name": "Liran Gabai",
+      "handle": "chorodev",
+      "handle_reserved": true,
+      "uploaded_to_created_entity": true,
+      "preview": "previews/youtube-public-final.png",
+      "visibility": "public_channel_private_content",
+      "private_playlists": 10,
+      "upload_default": "Private",
+      "saved": [
+        "name",
+        "handle",
+        "avatar",
+        "description",
+        "website",
+        "10 private playlists",
+        "private upload default",
+        "ImageGen cover"
+      ],
+      "new_cover": "imagegen-v2/youtube-cover.png",
+      "channel_id": "UCAGsl14dgTrB1VV47zgGtqg",
+      "playlist_preview": "previews/youtube-private-playlists.png"
+    },
+    "facebook": {
+      "status": "created_public_username_pending",
+      "url": "https://www.facebook.com/profile.php?id=61594239040077",
+      "owner_display_name": "Ten Days",
+      "handle_reserved": false,
+      "uploaded_to_created_entity": true,
+      "preview": "previews/facebook-public-final.png",
+      "handle": "chorodev",
+      "visibility": "Public",
+      "saved": [
+        "name",
+        "Software category",
+        "bio",
+        "website",
+        "avatar",
+        "ImageGen cover"
+      ],
+      "username_blocker": "Facebook password re-entry required; username validated available but not saved.",
+      "avatar_announcement": "automatic post hidden, not deleted",
+      "new_cover": "imagegen-v2/facebook-cover.png",
+      "cover_announcement": "none observed; timeline has no posts"
+    },
+    "linkedin": {
+      "status": "paused_by_user",
+      "url": null,
+      "form_url": "https://www.linkedin.com/company/setup/new/",
+      "owner_display_name": "Liran Gabai",
+      "handle": "chorodev",
+      "handle_reserved": false,
+      "staged_fields": [
+        "name",
+        "URL slug",
+        "website",
+        "Software Development industry",
+        "tagline",
+        "logo"
+      ],
+      "uploaded_to_created_entity": false,
+      "missing_fields": [
+        "organization size",
+        "organization type"
+      ],
+      "preview": "previews/linkedin-chorodev-prepared.png"
+    },
+    "reddit": {
+      "status": "created_public_configured",
+      "url": "https://www.reddit.com/r/chorodev/",
+      "owner_display_name": "u/SnooDucks7717",
+      "handle": "chorodev",
+      "handle_reserved": true,
+      "visibility": "Public",
+      "saved": [
+        "display title",
+        "description",
+        "production avatar",
+        "ImageGen desktop banner",
+        "ImageGen mobile banner",
+        "website",
+        "six rules",
+        "six post flairs"
+      ],
+      "post_flairs": [
+        "Question",
+        "Showcase",
+        "Bug report",
+        "Feature request",
+        "Workflow",
+        "Announcement"
+      ],
+      "preview": "previews/reddit-public-final.png",
+      "posts_created": 0,
+      "invitations_sent": 0,
+      "mobile_viewport_verified": false,
+      "desktop_crop_verified": true
+    },
+    "reddit_legacy": {
+      "status": "created_private",
+      "url": "https://www.reddit.com/r/usechoro/",
+      "owner_display_name": "u/SnooDucks7717",
+      "handle": "usechoro",
+      "handle_reserved": true,
+      "visibility": "Private",
+      "visibility_evidence": "Private, only approved users can view and contribute.",
+      "saved": [
+        "display title",
+        "description",
+        "website",
+        "profile icon",
+        "desktop banner",
+        "mobile banner",
+        "six rules"
+      ],
+      "posts_created": 0,
+      "invitations_sent": 0,
+      "preview": "previews/reddit-private.png"
+    },
+    "x": {
+      "status": "connected_profile_configured",
+      "url": "https://x.com/Chorodev",
+      "handle": "Chorodev",
+      "handle_reserved": true,
+      "visibility": "Public",
+      "saved": [
+        "name",
+        "avatar",
+        "ImageGen header",
+        "bio",
+        "website"
+      ],
+      "bio": "Your AI workspace on Mac. A product by Futurepicnic.",
+      "website": "https://choro.dev",
+      "preview": "previews/x-choro-profile-final.png",
+      "posts_created": 0,
+      "verification_note": "Saved profile verified before a subsequent reload triggered Cloudflare security check.",
+      "email_verified_by_agent": false
+    },
+    "tiktok": {
+      "status": "connected_profile_configured_custom_handle_pending",
+      "url": "https://www.tiktok.com/@user5401420888198",
+      "handle": "user5401420888198",
+      "visibility": "Public",
+      "saved": [
+        "name",
+        "avatar",
+        "bio"
+      ],
+      "bio": "Your AI workspace on Mac. By Futurepicnic. choro.dev",
+      "unavailable_handles": [
+        "chorodev",
+        "choro.dev"
+      ],
+      "website_field_available": false,
+      "preview": "previews/tiktok-choro-profile-final.png",
+      "videos_uploaded": 0,
+      "email_verified_by_agent": false
+    },
+    "instagram": {
+      "status": "created_public_business_profile_website_link_pending",
+      "url": "https://www.instagram.com/choro.dev/",
+      "handle": "choro.dev",
+      "handle_reserved": true,
+      "display_name": "Choro",
+      "last_verified": "2026-09-22",
+      "account_type": "Business",
+      "category": "Software Company",
+      "visibility": "Public",
+      "saved": [
+        "display name",
+        "production avatar",
+        "bio",
+        "public Business account",
+        "Software Company category",
+        "seven relevant follows"
+      ],
+      "bio": "Your AI workspace on Mac.\nCoding agents, projects, docs & Git in one place.\nA product by Futurepicnic.\nchoro.dev",
+      "website_in_bio": "choro.dev",
+      "clickable_website_saved": false,
+      "website_limitation": "Instagram desktop editor requires mobile app to add external link https://choro.dev with title Explore Choro",
+      "following": [
+        {
+          "name": "Windsurf",
+          "handle": "windsurf_ai",
+          "url": "https://www.instagram.com/windsurf_ai/"
+        },
+        {
+          "name": "Bolt",
+          "handle": "boltdotnew",
+          "url": "https://www.instagram.com/boltdotnew/"
+        },
+        {
+          "name": "Replit",
+          "handle": "replit",
+          "url": "https://www.instagram.com/replit/"
+        },
+        {
+          "name": "Raycast",
+          "handle": "raycastapp",
+          "url": "https://www.instagram.com/raycastapp/"
+        },
+        {
+          "name": "Warp",
+          "handle": "warpdotdev",
+          "url": "https://www.instagram.com/warpdotdev/"
+        },
+        {
+          "name": "Lovable",
+          "handle": "lovable.dev",
+          "url": "https://www.instagram.com/lovable.dev/"
+        },
+        {
+          "name": "GitHub",
+          "handle": "github",
+          "url": "https://www.instagram.com/github/"
+        }
+      ],
+      "preview": "previews/instagram-public-final.png",
+      "posts_created": 0,
+      "messages_sent": 0,
+      "public_contact_details_added": false,
+      "facebook_connected": true,
+      "facebook_page_id": "61594239040077",
+      "meta_business_portfolio": "Choro Business portfolio"
+    }
+  },
+  "unconfirmed_fields": [
+    "LinkedIn organization size",
+    "LinkedIn organization type"
+  ],
+  "public_profile_creation": "explicitly_authorized_by_user",
+  "preferred_handle": "chorodev",
+  "new_artwork_directory": "imagegen-v2",
+  "pending_owner_actions": [
+    "Complete Facebook secure password confirmation to save chorodev username",
+    "Choose an alternative TikTok username; chorodev and choro.dev unavailable",
+    "Add Instagram clickable website link https://choro.dev via mobile app (Edit profile > Links)"
+  ],
+  "aside_sessions": {
+    "youtube_facebook_linkedin": "fvMAHfbTRnvYtwYb",
+    "reddit": "3y8VS4PfmbC3ndfe",
+    "x_tiktok": "FItyuzzbGt7OYcHa",
+    "instagram": "ImVtF2W5Wa6ZCGTn",
+    "wholething": "QHx5xLrNg9T0LmMw"
+  },
+  "aside_session_status": "setup_sessions_idle",
+  "updated_at": "2026-09-22",
+  "integrations": {
+    "wholething": {
+      "url": "https://app.wholething.media/launches",
+      "workspace": "Choro",
+      "checked_at": "2026-09-22",
+      "status": "four_connected_tiktok_reddit_pending_linkedin_on_hold",
+      "connected_channels_shown": 4,
+      "new_connections_created": 3,
+      "results": {
+        "youtube": {
+          "status": "existing_connection_listed",
+          "display_name": "Choro",
+          "expected_handle": "chorodev",
+          "expected_channel_id": "UCAGsl14dgTrB1VV47zgGtqg",
+          "identity_fully_verified_inside_wholething": false,
+          "note": "Wholething displays name and Choro avatar but does not expose channel handle or ID; existing connection left unchanged."
+        },
+        "x": {
+          "status": "connected",
+          "handle": "Chorodev",
+          "display_name": "Choro",
+          "setup": "Dedicated Wholething Postiz developer app; OAuth 1.0 Read and write / Native App; credentials installed securely on production and app container restarted."
+        },
+        "facebook": {
+          "status": "connected",
+          "page_id": "61594239040077",
+          "display_name": "Choro",
+          "setup": "Meta App Domains and exact Facebook callback saved; OAuth completed selecting Choro only."
+        },
+        "instagram": {
+          "status": "connected",
+          "handle": "choro.dev",
+          "display_name": "Choro",
+          "connection_method": "Facebook Business",
+          "setup": "Exact Instagram callback saved; Instagram linked to Choro Facebook Page and Choro business portfolio; OAuth completed selecting Choro assets only.",
+          "instagram_inbox_access_enabled": false
+        },
+        "tiktok": {
+          "status": "developer_app_draft_not_connected",
+          "developer_app_name": "Wholething Postiz",
+          "configured": [
+            "Login Kit",
+            "Content Posting API",
+            "Direct Post",
+            "Web platform",
+            "Choro avatar",
+            "Postiz callback",
+            "required scopes"
+          ],
+          "domain_verification": "TXT record saved in Hostinger for wholething.media and publicly resolvable; TikTok verification still rejected on latest check.",
+          "remaining": [
+            "public Terms of Service URL",
+            "public Privacy Policy URL",
+            "TikTok ownership verification acceptance",
+            "end-to-end demo video and app review"
+          ],
+          "production_credentials_installed": false,
+          "verification_dns": {
+            "provider": "Hostinger",
+            "domain": "wholething.media",
+            "host": "@",
+            "type": "TXT",
+            "ttl": 3600,
+            "publicly_resolvable": true,
+            "accepted_by_tiktok": false
+          }
+        },
+        "reddit": {
+          "status": "api_access_request_required_not_connected",
+          "expected_community": "r/chorodev",
+          "expected_moderator": "u/SnooDucks7717",
+          "blocker": "Legacy app creation routes to Reddit Data API approval; request not submitted."
+        },
+        "linkedin": {
+          "status": "on_hold_not_attempted"
+        }
+      },
+      "preview": "previews/wholething-four-channels-20260922.png",
+      "report": "wholething-connections.md",
+      "published_or_scheduled_by_agent": false,
+      "deployment": {
+        "host": "DigitalOcean wholething-production",
+        "frontend_url": "https://app.wholething.media",
+        "configuration_path": "/opt/wholething/.env",
+        "secrets_recorded_here": false
+      }
+    }
+  }
+}

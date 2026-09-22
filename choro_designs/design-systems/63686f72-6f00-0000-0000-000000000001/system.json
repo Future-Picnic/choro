@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "id": "63686f72-6f00-0000-0000-000000000001",
+  "name": "Legacy starter",
+  "platform": "Unspecified",
+  "archived": false,
+  "sources": {
+    "choro_designs/design-system/system.json": "Imported without changing existing designs"
+  },
+  "draft": {
+    "schema_version": 1,
+    "revision": 0,
+    "tokens": {
+      "color-background": "#ffffff",
+      "color-muted": "#60646c",
+      "color-on-primary": "#ffffff",
+      "color-primary": "#335cff",
+      "color-surface": "#f4f5f7",
+      "color-text": "#202124",
+      "font-body": "system-ui, sans-serif",
+      "font-size-body": "16px",
+      "font-size-heading": "32px",
+      "radius-card": "12px",
+      "radius-control": "6px",
+      "shadow-card": "0 2px 8px #00000012",
+      "space-large": "32px",
+      "space-medium": "16px",
+      "space-small": "8px"
+    },
+    "recipes": {
+      "button": {
+        "background": "var(--color-primary)",
+        "border-radius": "var(--radius-control)",
+        "color": "var(--color-on-primary)"
+      },
+      "card": {
+        "background": "var(--color-surface)",
+        "border-radius": "var(--radius-card)",
+        "padding": "var(--space-medium)"
+      },
+      "heading": {
+        "color": "var(--color-text)",
+        "font-family": "var(--font-body)",
+        "font-size": "var(--font-size-heading)"
+      },
+      "input": {
+        "background": "var(--color-background)",
+        "border-radius": "var(--radius-control)",
+        "color": "var(--color-text)"
+      }
+    },
+    "font_faces": []
+  },
+  "applied": {
+    "schema_version": 1,
+    "revision": 0,
+    "tokens": {
+      "color-background": "#ffffff",
+      "color-muted": "#60646c",
+      "color-on-primary": "#ffffff",
+      "color-primary": "#335cff",
+      "color-surface": "#f4f5f7",
+      "color-text": "#202124",
+      "font-body": "system-ui, sans-serif",
+      "font-size-body": "16px",
+      "font-size-heading": "32px",
+      "radius-card": "12px",
+      "radius-control": "6px",
+      "shadow-card": "0 2px 8px #00000012",
+      "space-large": "32px",
+      "space-medium": "16px",
+      "space-small": "8px"
+    },
+    "recipes": {
+      "button": {
+        "background": "var(--color-primary)",
+        "border-radius": "var(--radius-control)",
+        "color": "var(--color-on-primary)"
+      },
+      "card": {
+        "background": "var(--color-surface)",
+        "border-radius": "var(--radius-card)",
+        "padding": "var(--space-medium)"
+      },
+      "heading": {
+        "color": "var(--color-text)",
+        "font-family": "var(--font-body)",
+        "font-size": "var(--font-size-heading)"
+      },
+      "input": {
+        "background": "var(--color-background)",
+        "border-radius": "var(--radius-control)",
+        "color": "var(--color-text)"
+      }
+    },
+    "font_faces": []
+  },
+  "applied_assets": null
+}

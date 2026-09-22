@@ -94,7 +94,7 @@ impl CenterArea {
         let linked_docs = agent.linked_docs.clone();
         let linked_tasks = agent.linked_tasks.clone();
         let linked_designs = self.penpot.read(cx).designs_for_agent(&agent);
-        let linked_design_indicators = linked_designs
+        let mut linked_design_indicators = linked_designs
             .into_iter()
             .map(|design| {
                 self.render_linked_design_indicator(
@@ -104,6 +104,9 @@ impl CenterArea {
                 )
             })
             .collect::<Vec<_>>();
+        for design in self.studio_designs_for_agent(&agent) {
+            linked_design_indicators.push(self.render_linked_studio_indicator("agent-linked-studio", agent.project_id, design, cx));
+        }
         // Deliberately the project root, not `runtime_path()`: linked docs are
         // project-level documents, so a Solo agent's chips open the project's
         // copy rather than a shadow inside its lane.
@@ -118,6 +121,7 @@ impl CenterArea {
             || !linked_design_indicators.is_empty();
         let agent_status_accent = status_accent(agent.status, cx);
         let expert_status = self.render_expert_chat_status(&agent, cx);
+        let band_header_toggle = self.render_band_header_toggle(&agent, cx);
         let bandmate_index = self.expert_bandmate_index(&agent, cx);
         let title_edit_input = self
             .agent_title_edit
@@ -314,6 +318,13 @@ impl CenterArea {
                                     })
                                     .into_any_element(),
                             })
+                            .when_some(agent.expert_snapshot.as_ref(), |column, snapshot| {
+                                // Profile identity survives beta-toggle changes and comes from
+                                // this chat's immutable snapshot, not the editable catalog.
+                                column.child(h_flex().min_w(px(0.)).child(
+                                    crate::ui::style::bandmate_profile_chip(snapshot.profile.name.clone(), cx),
+                                ))
+                            })
                             .when(has_header_metadata, |column| {
                                 column.child(
                                     crate::ui::design::header::subline()
@@ -409,6 +420,7 @@ impl CenterArea {
                             }),
                     )
                     .child(crate::ui::design::header::actions().map(|actions| {
+                        let actions = actions.children(band_header_toggle);
                         if let Some(status) = expert_status {
                             return actions.child(status);
                         }

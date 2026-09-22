@@ -318,7 +318,21 @@ impl CenterArea {
                     }
                 }
                 let mut design_count = 0;
+                for design in self.studio_designs(project) {
+                    if !query.is_empty() && !design.name.to_ascii_lowercase().contains(&query) { continue; }
+                    let data = velotype::ReferenceData {
+                        kind: "design".into(), title: design.name.clone(), target: format!("ref:studio:{}", design.id),
+                        subtitle: Some("Studio".into()),
+                        preview: self.studio_catalog_previews.get(&project).and_then(|previews| previews.get(&design.id)).map(|path| path.to_string_lossy().into_owned()),
+                        badge: Some("Studio".into()), status: None, tags: vec![], open_label: Some("Open in Studio".into()),
+                    };
+                    candidates.push(velotype::MentionCandidate { label: design.name, sublabel: "Studio".into(), badge: "Studio".into(), markdown: velotype::reference_fence_markdown(&data), is_block: true });
+                    design_count += 1;
+                    if design_count >= 6 { break; }
+                }
+
                 for reference in self.designs.read(cx).references_for_project(project) {
+                    if design_count >= 6 { break; }
                     if !query.is_empty()
                         && !reference.title.to_ascii_lowercase().contains(&query)
                         && !reference.source.to_ascii_lowercase().contains(&query)

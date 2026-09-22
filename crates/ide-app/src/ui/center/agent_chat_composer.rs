@@ -258,24 +258,13 @@ impl CenterArea {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let query = agent_chat_slash_query(&input.read(cx).value())?;
-        if self
-            .agent_chat_slash_dismissed_query
-            .get(&agent.id)
-            .is_some_and(|dismissed| dismissed == &query.query)
-        {
-            return None;
-        }
-
-        let commands =
-            self.cached_agent_chat_slash_capabilities(agent.provider, agent.project_id, cx);
-        let matches = agent_chat_slash_matches(&commands, &query.query);
-        let selected = self
-            .agent_chat_slash_selection
-            .get(&agent.id)
-            .copied()
-            .unwrap_or(0)
-            .min(matches.len().saturating_sub(1));
+        // Share the exact command list and selection with keyboard handling.
+        // Rebuilding from cached provider skills alone hides Choro delegation.
+        let AgentChatSlashView {
+            query,
+            matches,
+            selected,
+        } = self.active_agent_chat_slash_view(agent, cx)?;
         self.agent_chat_slash_selection.insert(agent.id, selected);
 
         let empty_row = |title: &'static str,
@@ -300,13 +289,7 @@ impl CenterArea {
                 .into_any_element()
         };
 
-        let content = if commands.is_empty() {
-            vec![empty_row(
-                "No cached commands",
-                Some("Refresh skills in Settings".to_string()),
-                cx,
-            )]
-        } else if matches.is_empty() {
+        let content = if matches.is_empty() {
             vec![empty_row("No matching commands", None, cx)]
         } else {
             matches
@@ -739,7 +722,7 @@ impl CenterArea {
             }
             ComposerMentionKind::File => (IconName::File, crate::ui::design::sage(cx)),
             ComposerMentionKind::Folder => (IconName::FolderOpen, crate::ui::design::sage(cx)),
-            ComposerMentionKind::PenpotDesign => (
+            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => (
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),
@@ -867,8 +850,8 @@ impl CenterArea {
                 let index = design_index;
                 let is_active = index == selected;
                 let kind = reference.kind;
-                let is_penpot = project_reference_is_penpot(reference);
-                let accent = if is_penpot {
+                let is_native_design = project_reference_is_native_design(reference);
+                let accent = if is_native_design {
                     crate::ui::design::accent(cx)
                 } else {
                     crate::ui::designs_panel::design_kind_color(kind, cx)
@@ -905,7 +888,7 @@ impl CenterArea {
                             cx,
                         );
                     }))
-                    .child(if is_penpot {
+                    .child(if is_native_design {
                         gpui_component::Icon::new(crate::ui::design::design_icon())
                             .size(crate::ui::design::icon_md())
                             .text_color(accent)
@@ -944,7 +927,7 @@ impl CenterArea {
                             .py_0p5()
                             .text_size(crate::ui::design::text_label())
                             .text_color(accent)
-                            .child(if is_penpot {
+                            .child(if is_native_design {
                                 "Design"
                             } else {
                                 crate::ui::designs_panel::design_kind_label(kind)

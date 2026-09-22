@@ -920,9 +920,7 @@ impl ProjectList {
             match self.runtime_for_agent(project, agent, cx) {
                 ProjectAgentRuntime::Working => {
                     activity.working = true;
-                    if self.delegation_state_for(agent.id, cx).activity
-                        == DelegationActivity::Working
-                    {
+                    if self.delegation_activity_for(agent.id, cx) == DelegationActivity::Working {
                         activity.delegating = true;
                     }
                 }
@@ -1175,7 +1173,7 @@ impl ProjectList {
         if agent.status.is_finished() || provider == ProjectAgentRuntime::Waiting {
             return provider;
         }
-        match self.delegation_state_for(agent.id, cx).activity {
+        match self.delegation_activity_for(agent.id, cx) {
             DelegationActivity::Attention => ProjectAgentRuntime::Waiting,
             DelegationActivity::Working => ProjectAgentRuntime::Working,
             DelegationActivity::Paused | DelegationActivity::Idle => provider,

@@ -251,6 +251,7 @@ impl AgentRecords {
         linked_tasks: Vec<TaskRef>,
         source_task: Option<TaskRef>,
         status: AgentStatus,
+        expert_snapshot: Option<ide_core::experts::ExpertSnapshot>,
         cx: &mut Context<Self>,
     ) -> Uuid {
         let mut agent = AgentRecord::new(
@@ -270,13 +271,25 @@ impl AgentRecords {
         agent.source_doc = source_doc;
         agent.linked_tasks = linked_tasks;
         agent.source_task = source_task;
-        let id = agent.id;
-        self.records.push(agent);
-        self.selected.insert(project_id, id);
+        let id = self.insert_created_agent(agent, expert_snapshot);
         self.schedule_save(cx);
         cx.emit(AgentRecordsEvent::Changed);
         cx.emit(AgentRecordsEvent::SelectionChanged);
         cx.notify();
+        id
+    }
+
+    /// Attach the immutable setup before the new record can be persisted or
+    /// dispatched. Managed adoption deliberately cannot update standalone chats.
+    fn insert_created_agent(
+        &mut self,
+        mut agent: AgentRecord,
+        expert_snapshot: Option<ide_core::experts::ExpertSnapshot>,
+    ) -> Uuid {
+        agent.expert_snapshot = expert_snapshot;
+        let id = agent.id;
+        self.selected.insert(agent.project_id, id);
+        self.records.push(agent);
         id
     }
 
@@ -973,6 +986,80 @@ mod tests {
             issue_key: issue_key.to_string(),
             issue_url: format!("{}/browse/{}", site_url.trim_end_matches('/'), issue_key),
             title: "Add task board".to_string(),
+        }
+    }
+
+    #[test]
+    fn standalone_bandmate_creation_persists_frozen_setup_and_skills() {
+        use ide_core::experts::{ExpertAdditions, ExpertCustomSkill, ExpertProfile};
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(dir.path().join("store")).unwrap();
+        let project = ide_core::Project::from_path(dir.path().join("project"));
+        let mut config = ide_core::AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        let mut records = AgentRecords {
+            records: Vec::new(),
+            selected: HashMap::new(),
+            save_scheduled: false,
+        };
+        for provider in [AgentKind::Codex, AgentKind::Claude] {
+            let model = AgentModel::default_for(provider);
+            let mut profile = ExpertProfile {
+                id: Uuid::new_v4(),
+                revision: 1,
+                name: "UI Designer".into(),
+                description: "Design screens".into(),
+                provider,
+                model,
+                effort: model.default_effort(),
+                instructions: "Keep the layout compact".into(),
+                expected_outcome: "Keyboard accessible screens".into(),
+                enabled: true,
+                archived: false,
+                skills: vec![],
+                additions: ExpertAdditions {
+                    custom_skills: vec![ExpertCustomSkill {
+                        id: Uuid::new_v4(),
+                        name: "Focus".into(),
+                        description: "Focus behavior".into(),
+                        instructions: "Always preserve visible keyboard focus".into(),
+                    }],
+                    ..Default::default()
+                },
+            };
+            let snapshot = profile.snapshot_at(dir.path()).unwrap();
+            let agent = AgentRecord::new(
+                project.id,
+                project.path.clone(),
+                "Screen",
+                "Build a screen",
+                provider,
+                model,
+                model.default_effort(),
+                AgentAccessMode::FullAccess,
+            );
+            let id = records.insert_created_agent(agent, Some(snapshot.clone()));
+            assert_eq!(records.explicitly_selected_agent_id(project.id), Some(id));
+            store.save_agents(&records.records).unwrap();
+            profile.instructions = "Changed for future chats".into();
+            let loaded = store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap();
+            assert!(loaded.delegation.is_none());
+            assert_eq!(loaded.provider, provider);
+            assert_eq!(loaded.expert_snapshot.as_ref(), Some(&snapshot));
+            let instructions = loaded
+                .expert_snapshot
+                .unwrap()
+                .runtime_instructions(&dir.path().join("cache"))
+                .unwrap();
+            assert!(instructions.contains("Keep the layout compact"));
+            assert!(instructions.contains("Always preserve visible keyboard focus"));
+            assert!(!instructions.contains(&profile.instructions));
         }
     }
 

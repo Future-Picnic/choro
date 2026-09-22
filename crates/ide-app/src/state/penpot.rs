@@ -173,6 +173,8 @@ pub enum PenpotEvent {
 }
 
 #[derive(Clone, Debug)]
+// Kept for optional Penpot integrations; task/doc actions now create Studio designs.
+#[allow(dead_code)]
 pub enum PenpotDesignSource {
     Document(PathBuf),
     Task(TaskRef),
@@ -188,13 +190,14 @@ pub enum DesignProvider {
 impl DesignProvider {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Choro => "Choro Design",
+            Self::Choro => "Managed Penpot",
             Self::PenpotCloud => "Penpot Cloud",
         }
     }
 }
 
 pub struct PenpotState {
+    enabled: bool,
     config: PenpotConfig,
     connection: Option<StoredPenpotConnection>,
     designs: HashMap<ProjectId, Vec<PenpotDesign>>,
@@ -213,104 +216,130 @@ pub struct PenpotState {
 impl EventEmitter<PenpotEvent> for PenpotState {}
 
 impl PenpotState {
-    pub fn view(cx: &mut App) -> Entity<Self> {
-        cx.new(|_| {
-            let legacy = PenpotConfig::load();
-            let store = LocalStore::open_default().ok();
-            let mut connection = store
-                .as_ref()
-                .and_then(|store| store.active_penpot_connection().ok())
-                .flatten();
-            if connection.is_none()
-                && (PenpotConfig::path().is_file()
-                    || load_keychain_secret(LEGACY_KEYCHAIN_ACCOUNT).is_some()
-                    || load_keychain_secret(LEGACY_KEYCHAIN_ACCESS_TOKEN_ACCOUNT).is_some())
-            {
-                let now = ide_core::agents::unix_now();
-                let migrated = StoredPenpotConnection {
-                    id: Uuid::new_v4(),
-                    instance_url: legacy.instance_url.clone(),
-                    mcp_url: legacy.mcp_url.clone(),
-                    profile_id: None,
-                    profile_email: None,
-                    default_team_id: None,
-                    default_project_id: None,
-                    is_active: true,
-                    verified_at: None,
-                    created_at: now,
-                    updated_at: now,
-                };
-                if let Some(store) = store.as_ref() {
-                    if store.save_active_penpot_connection(&migrated).is_ok() {
-                        migrate_legacy_credentials(migrated.id);
-                        migrate_legacy_designs(store, &legacy, &migrated);
-                        connection = Some(migrated);
-                    }
+    pub fn view(enabled: bool, cx: &mut App) -> Entity<Self> {
+        cx.new(|_| Self::load(enabled))
+    }
+
+    fn load(enabled: bool) -> Self {
+        let legacy = PenpotConfig::load();
+        let store = LocalStore::open_default().ok();
+        let mut connection = store
+            .as_ref()
+            .and_then(|store| store.active_penpot_connection().ok())
+            .flatten();
+        if enabled
+            && connection.is_none()
+            && (PenpotConfig::path().is_file()
+                || load_keychain_secret(LEGACY_KEYCHAIN_ACCOUNT).is_some()
+                || load_keychain_secret(LEGACY_KEYCHAIN_ACCESS_TOKEN_ACCOUNT).is_some())
+        {
+            let now = ide_core::agents::unix_now();
+            let migrated = StoredPenpotConnection {
+                id: Uuid::new_v4(),
+                instance_url: legacy.instance_url.clone(),
+                mcp_url: legacy.mcp_url.clone(),
+                profile_id: None,
+                profile_email: None,
+                default_team_id: None,
+                default_project_id: None,
+                is_active: true,
+                verified_at: None,
+                created_at: now,
+                updated_at: now,
+            };
+            if let Some(store) = store.as_ref() {
+                if store.save_active_penpot_connection(&migrated).is_ok() {
+                    migrate_legacy_credentials(migrated.id);
+                    migrate_legacy_designs(store, &legacy, &migrated);
+                    connection = Some(migrated);
                 }
             }
-            let config = connection
+        }
+        let config = connection
+            .as_ref()
+            .map(|value| PenpotConfig {
+                instance_url: value.instance_url.clone(),
+                mcp_url: value.mcp_url.clone(),
+                designs: HashMap::new(),
+                selected_designs: HashMap::new(),
+            })
+            .unwrap_or(legacy);
+        let active_connection_id = connection.as_ref().map(|value| value.id);
+        let mut designs: HashMap<ProjectId, Vec<PenpotDesign>> = HashMap::new();
+        for design in store
+            .as_ref()
+            .and_then(|store| store.load_all_penpot_designs().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|design| Some(design.connection_id) == active_connection_id)
+        {
+            designs.entry(design.project_id).or_default().push(design);
+        }
+        let mut selected_designs = HashMap::new();
+        for project in designs.keys().copied() {
+            if let Some(selected) = store
                 .as_ref()
-                .map(|value| PenpotConfig {
-                    instance_url: value.instance_url.clone(),
-                    mcp_url: value.mcp_url.clone(),
-                    designs: HashMap::new(),
-                    selected_designs: HashMap::new(),
+                .and_then(|store| {
+                    store
+                        .project_penpot_binding(project, active_connection_id?)
+                        .ok()
                 })
-                .unwrap_or(legacy);
-            let active_connection_id = connection.as_ref().map(|value| value.id);
-            let mut designs: HashMap<ProjectId, Vec<PenpotDesign>> = HashMap::new();
-            for design in store
-                .as_ref()
-                .and_then(|store| store.load_all_penpot_designs().ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|design| Some(design.connection_id) == active_connection_id)
+                .flatten()
+                .filter(|binding| Some(binding.connection_id) == active_connection_id)
+                .and_then(|binding| binding.selected_design_id)
             {
-                designs.entry(design.project_id).or_default().push(design);
+                selected_designs.insert(project, selected);
             }
-            let mut selected_designs = HashMap::new();
-            for project in designs.keys().copied() {
-                if let Some(selected) = store
-                    .as_ref()
-                    .and_then(|store| {
-                        store
-                            .project_penpot_binding(project, active_connection_id?)
-                            .ok()
-                    })
-                    .flatten()
-                    .filter(|binding| Some(binding.connection_id) == active_connection_id)
-                    .and_then(|binding| binding.selected_design_id)
-                {
-                    selected_designs.insert(project, selected);
-                }
-            }
-            let conversations = store
-                .as_ref()
-                .map(|store| load_conversations(store, &designs))
-                .unwrap_or_default();
-            let has_key = connection
+        }
+        let conversations = store
+            .as_ref()
+            .map(|store| load_conversations(store, &designs))
+            .unwrap_or_default();
+        let has_key = enabled
+            && (connection
                 .as_ref()
                 .is_some_and(|value| load_mcp_key(value.id).is_some())
-                || config.is_local();
-            let has_access_token = connection
+                || config.is_local());
+        let has_access_token = enabled
+            && connection
                 .as_ref()
                 .is_some_and(|value| load_access_token(value.id).is_some());
-            Self {
-                config,
-                connection,
-                designs,
-                selected_designs,
-                thumbnail_paths: HashMap::new(),
-                thumbnail_refreshing: HashSet::new(),
-                conversations,
-                assistant_busy: HashMap::new(),
-                has_key,
-                has_access_token,
-                status: PenpotConnectionStatus::NotChecked,
-                creating_design: false,
-                last_error: None,
-            }
-        })
+        Self {
+            enabled,
+            config,
+            connection,
+            designs,
+            selected_designs,
+            thumbnail_paths: HashMap::new(),
+            thumbnail_refreshing: HashSet::new(),
+            conversations,
+            assistant_busy: HashMap::new(),
+            has_key,
+            has_access_token,
+            status: PenpotConnectionStatus::NotChecked,
+            creating_design: false,
+            last_error: None,
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled == enabled {
+            return;
+        }
+        if enabled {
+            *self = Self::load(true);
+        } else {
+            self.enabled = false;
+        }
+        if enabled {
+            self.ensure_auto_provisioned(cx);
+        }
+        cx.emit(PenpotEvent::Changed);
+        cx.notify();
     }
 
     pub fn config(&self) -> &PenpotConfig {
@@ -326,7 +355,10 @@ impl PenpotState {
     }
 
     pub fn is_configured(&self) -> bool {
-        self.has_key && self.has_access_token && !self.config.instance_url.trim().is_empty()
+        self.enabled
+            && self.has_key
+            && self.has_access_token
+            && !self.config.instance_url.trim().is_empty()
     }
 
     pub fn provider(&self) -> DesignProvider {
@@ -334,14 +366,16 @@ impl PenpotState {
     }
 
     pub fn connection_pending(&self) -> bool {
-        matches!(
-            self.status,
-            PenpotConnectionStatus::Provisioning | PenpotConnectionStatus::Checking
-        )
+        self.enabled
+            && matches!(
+                self.status,
+                PenpotConnectionStatus::Provisioning | PenpotConnectionStatus::Checking
+            )
     }
 
     pub fn connection_needs_attention(&self) -> bool {
-        !self.connection_pending()
+        self.enabled
+            && !self.connection_pending()
             && (!self.is_configured()
                 || matches!(
                     self.status,
@@ -350,6 +384,9 @@ impl PenpotState {
     }
 
     pub fn ensure_auto_provisioned(&mut self, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         if self.connection_pending() || self.managed_connection_ready() {
             return;
         }
@@ -362,6 +399,9 @@ impl PenpotState {
     }
 
     pub fn switch_to_managed(&mut self, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         if self.connection_pending() || self.managed_connection_ready() {
             return;
         }
@@ -496,6 +536,9 @@ impl PenpotState {
     }
 
     pub fn designs_for_project(&self, project: ProjectId) -> Vec<PenpotDesign> {
+        if !self.enabled {
+            return Vec::new();
+        }
         self.designs.get(&project).cloned().unwrap_or_default()
     }
 
@@ -511,6 +554,9 @@ impl PenpotState {
     /// The access token is used only for the authenticated fetch. The hub keeps
     /// a local display cache, never an authenticated URL or duplicate DB blob.
     pub fn refresh_design_thumbnails(&mut self, project: ProjectId, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         if self.thumbnail_refreshing.contains(&project) {
             return;
         }
@@ -563,6 +609,9 @@ impl PenpotState {
         project: ProjectId,
         relative_doc: &std::path::Path,
     ) -> Vec<PenpotDesign> {
+        if !self.enabled {
+            return Vec::new();
+        }
         self.designs
             .get(&project)
             .into_iter()
@@ -573,6 +622,9 @@ impl PenpotState {
     }
 
     pub fn designs_for_task(&self, project: ProjectId, reference: &TaskRef) -> Vec<PenpotDesign> {
+        if !self.enabled {
+            return Vec::new();
+        }
         self.designs
             .get(&project)
             .into_iter()
@@ -588,6 +640,9 @@ impl PenpotState {
     }
 
     pub fn designs_for_agent(&self, agent: &AgentRecord) -> Vec<PenpotDesign> {
+        if !self.enabled {
+            return Vec::new();
+        }
         self.designs
             .get(&agent.project_id)
             .into_iter()
@@ -648,6 +703,9 @@ impl PenpotState {
     }
 
     pub fn selected_design(&self, project: ProjectId) -> Option<PenpotDesign> {
+        if !self.enabled {
+            return None;
+        }
         let selected = self.selected_designs.get(&project)?;
         self.designs
             .get(&project)?
@@ -667,6 +725,9 @@ impl PenpotState {
     }
 
     pub fn design_url(&self, design: &PenpotDesign) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
         (self.connection.as_ref().map(|value| value.id) == Some(design.connection_id))
             .then(|| self.config.workspace_url(design).ok())
             .flatten()
@@ -677,6 +738,9 @@ impl PenpotState {
     /// Authentication remains in the same-origin session redirect; agent
     /// prompts continue to receive the ordinary, credential-free design URL.
     pub fn external_mcp_design_url(&self, design: &PenpotDesign) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
         if self.connection.as_ref().map(|value| value.id) != Some(design.connection_id) {
             return None;
         }
@@ -741,10 +805,13 @@ impl PenpotState {
     }
 
     pub fn creating_design(&self) -> bool {
-        self.creating_design
+        self.enabled && self.creating_design
     }
 
     pub fn assistant_busy(&self, project: ProjectId) -> bool {
+        if !self.enabled {
+            return false;
+        }
         self.assistant_busy.get(&project).copied().unwrap_or(false)
     }
 
@@ -758,6 +825,9 @@ impl PenpotState {
     }
 
     pub fn last_error(&self) -> Option<&str> {
+        if !self.enabled {
+            return None;
+        }
         self.last_error.as_deref()
     }
 
@@ -787,6 +857,10 @@ impl PenpotState {
         entered_access_token: &str,
         cx: &mut Context<Self>,
     ) -> Result<()> {
+        anyhow::ensure!(
+            self.enabled,
+            "Enable Penpot in Settings → Beta features first"
+        );
         self.status = PenpotConnectionStatus::Checking;
         self.last_error = None;
         cx.notify();
@@ -933,6 +1007,9 @@ impl PenpotState {
     }
 
     pub fn test_connection(&mut self, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         if matches!(self.status, PenpotConnectionStatus::Checking) {
             return;
         }
@@ -1026,7 +1103,7 @@ impl PenpotState {
         initial_draft: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if self.creating_design || self.assistant_busy(project) {
+        if !self.enabled || self.creating_design || self.assistant_busy(project) {
             return;
         }
         let Some(connection) = self.connection.clone() else {
@@ -1169,6 +1246,9 @@ impl PenpotState {
     }
 
     pub fn delete_design(&mut self, project: ProjectId, design_id: Uuid, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         let Some(design) = self.design(project, design_id) else {
             return;
         };
@@ -1260,6 +1340,14 @@ fn load_conversations(
 /// Read the configured remote URL for agent startup. The key is retrieved only
 /// at the last possible moment and is never persisted in agent records.
 pub fn configured_mcp_url() -> Option<String> {
+    if !LocalStore::open_default()
+        .ok()?
+        .beta_features()
+        .ok()?
+        .penpot
+    {
+        return None;
+    }
     let connection = LocalStore::open_default()
         .and_then(|store| store.active_penpot_connection())
         .ok()

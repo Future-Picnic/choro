@@ -14,6 +14,10 @@ The local `TextView` also supports transient, full-Unicode case-insensitive matc
 highlights. Find-in-conversation uses this render-only layer so Markdown is not
 reparsed and off-screen virtualized messages do not create highlight elements.
 
+Multiline inputs synchronize soft wrapping with the current layout width before
+shaping and painting text, including the initial frame and width changes. This
+prevents drafts from painting with unwrapped or stale-width line breaks.
+
 To review the patch against a local Cargo registry checkout:
 
 ```sh

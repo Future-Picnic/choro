@@ -16,7 +16,7 @@ migration or profile renaming is needed for this wording trial.
 
 ## Availability and defaults
 
-Saved Bandmate profiles and the new-chat Bandmates picker are available normally.
+Saved Bandmate profiles and the new-chat Bandmates picker are available normally. The selected profile appears as a compact, left-aligned Bandmate chip with a separate remove action that preserves the prompt. After launch, the same identity appears beneath the chat title from the chat's saved snapshot, including when delegation is disabled. Profile edits or renames do not relabel existing chats.
 Managed delegation is **off by default**. Enable **Settings → Beta features →
 Delegation** to use `/delegate`, existing-chat Bandmate selection, or natural-language
 assignments. The preference persists locally, takes effect without restarting,
@@ -40,8 +40,10 @@ team. Names match normalized whitespace and case; longer names take precedence
 over overlapping shorter names. Multiword names tolerate small, unambiguous
 spelling errors while keeping at least one exact word (such as UI or UX).
 The default Frontend Engineer and Backend Engineer also expose Frontend and
-Backend as recipient aliases in delegation requests. These aliases stop applying
-if the profile is renamed; ordinary mentions of working scope do not opt in a team.
+Backend as recipient aliases in explicit delegation recipient phrases (for example,
+“delegate to Frontend and Backend”). A later “and frontend” in a description of work
+does not extend that recipient list. Use a full name or the picker when the wording
+is unclear. These aliases stop applying if the profile is renamed; ordinary mentions of working scope do not opt in a team.
 Ambiguous references require the full name or an explicit picker selection.
 
 `experts_list` distinguishes discovery from permission with `authorized_expert_ids`,
@@ -92,6 +94,13 @@ Delegation starts through `/delegate`, a bandmate in the slash picker, or a name
 Bandmate in the user's request. There is no persistent Delegate button. A lead does
 not automatically assemble a team for an ordinary request: the selected or named
 Bandmates define the task's authorized team.
+
+Before submission, a compact recipient chip opens a native searchable popover,
+with **On-demand teammate** first and saved Bandmates below. Each option shows
+its description, and a checkmark identifies the current recipient. The chip
+supports keyboard opening; arrow keys navigate, Enter selects, and Escape closes
+the picker. A separate **×** cancels delegation. Changing the recipient or
+cancelling delegation preserves the draft and does not submit it.
 
 Each originating request has a compact chat card with one row per assignment,
 its real activity, dependencies and Open/Stop/Resume actions. The composer chip
@@ -173,9 +182,16 @@ in the source. Private copies have independent Git metadata.
 Integration applies the change from the recorded baseline to the captured
 result into the current parent files. Conflicts use a separate resolution
 directory. Every apply rechecks source identity and affected-file hashes and
-records a recoverable journal. File deletions require an explicit confirmation
+records a recoverable journal. Replacements and deletions both recheck the durable
+Stop gate, repository identity and file preimage immediately before mutation. These
+checks reduce races; they do not make multi-file application atomic. File deletions require an explicit confirmation
 of the displayed operation. Working copies remain after Stop, completion and
 failure; cleanup requires a preview and confirmation.
+
+Managed provider startup only initializes or resumes the session. The durable
+delivery queue sends the assignment, so startup cannot also execute the chat brief.
+Ordinary fresh chats retain their initial-prompt behavior. Standalone bandmate
+configuration is attached before initial persistence, including its frozen skills.
 
 Parent Stop pauses the run and all managed runtimes. An individual Bandmate can
 also be stopped. Resume is a user action and reconciles uncertain deliveries

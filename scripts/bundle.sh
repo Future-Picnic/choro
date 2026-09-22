@@ -63,6 +63,21 @@ else
   )
 fi
 
+# Build the locally bundled Studio canvas before compiling its native host.
+if [[ "${CHORO_SKIP_STUDIO_CANVAS_BUILD:-0}" == "1" ]]; then
+  if [[ ! -f crates/ide-app/web/studio-canvas/dist/canvas.js ]] \
+    || [[ ! -f crates/ide-app/web/studio-canvas/dist/canvas.css ]]; then
+    echo "CHORO_SKIP_STUDIO_CANVAS_BUILD=1 requires an existing canvas dist." >&2
+    exit 1
+  fi
+else
+  (
+    cd crates/ide-app/web/studio-canvas
+    npm ci --no-audit --no-fund
+    npm run build
+  )
+fi
+
 cargo build --release -p ide-app --bin choro --bin choro-cef-helper
 cargo build --release -p ide-mcp
 
@@ -96,6 +111,7 @@ mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources" "$BUNDLE/Contents
 cp target/release/choro "$BUNDLE/Contents/MacOS/choro"
 # First-party MCP server, launched by the app next to the main binary.
 cp target/release/choro-mcp "$BUNDLE/Contents/MacOS/choro-mcp"
+xcrun swiftc -target "$(uname -m)-apple-macosx13.0" -O -framework AppKit -framework WebKit crates/ide-app/assets/studio/thumbnail.swift -o "$BUNDLE/Contents/MacOS/choro-studio-thumbnail"
 cp crates/ide-app/assets/app-icon/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
 
 # CEF requires its version-matched framework plus macOS helper app bundles.
@@ -156,7 +172,8 @@ fi
 node scripts/collect-third-party-licenses.mjs \
   --output "$BUNDLE/Contents/Resources/licenses" \
   --agent-node-modules "$BUNDLE/Contents/Resources/agent-chat/node_modules" \
-  --editor-node-modules "crates/ide-app/web/doc-editor/node_modules"
+  --editor-node-modules "crates/ide-app/web/doc-editor/node_modules" \
+  --canvas-node-modules "crates/ide-app/web/studio-canvas/node_modules"
 mkdir -p "$BUNDLE/Contents/Resources/licenses/chromium"
 cp "$CEF_ROOT/CREDITS.html" \
   "$BUNDLE/Contents/Resources/licenses/chromium/CREDITS.html"

@@ -610,6 +610,8 @@ pub struct AgentRecord {
     #[serde(default)]
     pub design_context: Option<AgentDesignContext>,
     #[serde(default)]
+    pub studio_context: Option<crate::studio::StudioAgentContext>,
+    #[serde(default)]
     pub cli_session_id: Option<String>,
     #[serde(default)]
     pub chat_session_id: Option<String>,
@@ -698,6 +700,7 @@ impl AgentRecord {
             changed_files: Vec::new(),
             hidden_doc_assistant: false,
             design_context: None,
+            studio_context: None,
             cli_session_id: None,
             chat_session_id: None,
             ship_pr_repo_path: None,
@@ -1751,6 +1754,7 @@ mod tests {
             changed_files: Vec::new(),
             hidden_doc_assistant: false,
             design_context: None,
+            studio_context: None,
             cli_session_id: None,
             chat_session_id: None,
             ship_pr_repo_path: None,

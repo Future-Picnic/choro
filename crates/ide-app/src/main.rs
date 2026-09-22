@@ -136,6 +136,10 @@ fn main() {
 
         let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
         let mut titlebar = TitleBar::title_bar_options();
+        // Screen recorders may omit windows without a native title.
+        if std::env::var_os("CHORO_DEMO").is_some() {
+            titlebar.title = Some("Choro Demo".into());
+        }
         titlebar.traffic_light_position = Some(gpui::point(px(9.0), px(16.0)));
 
         let options = WindowOptions {

@@ -65,3 +65,39 @@ test("a read-only review checklist never gains coordination mutations", () => {
     }
   }
 });
+
+test("Studio rejects mutations and unrelated MCP even when normal access is bypassed", () => {
+  const policy = { studio: true };
+  for (const name of ["Read", "Glob", "Grep", "AskUserQuestion", "mcp__choro__studio_apply", "mcp__ide__studio_read", "mcp__choro__studio_project_read"]) {
+    assert.equal(toolPolicyDenial(name, policy), null, name);
+  }
+  for (const name of ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "mcp__penpot__update", "mcp__other__studio_apply", "mcp__choro__create_choro_doc", "mcp__choro__delegation_plan", "mcp__choro__studio_apply_extra"]) {
+    assert.ok(toolPolicyDenial(name, policy), name);
+    assert.equal(toolPolicyHook(name, policy).hookSpecificOutput.permissionDecision, "deny");
+  }
+});
+
+test("Studio preflight rejects missing capabilities, disconnected or unrestricted MCP before submitting a prompt", async () => {
+  const {preflightStudioRuntime} = await import('./claude_bridge.mjs');
+  const names = ['studio_context','studio_read','studio_apply','studio_snapshot','studio_review'];
+  const server = {name:'choro',status:'connected',tools:names.map(name=>({name}))};
+  const runtime = servers => ({initializationResult:async()=>({}),mcpServerStatus:async()=>servers});
+  await preflightStudioRuntime(runtime([server]),['choro']);
+  await assert.rejects(preflightStudioRuntime({},['choro']),/repair/);
+  await assert.rejects(preflightStudioRuntime(runtime([{...server,status:'failed'}]),['choro']),/repair/);
+  await assert.rejects(preflightStudioRuntime(runtime([{...server,tools:[]}]),['choro']),/Missing/);
+  await assert.rejects(preflightStudioRuntime(runtime([{...server,tools:[...server.tools,{name:'create_choro_doc'}]}]),['choro']),/Unexpected/);
+  await assert.rejects(preflightStudioRuntime(runtime([server,{name:'other',status:'connected'}]),['choro']),/repair/);
+});
+
+
+test("asynchronous setup failure is reported and a later command still dispatches", async () => {
+  const { handleCommandLine } = await import("./claude_bridge.mjs");
+  const errors = [], received = [];
+  await handleCommandLine('{"type":"send_turn"}', async () => {
+    await Promise.resolve(); throw new Error("Studio preflight failed");
+  }, error => errors.push(error.message));
+  await handleCommandLine('{"type":"send_turn","text":"retry"}', async command => received.push(command.text), error => errors.push(error.message));
+  assert.deepEqual(errors, ["Studio preflight failed"]);
+  assert.deepEqual(received, ["retry"]);
+});

@@ -30,6 +30,7 @@ mod agent_launcher;
 mod experts;
 mod experts_cards;
 mod experts_dialogs;
+mod experts_picker;
 use ide_core::local_store::LocalStore;
 mod agent_naming;
 mod agent_panel;
@@ -60,6 +61,11 @@ mod quick_ask_history;
 mod remote_bridge;
 mod services;
 mod shutdown;
+mod studio;
+mod studio_links;
+mod studio_canvas;
+mod studio_editor;
+mod studio_systems;
 mod tasks;
 mod time;
 mod voice;
@@ -141,7 +147,7 @@ use crate::state::{
     AgentActivityCache, AgentCapability, AgentCapabilityCacheFile, AgentCapabilitySource,
     AgentChatState, AgentRecords, DesignsState, DocAssistantState, DocSaveStatus, DocsState,
     GitState, GitStates, OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel, OrbitEvent,
-    OrbitState, PenpotConnectionStatus, PenpotDesignSource, PenpotEvent, PenpotState,
+    OrbitState, PenpotConnectionStatus, PenpotEvent, PenpotState,
     QuickAskPhase, QuickAskScope, QuickAskState, ServicesScanKind, ServicesState, SessionId,
     TasksState, TerminalManager, Workspace,
 };
@@ -348,9 +354,10 @@ struct NewAgentComposer {
     source_doc: Option<PathBuf>,
     linked_tasks: Vec<TaskRef>,
     source_task: Option<TaskRef>,
-    /// Design whose implementation action opened this composer. Its browser
-    /// surface is opened only after the user actually starts the agent.
-    implementation_design: Option<Uuid>,
+    /// Studio snapshot or optional Penpot design used for implementation.
+    /// Only Penpot requires an external browser at agent startup.
+    implementation_target: Option<ImplementationTarget>,
+    studio_attachment_error: Option<String>,
     /// Guards the confirmation recursion when Start is resumed from the
     /// external-browser explanation dialog.
     design_browser_open_confirmed: bool,
@@ -432,6 +439,12 @@ fn should_defer_agent_chat_submission_for_resume(
     has_loaded_history: bool,
 ) -> bool {
     has_resume_id && (is_hydrating || (!has_backend && !has_loaded_history))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImplementationTarget {
+    Penpot(Uuid),
+    Studio(Uuid),
 }
 
 #[derive(Clone, Debug)]
@@ -621,6 +634,7 @@ enum ComposerMentionKind {
     File,
     Folder,
     PenpotDesign,
+    StudioDesign,
     Project,
 }
 
@@ -698,7 +712,7 @@ impl ComposerMentionToken {
             ComposerMentionKind::File | ComposerMentionKind::Folder => {
                 format!("@{} ", self.path_label)
             }
-            ComposerMentionKind::PenpotDesign => self.context.clone().unwrap_or_default(),
+            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => self.context.clone().unwrap_or_default(),
             ComposerMentionKind::Project => self.project_context_invocation(None),
         }
     }
@@ -779,7 +793,7 @@ fn penpot_design_reference(
     }
 }
 
-fn project_reference_is_penpot(reference: &ProjectReference) -> bool {
+fn project_reference_is_native_design(reference: &ProjectReference) -> bool {
     serde_json::from_str::<serde_json::Value>(&reference.metadata_json)
         .ok()
         .and_then(|value| {
@@ -788,8 +802,7 @@ fn project_reference_is_penpot(reference: &ProjectReference) -> bool {
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         })
-        .as_deref()
-        == Some("penpot")
+        .is_some_and(|provider| provider == "penpot" || provider == "studio")
 }
 
 fn composer_message_tags(
@@ -832,7 +845,7 @@ fn composer_message_tags(
             ComposerMentionKind::Doc => AgentChatMessageTagKind::Doc,
             ComposerMentionKind::File => AgentChatMessageTagKind::File,
             ComposerMentionKind::Folder => AgentChatMessageTagKind::Folder,
-            ComposerMentionKind::PenpotDesign => AgentChatMessageTagKind::Design,
+            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => AgentChatMessageTagKind::Design,
             ComposerMentionKind::Project => AgentChatMessageTagKind::Project,
         },
         label: if mention.kind == ComposerMentionKind::Project {
@@ -1925,6 +1938,10 @@ struct ProjectPreviewNavigationBarrier {
 /// files) and a separate terminals section below it.
 pub struct CenterArea {
     delegation_selection: HashMap<Uuid, Option<Uuid>>,
+    delegation_picker: Option<(
+        Uuid,
+        Entity<gpui_component::list::ListState<experts_picker::DelegatePicker>>,
+    )>,
     delegated_panel: Option<Uuid>,
     delegated_overview: Option<Uuid>,
     delegated_preview: bool,
@@ -1995,6 +2012,15 @@ pub struct CenterArea {
     /// the project-level Designs hub is visible; selection remains persisted
     /// independently so linked docs/tasks keep their existing relationships.
     penpot_open_design: Option<(ProjectId, Uuid)>,
+    studio: Option<studio::StudioWorkspace>,
+    studio_system_library: Option<ProjectId>,
+    studio_system_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioSystemRecord>>,
+    studio_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioDesignManifest>>,
+    studio_catalog_refreshing: HashSet<ProjectId>,
+    studio_catalog_refreshed: HashMap<ProjectId, std::time::Instant>,
+    studio_catalog_implementors: HashMap<ProjectId, HashMap<Uuid, Vec<Uuid>>>,
+    studio_creating: HashSet<ProjectId>,
+    studio_catalog_previews: HashMap<ProjectId, HashMap<uuid::Uuid, PathBuf>>,
     /// A lightweight Figma link opened from the project Design hub. Unlike a
     /// Choro design, this owns only an embedded viewer and no assistant state.
     figma_open_design: Option<(ProjectId, Uuid)>,
@@ -2111,6 +2137,7 @@ pub struct CenterArea {
     /// invalidate this cache; scroll-only repaints can then share the snapshot
     /// instead of cloning every message and timeline entry again.
     agent_chat_render_sessions: HashMap<Uuid, Rc<AgentChatSession>>,
+    agent_chat_transcript_views: HashMap<Uuid, Entity<agent_chat_timeline::AgentChatTranscript>>,
     /// Last chat status seen per agent, so the observer can detect a turn
     /// finishing (Running → Idle) and offer or fire verification.
     agent_status_seen: HashMap<Uuid, AgentChatStatus>,

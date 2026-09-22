@@ -412,6 +412,13 @@ pub fn is_project(project: ProjectId, cx: &App) -> bool {
     tour(cx).is_some_and(|tour| tour.read(cx).project_id == project)
 }
 
+pub fn is_touring_project(project: ProjectId, cx: &App) -> bool {
+    tour(cx).is_some_and(|tour| {
+        let tour = tour.read(cx);
+        tour.project_id == project && tour.phase != Phase::Finished
+    })
+}
+
 pub fn expects_first_agent(project: ProjectId, cx: &App) -> bool {
     tour(cx).is_some_and(|tour| {
         let tour = tour.read(cx);
@@ -640,6 +647,18 @@ impl OnboardingTour {
             }
         });
         tour.update(cx, |tour, cx| {
+            // The playground introduces every activity. Keep them discoverable
+            // after exiting, while preserving later explicit Manage choices.
+            if tour.phase != Phase::Finished
+                || !tour.workspace.read(cx).has_project_activity_override(project_id)
+            {
+                tour.workspace.update(cx, |workspace, cx| {
+                    for activity in ProjectActivityId::ALL {
+                        workspace.set_project_activity_pinned(project_id, activity, true, cx);
+                    }
+                    workspace.save_now();
+                });
+            }
             tour.restore_surface(cx);
             tour.refresh_provider_connection_statuses(cx);
         });

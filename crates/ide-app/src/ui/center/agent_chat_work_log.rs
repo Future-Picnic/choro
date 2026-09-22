@@ -162,7 +162,9 @@ impl CenterArea {
                                     ))
                                 }
                                 AgentChatTimelineItem::FileChangeActivity(file_change)
-                                    if !artifact_filter.is_artifact(&file_change.file.path) =>
+                                    if !file_change.observed
+                                        && !file_change.file.clears_projection
+                                        && !artifact_filter.is_artifact(&file_change.file.path) =>
                                 {
                                     Some(self.render_file_change_activity(file_change, cx))
                                 }
@@ -385,7 +387,9 @@ fn activity_step_count(
                 entry.count.max(1)
             }
             AgentChatTimelineItem::FileChangeActivity(file_change)
-                if !artifact_filter.is_artifact(&file_change.file.path) =>
+                if !file_change.observed
+                    && !file_change.file.clears_projection
+                    && !artifact_filter.is_artifact(&file_change.file.path) =>
             {
                 1
             }

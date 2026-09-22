@@ -1,0 +1,161 @@
+<!doctype html><html data-bs-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-src about: data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<style>/*STUDIO_VENDOR_CSS*/</style>
+<style>
+/* Choro theme roles. The host overrides every value; these fallbacks are Choro Dark.
+   Planes: `stage` (deepest) holds the artboard, `bg` holds all chrome, `track` is the
+   recessed well behind every either/or choice, `seg` is the chosen segment that rises out
+   of it, and `field` is the input well. */
+:root{--bg:#19181c;--panel:#151417;--stage:#111013;--track:#100f12;--seg:#26252b;--field:#100f12;--surface:#1f1e23;--raised:#26252b;--float:#232128;--text:#ede9ea;--muted:#b9b2b4;--faint:#8b8691;--line:#232228;--line2:#322f38;--accent:#cac9ee;--ink:#cac9ee;--danger:#de6e6e;--ok:#96c9a4;--warn:#e4b876;--scheme:dark;--ring:color-mix(in srgb,var(--ink) 34%,transparent);--control:28px;--r-control:5px;--r-track:7px;--bar:44px;--gutter:12px;color-scheme:var(--scheme)}
+html,body{margin:0;width:100%;height:100%;overflow:hidden}
+body#vvveb-builder{--builder-right-panel-width:300px;display:grid;grid-template-rows:auto minmax(0,1fr);background:var(--bg);color:var(--text);font:12.5px/16px -apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased;--bs-body-bg:var(--bg);--bs-body-color:var(--text);--bs-body-font-size:12.5px;--bs-emphasis-color:var(--text);--bs-secondary-color:var(--muted);--bs-tertiary-color:var(--faint);--bs-border-color:var(--line);--bs-border-color-translucent:var(--line2);--bs-tertiary-bg:var(--bg);--bs-secondary-bg:var(--raised);--bs-primary:var(--ink);--bs-link-color:var(--ink);--bs-link-hover-color:var(--ink);--bs-border-radius:var(--r-control);--bs-border-radius-sm:var(--r-control)}
+
+/* Toolbar. Choices live in a recessed track; actions are quiet fills; status is a dot and a word. */
+/* The bar is 44px with one row. When a narrow host cannot fit every action, the row wraps
+   rather than clipping: nothing in it may ever sit outside the host. */
+#studio-toolbar{box-sizing:border-box;display:flex;flex-wrap:wrap;align-items:center;align-content:center;gap:8px;min-width:0;min-height:var(--bar);padding:8px var(--gutter);background:var(--bg);border-bottom:1px solid var(--line);color:var(--text)}
+/* The workspace supplies one native context/action row above the WebKit host. */
+body#vvveb-builder.native-toolbar{grid-template-rows:minmax(0,1fr)}
+.native-toolbar #studio-toolbar{display:none}
+#studio-toolbar .spacer{flex:1 1 0;min-width:0}
+#studio-toolbar .rule{flex:none;width:1px;height:16px;background:var(--line2)}
+#studio-toolbar button,#studio-toolbar select{flex:none;box-sizing:border-box;font:inherit;height:var(--control);color:var(--muted);background:transparent;border:0;border-radius:var(--r-control);padding:0 10px;white-space:nowrap;cursor:default}
+#studio-toolbar button:hover:not(:disabled),#studio-toolbar select:hover{background:var(--surface);color:var(--text)}
+#studio-toolbar button:active:not(:disabled){background:var(--raised)}
+#studio-toolbar button:disabled{opacity:.45}
+#studio-toolbar svg{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.seg{flex:none;display:flex;align-items:center;gap:2px;padding:2px;border-radius:var(--r-track);background:var(--track)}
+#studio-toolbar .seg button{height:26px;padding:0 12px;color:var(--faint);font-weight:600}
+#studio-toolbar .seg button:hover:not(:disabled){background:var(--surface)}
+#studio-toolbar .seg button[aria-pressed=true],#studio-toolbar .seg button[aria-pressed=true]:hover{background:var(--seg);color:var(--text)}
+#studio-toolbar .pair{flex:none;display:flex;gap:2px}
+#studio-toolbar .pair button{width:var(--control);padding:0;display:grid;place-items:center}
+#studio-toolbar .zoom{flex:none;position:relative;display:flex;align-items:center}
+#studio-toolbar .zoom::after{content:"";position:absolute;right:10px;top:50%;width:5px;height:5px;margin-top:-4px;border:solid var(--faint);border-width:0 1.5px 1.5px 0;transform:rotate(45deg);pointer-events:none}
+#studio-toolbar select{appearance:none;-webkit-appearance:none;width:72px;padding:0 24px 0 10px;background:var(--surface);color:var(--text);font-variant-numeric:tabular-nums}
+#studio-toolbar select:hover{background:var(--raised)}
+#status{flex:none;display:inline-flex;align-items:center;gap:6px;padding:0 4px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+#status::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}
+#status[data-state=unsaved]::before,#status[data-state=saving]::before{background:var(--warn)}
+#status[data-state=failed]{color:var(--danger)}
+#status[data-state=failed]::before{background:var(--danger)}
+#studio-toolbar #retry,#studio-toolbar #recover{background:var(--surface);color:var(--text)}
+#studio-toolbar #retry:hover,#studio-toolbar #recover:hover{background:var(--raised)}
+#inspector-toggle{display:inline-flex;align-items:center;gap:6px}
+#studio-toolbar #inspector-toggle[aria-expanded=true]{color:var(--text)}
+#inspector-toggle .pane{fill:currentColor;stroke:none;opacity:0}
+#inspector-toggle[aria-expanded=true] .pane{opacity:.9}
+
+#layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;min-height:0}
+body.inspector-collapsed #layout{grid-template-columns:minmax(0,1fr)}
+body.inspector-collapsed #right-panel{display:none!important}
+
+/* The inline editor exposes only its artboard and chrome through the canvas overlay. */
+body#vvveb-builder.inline-canvas,.inline-canvas #layout,#vvveb-builder.inline-canvas #canvas{background:transparent}
+.inline-canvas #studio-toolbar .seg,.prototype-player #studio-toolbar .seg,.prototype-player #studio-toolbar .pair,.prototype-player #studio-toolbar .rule,.prototype-player #status{display:none}
+.inline-canvas #studio-toolbar .zoom,.prototype-player #studio-toolbar .zoom{display:none}
+/* On the canvas the native canvas header already names the screen; this row keeps only the edit tools. */
+.inline-canvas #session-label,.inline-canvas #studio-toolbar .rule{display:none}
+#studio-empty-selection{display:none}
+.element-deselected #right-panel .component-properties{display:none}
+.element-deselected #studio-empty-selection{display:block;background:transparent;color:var(--muted);border:0;padding:24px 16px}
+#studio-empty-selection strong,#studio-empty-selection span{display:block;margin-bottom:8px}
+#session-label{min-width:0;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+/* Stage: the deepest plane, so the authored artboard is the brightest object in the workspace. */
+#vvveb-builder #canvas{overflow:auto;padding:28px;position:relative;inset:auto;margin:0;width:auto;height:auto;min-width:0;min-height:0;background:var(--stage)}
+#vvveb-builder.camera-stage #canvas{overflow:hidden;touch-action:none}
+.camera-stage #frame-wrap{position:absolute;margin:0}
+#frame-wrap{position:relative;margin:auto;background:white}
+#frame-surface{position:absolute;top:0;left:0;transform-origin:top left}
+#vvveb-builder #canvas #screen{display:block;border:0;background:white;width:100%;height:100%}
+/* The artboard edge is a ring plus shadow, never a border, so it cannot change the authored viewport. */
+#frame-wrap{box-shadow:0 0 0 1px var(--line2),0 2px 4px #0000001f,0 18px 44px -12px #00000059}
+#outline{position:absolute;border:2px solid #335cff;pointer-events:none;display:none}
+#vvveb-builder #canvas,#vvveb-builder .component-properties .tab-content{scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+
+/* Inspector: upstream markup on the chrome plane, with the same track, field and row grammar. */
+#vvveb-builder #right-panel{position:relative;top:auto;right:auto;bottom:auto;float:none;z-index:auto;width:auto;height:100%;min-height:0;border-left:1px solid var(--line);background:var(--bg);color:var(--text);overflow:hidden;transition:none}
+#vvveb-builder #right-panel .component-properties{height:100%;display:flex;flex-direction:column;font-size:12.5px}
+#vvveb-builder #right-panel .nav-tabs{flex:none;display:flex;flex-wrap:nowrap;gap:2px;margin:8px var(--gutter);padding:2px;border:0;border-radius:var(--r-track);background:var(--track)}
+#vvveb-builder #right-panel .nav-tabs .nav-item{flex:1 1 auto;min-width:0;margin:0}
+#vvveb-builder #right-panel .nav-tabs .nav-link{display:flex;align-items:center;justify-content:center;gap:5px;height:26px;padding:0 6px;border:0;transition:none;border-radius:var(--r-control);color:var(--faint);font-weight:600;white-space:nowrap;cursor:default}
+#vvveb-builder #right-panel .nav-tabs .nav-link span{font-size:12px;overflow:hidden;text-overflow:ellipsis}
+#vvveb-builder #right-panel .nav-tabs .nav-link i{flex:none;font-size:14px;color:inherit}
+#vvveb-builder #right-panel .nav-tabs .nav-link:hover{background:var(--surface);color:var(--text)}
+#vvveb-builder #right-panel .nav-tabs .nav-link.active,#vvveb-builder #right-panel .nav-tabs .nav-link.active:hover{background:var(--seg);color:var(--text);font-weight:600}
+#vvveb-builder #right-panel .nav-tabs .nav-link.active i{color:inherit}
+#vvveb-builder #right-panel .tab-content{flex:1 1 0;min-height:0;padding:0 0 24px;border-top:1px solid var(--line)}
+#vvveb-builder #right-panel .tab-content>.active{height:auto;margin-bottom:0}
+#vvveb-builder #right-panel label.header{display:flex;align-items:center;height:36px;padding:0 var(--gutter);font-size:12.5px;font-weight:600;line-height:16px;color:var(--text);border-top:1px solid var(--line)}
+#vvveb-builder #right-panel label.header:hover{background:var(--surface)}
+#vvveb-builder #right-panel label.header .header-arrow{position:static;margin-left:auto;padding:0;font-size:11px;color:var(--faint)}
+#vvveb-builder #right-panel .section.row{margin:0;padding:2px 4px 10px}
+#vvveb-builder #right-panel .section.row>.mb-2{margin-bottom:8px!important;padding-left:8px;padding-right:8px}
+#vvveb-builder .component-properties .mb-2 label{font-size:11px;font-weight:500;color:var(--faint);margin-bottom:4px}
+#vvveb-builder #right-panel #style-tab>.pb-2{padding:8px var(--gutter)!important}
+#vvveb-builder #right-panel .form-control,#vvveb-builder #right-panel .form-select,#vvveb-builder #right-panel .input-group-text{min-height:var(--control);padding-top:4px;padding-bottom:4px;font-size:12.5px;line-height:18px;background-color:var(--field);border:1px solid var(--line2);color:var(--text);border-radius:var(--r-control);box-shadow:none}
+#vvveb-builder #right-panel .form-control{padding-left:8px;padding-right:8px}
+#vvveb-builder #right-panel .form-select{padding-left:8px}
+#vvveb-builder #right-panel textarea.form-control{min-height:64px;line-height:18px}
+#vvveb-builder #right-panel .input-group>:not(:first-child){border-top-left-radius:0;border-bottom-left-radius:0}
+#vvveb-builder #right-panel .input-group>:not(:last-child){border-top-right-radius:0;border-bottom-right-radius:0}
+#vvveb-builder #right-panel .btn,#vvveb-builder #right-panel .form-control,#vvveb-builder #right-panel .form-select,#vvveb-builder #right-panel .form-check-input{transition:none}
+#vvveb-builder #right-panel .form-control::placeholder{color:var(--faint)}
+#vvveb-builder #right-panel .form-control:hover,#vvveb-builder #right-panel .form-select:hover{border-color:var(--faint)}
+#vvveb-builder #right-panel .form-control:focus,#vvveb-builder #right-panel .form-select:focus{border-color:var(--ink);box-shadow:0 0 0 2px var(--ring);outline:0;position:relative;z-index:1}
+#vvveb-builder #right-panel .form-control:disabled,#vvveb-builder #right-panel .form-select:disabled{opacity:.45}
+#vvveb-builder #right-panel .form-control.is-invalid{border-color:var(--danger)}
+#vvveb-builder #right-panel input[type=file].form-control{margin-top:6px;padding:3px;color:var(--muted)}
+#vvveb-builder #right-panel input[type=file]::file-selector-button{height:20px;margin:0 8px 0 0;padding:0 8px;border:0;border-radius:3px;background:var(--raised);color:var(--text);font:inherit}
+/* Option groups are choices, so they use the track too. */
+#vvveb-builder #right-panel .btn-group{display:flex;gap:2px;padding:2px;border-radius:var(--r-track);background:var(--track)}
+#vvveb-builder #right-panel .btn-group>.btn{flex:1 1 0;height:24px;margin:0;padding:0 4px;display:grid;place-items:center;border:0;border-radius:4px!important;background:transparent;color:var(--faint);font-size:12px;box-shadow:none}
+#vvveb-builder #right-panel .btn-group>.btn:hover{background:var(--surface);color:var(--text)}
+#vvveb-builder #right-panel .btn-group>.btn-check:checked+.btn{background:var(--seg);color:var(--text)}
+#vvveb-builder #right-panel .btn-group>.btn-check:focus-visible+.btn{outline:2px solid var(--ink);outline-offset:1px}
+#vvveb-builder #right-panel .btn{--bs-btn-color:var(--muted);--bs-btn-bg:var(--surface);--bs-btn-border-color:transparent;--bs-btn-hover-color:var(--text);--bs-btn-hover-bg:var(--raised);--bs-btn-hover-border-color:transparent;--bs-btn-active-color:var(--text);--bs-btn-active-bg:var(--raised);--bs-btn-active-border-color:transparent;--bs-btn-disabled-color:var(--faint);--bs-btn-disabled-bg:transparent;--bs-btn-disabled-border-color:transparent;--bs-btn-focus-box-shadow:0 0 0 2px var(--ring);font-size:12.5px}
+#vvveb-builder #right-panel .btn-outline-danger{--bs-btn-color:var(--danger);--bs-btn-hover-color:var(--danger);--bs-btn-active-color:var(--danger)}
+#vvveb-builder #right-panel .form-range{height:18px}
+#vvveb-builder #right-panel .form-range::-webkit-slider-thumb{width:12px;height:12px;margin-top:-4px;background-color:var(--text);box-shadow:0 0 0 2px var(--bg)}
+#vvveb-builder #right-panel .form-range:focus::-webkit-slider-thumb{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--ring)}
+#vvveb-builder #right-panel .form-range::-webkit-slider-runnable-track{height:4px;border-radius:2px;background-color:var(--raised)}
+#vvveb-builder .component-properties .mb-2 .input .input-range input[type=number]{top:-1.35rem;min-height:22px;height:22px;width:4.5em;padding:0 4px}
+#vvveb-builder #right-panel .form-check-input{background-color:var(--field);border-color:var(--line2)}
+#vvveb-builder #right-panel .form-check-input:checked{background-color:var(--ink);border-color:var(--ink)}
+#vvveb-builder #right-panel .clr-field button{border-radius:3px;width:18px;height:18px;right:5px}
+/* Nothing selected: direction, not an alert. */
+#vvveb-builder #right-panel .alert{display:flex;flex-direction:column;align-items:center;gap:4px;margin:56px 28px 0!important;padding:0;border:0;background:transparent;color:var(--faint);text-align:center;line-height:18px}
+#vvveb-builder #right-panel .alert::before{content:"";width:28px;height:28px;margin-bottom:8px;background:var(--faint);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 3h2M11 3h2M17 3h2a2 2 0 0 1 2 2v2M21 11v1M3 5a2 2 0 0 1 2-2M3 9v2M3 15v2a2 2 0 0 0 2 2h2M11 19h1'/%3E%3Cpath d='m13 13 3.2 8 1.6-3.2L21 16.2z'/%3E%3C/svg%3E") center/contain no-repeat}
+#vvveb-builder #right-panel .alert strong{color:var(--text);font-weight:600}
+#vvveb-builder #right-panel .alert br,#vvveb-builder #right-panel .alert .btn-close{display:none}
+
+/* Floating rich-text toolbar sits on Choro's menu plane. */
+#vvveb-builder #wysiwyg-editor{position:fixed;z-index:10;bottom:auto;right:auto;max-width:calc(100vw - 24px);padding:3px;white-space:nowrap;background:var(--float);color:var(--text);border:1px solid var(--line2);border-radius:var(--r-track);box-shadow:0 8px 24px #0000003d}
+#vvveb-builder #wysiwyg-editor>select{max-width:130px}
+#vvveb-builder #wysiwyg-editor.default-editor a{border-radius:4px}
+#vvveb-builder #wysiwyg-editor.default-editor a:hover{background:var(--raised)}
+#vvveb-builder #wysiwyg-editor.default-editor div.separator{background:var(--line2)}
+
+#error{position:fixed;bottom:var(--gutter);left:var(--gutter);margin:0;padding:8px 12px 8px 26px;max-width:min(520px,calc(100% - 340px));color:var(--text);background:var(--float);border:1px solid var(--line2);border-radius:var(--r-track);box-shadow:0 8px 24px #0000003d;line-height:18px;white-space:pre-wrap;z-index:20}
+#error::before{content:"";position:absolute;left:12px;top:14px;width:6px;height:6px;border-radius:50%;background:var(--danger)}
+#error:empty{display:none}
+body.inspector-collapsed #error,body.preview #error{max-width:min(520px,calc(100% - 24px))}
+body.preview #layout{grid-template-columns:1fr}
+body.preview #right-panel{display:none!important}
+#vvveb-builder.preview #canvas{padding:12px;inset:auto;margin:0;width:auto;height:auto;position:relative}
+#retry{display:none}
+[hidden]{display:none!important}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.clr-picker{z-index:30}
+/* Narrow hosts keep every action; labels give way before controls do. */
+/* Save recovery gets its own right-aligned row, as a pair, before anything can clip. */
+@media(max-width:760px){body:has(#recover:not([hidden])) #studio-toolbar::after{content:"";order:1;flex:0 0 100%;height:0;margin-top:-8px}#studio-toolbar #retry{order:2;margin-left:auto}#studio-toolbar #recover{order:3}}
+@media(max-width:640px){#inspector-toggle .label{display:none}#studio-toolbar #inspector-toggle{width:var(--control);padding:0;justify-content:center}}
+@media(max-width:640px){#error,body.inspector-collapsed #error{max-width:calc(100% - 2*var(--gutter) - 40px)}}
+@media(max-width:520px){#status:not([data-state=failed]){font-size:0;gap:0}#studio-toolbar .rule{display:none}}
+@media(max-width:440px){#status[data-state]{font-size:0;gap:0}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style></head><body id="vvveb-builder" data-bs-theme="dark">
+<header id="studio-toolbar"><span id="session-label" hidden></span><div class="seg" role="group" aria-label="Mode"><button id="edit" aria-pressed="true">Edit</button><button id="preview" aria-pressed="false">Preview</button></div><span class="rule" aria-hidden="true"></span><div class="pair"><button id="undo" aria-label="Undo" title="Undo"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3 2.5 6l3 3"/><path d="M2.5 6h7a4 4 0 0 1 0 8H7"/></svg></button><button id="redo" aria-label="Redo" title="Redo"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m10.5 3 3 3-3 3"/><path d="M13.5 6h-7a4 4 0 0 0 0 8H9"/></svg></button></div><span class="spacer"></span><span id="status" role="status" data-state="saved">Saved</span><button id="retry">Retry save</button><button id="recover" hidden>Keep draft &amp; reload</button><label class="zoom"><select id="zoom" aria-label="Zoom" title="Pinch to zoom · Space-drag to pan · Two-finger pan in Edit"><option value="fit">Fit</option><option id="zoom-selection" value="selection" disabled>Fit selection</option><option value="4">400%</option><option value="2">200%</option><option value="1">100%</option><option value="0.75">75%</option><option value="0.5">50%</option><option value="0.25">25%</option><option id="zoom-custom" value="custom" hidden disabled></option></select></label><button id="inspector-toggle" type="button" aria-controls="right-panel" aria-expanded="true" aria-label="Hide inspector" title="Hide inspector"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"/><path class="pane" d="M10 3.5h2.25a1.25 1.25 0 0 1 1.25 1.25v6.5a1.25 1.25 0 0 1-1.25 1.25H10z"/><path d="M10 2.75v10.5"/></svg><span class="label">Inspector</span></button></header>
+<div id="layout"><main id="canvas"><div id="frame-wrap"><div id="frame-surface"><iframe id="screen" title="Design screen" sandbox="allow-same-origin"></iframe><div id="outline"></div></div></div></main><!--STUDIO_RIGHT_PANEL--></div>
+<!--STUDIO_INLINE_TOOLBAR--><p id="error" role="alert"></p>
+<script>/*STUDIO_VENDOR*/</script><script>/*STUDIO_EDITOR*/</script></body></html>
