@@ -101,37 +101,13 @@ impl CenterArea {
         let implement_action =
             self.render_task_implement_action(project, &summary, detail.as_ref(), cx);
         let design_action = {
-            let configured = self.penpot.read(cx).is_configured();
-            let creating = self.penpot.read(cx).creating_design();
-            let assistant_busy = self.penpot.read(cx).assistant_busy(project);
+            let creating = self.studio_creating.contains(&project);
             let design_summary = summary.clone();
             let design_detail = detail.clone();
-            if assistant_busy {
-                style::busy_button_compact(("task-design", task_element_id), "Design busy", cx)
-            } else {
-                style::accent_button_compact(
-                    ("task-design", task_element_id),
-                    if creating { "Creating…" } else { "Design" },
-                    cx,
-                )
-                .icon(crate::ui::design::design_icon())
-                .disabled(!configured || creating)
-                .tooltip(if !configured {
-                    "Connect Design before creating a design"
-                } else if creating {
-                    "Creating a design…"
-                } else {
-                    "Create a design from this task"
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.create_penpot_design_for_task(
-                        project,
-                        design_summary.clone(),
-                        design_detail.clone(),
-                        cx,
-                    );
-                }))
-            }
+            style::accent_button_compact(("task-design", task_element_id), if creating { "Creating…" } else { "Design" }, cx)
+                .icon(crate::ui::design::design_icon()).disabled(creating)
+                .tooltip("Create a Studio design from this task")
+                .on_click(cx.listener(move |this, _, _, cx| this.create_studio_for_task(project, design_summary.clone(), design_detail.clone(), cx)))
         };
         let status_control = self.render_task_status_control(
             project,
@@ -685,6 +661,9 @@ impl CenterArea {
             }
         }
 
+        for design in self.studio_designs_for_task(project, &summary.reference) {
+            items.push(self.render_linked_studio_indicator("task-linked-studio", project, design, cx));
+        }
         let linked_designs = self
             .penpot
             .read(cx)

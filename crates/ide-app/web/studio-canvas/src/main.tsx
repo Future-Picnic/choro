@@ -13,6 +13,8 @@ import {
 } from "@xyflow/react";
 import {
   takeNextDecode,
+  trimPreviews,
+  IMAGE_BUDGET,
   previewPlan,
   type Camera,
   type Layout,
@@ -30,7 +32,7 @@ type Boot = {
   theme: Record<string, string>;
   test?: boolean;
 };
-type Preview = { key: string; width: number; height: number; url: string; screenWidth:number;screenHeight:number };
+type Preview = { key: string; content_key: string; tier: number; width: number; height: number; url: string; image: HTMLImageElement; screenWidth:number;screenHeight:number };
 type Data = {
   screen: Screen;
   preview?: Preview;
@@ -177,12 +179,30 @@ function Canvas() {
     decodingBytes = useRef(0),
     alive = useRef(true),
     decodingKeys = useRef(new Set<string>());
+  const lastDemand = useRef("");
+  const lastImageVisibility = useRef("");
+  const lastMotion = useRef(-Infinity);
+  const canvasCamera = useRef<Camera | null>(null);
+  const activation = useRef<{screen:string;x:number;y:number} | null>(null);
+  const fitScreens = (selected?: string) => {
+    const f=flow.current;if(!f)return;
+    const visible=screens.current.filter(s=>!s.archived&&(!selected||s.id===selected)
+      &&(layout.current.overview_mode!=="focus"||s.id===layout.current.selected_screen_id));
+    const bounds=visible.map(s=>({s,p:layout.current.positions[s.id]})).filter(v=>v.p);
+    if(!bounds.length)return;
+    const x=Math.min(...bounds.map(v=>v.p.x)),y=Math.min(...bounds.map(v=>v.p.y));
+    const width=Math.max(...bounds.map(v=>v.p.x+v.s.width))-x,height=Math.max(...bounds.map(v=>v.p.y+v.s.height))-y;
+    const target=inline.current?.area??{x:0,y:0,width:innerWidth,height:innerHeight};
+    const v=getViewportForBounds({x,y,width,height},target.width,target.height,.02,1,.15);
+    void f.setViewport({...v,x:v.x+target.x,y:v.y+target.y});
+  };
   const syncNodes = useCallback(() => {
-    setNodes((old) =>
-      screens.current
+    setNodes((old) => {
+      const previousNodes = new Map(old.map(n => [n.id, n]));
+      const next = screens.current
         .filter((s) => !s.archived)
         .map((screen) => {
-          const previous = old.find((n) => n.id === screen.id);
+          const previous = previousNodes.get(screen.id);
           if (
             previous &&
             resize.current?.id === screen.id &&
@@ -206,11 +226,13 @@ function Canvas() {
               height: saving?.height ?? screen.height,
             },
             dragHandle: ".artboard-title",
+            hidden: layout.current.overview_mode === "focus" && layout.current.selected_screen_id !== screen.id,
             selected: layout.current.selected_screen_id === screen.id,
-            draggable: !pending.current.has(screen.id),
+            draggable: layout.current.overview_mode !== "focus" && !pending.current.has(screen.id),
             data: {
               screen,
-              preview: previews.current.get(screen.id),
+              preview: Math.max(screen.width, screen.height) * layout.current.viewport.zoom >= 48 || inline.current?.screen === screen.id
+                ? previews.current.get(screen.id) : undefined,
               error: failures.current.get(screen.id),
               pending: pending.current.has(screen.id),
               editing: inline.current?.screen===screen.id,
@@ -274,6 +296,8 @@ function Canvas() {
             previous.data.screen === screen &&
             previous.data.preview === n.data.preview &&
             previous.selected === n.selected &&
+            previous.hidden === n.hidden &&
+            previous.draggable === n.draggable &&
             previous.data.pending === n.data.pending &&
             previous.data.editing === n.data.editing &&
             previous.data.error === n.data.error &&
@@ -284,35 +308,52 @@ function Canvas() {
           )
             return previous;
           return n;
-        }),
-    );
+        });
+      return old.length === next.length && next.every((n, i) => n === old[i]) ? old : next;
+    });
   }, []);
   const planPreviews = useCallback(() => {
     if (!flow.current || !alive.current) return;
     const v = flow.current.getViewport();
     layout.current.viewport = v;
     const requests = previewPlan(
-      screens.current.filter(s=>s.id!==inline.current?.screen),
+      screens.current.filter(s=>s.id!==inline.current?.screen && (layout.current.overview_mode!=="focus"||s.id===layout.current.selected_screen_id)),
       layout.current.positions,
       v,
       innerWidth,
       innerHeight,
       devicePixelRatio,
       layout.current.selected_screen_id,
+      performance.now() - lastMotion.current < 150,
     );
     desired.current = new Map(requests.map((r) => [r.screen_id, r]));
-    let changed = false;
-    for (const id of previews.current.keys())
-      if (!desired.current.has(id)) {
-        previews.current.delete(id);
-        changed = true;
-      }
+    // Touch visible images without dropping the rest. Returning to an artboard
+    // can reuse its decoded image even if the host's encoded LRU has evicted it.
+    for (const r of requests) {
+      const p = previews.current.get(r.screen_id);
+      if (p) { previews.current.delete(r.screen_id); previews.current.set(r.screen_id, p); }
+    }
+    const retained = new Set(requests.map(r => r.screen_id));
+    if (inline.current?.screen) retained.add(inline.current.screen);
+    const evicted = trimPreviews(previews.current, retained);
+    for (const p of evicted) p.image.src = "";
     decodeQueue.current = decodeQueue.current.filter((r) => {
       const d = desired.current.get(r.screen_id);
-      return d && d.content_key === r.content_key && d.tier === r.tier;
+      return d && d.content_key === r.content_key && r.tier <= d.tier;
     });
-    if (changed) syncNodes();
-    send("previews", { requests });
+    const visibility = screens.current.filter(s => Math.max(s.width, s.height) * v.zoom >= 48).map(s => s.id).join(',');
+    if (evicted.length || visibility !== lastImageVisibility.current) syncNodes();
+    lastImageVisibility.current = visibility;
+    const pressure = [...previews.current.values()].reduce((n, p) => n + p.width * p.height * 4, 0) > IMAGE_BUDGET / 2;
+    const missing = requests.filter(r => {
+      const p = previews.current.get(r.screen_id);
+      return !p || p.content_key !== r.content_key || p.tier < r.tier || (pressure && p.tier > r.tier);
+    });
+    const signature = JSON.stringify(missing);
+    if (signature !== lastDemand.current) {
+      lastDemand.current = signature;
+      send("previews", { requests: missing });
+    }
   }, [syncNodes]);
   const positionEditor = useCallback(() => {
     const id=inline.current?.screen,f=flow.current;if(!id||!f)return;
@@ -350,7 +391,7 @@ function Canvas() {
         if (
           !wanted ||
           wanted.content_key !== item.content_key ||
-          wanted.tier !== item.tier
+          item.tier > wanted.tier
         )
           continue;
         if (
@@ -374,6 +415,7 @@ function Canvas() {
         decodingBytes.current += bytes;
         decodingKeys.current.add(item.key);
         const image = new Image();
+        let retained = false;
         // The isolated fixture uses data images; production only receives opaque keys.
         image.src =
           boot.test && item.test_url
@@ -387,9 +429,12 @@ function Canvas() {
               !alive.current ||
               !current ||
               current.content_key !== item.content_key ||
-              current.tier !== item.tier
+              item.tier > current.tier
             )
               return;
+            const previous = previews.current.get(item.screen_id);
+            if (previous && previous.content_key === item.content_key &&
+              (previous.tier === item.tier || (previous.tier > item.tier && item.tier !== current.tier))) return;
             if (
               image.naturalWidth !== item.width ||
               image.naturalHeight !== item.height
@@ -397,11 +442,16 @@ function Canvas() {
               throw Error("Preview dimensions changed");
             previews.current.set(item.screen_id, {
               key: item.key,
+              content_key: item.content_key,
+              tier: item.tier,
               width: item.width,
               height: item.height,
               url: image.src,
+              image,
               screenWidth:sourceScreen.width,screenHeight:sourceScreen.height,
             });
+            retained = true;
+            if (previous) previous.image.src = "";
             failures.current.delete(item.screen_id);
             syncNodes();
           })
@@ -416,12 +466,13 @@ function Canvas() {
             decoding.current--;
             decodingBytes.current -= bytes;
             decodingKeys.current.delete(item.key);
-            image.src = "";
+            if (!retained) image.src = "";
+            planPreviews();
             next();
           });
       }
     },
-    [syncNodes],
+    [syncNodes, planPreviews],
   );
   useEffect(() => {
     alive.current = true;
@@ -468,14 +519,31 @@ function Canvas() {
             ? old.get(s.id)
             : s,
         );
+        const previousView = layout.current.overview_mode;
+        if (previousView === "canvas" && message.layout.overview_mode === "focus")
+          canvasCamera.current = flow.current?.getViewport() ?? layout.current.viewport;
         layout.current = {
           ...message.layout,
           viewport: layout.current.viewport,
         };
         syncNodes();
         schedulePreviews();
+        if (previousView !== layout.current.overview_mode) {
+          const view = layout.current.overview_mode;
+          requestAnimationFrame(() => {
+            if (layout.current.overview_mode !== view) return;
+            if (view === "focus") inline.current?.focus();
+            else if (view === "canvas" && canvasCamera.current) void flow.current?.setViewport(canvasCamera.current);
+          });
+        }
       } else if (message.type === "editor") {
         inline.current?.open(message.screen_id?message:null);
+        const point=activation.current;
+        if (point && point.screen === message.screen_id) {
+          inline.current?.activate(point.x,point.y);
+          activation.current = null;
+        }
+        if (message.screen_id && layout.current.overview_mode === "focus") inline.current?.focus();
         positionEditor();
       } else if (message.type === "preview") {
         if (
@@ -517,24 +585,13 @@ function Canvas() {
           inline.current?.focus();
         if (message.command === "zoom-in") void f.zoomIn({ duration: 0 });
         if (message.command === "zoom-out") void f.zoomOut({ duration: 0 });
-        if (message.command === "fit-all")
-          void f.fitView({
-            padding: 0.12,
-            minZoom: 0.02,
-            maxZoom: 1,
-            duration: 0,
-          });
-        if (
+        if (message.command === "fit-all") requestAnimationFrame(()=>fitScreens());
+        if (message.command === "fit-selected" && inline.current?.screen) inline.current.focus();
+        else if (
           message.command === "fit-selected" &&
           layout.current.selected_screen_id
         )
-          void f.fitView({
-            nodes: [{ id: layout.current.selected_screen_id }],
-            padding: 0.15,
-            minZoom: 0.02,
-            maxZoom: 1,
-            duration: 0,
-          });
+          fitScreens(layout.current.selected_screen_id);
         if (message.command === "flush") {
           layout.current.viewport = f.getViewport();
           flushCamera();
@@ -542,6 +599,7 @@ function Canvas() {
         }
         if (message.command === "refresh") {
           failures.current.clear();
+          lastDemand.current = "";
           planPreviews();
         }
       }
@@ -582,6 +640,7 @@ function Canvas() {
       inline.current?.dispose();inline.current=null;
       clearTimeout(timers.current.preview);
       clearTimeout(timers.current.camera);
+      for (const p of previews.current.values()) p.image.src = "";
       previews.current.clear();
       decodeQueue.current = [];
       removeEventListener("keydown", onKey);
@@ -661,6 +720,7 @@ function Canvas() {
         multiSelectionKeyCode={null}
         deleteKeyCode={null}
         panOnScroll
+        panOnScrollSpeed={1}
         panOnDrag={[1]}
         panActivationKeyCode="Space"
         zoomOnScroll={false}
@@ -668,6 +728,7 @@ function Canvas() {
         zoomActivationKeyCode={["Meta", "Control"]}
         zoomOnDoubleClick={false}
         onMove={(_, v) => {
+          lastMotion.current = performance.now();
           layout.current.viewport = v;
           clearTimeout(timers.current.camera);
           timers.current.camera = setTimeout(flushCamera, 300);
@@ -675,7 +736,10 @@ function Canvas() {
           schedulePreviews();
         }}
         onMoveEnd={() => {
-          flushCamera();
+          // Programmatic movement (including each wheel event from the live
+          // editor) also emits move-end. Persist only after the gesture settles.
+          clearTimeout(timers.current.camera);
+          timers.current.camera = setTimeout(flushCamera, 300);
           positionEditor();
           schedulePreviews();
         }}
@@ -686,12 +750,15 @@ function Canvas() {
           syncNodes();
           schedulePreviews();
         }}
-        onNodeDoubleClick={(_, n) => {
+        onNodeDoubleClick={(event, n) => {
+          const v=flow.current!.getViewport();
+          activation.current={screen:n.id,x:(event.clientX-v.x)/v.zoom-n.position.x,y:(event.clientY-v.y)/v.zoom-n.position.y};
           flushCamera();
           send("open", { screen_id: n.id });
         }}
         onPaneClick={() => {
-          if(inline.current?.screen){send("close-editor");return;}
+          if(inline.current?.screen){inline.current.reply({session:inline.current.session,type:"deselect"});return;}
+          if(layout.current.overview_mode === "focus")return;
           layout.current.selected_screen_id = null;
           send("select", { screen_id: null });
           syncNodes();

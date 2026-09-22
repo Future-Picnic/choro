@@ -60,12 +60,29 @@ Checked in the user's signed-in Aside browser on 2026-09-17. Browser control and
 - Public; zero videos and follows. [Saved profile preview](previews/tiktok-choro-profile-final.png).
 - The intended signup email for X and TikTok was liran@choro.dev; neither profile UI exposed it, so the agent did not independently verify the account email.
 
-## Instagram — not started
+## Instagram — configured September 22
 
-No account has been created or handle availability checked.
+- Profile: https://www.instagram.com/choro.dev/
+- The owner completed signup; the signed-in Choro profile was confirmed before editing.
+- Public **Business** account; category **Software Company** displayed.
+- Saved: Choro display name, production avatar, and the following bio:
+
+  > Your AI workspace on Mac.  
+  > Coding agents, projects, docs & Git in one place.  
+  > A product by Futurepicnic.  
+  > choro.dev
+
+- Instagram disables the website field in its desktop editor. Add the external link `https://choro.dev` with title **Explore Choro** through the mobile app; the plain-text domain is already in the bio.
+- Following verified in the account's Following list: [Windsurf (@windsurf_ai)](https://www.instagram.com/windsurf_ai/), [Bolt (@boltdotnew)](https://www.instagram.com/boltdotnew/), [Replit (@replit)](https://www.instagram.com/replit/), [Raycast (@raycastapp)](https://www.instagram.com/raycastapp/), [Warp (@warpdotdev)](https://www.instagram.com/warpdotdev/), [Lovable (@lovable.dev)](https://www.instagram.com/lovable.dev/), [GitHub (@github)](https://www.instagram.com/github/). The owner explicitly authorized relevant competitor follows.
+- [Final saved profile preview](previews/instagram-public-final.png).
+- No posts, Reels, stories, messages, public contact details or ads were added. During Wholething setup, @choro.dev was linked to the Choro Facebook Page and Choro business portfolio; Instagram inbox access remained disabled.
 
 ## Content and artwork
 
 Launch and welcome posts remain local drafts. No invitations or messages were sent. YouTube videos and playlists retain Private defaults/settings despite the channel being public.
 
 The new coordinated headers are in [imagegen-v2](imagegen-v2/README.md); the avatar remains the production app icon. Earlier unsubmitted-form screenshots in `previews/` are historical preparation evidence, not proof of the current saved platform state.
+
+## Wholething — connection attempt September 22
+
+Wholething now shows **four Choro channels: YouTube, X, Facebook and Instagram**. X, Facebook and Instagram were connected after configuring developer apps, production credentials, Meta callbacks and Choro business assets. YouTube was already connected; its exact channel ID remains unexposed by Wholething. TikTok has a developer-app draft and a Hostinger verification TXT record, but still needs accepted ownership verification, public policy URLs, a demo video and review. Reddit requires API-access approval. LinkedIn remains on hold. Nothing was published or scheduled by the agent. See [the full connection record](wholething-connections.md).

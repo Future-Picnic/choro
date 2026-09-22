@@ -8,6 +8,20 @@ use crate::state::delegation::display::{self, DelegatedTaskRow, ParentDelegation
 use crate::state::delegation::DelegationHandle;
 
 impl ProjectList {
+    pub(super) fn delegation_activity_for(&self, agent_id: Uuid, cx: &App) -> DelegationActivity {
+        let Some(handle) = cx.try_global::<DelegationHandle>() else {
+            return DelegationActivity::Idle;
+        };
+        let chats = self.agent_chats.read(cx);
+        display::parent_delegation_activity(&handle.0.read(cx).runs, agent_id, &|child| {
+            chats.session(child).is_some_and(|session| {
+                session.pending_approval.is_some()
+                    || session.pending_user_input.is_some()
+                    || session.status == AgentChatStatus::PlanReady
+            })
+        })
+    }
+
     /// The lead's delegated work, from the application-owned coordinator.
     pub(super) fn delegation_state_for(&self, agent_id: Uuid, cx: &App) -> ParentDelegationState {
         let Some(handle) = cx.try_global::<DelegationHandle>() else {

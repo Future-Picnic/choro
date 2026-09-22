@@ -89,6 +89,25 @@ Company size and organization type: awaiting factual confirmation; do not guess.
 
 Visibility: public creation is authorized. Submit after the owner supplies organization size and type, then save the cover and full overview.
 
+## Instagram
+
+Profile: https://www.instagram.com/choro.dev/
+
+Name: Choro
+
+Type/category: Business / Software Company
+
+Saved bio:
+
+Your AI workspace on Mac.
+Coding agents, projects, docs & Git in one place.
+A product by Futurepicnic.
+choro.dev
+
+Avatar: `assets/choro-profile-1024.png`
+
+External link: https://choro.dev, title “Explore Choro” — mobile-app addition pending because the desktop website field is disabled. The domain is already in the saved bio.
+
 ## Reddit
 
 Main community: r/chorodev

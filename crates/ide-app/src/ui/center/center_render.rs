@@ -98,8 +98,19 @@ impl Render for CenterArea {
         self.handle_project_preview_messages(window, cx);
         self.apply_pending_reference_open(window, cx);
 
+        if !self.penpot.read(cx).enabled() && self.penpot_open_design.is_some() {
+            self.penpot_open_design = None;
+            self.penpot_external_mcp_design = None;
+            self.penpot_assistant_open = false;
+            self.close_penpot_compare(cx);
+        }
         let has_terminals = self.has_terminal_content(project, cx);
         let effective_mode = self.effective_code_mode(project, has_terminals);
+        if matches!(effective_mode, CenterMode::Design | CenterMode::Tasks | CenterMode::MyTasks | CenterMode::Docs | CenterMode::Agents)
+            && self.studio_catalog_refreshed.get(&project).is_none_or(|last| last.elapsed() > Duration::from_secs(2)) {
+            self.refresh_studio_catalog(project, cx);
+        }
+
 
         // Reconcile the single in-app web preview: a URL is intended only when the
         // Assets context is visible and a web-URL reference is selected. Any other
@@ -316,10 +327,10 @@ impl Render for CenterArea {
                             .penpot_open_design
                             .is_some_and(|(_, open_design_id)| open_design_id == *design_id)
                 });
-        let keep_penpot_connected = dedicated_design_session_active
+        let keep_penpot_connected = self.penpot.read(cx).enabled() && (dedicated_design_session_active
             || (effective_mode == CenterMode::Agents
                 && (composer_has_linked_design || selected_agent_has_linked_design)
-                && !external_browser_owns_mcp);
+                && !external_browser_owns_mcp));
         let web_preview_torn_down = self.web_host.update(cx, |host, _| {
             host.set_modal_suspended(
                 overlay_open

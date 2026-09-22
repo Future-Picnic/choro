@@ -10,7 +10,7 @@ fn fixture() -> (tempfile::TempDir, ServerContext, Uuid, ExpertProfile) {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().join("store")).unwrap();
     store
-        .save_beta_features(ide_core::config::BetaFeatures { delegation: true })
+        .save_beta_features(ide_core::config::BetaFeatures { delegation: true, ..Default::default() })
         .unwrap();
     let repo = dir.path().join("repo");
     git2::Repository::init(&repo).unwrap();
@@ -80,7 +80,7 @@ fn typo_role_request_survives_invalid_plan_and_schedules_exactly_its_team() {
     let store = ctx.store().unwrap();
     store.ensure_default_experts().unwrap();
     let source = Uuid::new_v4();
-    let request = "Please add a new landing page and delegate expets ui designder fro deisgn, ux writie for texrt and frotnend for the build the code of front";
+    let request = "Please add a new landing page and delegate expets ui designder fro deisgn, ux writie for texrt and delegate implementation to frotnend";
     let grant = store
         .authorize_experts(ctx.agent_id().unwrap(), source, request, &[], false)
         .unwrap()
@@ -140,6 +140,53 @@ fn typo_role_request_survives_invalid_plan_and_schedules_exactly_its_team() {
         store.load_agents().unwrap().len(),
         1,
         "Planning must not spawn provider or standalone child records"
+    );
+}
+
+#[test]
+fn later_work_scope_cannot_authorize_another_bandmate() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    store.ensure_default_experts().unwrap();
+    let source = Uuid::new_v4();
+    let grant = store
+        .authorize_experts(
+            ctx.agent_id().unwrap(),
+            source,
+            "Delegate the layout to UI Designer. Also update the backend and frontend styling.",
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    let profiles = store.load_experts().unwrap();
+    let ui = profiles.iter().find(|p| p.name == "UI Designer").unwrap();
+    let frontend = profiles
+        .iter()
+        .find(|p| p.name == "Frontend Engineer")
+        .unwrap();
+    assert_eq!(grant.expert_ids, vec![ui.id]);
+    let error = DelegationTool("delegation_plan")
+        .call_enabled(&ctx, &plan(&ctx, source, frontend))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("not named this Bandmate"),
+        "{error:#}"
+    );
+    // Run creation precedes plan validation, but a rejected plan must neither
+    // extend its authorized team nor create assignments or child chats.
+    let runs = store.load_delegations().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].authorized_experts, vec![ui.id]);
+    assert!(runs[0].tasks.is_empty());
+    assert_eq!(store.load_agents().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .latest_expert_authorization(ctx.agent_id().unwrap())
+            .unwrap()
+            .unwrap()
+            .expert_ids,
+        vec![ui.id]
     );
 }
 

@@ -23,6 +23,8 @@ class LibraryTests(unittest.TestCase):
             r'id="completed-video-files">(.*?)</script>', library.PAGE.read_text(), re.S).group(1))
         cls.videos += json.loads(re.search(
             r'id="draft-video-files">(.*?)</script>', library.PAGE.read_text(), re.S).group(1))
+        cls.videos += json.loads(re.search(
+            r'id="social-video-files">(.*?)</script>', library.PAGE.read_text(), re.S).group(1))
         for video in cls.videos:
             folder = cls.root / video['folder']
             (folder / 'approved-endcards').mkdir(parents=True)
@@ -95,6 +97,28 @@ class LibraryTests(unittest.TestCase):
     def test_missing_media(self):
         with patch.object(Path, 'open', side_effect=FileNotFoundError):
             self.status('/media/context', 404)
+
+    def test_embedded_social_plan(self):
+        with self.request('/social-media-plan.html') as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn('text/html', response.headers['Content-Type'])
+            self.assertIn("frame-ancestors 'self'", response.headers['Content-Security-Policy'])
+            page = response.read().decode()
+            self.assertIn('Choro — Weekly social plan', page)
+            self.assertIn('target="_top"', page)
+        with self.request('/social-media-plan.html', method='HEAD') as response:
+            self.assertEqual(response.read(), b'')
+            self.assertGreater(int(response.headers['Content-Length']), 0)
+        with self.request('/') as response:
+            self.assertIn("frame-src 'self'", response.headers['Content-Security-Policy'])
+            self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
+        with self.request('/social-launch/README.md') as response:
+            self.assertIn('text/plain', response.headers['Content-Type'])
+        for path in ['/social-launch/private.md', '/social-launch/../../AGENTS.md', '/social-media-plan.html/../AGENTS.md']:
+            self.status(path, 404)
+        self.status('/social-media-plan.html', 403, {'Sec-Fetch-Site': 'cross-site'})
+        with patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+            self.status('/social-media-plan.html', 404)
 
 
 if __name__ == '__main__':

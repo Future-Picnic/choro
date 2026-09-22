@@ -89,7 +89,7 @@ impl Render for DesignBrowserOpenChoice {
                     .line_height(gpui::relative(1.45))
                     .text_color(crate::ui::design::t3(cx))
                     .child(
-                        "To let the implementation agent inspect the live design, Choro will open this design in your default browser when the agent starts. Keep that browser tab open while the agent works; you can continue using Choro normally.",
+                        "To let the implementation agent inspect this Penpot design, Choro will open it in your default browser when the agent starts. Keep that browser tab open while the agent works; you can continue using Choro normally.",
                     ),
             )
             .child(
@@ -123,6 +123,7 @@ impl CenterArea {
     const DESIGN_MCP_DISCONNECT_GRACE: Duration = Duration::from_millis(1_500);
 
     pub(super) fn reconnect_penpot(&mut self, cx: &mut Context<Self>) {
+        if !self.penpot.read(cx).enabled() { return; }
         let configured = self.penpot.read(cx).is_configured();
         self.penpot.update(cx, |penpot, cx| {
             if configured {
@@ -154,6 +155,11 @@ impl CenterArea {
             move |this, cx| this.open_penpot_design_surface(project, design_id, assistant_open, cx),
             cx,
         ) {
+            return;
+        }
+        if !self.penpot.read(cx).enabled() {
+            self.design_hub_error = Some("Enable Penpot in Settings → Beta features to open this design.".into());
+            self.show_penpot_hub(cx);
             return;
         }
         self.close_penpot_compare(cx);
@@ -426,56 +432,6 @@ impl CenterArea {
         self.open_penpot_design_surface(project, design_id, draft.is_some(), cx);
     }
 
-    pub(super) fn create_penpot_design_for_doc(
-        &mut self,
-        project: ProjectId,
-        title: String,
-        relative_doc_path: PathBuf,
-        cx: &mut Context<Self>,
-    ) {
-        let name = format!("{title} Design");
-        let path = relative_doc_path.to_string_lossy();
-        let prompt = format!(
-            "Design the product experience described in @@{path}.\n\nRead the document first, then use the connected Design MCP tools to create the design in this file. Cover the important screens, states, hierarchy, and interactions. Keep the design grounded in the document and call out any ambiguity before inventing major product behavior.\n\n{}",
-            penpot_assistant::codebase_context_instruction()
-        );
-        self.penpot.update(cx, |penpot, cx| {
-            penpot.create_design(
-                project,
-                name,
-                Some(PenpotDesignSource::Document(relative_doc_path)),
-                Some(prompt),
-                cx,
-            )
-        });
-    }
-
-    pub(super) fn create_penpot_design_for_task(
-        &mut self,
-        project: ProjectId,
-        summary: TaskSummary,
-        detail: Option<TaskDetail>,
-        cx: &mut Context<Self>,
-    ) {
-        let source_title = summary.reference.title.trim();
-        let source_title = if source_title.is_empty() {
-            summary.reference.issue_key.as_str()
-        } else {
-            source_title
-        };
-        let name = format!("{source_title} Design");
-        let prompt = super::tasks::prompt::task_design_prompt(&summary, detail.as_ref());
-        self.penpot.update(cx, |penpot, cx| {
-            penpot.create_design(
-                project,
-                name,
-                Some(PenpotDesignSource::Task(summary.reference)),
-                Some(prompt),
-                cx,
-            )
-        });
-    }
-
     pub(super) fn render_linked_design_indicator(
         &mut self,
         key: (&'static str, u64),
@@ -559,6 +515,7 @@ impl CenterArea {
             let Some(composer) = self.new_agent_composer.as_mut() else {
                 return;
             };
+            composer.reset_source_implementation();
             composer.prompt.update(cx, |input, cx| {
                 input.set_value(prompt.clone(), window, cx);
                 input.set_cursor_position(
@@ -887,45 +844,23 @@ impl CenterArea {
     }
 
     fn new_design_dropdown(
-        &self,
-        id: impl Into<gpui::ElementId>,
-        label: &'static str,
-        project: ProjectId,
-        cx: &mut Context<Self>,
+        &self, id: impl Into<gpui::ElementId>, label: &'static str,
+        project: ProjectId, cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let penpot_enabled = self.penpot.read(cx).enabled();
         let configured = self.penpot.read(cx).is_configured();
-        let busy =
-            self.penpot.read(cx).creating_design() || self.penpot.read(cx).assistant_busy(project);
+        let busy = self.penpot.read(cx).creating_design() || self.penpot.read(cx).assistant_busy(project);
         let center = cx.entity().clone();
-        style::primary_button_compact(id, label, cx)
-            .icon(IconName::Plus)
+        style::primary_button_compact(id, label, cx).icon(IconName::Plus)
             .dropdown_menu(move |menu, window, _| {
-                let native_center = center.clone();
-                let studio_center = center.clone();
-                let figma_center = center.clone();
-                menu.item(
-                    PopupMenuItem::new("New Choro Design")
-                        .icon(crate::ui::design::design_icon())
-                        .disabled(!configured || busy)
-                        .on_click(window.listener_for(&native_center, move |this, _, _, cx| {
-                            this.create_penpot_design_from_hub(project, cx);
-                        })),
-                )
-                .item(PopupMenuItem::new("Figma").icon(IconName::Globe).on_click(
-                    window.listener_for(&figma_center, move |this, _, window, cx| {
-                        this.open_figma_design_dialog(project, window, cx);
-                    }),
-                ))
-                .item(
-                    PopupMenuItem::new("Studio")
-                        .icon(IconName::LayoutDashboard)
-                        .on_click(window.listener_for(
-                            &studio_center,
-                            move |this, _, window, cx| {
-                                this.create_studio_from_hub(project, window, cx)
-                            },
-                        )),
-                )
+                let studio = center.clone();let figma = center.clone();let penpot = center.clone();
+                menu.item(PopupMenuItem::new("New Studio design").icon(crate::ui::design::design_icon())
+                    .on_click(window.listener_for(&studio, move |this, _, window, cx| this.create_studio_from_hub(project, window, cx))))
+                    .item(PopupMenuItem::new("Add Figma link").icon(IconName::Globe)
+                        .on_click(window.listener_for(&figma, move |this, _, window, cx| this.open_figma_design_dialog(project, window, cx))))
+                    .when(penpot_enabled, |menu| menu.item(PopupMenuItem::new("New Penpot design (beta)")
+                        .icon(crate::ui::design::design_icon()).disabled(!configured || busy)
+                        .on_click(window.listener_for(&penpot, move |this, _, _, cx| this.create_penpot_design_from_hub(project, cx)))))
             })
     }
 
@@ -1441,11 +1376,12 @@ impl CenterArea {
             1 => format!("{project_name} · 1 design"),
             count => format!("{project_name} · {count} designs"),
         };
-        let mut cards = designs
+        let mut cards = studio_designs.into_iter().enumerate()
+            .map(|(index, design)| self.render_studio_hub_card(project, design, index, cx)).collect::<Vec<_>>();
+        cards.extend(designs
             .into_iter()
             .enumerate()
-            .map(|(key, design)| self.render_penpot_hub_card(project, design, key, cx))
-            .collect::<Vec<_>>();
+            .map(|(key, design)| self.render_penpot_hub_card(project, design, key, cx)));
         let native_count = cards.len();
         cards.extend(
             figma_designs
@@ -1455,9 +1391,6 @@ impl CenterArea {
                     self.render_figma_hub_card(project, reference, native_count + key, cx)
                 }),
         );
-        for (index, design) in studio_designs.into_iter().enumerate() {
-            cards.push(self.render_studio_hub_card(project, design, index, cx));
-        }
         let new_design = self.new_design_dropdown(
             "penpot-hub-new-design",
             if creating {
@@ -1597,6 +1530,10 @@ impl CenterArea {
                 })
         {
             return self.render_figma_design_section(project, reference_id, cx);
+        }
+
+        if !self.penpot.read(cx).enabled() || (self.penpot_open_design.is_none() && !self.penpot_editing_settings) {
+            return self.render_penpot_hub(project, cx);
         }
 
         if !self.penpot.read(cx).is_configured() || self.penpot_editing_settings {
@@ -2655,7 +2592,7 @@ fn penpot_field_label(label: &'static str, cx: &App) -> gpui::AnyElement {
         .into_any_element()
 }
 
-fn short_design_chip_label(name: &str) -> String {
+pub(super) fn short_design_chip_label(name: &str) -> String {
     let mut chars = name.chars();
     let prefix = chars.by_ref().take(10).collect::<String>();
     if chars.next().is_some() {

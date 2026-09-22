@@ -218,6 +218,7 @@ impl CenterArea {
             linked_tasks: Vec::new(),
             source_task: None,
             implementation_target: None,
+            studio_attachment_error: None,
             design_browser_open_confirmed: false,
             starting: false,
             error: None,
@@ -302,6 +303,7 @@ impl CenterArea {
             cx.notify();
             return;
         }
+        composer.reset_source_implementation();
         composer.prompt.update(cx, |input, cx| {
             input.set_value(prompt.clone(), window, cx);
             input.set_cursor_position(
@@ -314,7 +316,7 @@ impl CenterArea {
         composer.linked_docs.clear();
         composer.linked_docs.push(relative_doc_path.clone());
         composer.suggested_title = Some(implementation_agent_title(&doc_title, "doc"));
-        composer.source_doc = Some(relative_doc_path);
+        composer.source_doc = Some(relative_doc_path.clone());
         if crate::ui::onboarding::defaults_doc_agent_to_plan(cx) {
             composer.interaction_mode = AgentInteractionMode::Plan;
         }
@@ -324,6 +326,7 @@ impl CenterArea {
         composer.file_mention_selected = 0;
         composer.file_mention_dismissed_query = None;
         self.add_design_mentions_to_new_agent(linked_designs, cx);
+        self.attach_studio_source_designs(project, Some(&relative_doc_path), None, cx);
         crate::ui::onboarding::emit_for_project(
             project,
             crate::ui::onboarding::OnboardingEvent::DocImplementOpened,
@@ -351,6 +354,11 @@ impl CenterArea {
         let Some(composer) = self.new_agent_composer.as_mut() else {
             return;
         };
+        if let Some(error) = composer.studio_attachment_error.clone() {
+            composer.error = Some(error);
+            cx.notify();
+            return;
+        }
         if composer.starting {
             return;
         }
@@ -497,6 +505,10 @@ impl CenterArea {
             .clone()
             .filter(|source_task| linked_tasks.iter().any(|task| task.same_issue(source_task)));
         if let Some(ImplementationTarget::Penpot(design_id)) = implementation_target {
+            if !self.penpot.read(cx).enabled() {
+                if let Some(composer) = self.new_agent_composer.as_mut() { composer.error = Some("Enable Penpot in Settings → Beta features to implement this Penpot design.".into()); }
+                cx.notify();return;
+            }
             let prompt_dismissed = self.workspace.read(cx).design_browser_open_prompt_dismissed;
             if !design_browser_open_confirmed && !prompt_dismissed {
                 if let Some(design) = self.penpot.read(cx).design(project, design_id) {
@@ -542,10 +554,10 @@ impl CenterArea {
         } else {
             None
         };
-        let studio_implementation = match implementation_target {
-            Some(ImplementationTarget::Studio(handoff)) => Some((workspace_root.clone(), handoff)),
-            _ => None,
-        };
+        let mut studio_handoffs = selected_mentions.iter().filter_map(ComposerMentionToken::studio_handoff_id).collect::<Vec<_>>();
+        if let Some(ImplementationTarget::Studio(handoff)) = implementation_target { studio_handoffs.push(handoff); }
+        studio_handoffs.sort();studio_handoffs.dedup();
+        let studio_implementation = (!studio_handoffs.is_empty()).then(|| (workspace_root.clone(), studio_handoffs));
         let agent_id = self.agents.update(cx, |agents, cx| {
             let agent_id = agents.create_agent(
                 project,
@@ -563,14 +575,9 @@ impl CenterArea {
                 linked_tasks,
                 source_task,
                 AgentStatus::InProgress,
+                expert_snapshot.clone(),
                 cx,
             );
-            if let Some(snapshot) = expert_snapshot.clone() {
-                if let Some(mut record) = agents.agent(agent_id).cloned() {
-                    record.expert_snapshot = Some(snapshot);
-                    agents.adopt_managed(record, cx);
-                }
-            }
             if provider == AgentKind::OpenCode {
                 if let (Some(id), Some(label)) =
                     (external_model_id.clone(), external_model_label.clone())
@@ -602,9 +609,9 @@ impl CenterArea {
                 .background_executor()
                 .spawn(async move {
                     crate::state::agents::persist_agent_store_snapshot(save_revision, agent_store)?;
-                    if let Some((root, handoff)) = studio_implementation {
-                        ide_core::studio::StudioStore::for_project(root)?
-                            .link_implementation_agent(handoff, agent_id)?;
+                    if let Some((root, handoffs)) = studio_implementation {
+                        let store = ide_core::studio::StudioStore::for_project(root)?;
+                        for handoff in handoffs { store.link_implementation_agent(handoff, agent_id)?; }
                     }
 
                     if runtime == AgentRuntimeKind::Chat
@@ -654,6 +661,7 @@ impl CenterArea {
             }
 
             this.update(cx, |this, cx| {
+                this.refresh_studio_catalog(project, cx);
                 this.agent_chats.update(cx, |chats, cx| {
                     let session = chats.ensure_session(agent_id, title.clone(), cx);
                     session.interaction_mode = interaction_mode;
@@ -1028,7 +1036,10 @@ impl CenterArea {
         if mention.range.start > mention.range.end || mention.range.end > current.len() {
             return;
         }
-        let penpot_token = ComposerMentionToken::penpot_design(&reference);
+        let penpot_token = match self.studio_reference_token(&reference, cx) {
+            Ok(studio) => studio.or_else(|| ComposerMentionToken::penpot_design(&reference)),
+            Err(error) => { if let Some(composer) = self.new_agent_composer.as_mut() { composer.error = Some(format!("Could not attach Studio design: {error:#}")); } cx.notify();return; }
+        };
         let preview = crate::state::designs::reference_absolute_preview_path(&reference)
             .filter(|path| path.is_file());
         let replacement = if let Some(token) = penpot_token.as_ref() {

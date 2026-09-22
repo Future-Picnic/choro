@@ -570,6 +570,13 @@ impl CenterArea {
             })
             .unwrap_or_default()
     }
+
+    fn delegation_indicator(&self, parent: Uuid, cx: &App) -> Option<display::DelegationIndicator> {
+        let handle = cx.try_global::<DelegationHandle>()?;
+        display::delegation_indicator(&handle.0.read(cx).runs, parent, &|child| {
+            self.delegated_child_needs_user(child, cx)
+        })
+    }
     pub(super) fn delegated_preview_intent(
         &self,
         project: ProjectId,
@@ -641,61 +648,67 @@ impl CenterArea {
                     cx.notify();
                 })),
             );
-            if let Some(run) = self
-                .delegation_runs(parent, cx)
-                .into_iter()
-                .find(|r| r.id == binding.run_id)
-            {
-                let queued = run
-                    .deliveries
-                    .iter()
-                    .filter(|d| {
-                        d.target == id && d.status == ide_core::delegation::DeliveryStatus::Queued
-                    })
-                    .count();
-                if queued > 0 {
-                    row = row.child(crate::ui::design::indicator::indicator(
-                        IconName::Loader,
-                        format!(
-                            "{queued} queued message{}",
-                            if queued == 1 { "" } else { "s" }
-                        ),
-                        crate::ui::design::amber(cx),
-                        cx,
-                    ));
-                }
+            let queued = cx
+                .try_global::<DelegationHandle>()
+                .and_then(|handle| {
+                    handle
+                        .0
+                        .read(cx)
+                        .runs
+                        .iter()
+                        .find(|run| run.id == binding.run_id)
+                        .map(|run| {
+                            run.deliveries
+                                .iter()
+                                .filter(|delivery| {
+                                    delivery.target == id
+                                        && delivery.status
+                                            == ide_core::delegation::DeliveryStatus::Queued
+                                })
+                                .count()
+                        })
+                })
+                .unwrap_or(0);
+            if queued > 0 {
+                row = row.child(crate::ui::design::indicator::indicator(
+                    IconName::Loader,
+                    format!(
+                        "{queued} queued message{}",
+                        if queued == 1 { "" } else { "s" }
+                    ),
+                    crate::ui::design::amber(cx),
+                    cx,
+                ));
             }
         }
         if let Some(selection) = self.delegation_selection.get(&id).copied() {
             row = row.child(self.render_delegation_recipient(id, selection, cx));
         }
-        if let Some(e) = &agent.expert_snapshot {
-            row = row.child(crate::ui::style::tag(
-                format!("Bandmate · {}", e.profile.name),
-                cx,
-            ));
-        }
         if let Some(chip) = self.render_delegation_activity_chip(id, cx) {
             row = row.child(chip);
         }
-        if let Some(run) = self
-            .delegation_runs(id, cx)
-            .iter()
-            .find(|r| r.status.stopped())
-        {
-            row = row.child(self.render_delegation_recovery(run, "composer", cx));
+        let stopped_run = cx.try_global::<DelegationHandle>().and_then(|handle| {
+            handle
+                .0
+                .read(cx)
+                .runs
+                .iter()
+                .find(|run| run.parent_agent_id == id && run.status.stopped())
+                .map(|run| run.id)
+        });
+        if let Some(run_id) = stopped_run {
+            row = row.child(self.render_delegation_recovery(run_id, id, "composer", cx));
         }
         row.into_any_element()
     }
 
     pub(super) fn render_delegation_recovery(
         &self,
-        run: &DelegationRun,
+        run_id: Uuid,
+        parent: Uuid,
         surface: &'static str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let run_id = run.id;
-        let parent = run.parent_agent_id;
         h_flex()
             .gap_2()
             .flex_wrap()
@@ -759,9 +772,7 @@ impl CenterArea {
             return None;
         }
         let parent = agent.id;
-        let runs = self.delegation_runs(parent, cx);
-        let needs_user = |child| self.delegated_child_needs_user(child, cx);
-        let indicator = display::delegation_indicator(&runs, parent, &needs_user)?;
+        let indicator = self.delegation_indicator(parent, cx)?;
         let active = self.delegated_overview == Some(parent)
             || self.delegated_panel.is_some_and(|id| {
                 self.agents.read(cx).agent(id).is_some_and(|child| {
@@ -811,9 +822,7 @@ impl CenterArea {
         parent: Uuid,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        let runs = self.delegation_runs(parent, cx);
-        let needs_user = |child: Uuid| self.delegated_child_needs_user(child, cx);
-        let indicator = display::delegation_indicator(&runs, parent, &needs_user)?;
+        let indicator = self.delegation_indicator(parent, cx)?;
         let leading = delegation_glyph(
             indicator.activity,
             indicator.status,

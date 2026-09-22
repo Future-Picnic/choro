@@ -6,6 +6,7 @@ import {
   pixels,
   validCamera,
   IMAGE_BUDGET,
+  trimPreviews,
   type Screen,
 } from "./model.ts";
 const screens: Screen[] = Array.from({ length: 200 }, (_, i) => ({
@@ -48,6 +49,25 @@ test("culls offscreen screens and omits unreadably small images", () => {
     ).length,
     0,
   );
+});
+
+test("movement asks for coarse images and idle restores sharp demand", () => {
+  const args = [screens, positions, { x: 0, y: 0, zoom: 1 }, 1200, 800, 2, null] as const;
+  assert.equal(previewPlan(...args, true)[0].tier, 512);
+  assert.equal(previewPlan(...args, false)[0].tier, 2048);
+});
+
+test("recent offscreen images survive until bounded LRU pressure evicts them", () => {
+  const resident = new Map(Array.from({length: 3}, (_, i) =>
+    [String(i), { width: 2048, height: 2048 }] as const));
+  const original = resident.get('0');
+  // With available budget, leaving and returning does not discard the image.
+  assert.equal(trimPreviews(resident, new Set(), IMAGE_BUDGET).length, 0);
+  assert.equal(resident.get('0'), original);
+  // Screen 0 is visible, so the oldest offscreen entry (1) is released first.
+  assert.equal(trimPreviews(resident, new Set(['0'])).length, 1);
+  assert.ok(resident.has('0')); assert.ok(!resident.has('1')); assert.ok(resident.has('2'));
+  assert.ok([...resident.values()].reduce((n, p) => n + p.width * p.height * 4, 0) <= IMAGE_BUDGET / 2);
 });
 test("fit-all requests remain bounded, preserving mobile aspect ratios", () => {
   const r = previewPlan(

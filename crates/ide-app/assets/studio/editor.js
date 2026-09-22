@@ -17,12 +17,29 @@
   };
   const tokenCss = boot.tokens_css;
   const assets = boot.assets || {};
+  // Text may be authored with semantic/formatting elements, not just headings
+  // and generic wrappers. Keep shapes, form fields and layout sections out of
+  // rich-text editing, but allow the same editing path for all these text tags.
+  const editableTextTags=new Set(('H1 H2 H3 H4 H5 H6 P SPAN A BUTTON LABEL LI TD TH DIV '+
+    'STRONG B EM I U S SMALL MARK SUB SUP ABBR CITE Q DFN CODE KBD SAMP VAR TIME DATA OUTPUT '+
+    'DEL INS BDI BDO PRE BLOCKQUOTE DT DD FIGCAPTION CAPTION LEGEND SUMMARY ADDRESS').split(' '));
   const inspectorPreference = 'choro.studio.inspector-collapsed.v1';
   let inspectorCollapsed = (()=>{try{return localStorage.getItem(inspectorPreference)==='true';}catch{return false;}})();
   let liveBaseline = null, initializedToolbar = false, propertyBefore = null;
   // The status dot reads its semantic color from data-state; the words stay the contract.
   const statusStates={'Saved':'saved','Unsaved':'unsaved','Saving…':'saving','Save failed':'failed'};
-  const setStatus=text=>{const node=$('status');node.textContent=text;node.dataset.state=statusStates[text];};
+  let toolbarQueued=false, lastToolbar='';
+  function publishToolbar(){
+    if(!boot.native_toolbar||toolbarQueued)return;
+    toolbarQueued=true;
+    queueMicrotask(()=>{
+      toolbarQueued=false;
+      const state={status:$('error').textContent&&!pending?'failed':$('status').dataset.state||'saved',can_undo:Vvveb.Undo.undoIndex>=0||!!Vvveb.WysiwygEditor.isActive,can_redo:Vvveb.Undo.undoIndex<Vvveb.Undo.mutations.length-1,inspector_open:!inspectorCollapsed,recovery_available:!$('recover').hidden};
+      const key=JSON.stringify(state);
+      if(key!==lastToolbar){lastToolbar=key;send({type:'toolbar-state',...state});}
+    });
+  }
+  const setStatus=text=>{const node=$('status');node.textContent=text;node.dataset.state=statusStates[text];publishToolbar();};
   const serialize = () => '<!doctype html>\n' + clean.documentElement.outerHTML;
   function normalize() {
     clean = parse(source.html);
@@ -68,7 +85,14 @@
     }
     return '<!doctype html>'+doc.documentElement.outerHTML;
   }
-  let inlineView={x:0,y:0,zoom:1},inlineHasCamera=false;
+  let inlineView={x:0,y:0,zoom:1},inlineHasCamera=false,lastInlineSize='',lastInlineLayout='';
+  let activationPoint=null;
+  function activatePoint(){
+    if(!activationPoint||mode!=='edit'||!frame.contentDocument||Vvveb.WysiwygEditor.doc!==frame.contentDocument)return;
+    const point=activationPoint;activationPoint=null;
+    const node=frame.contentDocument.elementFromPoint(point.x,point.y);
+    if(node){node.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true}));frame.contentWindow.focus();}
+  }
   const inlinePost=(type,data={})=>parent.postMessage({type,session:boot.session,...data},'*');
   function publishInlineLayout(){
     if(!boot.inline||!inlineHasCamera)return;
@@ -80,12 +104,14 @@
     for(const id of ['studio-toolbar','right-panel','wysiwyg-editor','error','clr-picker']){
       const node=$(id);if(node&&!node.hidden&&node.getClientRects().length)push(node.getBoundingClientRect());
     }
-    inlinePost('studio-inline-layout',{rectangles,area:{x:area.x,y:area.y,width:area.width,height:area.height}});
+    const layout={rectangles,area:{x:area.x,y:area.y,width:area.width,height:area.height}};
+    const key=JSON.stringify(layout);
+    if(key!==lastInlineLayout){lastInlineLayout=key;inlinePost('studio-inline-layout',layout);}
   }
   // A camera changes only presentation. The child viewport and document stay live.
   const cameraEnabled=!boot.thumbnail&&!boot.system_specimen&&!boot.inline;
   const clampZoom=value=>Math.max(.02,Math.min(4,value));
-  let camera, cameraKey, cameraTimer;
+  let camera, cameraKey, cameraTimer, reportedZoom;
   function restoreCamera(){
     cameraKey='choro.studio.camera.v1:'+boot.screen_id+':'+boot.width+'x'+boot.height;
     camera={mode:'fit',zoom:1,x:boot.width/2,y:boot.height/2};
@@ -101,12 +127,15 @@
   }
   function cameraChanged(){size();clearTimeout(cameraTimer);cameraTimer=setTimeout(persistCamera,150);}
   function syncZoom(){
+    if(boot.prototype&&reportedZoom!==camera.zoom){reportedZoom=camera.zoom;send({type:'camera',zoom:camera.zoom});}
     const zoom=$('zoom'), custom=$('zoom-custom');
     $('zoom-selection').disabled=mode!=='edit'||!selectedId;
     if(camera.mode==='fit'){zoom.value='fit';return;}
     const value=String(camera.zoom);
     if([...zoom.options].some(option=>option.value===value)){zoom.value=value;return;}
-    custom.textContent=Math.round(camera.zoom*100)+'%';zoom.value='custom';
+    const label=Math.round(camera.zoom*100)+'%';
+    if(custom.textContent!==label)custom.textContent=label;
+    if(zoom.value!=='custom')zoom.value='custom';
   }
   function zoomAt(value,x,y){
     const area=$('canvas'), next=clampZoom(value);
@@ -204,15 +233,28 @@
     window.addEventListener('pagehide',persistCamera);
   }
   function size() {
+    if(boot.inline){
+      // Panning moves a single composited surface. It must not resize the
+      // authored iframe or rebuild the zoom control on every wheel event.
+      const r=$('canvas').getBoundingClientRect(),wrap=$('frame-wrap');
+      scale=inlineView.zoom;
+      wrap.style.left='0px';wrap.style.top='0px';
+      wrap.style.transform='translate3d('+(inlineView.x-r.left)+'px,'+(inlineView.y-r.top)+'px,0)';
+      const key=boot.width+':'+boot.height+':'+scale;
+      if(key!==lastInlineSize){
+        lastInlineSize=key;camera.mode='free';camera.zoom=scale;syncZoom();
+        Object.assign(wrap.style,{width:(boot.width*scale)+'px',height:(boot.height*scale)+'px'});
+        Object.assign($('frame-surface').style,{width:boot.width+'px',height:boot.height+'px',transform:'scale('+scale+')'});
+        Object.assign(frame.style,{width:boot.width+'px',height:boot.height+'px'});
+      }
+      if(Vvveb.WysiwygEditor.isActive)outline();
+      publishInlineLayout();return;
+    }
     const area=$('canvas'), style=getComputedStyle(area);
     const availableWidth=area.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight);
     const availableHeight=area.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom);
     const fit=Math.min(1,availableWidth/boot.width,availableHeight/boot.height);
-    if(boot.inline){
-      const r=area.getBoundingClientRect();scale=inlineView.zoom;
-      Object.assign($('frame-wrap').style,{left:(inlineView.x-r.left)+'px',top:(inlineView.y-r.top)+'px'});
-      camera.mode='free';camera.zoom=scale;syncZoom();
-    }else if(cameraEnabled){
+    if(cameraEnabled){
       if(camera.mode==='fit'){camera.zoom=clampZoom(fit);camera.x=boot.width/2;camera.y=boot.height/2;}
       scale=camera.zoom;
       Object.assign($('frame-wrap').style,{left:(area.clientWidth/2-camera.x*scale)+'px',top:(area.clientHeight/2-camera.y*scale)+'px'});
@@ -233,6 +275,7 @@
     toggle.setAttribute('aria-expanded',String(expanded));
     const label=expanded?'Hide inspector':'Show inspector';
     toggle.setAttribute('aria-label',label);toggle.title=label;
+    publishToolbar();
   }
   function toggleInspector() {
     if(mode!=='edit'||boot.system_specimen||boot.thumbnail)return;
@@ -269,6 +312,7 @@
       if(mode!=='edit')return;
       const doc=frame.contentDocument;
       installCameraInput(doc,input=>cameraInput(input,true));
+      doc.addEventListener('keydown',historyShortcut,true);
       window.FrameDocument=doc;window.FrameWindow=frame.contentWindow;
       Vvveb.Builder.iframe=frame;Vvveb.Builder.frameBody=doc.body;Vvveb.Builder.selectedEl=null;
       Vvveb.StyleManager.styles={};Vvveb.StyleManager.currentElement=null;Vvveb.StyleManager.init(doc);
@@ -282,7 +326,7 @@
       });
       doc.addEventListener('dblclick',event=>{
         event.preventDefault();const node=event.target.closest('[data-studio-id]');
-        if(!node || !/^(H[1-6]|P|SPAN|A|BUTTON|LABEL|LI|TD|TH|DIV)$/.test(node.tagName))return;
+        if(!node || node.namespaceURI!=='http://www.w3.org/1999/xhtml' || !editableTextTags.has(node.tagName))return;
         finishText();select(node.dataset.studioId);textEditBefore=JSON.stringify(source);
         Vvveb.WysiwygEditor.edit(node);outline();
       });
@@ -294,6 +338,7 @@
       doc.addEventListener('input',()=>syncFromLive(false));
       doc.addEventListener('paste',event=>{if(Vvveb.WysiwygEditor.isActive){event.preventDefault();doc.execCommand('insertText',false,event.clipboardData.getData('text/plain'));}});
       doc.addEventListener('scroll',outline,true);
+      activatePoint();
     });
     frame.srcdoc=sanitize(parse(serialize()),mode==='preview'&&!boot.system_specimen);
     $('edit').setAttribute('aria-pressed',mode==='edit');$('preview').setAttribute('aria-pressed',mode==='preview');
@@ -301,6 +346,7 @@
   function selected(doc=clean){return [...doc.querySelectorAll('[data-studio-id]')].find(n=>n.dataset.studioId===selectedId);}
   function select(id) {
     if(mode!=='edit')return;
+    document.body.classList.remove('element-deselected');
     selectedId=id;const node=selected(frame.contentDocument);if(!node)return;
     Vvveb.Builder.selectedEl=node;
     const component=Vvveb.Components.matchNode(node)||Vvveb.Components.get('_base');
@@ -377,11 +423,34 @@
     if(before&&before!==JSON.stringify(source))addUndo({type:'studio',oldValue:before,newValue:JSON.stringify(source)});
     if(selectedId)select(selectedId);
   }
+  function historyShortcut(event){
+    if(mode!=='edit'||boot.thumbnail||boot.system_specimen||event.defaultPrevented||event.isComposing||event.altKey||!(event.metaKey||event.ctrlKey))return;
+    // Inspector fields own their text history. Authored inline text instead
+    // commits one edit before using the same document history as the buttons.
+    if(event.target?.closest?.('input,textarea,select')||
+       (event.target?.ownerDocument===document&&event.target?.isContentEditable))return;
+    const key=event.key.toLowerCase();
+    const undo=key==='z'||event.code==='KeyZ';
+    const redo=!event.shiftKey&&(key==='y'||event.code==='KeyY');
+    if(!undo&&!redo)return;
+    event.preventDefault();event.stopPropagation();
+    $(redo||event.shiftKey?'redo':'undo').click();
+  }
   function markDirty(){dirty=JSON.stringify(source)!==savedText;setStatus(dirty?'Unsaved':'Saved');send({type:'dirty',dirty,document:source,revision,fingerprint});clearTimeout(timer);if(dirty)timer=setTimeout(flush,500);}
   function flush(){clearTimeout(timer);if(pending||!dirty)return;pending=true;saveId=uuid();inFlightText=JSON.stringify(source);setStatus('Saving…');send({type:'save',id:saveId,revision,fingerprint,document:JSON.parse(inFlightText)});}
   function sendFlushed(){send({type:'flushed',request_id:flushRequest});flushRequest=null;}
   window.choroStudioReply=reply=>{
     if(reply.session!==boot.session)return;
+    // Only the trusted host can invoke these controls; authored screens never
+    // reach this reply channel. Keep one implementation of each editor action.
+    if(reply.type==='toolbar-command'&&boot.native_toolbar&&mode==='edit'){
+      const id={undo:'undo',redo:'redo',inspector:'inspector-toggle',retry:'retry',recover:'recover'}[reply.command];
+      if(typeof id==='string'&&(!['retry','recover'].includes(reply.command)||(!pending&&!$('recover').hidden))){$(id).click();publishToolbar();}
+      return;
+    }
+    if(reply.type==='activate'&&boot.inline){if(Number.isFinite(reply.x)&&Number.isFinite(reply.y)&&reply.x>=0&&reply.y>=0&&reply.x<=boot.width&&reply.y<=boot.height){activationPoint={x:reply.x,y:reply.y};activatePoint();}return;}
+    if(reply.type==='deselect'&&boot.inline){finishText();selectedId=null;Vvveb.Builder.selectedEl=null;$('outline').style.display='none';document.body.classList.add('element-deselected');send({type:'selection',element:null});return;}
+    if(reply.type==='camera-command'&&boot.prototype){if(reply.command==='fit'){camera.mode='fit';cameraChanged();}else if(['zoom-in','zoom-out'].includes(reply.command)){const area=$('canvas');zoomAt(camera.zoom*(reply.command==='zoom-in'?1.2:1/1.2),area.clientWidth/2,area.clientHeight/2);}return;}
     if(reply.type==='theme'&&reply.theme){
       for(const [key,value] of Object.entries(reply.theme))document.documentElement.style.setProperty('--'+key,String(value));
       const scheme=reply.theme.scheme==='light'?'light':'dark';
@@ -404,7 +473,8 @@
     if(reply.error){$('error').textContent=reply.error;setStatus('Save failed');$('retry').style.display='inline-block';$('recover').hidden=false;return;}
     revision=reply.revision;fingerprint=reply.fingerprint;savedText=inFlightText;$('error').textContent='';$('retry').style.display='none';$('recover').hidden=true;markDirty();if(!dirty)sendFlushed();else if(flushRequest)flush();
   };
-  const addUndo=Vvveb.Undo.addMutation.bind(Vvveb.Undo);
+  const upstreamAddUndo=Vvveb.Undo.addMutation.bind(Vvveb.Undo);
+  const addUndo=mutation=>{upstreamAddUndo(mutation);publishToolbar();};
   const restore=Vvveb.Undo.restore;
   Vvveb.Undo.addMutation=function(mutation){if(mutation.type==='studio')return addUndo(mutation);if(mutation.type!=='characterData')queueMicrotask(()=>syncFromLive(true));};
   Vvveb.Undo.restore=function(mutation,undo){if(mutation.type!=='studio')return restore.call(this,mutation,undo);source=JSON.parse(undo?mutation.oldValue:mutation.newValue);render();markDirty();};
@@ -469,9 +539,11 @@
   // Upstream's empty inspector is a dismissible alert. Keep its node, give it direction.
   const emptyInspector=document.querySelector('#content-tab > .alert');
   if(emptyInspector){const title=document.createElement('strong'),hint=document.createElement('span');title.textContent='Nothing selected';hint.textContent='Click an element on the screen to edit its content and style.';emptyInspector.replaceChildren(title,hint);emptyInspector.classList.remove('alert-dismissible');}
+  if(emptyInspector){const empty=emptyInspector.cloneNode(true);empty.id='studio-empty-selection';$('right-panel').append(empty);}
   const scheme=boot.theme?.scheme==='light'?'light':'dark';
   Coloris({el:'.coloris',theme:'polaroid',themeMode:scheme,format:'hex',alpha:true});
-  $('undo').onclick=()=>{finishText();Vvveb.Undo.undo();};$('redo').onclick=()=>{finishText();Vvveb.Undo.redo();};
+  $('undo').onclick=()=>{finishText();Vvveb.Undo.undo();publishToolbar();};$('redo').onclick=()=>{finishText();Vvveb.Undo.redo();publishToolbar();};
+  window.addEventListener('keydown',historyShortcut,true);
   function setMode(next){
     if(boot.system_specimen||boot.inline||boot.prototype||mode===next)return;
     finishText();flush();mode=next;send({type:'mode',mode});render();
@@ -486,11 +558,12 @@
   window.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key==='s'){event.preventDefault();flush();}});
   if(boot.theme)for(const [key,value] of Object.entries(boot.theme))document.documentElement.style.setProperty('--'+key,value);
   for(const node of [document.documentElement,document.body])node.dataset.bsTheme=scheme;
+  document.body.classList.toggle('native-toolbar',!!boot.native_toolbar);
   if(boot.system_specimen&&!boot.thumbnail){mode='preview';for(const id of ['edit','preview','undo','redo'])$(id).hidden=true;}
   if(boot.thumbnail){document.querySelector('header').style.display='none';$('right-panel').style.display='none';document.body.style.gridTemplateRows='1fr';$('layout').style.gridTemplateColumns='1fr';$('canvas').style.padding='0';$('canvas').style.overflow='hidden';}
   if(boot.inline){$('zoom').querySelector('[value="4"]').disabled=true;}
   if(boot.inline||boot.prototype){
-    const caption=$('session-label');caption.hidden=false;caption.textContent=(boot.inline?'Editing · ':'Prototype · ')+(boot.screens.find(s=>s.id===boot.screen_id)?.name||'Screen');
+    const caption=$('session-label');caption.hidden=false;caption.textContent=(boot.screens.find(s=>s.id===boot.screen_id)?.name||'Screen');
   }
   if(boot.inline){
     window.addEventListener('message',event=>{

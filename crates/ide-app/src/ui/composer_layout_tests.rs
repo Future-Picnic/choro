@@ -5,10 +5,12 @@ use gpui::{AppContext, Context, EntityInputHandler, Render, Window};
 struct ComposerFixture {
     input: Entity<InputState>,
     queued: usize,
+    verify_wrap_during_paint: bool,
 }
 
 impl Render for ComposerFixture {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.input.clone();
         v_flex().size_full().child(div().flex_1().min_h(px(0.))).child(
             v_flex()
                 .w_full()
@@ -44,6 +46,19 @@ impl Render for ComposerFixture {
                                 .gap_2()
                                 .child(
                                     composer_draft_editor(&self.input, false)
+                                        .relative()
+                                        .when(self.verify_wrap_during_paint, |editor| editor.child(
+                                            gpui::canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                                                input.update(cx, |input, cx| {
+                                                    let len = input.value().encode_utf16().count();
+                                                    for offset in 0..len {
+                                                        let glyph = input.bounds_for_range(offset..offset+1, bounds, window, cx).unwrap();
+                                                        assert!(glyph.right() <= bounds.right(),
+                                                            "painted draft overflows at byte={offset}: {glyph:?} / {bounds:?}");
+                                                    }
+                                                });
+                                            }).absolute().inset_0()
+                                        ))
                                         .debug_selector(|| "composer-editor".into()),
                                 ),
                         )
@@ -63,7 +78,7 @@ fn composer_keeps_short_draft_visible_when_preview_closes(cx: &mut gpui::TestApp
                 .auto_grow(2, 8)
                 .default_value("dddddddddd")
         });
-        let view = cx.new(|_| ComposerFixture { input, queued: 0 });
+        let view = cx.new(|_| ComposerFixture { input, queued: 0, verify_wrap_during_paint: false });
         fixture = Some(view.clone());
         gpui_component::Root::new(view, window, cx)
     });
@@ -144,5 +159,70 @@ fn composer_keeps_short_draft_visible_when_preview_closes(cx: &mut gpui::TestApp
                 assert!(text.size.height <= editor.size.height);
             });
         });
+    }
+}
+
+#[gpui::test]
+fn composer_wraps_long_draft_inside_frame_after_resize(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let mut fixture = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let input = cx.new(|cx| InputState::new(window, cx).auto_grow(2, 8));
+        let view = cx.new(|_| ComposerFixture {
+            input,
+            queued: 4,
+            verify_wrap_during_paint: false,
+        });
+        fixture = Some(view.clone());
+        gpui_component::Root::new(view, window, cx)
+    });
+    let view = fixture.unwrap();
+    let draft = "when done all videos - tell me how much credits we would need in heygen and eleven labs just make sure you look on real video length not the one written on @docs/how-to-video-library.html";
+    for width in [1573., 900., 620., 1573.] {
+        cx.simulate_resize(gpui::size(px(width), px(900.)));
+        cx.update(|window, cx| {
+            view.read(cx).input.clone().update(cx, |input, cx| {
+                input.set_value(draft, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        let editor = cx.debug_bounds("composer-editor").unwrap();
+        cx.update(|window, cx| {
+            view.read(cx).input.clone().update(cx, |input, cx| {
+                let first = input.bounds_for_range(0..1, editor, window, cx).unwrap();
+                let last = input.bounds_for_range(draft.len()-1..draft.len(), editor, window, cx).unwrap();
+                assert!(last.top() > first.top(), "long draft must wrap at {width}px: first={first:?}, last={last:?}, editor={editor:?}");
+                for offset in 0..draft.len() {
+                    let glyph = input.bounds_for_range(offset..offset+1, editor, window, cx).unwrap();
+                    assert!(glyph.left() >= editor.left() && glyph.right() <= editor.right(),
+                        "draft paints outside editor at {width}px, byte {offset}: {glyph:?} / {editor:?}");
+                }
+            });
+        });
+    }
+}
+
+#[gpui::test]
+fn composer_wraps_on_the_first_frame_at_each_width(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let draft =
+        "A long draft with ordinary words should wrap within the composer before it is painted. "
+            .repeat(3);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(2, 8)
+                .default_value(draft.clone())
+        });
+        let view = cx.new(|_| ComposerFixture {
+            input: state,
+            queued: 0,
+            verify_wrap_during_paint: true,
+        });
+        gpui_component::Root::new(view, window, cx)
+    });
+    for width in [1000., 480., 900.] {
+        cx.simulate_resize(gpui::size(px(width), px(900.)));
+        cx.run_until_parked();
     }
 }

@@ -1170,7 +1170,13 @@ mod imp {
         }
     }
 
-    fn preview_edit_action(key: &str, flags: NSEventModifierFlags) -> Option<objc2::runtime::Sel> {
+    fn preview_edit_action(key: &str, flags: NSEventModifierFlags, studio: bool) -> Option<objc2::runtime::Sel> {
+        // Studio owns document undo in JavaScript. Let keyDown reach that
+        // handler (and native field undo when it declines), instead of calling
+        // WebKit's unrelated text undo manager before the DOM sees the key.
+        if studio && (key.eq_ignore_ascii_case("z") || key.eq_ignore_ascii_case("y")) {
+            return None;
+        }
         let modifiers = flags
             & (NSEventModifierFlags::Command
                 | NSEventModifierFlags::Control
@@ -1224,7 +1230,7 @@ mod imp {
                 is_preview_editing_key(&key, native_event.modifierFlags())
             } else {
                 native_event.r#type() == NSEventType::KeyDown
-                    && preview_edit_action(&key, native_event.modifierFlags()) == Some(sel!(paste:))
+                    && preview_edit_action(&key, native_event.modifierFlags(), false) == Some(sel!(paste:))
             };
             if !route
                 || view.isHiddenOrHasHiddenAncestor()
@@ -1254,7 +1260,7 @@ mod imp {
             // selection, IME/dead keys, repeats and DOM keyboard events native.
             if native_event.r#type() == NSEventType::KeyUp {
                 responder.keyUp(native_event);
-            } else if let Some(action) = preview_edit_action(&key, native_event.modifierFlags()) {
+            } else if let Some(action) = preview_edit_action(&key, native_event.modifierFlags(), studio) {
                 // AppKit normally runs these through the Edit menu, after key
                 // equivalents. Use the native responder's action directly so
                 // GPUI's stale composer cannot claim them first.
@@ -4446,12 +4452,19 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             for key in ["q", "w", "m", "h", "`"] {
                 assert!(!is_preview_editing_key(key, Flags::Command), "{key:?}");
             }
-            assert_eq!(preview_edit_action("v", Flags::Command), Some(sel!(paste:)));
-            assert_eq!(preview_edit_action("a", Flags::Command), Some(sel!(selectAll:)));
-            assert_eq!(preview_edit_action("z", Flags::Command), Some(sel!(undo:)));
-            assert_eq!(preview_edit_action("z", Flags::Command | Flags::Shift), Some(sel!(redo:)));
-            assert!(preview_edit_action("v", Flags::empty()).is_none());
-            assert!(preview_edit_action("v", Flags::Command | Flags::Shift).is_none());
+            assert_eq!(preview_edit_action("v", Flags::Command, false), Some(sel!(paste:)));
+            assert_eq!(preview_edit_action("a", Flags::Command, false), Some(sel!(selectAll:)));
+            assert_eq!(preview_edit_action("z", Flags::Command, false), Some(sel!(undo:)));
+            assert_eq!(preview_edit_action("z", Flags::Command | Flags::Shift, false), Some(sel!(redo:)));
+            assert!(preview_edit_action("v", Flags::empty(), false).is_none());
+            assert!(preview_edit_action("v", Flags::Command | Flags::Shift, false).is_none());
+            for key in ["z", "Z", "y"] {
+                for flags in [Flags::Command, Flags::Control, Flags::Command | Flags::Shift, Flags::Control | Flags::Shift] {
+                    assert!(is_preview_editing_key(key, flags));
+                    assert!(preview_edit_action(key, flags, true).is_none(), "Studio history must reach DOM keyDown");
+                }
+            }
+            assert_eq!(preview_edit_action("v", Flags::Command, true), Some(sel!(paste:)));
         }
 
         #[test]

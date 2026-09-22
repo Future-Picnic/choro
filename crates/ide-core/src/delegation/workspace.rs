@@ -711,6 +711,16 @@ impl IntegrationOperation {
                         },
                     )?,
                     None => {
+                        // Deletions need the same final durable gate and
+                        // preimage check as replacements, immediately at unlink.
+                        gate()?;
+                        ensure!(
+                            source_identity(&self.source)? == identity,
+                            "The source branch or index changed before deleting a file."
+                        );
+                        let latest = read_file(&self.source, &change.path)?.map(|(entry, _)| entry);
+                        ensure!(latest == change.before,
+                            "{} changed before deletion. Recompute integration; the newer file is preserved.", change.path.display());
                         let path = safe_path(&self.source, &change.path)?;
                         fs::remove_file(&path)?;
                         File::open(path.parent().context("File has no parent")?)?.sync_all()?;
@@ -852,6 +862,71 @@ mod tests {
         assert_eq!(identity, source_identity(&source).unwrap());
         assert!(child.exists());
     }
+    #[test]
+    fn deletion_rechecks_newer_edits_stop_and_index_at_unlink_boundary() {
+        for interruption in ["edit", "stop", "index"] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("source");
+            repository(&source);
+            let identity = source_identity(&source).unwrap();
+            let base = capture(&source, &dir.path().join("store")).unwrap();
+            let child = dir.path().join("child");
+            materialize(&base, &child).unwrap();
+            fs::remove_file(child.join("a.txt")).unwrap();
+            let mut op = prepare_integration(&base, &child).unwrap();
+            let original = fs::read(source.join("a.txt")).unwrap();
+            let mut gates = 0;
+            let error = op
+                .apply_guarded(true, || {
+                    gates += 1;
+                    if gates == 3 {
+                        match interruption {
+                            "edit" => fs::write(source.join("a.txt"), "newer user edit")?,
+                            "stop" => bail!("Simulated durable Stop"),
+                            "index" => {
+                                fs::write(source.join("new.txt"), "staged by user")?;
+                                let repo = git2::Repository::open(&source)?;
+                                let mut index = repo.index()?;
+                                index.add_path(Path::new("new.txt"))?;
+                                index.write()?;
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap_err();
+            assert_eq!(gates, 3);
+            let expected = if interruption == "edit" {
+                b"newer user edit".to_vec()
+            } else {
+                original
+            };
+            assert_eq!(fs::read(source.join("a.txt")).unwrap(), expected);
+            if interruption == "edit" {
+                assert!(error.to_string().contains("newer file is preserved"));
+            }
+            if interruption == "stop" {
+                assert!(error.to_string().contains("durable Stop"));
+            }
+            if interruption != "index" {
+                assert_eq!(source_identity(&source).unwrap(), identity);
+            }
+            let journal: IntegrationOperation =
+                serde_json::from_slice(&fs::read(op.journal_path()).unwrap()).unwrap();
+            assert_eq!(journal.status, IntegrationStatus::Applying);
+            assert!(journal.applied_paths.is_empty());
+            assert!(child.exists());
+            if interruption == "stop" {
+                // Explicit resume can reconcile the untouched preimage, and
+                // repeated application cannot delete anything a second time.
+                let mut recovered = journal;
+                recovered.apply(true).unwrap();
+                recovered.apply(true).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn interrupted_multi_file_apply_reconciles_its_journal() {
         let dir = tempfile::tempdir().unwrap();

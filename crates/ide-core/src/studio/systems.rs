@@ -550,6 +550,7 @@ impl StudioStore {
             source_context: BTreeMap::from([(
                 "system".into(),
                 StudioSource {
+                    task_ref: None,
                     reference: record.platform.clone(),
                     content: serde_json::to_string(&record.sources)?,
                 },

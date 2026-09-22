@@ -25,9 +25,14 @@ def make_server(library_root, port=8769):
     drafts = re.search(r'<script type="application/json" id="draft-video-files">(.*?)</script>', page, re.S)
     if drafts:
         manifest += json.loads(drafts.group(1))
+    social = re.search(r'<script type="application/json" id="social-video-files">(.*?)</script>', page, re.S)
+    if social:
+        manifest += json.loads(social.group(1))
     root = Path(library_root).resolve()
     assets = {}
     for video in manifest:
+        if not re.fullmatch(r'[a-z0-9-]+', video['id']) or video['id'] in assets:
+            raise ValueError('Video manifest has an invalid or duplicate ID')
         folder = (root / video['folder']).resolve()
         movie = (folder / video['file']).resolve()
         poster = (folder / video.get('poster', 'approved-endcards/check-v2-intro.png')).resolve()
@@ -54,7 +59,8 @@ def make_server(library_root, port=8769):
             self.send_header('Referrer-Policy', 'no-referrer')
             self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
             self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+            ancestors = "'self'" if urlsplit(self.path).path == '/social-media-plan.html' else "'none'"
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src 'self'; frame-src 'self'; frame-ancestors " + ancestors + "; base-uri 'none'")
             super().end_headers()
 
         def do_HEAD(self):
@@ -67,6 +73,24 @@ def make_server(library_root, port=8769):
             if not self.trusted():
                 return
             path = urlsplit(self.path).path
+            documents = {
+                '/social-media-plan.html': ('social-media-plan.html', 'text/html; charset=utf-8'),
+                '/social-launch/README.md': ('social-launch/README.md', 'text/plain; charset=utf-8'),
+            }
+            if path in documents:
+                filename, content_type = documents[path]
+                try:
+                    content = (PAGE.parent / filename).read_bytes()
+                except OSError:
+                    self.send_error(404, 'Plan document not found')
+                    return
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                if not head:
+                    self.wfile.write(content)
+                return
             if path in ('/', '/how-to-video-library.html'):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -75,7 +99,7 @@ def make_server(library_root, port=8769):
                 if not head:
                     self.wfile.write(body)
                 return
-            match = re.fullmatch(r'/(media|poster)/([a-z-]+)', path)
+            match = re.fullmatch(r'/(media|poster)/([a-z0-9-]+)', path)
             if not match or match[2] not in assets:
                 self.send_error(404)
                 return
@@ -136,7 +160,7 @@ def make_server(library_root, port=8769):
                     self.headers.get('X-Choro-Library-Token', ''), token)):
                 self.send_error(403)
                 return
-            match = re.fullmatch(r'/open-folder/([a-z-]+)', urlsplit(self.path).path)
+            match = re.fullmatch(r'/open-folder/([a-z0-9-]+)', urlsplit(self.path).path)
             if not match or match[1] not in assets:
                 self.send_error(404)
                 return

@@ -94,7 +94,7 @@ fn task_prompt(summary: &TaskSummary, detail: Option<&TaskDetail>, design: bool)
     }
 
     if design {
-        prompt.push_str("\nUse the connected Design MCP tools to create the design in this file. Cover the important screens, states, hierarchy, and interactions. Keep the design grounded in the task and report ambiguity before inventing major product behavior.\n\n");
+        prompt.push_str("\nUse the Studio tools to create the design in this workspace. Cover the important screens, states, hierarchy, and interactions. Keep the design grounded in the task and report ambiguity before inventing major product behavior.\n\n");
         prompt.push_str(ide_core::penpot_assistant::codebase_context_instruction());
     } else {
         prompt.push_str("\nMake the needed code changes, update or add focused tests where they matter, and report any task ambiguity before making broad assumptions.");
@@ -135,7 +135,7 @@ mod tests {
         assert!(prompt.starts_with(
             "Design the product experience for Jira task APP-42: Checkout experience."
         ));
-        assert!(prompt.contains("Use the connected Design MCP tools"));
+        assert!(prompt.contains("Use the Studio tools"));
         assert!(prompt.contains("call the `task_read` tool"));
         assert!(prompt.contains("inspect the existing product and codebase"));
         assert!(prompt.contains("Reuse and extend those conventions"));

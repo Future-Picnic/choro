@@ -389,7 +389,7 @@ impl CenterArea {
         }
         let active_project = self.active_project(cx).map(|(project, _)| project);
         let has_open_design = active_project.is_some_and(|project| {
-            self.penpot_open_design
+            self.studio.as_ref().is_some_and(|studio| studio.project == project) || self.penpot_open_design
                 .is_some_and(|(open_project, _)| open_project == project)
                 || self
                     .figma_open_design

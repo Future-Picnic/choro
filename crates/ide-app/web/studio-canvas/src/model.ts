@@ -10,7 +10,7 @@ export type Screen = {
 };
 export type Layout = {
   schema_version: number;
-  overview_mode: "canvas" | "grid";
+  overview_mode: "canvas" | "grid" | "focus";
   viewport: Camera;
   positions: Record<string, Point>;
   selected_screen_id: string | null;
@@ -33,6 +33,7 @@ export function previewPlan(
   height: number,
   dpr: number,
   selected: string | null,
+  moving = false,
 ): Request[] {
   const margin = 160,
     z = camera.zoom;
@@ -58,6 +59,7 @@ export function previewPlan(
           (t) => t >= Math.max(s.width, s.height) * z * Math.min(dpr, 2),
         ) ?? 2048,
     }));
+  if (moving) for (const candidate of candidates) candidate.tier = Math.min(candidate.tier, 512);
   const total = () =>
     candidates.reduce((sum, c) => {
       const p = pixels(c.screen, c.tier);
@@ -78,13 +80,35 @@ export function previewPlan(
   return candidates
     .sort(
       (a, b) =>
-        (b.screen.id === selected ? 1 : 0) - (a.screen.id === selected ? 1 : 0),
+        (b.screen.id === selected ? 1 : 0) - (a.screen.id === selected ? 1 : 0) ||
+        distance(a.screen) - distance(b.screen),
     )
     .map((c) => ({
       screen_id: c.screen.id,
       content_key: c.screen.content_key,
       tier: c.tier,
     }));
+  function distance(s: Screen) {
+    const p = positions[s.id];
+    return Math.hypot((p.x + s.width / 2) * z + camera.x - width / 2,
+      (p.y + s.height / 2) * z + camera.y - height / 2);
+  }
+}
+
+/** Map insertion order is LRU. Keep recent offscreen decodes, but reserve space
+ * for two decode jobs and release the least recently viewed images under pressure. */
+export function trimPreviews<T extends { width: number; height: number }>(
+  resident: Map<string, T>, visible: ReadonlySet<string>,
+  limit = IMAGE_BUDGET / 2,
+): T[] {
+  let used = [...resident.values()].reduce((sum, p) => sum + p.width * p.height * 4, 0);
+  const removed: T[] = [];
+  for (const [id, p] of resident) {
+    if (used <= limit) break;
+    if (visible.has(id)) continue;
+    resident.delete(id); removed.push(p); used -= p.width * p.height * 4;
+  }
+  return removed;
 }
 export function validCamera(v: Camera) {
   return (

@@ -66,6 +66,7 @@ impl CenterArea {
             else {
                 continue;
             };
+            self.move_studio_doc_links(record.project_id, previous_relative.clone(), next_relative.clone(), cx);
             self.agents.update(cx, |agents, cx| {
                 agents.move_doc_reference(
                     record.project_id,
@@ -211,6 +212,8 @@ impl CenterArea {
             self.open_file(project, root.join(relative), window, cx);
         } else if let Some(relative) = target.strip_prefix("ref:doc:") {
             self.open_doc(project, root.join(relative), cx);
+        } else if let Some(id) = target.strip_prefix("ref:studio:") {
+            if let Ok(uuid) = Uuid::parse_str(id) { self.open_studio(project, uuid, cx); }
         } else if let Some(id) = target.strip_prefix("ref:penpot:") {
             if let Ok(uuid) = Uuid::parse_str(id) {
                 self.open_penpot_design(project, uuid, cx);

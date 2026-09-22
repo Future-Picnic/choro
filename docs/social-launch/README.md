@@ -9,7 +9,7 @@ Display name **Choro**, preferred handle **chorodev**, website **https://choro.d
 | Reddit | [r/chorodev](https://www.reddit.com/r/chorodev/) | Created Public; generated banners, avatar, description, website, six rules and six post flairs saved. |
 | X | [@Chorodev](https://x.com/Chorodev) | Connected by owner; name, avatar, generated header, bio and website saved. |
 | TikTok | [Choro](https://www.tiktok.com/@user5401420888198) | Connected by owner; name, avatar and bio saved. `chorodev` and `choro.dev` unavailable; alternative username pending. Website appears as text in bio. |
-| Instagram | Not started | Account, handle and profile setup remain. |
+| Instagram | [@choro.dev](https://www.instagram.com/choro.dev/) | Public Business profile; avatar, bio, Software Company category and seven relevant follows saved. Clickable website link must be added in the mobile app; domain included in bio. |
 | LinkedIn | Paused by owner | Copy and artwork prepared; no Page created. Futurepicnic parent-page structure to settle when resumed. |
 
 The earlier [r/usechoro](https://www.reddit.com/r/usechoro/) remains Private. No separate Reddit user account was created.
@@ -21,6 +21,7 @@ The earlier [r/usechoro](https://www.reddit.com/r/usechoro/) remains Private. No
 - [YouTube playlist plan](youtube-playlists.md) and [61 recording briefs](youtube-library.json)
 - [Platform setup record and screenshots](platform-setup.md)
 - [Machine-readable setup status](setup-status.json)
+- [Wholething connection status and remaining setup](wholething-connections.md)
 
 ## Current artwork
 

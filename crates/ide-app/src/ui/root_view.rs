@@ -356,7 +356,7 @@ impl RootView {
         let tasks = TasksState::view(workspace.clone(), cx);
         let services = ServicesState::view(workspace.clone(), cx);
         let orbit = OrbitState::view(workspace.clone(), cx);
-        let penpot = PenpotState::view(cx);
+        let penpot = PenpotState::view(workspace.read(cx).beta_features.penpot, cx);
         penpot.update(cx, |penpot, cx| penpot.ensure_auto_provisioned(cx));
         let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
         let quick_ask = cx.new(|cx| QuickAskState::load(workspace.clone(), cx));
@@ -1713,7 +1713,11 @@ impl Render for RootView {
                                                         div()
                                                             .flex_1()
                                                             .min_h(px(0.))
-                                                            .child(self.project_list.clone()),
+                                                            // Composer edits redraw the root. Keep
+                                                            // unchanged sidebar rows out of that path;
+                                                            // its own notifications still invalidate it.
+                                                            .child(gpui::AnyView::from(self.project_list.clone())
+                                                                .cached(gpui::StyleRefinement::default().size_full())),
                                                     )
                                                     .child(self.left_sidebar_footer(cx)),
                                             )

@@ -739,10 +739,12 @@ async fn completed_turns(
 async fn send_message(
     State(state): State<ServerState>,
     Path(agent_id): Path<String>,
+    Extension(device): Extension<PairedDevice>,
     Json(request): Json<SendMessageRequest>,
 ) -> Response {
     command(&state, |response| RemoteCommand::SendMessage {
         agent_id,
+        permission: device.permission,
         request,
         response,
     })
@@ -760,6 +762,7 @@ async fn update_agent_configuration(
     }
     command(&state, |response| RemoteCommand::UpdateAgentConfiguration {
         agent_id,
+        permission: device.permission,
         request,
         response,
     })
@@ -777,10 +780,12 @@ async fn stop_agent(State(state): State<ServerState>, Path(agent_id): Path<Strin
 async fn answer_question(
     State(state): State<ServerState>,
     Path((agent_id, request_id)): Path<(String, String)>,
+    Extension(device): Extension<PairedDevice>,
     Json(request): Json<AnswerQuestionRequest>,
 ) -> Response {
     command(&state, |response| RemoteCommand::AnswerQuestion {
         agent_id,
+        permission: device.permission,
         request_id,
         request,
         response,
@@ -791,10 +796,12 @@ async fn answer_question(
 async fn resolve_plan(
     State(state): State<ServerState>,
     Path(agent_id): Path<String>,
+    Extension(device): Extension<PairedDevice>,
     Json(request): Json<ResolvePlanRequest>,
 ) -> Response {
     command(&state, |response| RemoteCommand::ResolvePlan {
         agent_id,
+        permission: device.permission,
         request,
         response,
     })
@@ -835,10 +842,12 @@ async fn resolve_approval(
 async fn verification_fix(
     State(state): State<ServerState>,
     Path(agent_id): Path<String>,
+    Extension(device): Extension<PairedDevice>,
     Json(request): Json<VerificationFixRequest>,
 ) -> Response {
     command(&state, |response| RemoteCommand::RequestVerificationFix {
         agent_id,
+        permission: device.permission,
         request,
         response,
     })
@@ -1025,7 +1034,8 @@ fn may_mutate(permission: DevicePermission) -> bool {
 
 fn may_set_access_mode(permission: DevicePermission, access_mode: Option<&str>) -> bool {
     may_mutate(permission)
-        && (access_mode != Some("full_access") || permission == DevicePermission::FullAccess)
+        && (access_mode.map(str::trim) != Some("full_access")
+            || permission == DevicePermission::FullAccess)
 }
 
 fn permission_denied() -> Response {
@@ -1102,6 +1112,29 @@ mod tests {
             "choro-v1, choro-auth.secret-token".parse().unwrap(),
         );
         assert_eq!(request_token(&headers).as_deref(), Some("secret-token"));
+    }
+
+    #[test]
+    fn desktop_api_rejects_whitespace_full_access_for_control_devices() {
+        for mode in [
+            "full_access",
+            " full_access ",
+            "\tfull_access\r\n",
+            "\u{2003}full_access\u{a0}",
+        ] {
+            // The command parser accepts these spellings as FullAccess.
+            let parsed: ide_core::agents::AgentAccessMode =
+                serde_json::from_value(json!(mode.trim())).unwrap();
+            assert_eq!(parsed, ide_core::agents::AgentAccessMode::FullAccess);
+            assert!(!may_set_access_mode(DevicePermission::Control, Some(mode)));
+            assert!(!may_set_access_mode(DevicePermission::ViewOnly, Some(mode)));
+            assert!(may_set_access_mode(DevicePermission::FullAccess, Some(mode)));
+        }
+        assert!(may_set_access_mode(DevicePermission::Control, None));
+        assert!(may_set_access_mode(
+            DevicePermission::Control,
+            Some(" ask_for_approval ")
+        ));
     }
 
     #[test]

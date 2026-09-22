@@ -764,12 +764,18 @@ fn source_association_is_scoped_and_immutable_in_handoff() {
     let (_dir, store, design) = fixture();
     let screen = design.manifest.screens[0].id;
     let narrow = StudioTurnScope::screen(design.manifest.id, screen);
+    let task = crate::TaskRef {
+        provider: crate::IssueTrackerProvider::Personal, site_url: "local".into(),
+        issue_id: "task-12".into(), issue_key: "TASK-12".into(), issue_url: String::new(), title: "Build this screen".into(),
+    };
     let op = StudioOperation::SetSource {
         document: Some(StudioSource {
+            task_ref: None,
             reference: "docs/spec.md".into(),
             content: "Original document".into(),
         }),
         task: Some(StudioSource {
+            task_ref: Some(task.clone()),
             reference: "TASK-12".into(),
             content: "Build this screen".into(),
         }),
@@ -780,7 +786,21 @@ fn source_association_is_scoped_and_immutable_in_handoff() {
     let whole = StudioTurnScope::whole_design(&design);
     tx.scope_id = whole.id;
     let changed = store.apply(&whole, &tx).unwrap();
+    let reopened = store.load(design.manifest.id).unwrap();
+    assert!(reopened.manifest.links_doc(std::path::Path::new("docs/spec.md")));
+    assert!(reopened.manifest.links_task(&task));
+    let mut renamed_task = task.clone();
+    renamed_task.title = "A renamed task".into();
+    renamed_task.issue_url = "https://tracker.example/new-link".into();
+    assert!(reopened.manifest.links_task(&renamed_task));
+    renamed_task.issue_key = "TASK-13".into();
+    assert!(!reopened.manifest.links_task(&renamed_task));
     let snapshot = store.handoff(design.manifest.id, None).unwrap();
+    assert_eq!(snapshot.design.manifest.linked_task(), Some(&task));
+    let agent = Uuid::new_v4();
+    store.link_implementation_agent(snapshot.id, agent).unwrap();
+    store.link_implementation_agent(snapshot.id, agent).unwrap();
+    assert_eq!(store.implementation_agents(design.manifest.id).unwrap(), vec![agent]);
     assert_eq!(
         snapshot.design.manifest.source_context["document"].content,
         "Original document"
@@ -791,6 +811,8 @@ fn source_association_is_scoped_and_immutable_in_handoff() {
         task: None,
     }];
     store.apply(&whole, &tx).unwrap();
+    assert!(!store.load(design.manifest.id).unwrap().manifest.links_task(&task));
+    assert!(store.read_handoff(snapshot.id).unwrap().design.manifest.links_task(&task));
     assert_eq!(
         store
             .read_handoff(snapshot.id)
@@ -853,6 +875,7 @@ fn captured_sources_cannot_produce_an_unreadable_manifest() {
     let mut tx = edit(&design, &scope);
     tx.operations = vec![StudioOperation::SetSource {
         document: Some(StudioSource {
+            task_ref: None,
             reference: "large.md".into(),
             content: "\"".repeat(2 * 1024 * 1024),
         }),

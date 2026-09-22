@@ -1,6 +1,10 @@
 # Choro Studio
 
-Studio is the local HTML design option under **Design → +**. It uses Choro's native sidebar and existing Codex or Claude access. Penpot and Figma keep their existing storage and connection flows.
+Studio is Choro's default design workspace, using the native sidebar and existing Codex or Claude access. **Design** on a task or document creates a Studio design with a captured source link and a prepared Agent request. The design, source task/document, and implementation agent show reciprocal links. Document design mentions open Studio inside Choro.
+
+**Implement** from Studio, a linked task, or a linked document attaches immutable Studio snapshots. There is no Penpot connection or external-browser prerequisite. Task identity and source requirements travel with the snapshot; later design edits do not change it.
+
+Penpot is an optional **Settings → Beta features → Penpot** integration and defaults off, including on older installations. When off, its creation, connection status, credentials, provisioning, and MCP setup are inactive. Enabling it restores access to existing Penpot designs and Settings → Design connection controls; Studio remains the default. Disabling it preserves its saved designs and credentials. Existing Penpot files are not converted. Figma links remain available.
 
 ## Availability
 
@@ -12,14 +16,14 @@ Studio is available under Design → + in development and release builds without
 2. Use **Screens → All screens** for a cached overview. Edit/Preview is remembered for the design across screen navigation, All screens, editor reloads, and reopening the design. Open a screen to select elements, edit text on the page, or use the right inspector. The screen menu supports rename, duplicate, reorder, archive/restore, and desktop/mobile viewports.
 3. Use **Design system** to change or open the selected system, browse the library, and edit local token overrides. Custom inspector values create screen/element-specific tokens in the design’s overrides. Saves register each screen’s stylesheet and inline-style document as file-backed `screen_styles` overrides for agent and manual writes alike. These local styles and overrides survive system changes; unresolved token references must be mapped before a switch.
 4. Use **Agent** to discuss, create, or refine the design naturally. It can create multiple screens and edit across this design without a scope toggle or special wording. The current screen and selected element are the default target for local requests; broader requests and exclusions guide its work. All screens supports normal chat and creation; the agent asks only when the intended edit is ambiguous.
-5. The workspace header follows Penpot: Back, design title, contextual source/implementation links below the title, and Implement. A captured source document opens from its link; there are no attachment buttons or separate captured-source banner. Implementation agents and their pull requests use the same indicators as Penpot.
+5. The workspace header provides Back, design title, contextual source/implementation links below the title, and Implement. A captured source document opens from its link; there are no attachment buttons or separate captured-source banner. Implementation agents and their pull requests use the same indicators as Penpot.
 6. **Implement** flushes the live editor and snapshots all active screens only after the matching save acknowledgement. **Screens → Screen actions → Implement selected screens…** selects a subset. The ordinary coding-agent composer receives the immutable snapshot ID and instructions to translate it into the existing application framework.
 
 ### Compare, screen export, and viewing sizes
 
 Ordinary Studio designs expose **Compare** beside Implement. It reuses Choro’s live implementation preview and review controls. Reviews go to a linked implementation agent, with an immutable snapshot of the currently selected saved screen (or all active screens in All screens). A Solo preview only accepts reviews for its own linked implementation agent. Unsaved design changes must finish saving before feedback can be submitted. Closing Compare returns to the design workspace.
 
-When a screen is open, the footer provides **Desktop**, **Mobile**, the current dimensions, and **Export PNG**. Viewing-size changes resize the same document without changing its saved viewport, creating another screen, or generating responsive CSS. Each screen starts at its saved size; switching screens resets the temporary viewing size. A mobile screen returns to its authored mobile dimensions when Mobile is selected. The alternate defaults are 1440 × 960 and 390 × 844.
+In Prototype, the footer provides **Desktop**, **Mobile**, the current dimensions, and **Export PNG**. Viewing-size changes resize the same document without changing its saved viewport, creating another screen, or generating responsive CSS. Each screen starts at its saved size; switching screens resets the temporary viewing size. A mobile screen returns to its authored mobile dimensions when Mobile is selected. The alternate defaults are 1440 × 960 and 390 × 844.
 
 Export PNG flushes pending edits and waits for the matching save acknowledgement, then asks where to save. It renders the saved design at the current viewing size, at one PNG pixel per CSS pixel, independently of the smaller overview thumbnails. Exports show the saved design, not transient JavaScript state from an interactive Preview. Design-system specimens do not expose these screen controls.
 

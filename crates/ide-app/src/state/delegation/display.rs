@@ -143,6 +143,21 @@ fn fold_activities(
     })
 }
 
+/// Activity-only lookup for sidebar filters and indicators. Do not construct
+/// assignment rows (or copy their goals/reports) just to read a status.
+pub fn parent_delegation_activity(
+    runs: &[DelegationRun],
+    parent: Uuid,
+    child_needs_user: &dyn Fn(Uuid) -> bool,
+) -> DelegationActivity {
+    fold_activities(
+        runs.iter()
+            .filter(|run| run.parent_agent_id == parent && !run.status.terminal())
+            .map(|run| run_activity(run, child_needs_user)),
+    )
+    .unwrap_or_default()
+}
+
 /// Sidebar and card state for `parent`, from every run it owns.
 pub fn parent_delegation_state(
     runs: &[DelegationRun],
@@ -230,7 +245,24 @@ pub fn delegation_indicator(
         .iter()
         .find(|run| run.parent_agent_id == parent && !run.status.terminal())
         .or_else(|| runs.iter().rev().find(|run| run.parent_agent_id == parent))?;
-    let state = parent_delegation_state(runs, parent, child_needs_user);
+    let activity = parent_delegation_activity(runs, parent, child_needs_user);
+    let working = runs
+        .iter()
+        .filter(|run| run.parent_agent_id == parent && !run.status.terminal())
+        .map(|run| {
+            run.tasks
+                .iter()
+                .filter(|task| {
+                    let needs_user = task
+                        .attempt()
+                        .is_some_and(|attempt| child_needs_user(attempt.child_agent_id));
+                    expert_is_working(task.status)
+                        && task_activity(run.status, task, needs_user)
+                            == DelegationActivity::Working
+                })
+                .count()
+        })
+        .sum::<usize>();
     let ready = current
         .tasks
         .iter()
@@ -241,7 +273,7 @@ pub fn delegation_indicator(
             .tasks
             .iter()
             .all(|task| task.status.terminal() || task.status == TaskStatus::ResultReady);
-    let (label, activity, status, live) = match state.activity {
+    let (label, activity, status, live) = match activity {
         DelegationActivity::Attention => (
             "Band · Needs attention".into(),
             DelegationActivity::Attention,
@@ -259,8 +291,8 @@ pub fn delegation_indicator(
             TaskStatus::Paused,
             false,
         ),
-        _ if state.working > 0 => (
-            format!("Band · {} working", state.working),
+        _ if working > 0 => (
+            format!("Band · {working} working"),
             DelegationActivity::Working,
             TaskStatus::Running,
             true,
@@ -630,6 +662,97 @@ mod tests {
 
     fn nobody_waiting(_: Uuid) -> bool {
         false
+    }
+
+    #[test]
+    fn activity_lookup_matches_rows_across_run_states_and_child_attention() {
+        let parent = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        for status in [
+            RunStatus::Preparing,
+            RunStatus::Active,
+            RunStatus::Waiting,
+            RunStatus::Paused,
+            RunStatus::Interrupted,
+            RunStatus::Blocked,
+            RunStatus::Completed,
+            RunStatus::Cancelled,
+        ] {
+            for task_status in [
+                TaskStatus::Queued,
+                TaskStatus::Running,
+                TaskStatus::WaitingForLead,
+                TaskStatus::ResultReady,
+                TaskStatus::Integrated,
+                TaskStatus::Failed,
+                TaskStatus::NeedsUser,
+                TaskStatus::Paused,
+            ] {
+                for waiting in [false, true] {
+                    let runs = vec![
+                        run(Uuid::new_v4(), RunStatus::Blocked, vec![]),
+                        run(
+                            parent,
+                            RunStatus::Completed,
+                            vec![task("Old", "History", TaskStatus::Failed, None)],
+                        ),
+                        run(
+                            parent,
+                            status,
+                            vec![task("Expert", "Work", task_status, Some(child))],
+                        ),
+                    ];
+                    let needs_user = |id| waiting && id == child;
+                    assert_eq!(
+                        parent_delegation_activity(&runs, parent, &needs_user),
+                        parent_delegation_state(&runs, parent, &needs_user).activity,
+                        "{status:?} / {task_status:?} / waiting={waiting}"
+                    );
+                }
+            }
+            let empty_run = [run(parent, status, vec![])];
+            assert_eq!(
+                parent_delegation_activity(&empty_run, parent, &nobody_waiting),
+                parent_delegation_state(&empty_run, parent, &nobody_waiting).activity
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "local sidebar status microbenchmark"]
+    fn sidebar_activity_lookup_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let parent = Uuid::new_v4();
+        let goal = "Assignment context with a long conversation. ".repeat(10_000);
+        let runs = vec![run(
+            parent,
+            RunStatus::Completed,
+            (0..24)
+                .map(|_| task("Expert", &goal, TaskStatus::Integrated, None))
+                .collect(),
+        )];
+        let before = Instant::now();
+        for _ in 0..1_000 {
+            // The old sidebar status path also built history when no run was live.
+            let state = parent_delegation_state(black_box(&runs), parent, &nobody_waiting);
+            if !state.has_live_run() {
+                black_box(assignment_overview(&runs, parent, &nobody_waiting));
+            }
+            black_box(state.activity);
+        }
+        let old = before.elapsed();
+        let after = Instant::now();
+        for _ in 0..1_000 {
+            black_box(parent_delegation_activity(
+                black_box(&runs),
+                parent,
+                &nobody_waiting,
+            ));
+        }
+        eprintln!(
+            "1,000 sidebar status lookups, 24 long assignments: before={old:?}, after={:?}",
+            after.elapsed()
+        );
     }
 
     #[test]

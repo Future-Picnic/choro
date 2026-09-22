@@ -393,7 +393,7 @@ impl CenterArea {
                 .on_click(move |_, _, _| crate::ui::git::git_panel::open_url(&url))
                 .into_any_element()
             });
-        let design_indicators = linked_designs
+        let mut design_indicators = linked_designs
             .iter()
             .cloned()
             .map(|design| {
@@ -404,6 +404,11 @@ impl CenterArea {
                 )
             })
             .collect::<Vec<_>>();
+        if !is_template {
+            for design in self.studio_designs_for_doc(project, &doc.relative_path) {
+                design_indicators.push(self.render_linked_studio_indicator("doc-linked-studio", project, design, cx));
+            }
+        }
         let implement_action = (!is_template).then(|| {
             let label = if active_implementor.is_some() {
                 "Reimplement"
@@ -435,41 +440,13 @@ impl CenterArea {
                 .into_any_element()
         });
         let design_action = (!is_template).then(|| {
-            let configured = self.penpot.read(cx).is_configured();
-            let creating = self.penpot.read(cx).creating_design();
-            let assistant_busy = self.penpot.read(cx).assistant_busy(project);
-            if assistant_busy {
-                // Keep the reason visible in the native header instead of a
-                // tooltip that the document WKWebView can cover.
-                style::busy_button_compact("design-doc", "Design busy", cx)
-            } else {
-                style::accent_button_compact(
-                    "design-doc",
-                    if creating { "Creating…" } else { "Design" },
-                    cx,
-                )
-                .icon(crate::ui::design::design_icon())
-                .disabled(!configured || creating)
-                .tooltip(if !configured {
-                    "Connect Design before creating a design"
-                } else if creating {
-                    "Creating a design…"
-                } else {
-                    "Create a design from this document"
-                })
-                .on_click({
-                    let title = doc.title.clone();
-                    let relative_doc_path = doc.relative_path.clone();
-                    cx.listener(move |this, _, _, cx| {
-                        this.create_penpot_design_for_doc(
-                            project,
-                            title.clone(),
-                            relative_doc_path.clone(),
-                            cx,
-                        );
-                    })
-                })
-            }
+            let creating = self.studio_creating.contains(&project);
+            let title = doc.title.clone();
+            let relative_doc_path = doc.relative_path.clone();
+            style::accent_button_compact("design-doc", if creating { "Creating…" } else { "Design" }, cx)
+                .icon(crate::ui::design::design_icon()).disabled(creating)
+                .tooltip("Create a Studio design from this document")
+                .on_click(cx.listener(move |this, _, _, cx| this.create_studio_for_doc(project, title.clone(), relative_doc_path.clone(), cx)))
         });
         let assistant_open = !is_template && self.docs_focus_mode == DocsFocusMode::Assistant;
         let assistant_toggle = (!is_template).then(|| {
@@ -588,6 +565,7 @@ impl CenterArea {
                                                                             );
                                                                     },
                                                                 );
+                                                                this.move_studio_doc_links(project, previous_relative.clone(), next_relative.clone(), cx);
                                                                 this.penpot.update(
                                                                     cx,
                                                                     |penpot, cx| {

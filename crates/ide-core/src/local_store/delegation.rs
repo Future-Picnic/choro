@@ -587,10 +587,24 @@ mod tests {
         assert!(!store.beta_features().unwrap().delegation);
         let old: crate::config::BetaFeatures = serde_json::from_str("{}").unwrap();
         assert!(!old.delegation);
+        assert!(!old.penpot);
+        let legacy: crate::config::BetaFeatures = serde_json::from_str(r#"{"delegation":true}"#).unwrap();
+        assert!(!legacy.penpot);
         store
-            .save_beta_features(crate::config::BetaFeatures { delegation: true })
+            .save_beta_features(crate::config::BetaFeatures { delegation: true, ..Default::default() })
             .unwrap();
         store.save_workspace_config(&AppConfig::default()).unwrap();
+        assert!(observer.beta_features().unwrap().delegation);
+        assert!(!observer.beta_features().unwrap().penpot);
+        let mut features = observer.beta_features().unwrap();
+        features.penpot = true;
+        store.save_beta_features(features).unwrap();
+        store.save_workspace_config(&AppConfig::default()).unwrap();
+        assert!(observer.beta_features().unwrap().penpot);
+        assert!(observer.beta_features().unwrap().delegation);
+        features.penpot = false;
+        store.save_beta_features(features).unwrap();
+        assert!(!observer.beta_features().unwrap().penpot);
         assert!(observer.beta_features().unwrap().delegation);
         store
             .save_beta_features(crate::config::BetaFeatures::default())
@@ -615,7 +629,7 @@ mod tests {
             .contains("Beta features"));
         assert!(store.load_delegations().unwrap().is_empty());
         store
-            .save_beta_features(crate::config::BetaFeatures { delegation: true })
+            .save_beta_features(crate::config::BetaFeatures { delegation: true, ..Default::default() })
             .unwrap();
         let run = store.begin_delegation(parent.id, source).unwrap();
         store
@@ -651,7 +665,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
         store
-            .save_beta_features(crate::config::BetaFeatures { delegation: true })
+            .save_beta_features(crate::config::BetaFeatures { delegation: true, ..Default::default() })
             .unwrap();
         let project = Project::from_path(dir.path().join("repo"));
         let mut config = AppConfig::default();

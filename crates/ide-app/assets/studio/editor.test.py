@@ -67,6 +67,94 @@ checks = r'''
    assert(messages.some(m=>m.type==='mode'&&m.mode==='edit'),'Edit choice is sent to the host');
  }
  await wait(()=>title()?.textContent==='Original','initial screen');
+ if(window.__CHORO_STUDIO__.testHistoryShortcuts){
+   const key=(target,options)=>{const event=new KeyboardEvent('keydown',{key:'z',code:'KeyZ',bubbles:true,cancelable:true,...options});target.dispatchEvent(event);return event;};
+   const edit=value=>{
+     const node=title(),doc=frame().contentDocument;
+     node.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true}));
+     const range=doc.createRange(),selection=frame().contentWindow.getSelection();
+     range.selectNodeContents(node);selection.removeAllRanges();selection.addRange(range);
+     assert(doc.execCommand('insertText',false,value),'Type an undoable text edit');
+   };
+   const flush=async id=>{window.choroStudioReply({session:'test',type:'flush',request_id:id});await wait(()=>messages.some(m=>m.type==='flushed'&&m.request_id===id),id);};
+   // The shortcut must finish active text and undo that edit, not a prior one.
+   edit('Active typing');
+   assert(key(title(),{metaKey:true}).defaultPrevented,'Cmd+Z is handled by Studio');
+   await wait(()=>title()?.textContent==='Original','undo active text');
+   assert(key(document.body,{metaKey:true,shiftKey:true,key:'Z'}).defaultPrevented,'Cmd+Shift+Z is handled by Studio');
+   await wait(()=>title()?.textContent==='Active typing','redo active text');
+   key(document.body,{ctrlKey:true});await wait(()=>title()?.textContent==='Original','Ctrl+Z');
+   // Twelve separately saved edits exceed the requested ten-step history.
+   for(let i=1;i<=12;i++){edit('Edit '+i);await flush('history-edit-'+i);}
+   for(let i=11;i>=0;i--){
+     const target=i%2?frame().contentDocument.body:document.body;
+     key(target,i%2?{ctrlKey:true}:{metaKey:true});
+     await wait(()=>title()?.textContent===(i?'Edit '+i:'Original'),'undo step '+(12-i));
+     assert(frame().contentDocument.querySelector('p').textContent==='Unchanged neighbor','Undo keeps neighboring text');
+   }
+   for(let i=1;i<=12;i++){
+     const options=i%3===0?{ctrlKey:true,key:'y',code:'KeyY'}:i%2?{metaKey:true,shiftKey:true}:{ctrlKey:true,shiftKey:true};
+     key(document.body,options);await wait(()=>title()?.textContent==='Edit '+i,'redo step '+i);
+   }
+   await flush('history-redone');
+   assert(messages.filter(m=>m.type==='save').at(-1).document.html.includes('Edit 12'),'Redo persists through the existing save path');
+   // Inspector typing uses its own native field history, not the design stack.
+   click();const input=document.querySelector('#right-panel input[name=color]');
+   const index=Vvveb.Undo.undoIndex;
+   assert(!key(input,{metaKey:true}).defaultPrevented&&Vvveb.Undo.undoIndex===index,'Inspector field keeps native undo');
+   input.value='#aa2244';input.dispatchEvent(new Event('change',{bubbles:true}));
+   await wait(()=>Vvveb.Undo.undoIndex===index+1,'property edit history');
+   assert(key(document.getElementById('right-panel'),{ctrlKey:true}).defaultPrevented,'Inspector background uses design undo');
+   await wait(()=>title()&&Vvveb.Undo.undoIndex===index,'undo property edit');
+   assert(!messages.filter(m=>m.type==='dirty').at(-1).document.overrides['custom-test-screen-title-color'],'Shortcut undoes the style token too');
+   assert(!key(document.body,{}).defaultPrevented,'Plain Z is not a shortcut');
+   assert(!key(document.body,{metaKey:true,altKey:true}).defaultPrevented,'Option-modified Z is left alone');
+   assert(!key(document.body,{ctrlKey:true,isComposing:true}).defaultPrevented,'IME composition is left alone');
+   edit('New branch');await flush('history-new-branch');
+   key(document.body,{metaKey:true,shiftKey:true});
+   assert(title()?.textContent==='New branch'&&Vvveb.Undo.undoIndex===Vvveb.Undo.mutations.length-1,'A new edit discards the old redo branch');
+   document.getElementById('preview').click();
+   assert(!key(document.body,{metaKey:true}).defaultPrevented,'Preview does not undo design edits');
+   assert(window.testErrors.length===0,'Unexpected errors: '+JSON.stringify(window.testErrors));
+   originalSend(JSON.stringify({type:'thumbnail-ready'}));return;
+ }
+ if(window.__CHORO_STUDIO__.testSemanticText){
+   // Real billing markup: the date cell worked, but the metric's <strong>
+   // could be selected without ever entering the live text editor.
+   const cases=[...frame().contentDocument.querySelectorAll('[data-text-case]')].map(node=>[node.dataset.textCase,node.textContent]);
+   for(const [id,original] of cases){
+     const node=frame().contentDocument.querySelector('[data-text-case="'+id+'"]');
+     node.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+     node.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true}));
+     assert(Vvveb.WysiwygEditor.isActive&&Vvveb.WysiwygEditor.element===node,'Double-click starts editing '+node.tagName);
+     assert(node.isContentEditable&&frame().contentDocument.activeElement===node,'Text input focuses '+node.tagName);
+     assert(getComputedStyle(document.getElementById('wysiwyg-editor')).display!=='none','Inline formatting appears for '+node.tagName);
+     const doc=frame().contentDocument,range=doc.createRange(),selection=frame().contentWindow.getSelection();
+     range.selectNodeContents(node);selection.removeAllRanges();selection.addRange(range);
+     const replacement='Edited '+id;
+     assert(doc.execCommand('insertText',false,replacement),'Typing edits '+node.tagName);
+     node.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+     window.choroStudioReply({session:'test',type:'flush',request_id:'text-'+id});
+     await wait(()=>messages.some(m=>m.type==='flushed'&&m.request_id==='text-'+id),'save '+id);
+     const saved=new DOMParser().parseFromString(messages.filter(m=>m.type==='save').at(-1).document.html,'text/html');
+     assert(saved.querySelector('[data-text-case="'+id+'"]').textContent===replacement,'Saved text for '+id);
+     assert(saved.querySelector('p').textContent==='Unchanged neighbor'&&saved.querySelector('[data-text-neighbor]').textContent==='8 invoices','Editing leaves neighboring text intact');
+     assert(saved.querySelector('[data-chart]').outerHTML.includes('<path')&&!saved.querySelector('[contenteditable]'),'Editing preserves graphics and excludes editor attributes');
+     document.getElementById('undo').click();
+     await wait(()=>title()&&frame().contentDocument.querySelector('[data-text-case="'+id+'"]').textContent===original,'undo '+id);
+     document.getElementById('redo').click();
+     await wait(()=>title()&&frame().contentDocument.querySelector('[data-text-case="'+id+'"]').textContent===replacement,'redo '+id);
+     document.getElementById('undo').click();
+     await wait(()=>title()&&frame().contentDocument.querySelector('[data-text-case="'+id+'"]').textContent===original,'restore '+id);
+   }
+   for(const selector of ['[data-chart] path','input']){
+     const node=frame().contentDocument.querySelector(selector);
+     node.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true}));
+     assert(!Vvveb.WysiwygEditor.isActive&&!node.isContentEditable,'Non-text '+selector+' stays outside rich-text editing');
+   }
+   assert(window.testErrors.length===0,'Unexpected errors: '+JSON.stringify(window.testErrors));
+   originalSend(JSON.stringify({type:'thumbnail-ready'}));return;
+ }
  assert(frame().contentDocument.documentElement.clientWidth===800&&frame().contentDocument.documentElement.clientHeight===600,'Edit uses the declared authored viewport');
  assert(layoutMode()==='desktop','Edit starts on the authored desktop media-query branch');
  assertFrameBounds(800,600,'Edit Fit');
@@ -347,6 +435,18 @@ if boot['testAssets']:
     boot['document']['html']=boot['document']['html'].replace('</body>','<img data-studio-id="picture" src="assets/first.svg" alt="Local image"></body>')
     boot['assets']={f'assets/{name}.svg':'data:image/svg+xml;base64,'+base64.b64encode(f'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="{color}"/></svg>'.encode()).decode() for name,color in [('first','red'),('second','blue')]}
 boot['testProperties']='--properties' in sys.argv
+boot['testHistoryShortcuts']='--history-shortcuts' in sys.argv
+boot['testSemanticText']='--semantic-text' in sys.argv
+if boot['testSemanticText']:
+    boot['document']['html']=boot['document']['html'].replace('</body>', '''<section>
+      <article><span>Recurring revenue</span><strong data-text-case="revenue">₪64,800</strong><small data-text-case="ratio">79% of total</small><svg data-chart="" viewBox="0 0 110 28"><path d="M0 24L110 9"/></svg></article>
+      <article><span data-text-neighbor="">8 invoices</span><em data-text-case="trend">+12.4%</em><b data-text-case="amount">₪2,400</b></article>
+      <h2>Subtotal <mark data-text-case="nested">₪3,540</mark></h2>
+      <dl><dt data-text-case="term">Revenue</dt><dd data-text-case="definition">Monthly total</dd></dl>
+      <time data-text-case="time" datetime="2026-09-18">18 Sep</time>
+      <table><tbody><tr><td data-text-case="date">18 Sep</td></tr></tbody></table>
+      <input value="Search invoices" />
+    </section></body>''')
 boot['mode'] = 'preview' if '--preview-start' in sys.argv else 'edit'
 boot['document']['css'] += '/* </style><script>parent.__editEscaped=true</script> */'
 encoded=json.dumps(boot).replace('<','\\u003c').replace('>','\\u003e')
@@ -369,7 +469,7 @@ assert result.returncode==0, result.stderr
 response=json.loads(result.stdout.strip())
 assert response.get('error') is None, (response,result.stderr)
 assert output.stat().st_size>1000
-print('PASS: system specimen isolation and disabled screen editing' if boot['system_specimen'] else 'PASS: local image selection, clean asset paths, and revisioned native upload/assignment' if boot['testAssets'] else 'PASS: upstream controls, focus preservation, custom-token undo, partial-text formatting and inline undo/redo' if boot['testProperties'] else 'PASS: text, tokens, autosave, undo/redo, correlated Implement flush, failed-save recovery, Edit isolation, Preview sandbox and clean source round trip')
+print('PASS: keyboard undo/redo through 12 saved edits, active typing, property changes, redo branching and input/Preview exclusions' if boot['testHistoryShortcuts'] else 'PASS: semantic text double-click, focus, inline toolbar, typed saves, undo/redo and intact neighbors' if boot['testSemanticText'] else 'PASS: system specimen isolation and disabled screen editing' if boot['system_specimen'] else 'PASS: local image selection, clean asset paths, and revisioned native upload/assignment' if boot['testAssets'] else 'PASS: upstream controls, focus preservation, custom-token undo, partial-text formatting and inline undo/redo' if boot['testProperties'] else 'PASS: text, tokens, autosave, undo/redo, correlated Implement flush, failed-save recovery, Edit isolation, Preview sandbox and clean source round trip')
 print('Screenshot:',output)
 
 if '--export' in sys.argv:

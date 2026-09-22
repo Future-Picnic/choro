@@ -714,7 +714,7 @@ impl CenterArea {
                     ComposerMentionKind::Doc => "Document",
                     ComposerMentionKind::File => "File",
                     ComposerMentionKind::Folder => "Folder",
-                    ComposerMentionKind::PenpotDesign => "Design",
+                    ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => "Design",
                     ComposerMentionKind::Project => "Project",
                 };
                 format!(

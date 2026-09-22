@@ -12,7 +12,7 @@ use crate::remote::dto::{
     SyncPocketCometTaskSourcesResponse, TimelineItemDto, UpsertChoroDocumentRequest,
     VerificationItemDto,
 };
-use crate::remote::{RemoteCommand, RemoteError, RemoteResult};
+use crate::remote::{DevicePermission, RemoteCommand, RemoteError, RemoteResult};
 use crate::state::agent_chat::VerificationStatus;
 
 struct RemoteCompletedTurnContext {
@@ -22,6 +22,21 @@ struct RemoteCompletedTurnContext {
 }
 
 impl CenterArea {
+    // Check the live agent mode on the UI thread, immediately before applying
+    // input. Checking a snapshot in the HTTP handler would race desktop changes.
+    fn authorize_remote_agent_control(
+        &self,
+        agent_id: Uuid,
+        permission: DevicePermission,
+        cx: &Context<Self>,
+    ) -> RemoteResult<()> {
+        let agents = self.agents.read(cx);
+        let agent = agents
+            .agent(agent_id)
+            .ok_or_else(|| RemoteError::not_found("agent not found"))?;
+        authorize_remote_agent_mode(permission, agent.access_mode)
+    }
+
     pub(crate) fn handle_remote_command(&mut self, command: RemoteCommand, cx: &mut Context<Self>) {
         match command {
             RemoteCommand::GetConfiguration { response } => {
@@ -219,10 +234,12 @@ impl CenterArea {
             }
             RemoteCommand::SendMessage {
                 agent_id,
+                permission,
                 request,
                 response,
             } => {
                 let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    self.authorize_remote_agent_control(agent_id, permission, cx)?;
                     let text = request.text.trim();
                     if text.is_empty() {
                         return Err(RemoteError::bad_request("message text cannot be empty"));
@@ -256,10 +273,12 @@ impl CenterArea {
             }
             RemoteCommand::UpdateAgentConfiguration {
                 agent_id,
+                permission,
                 request,
                 response,
             } => {
                 let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    self.authorize_remote_agent_control(agent_id, permission, cx)?;
                     let agent = self
                         .agents
                         .read(cx)
@@ -304,11 +323,13 @@ impl CenterArea {
             }
             RemoteCommand::AnswerQuestion {
                 agent_id,
+                permission,
                 request_id,
                 request,
                 response,
             } => {
                 let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    self.authorize_remote_agent_control(agent_id, permission, cx)?;
                     if !self.accept_remote_command_id(&request.client_command_id) {
                         return Ok(CommandAcceptedResponse { accepted: true });
                     }
@@ -380,10 +401,12 @@ impl CenterArea {
             }
             RemoteCommand::ResolvePlan {
                 agent_id,
+                permission,
                 request,
                 response,
             } => {
                 let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    self.authorize_remote_agent_control(agent_id, permission, cx)?;
                     if !self.accept_remote_command_id(&request.client_command_id) {
                         return Ok(CommandAcceptedResponse { accepted: true });
                     }
@@ -558,10 +581,12 @@ impl CenterArea {
             }
             RemoteCommand::RequestVerificationFix {
                 agent_id,
+                permission,
                 request,
                 response,
             } => {
                 let result = parse_agent_id(&agent_id).and_then(|agent_id| {
+                    self.authorize_remote_agent_control(agent_id, permission, cx)?;
                     if !self.accept_remote_command_id(&request.client_command_id) {
                         return Ok(CommandAcceptedResponse { accepted: true });
                     }
@@ -1527,6 +1552,7 @@ impl CenterArea {
                 Vec::new(),
                 None,
                 AgentStatus::InProgress,
+                None,
                 cx,
             );
             if let Some(model) = external_model.clone() {
@@ -1931,6 +1957,20 @@ fn wire_value<T: serde::Serialize>(value: T) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+fn authorize_remote_agent_mode(
+    permission: DevicePermission,
+    access_mode: AgentAccessMode,
+) -> RemoteResult<()> {
+    match permission {
+        DevicePermission::FullAccess => Ok(()),
+        DevicePermission::Control if access_mode != AgentAccessMode::FullAccess => Ok(()),
+        _ => Err(RemoteError {
+            status: 403,
+            message: "This device cannot control this agent. Full access agents require a device with Full access permission.".into(),
+        }),
+    }
 }
 
 /// Resolve the access mode for a remotely created agent.
@@ -2766,6 +2806,25 @@ mod tests {
             image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (1_600, 800));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_agent_control_requires_permission_for_the_current_agent_mode() {
+        for mode in AgentAccessMode::ALL {
+            assert_eq!(
+                authorize_remote_agent_mode(DevicePermission::ViewOnly, mode)
+                    .unwrap_err()
+                    .status,
+                403,
+            );
+            assert!(authorize_remote_agent_mode(DevicePermission::FullAccess, mode).is_ok());
+            let control = authorize_remote_agent_mode(DevicePermission::Control, mode);
+            if mode == AgentAccessMode::FullAccess {
+                assert_eq!(control.unwrap_err().status, 403);
+            } else {
+                assert!(control.is_ok());
+            }
+        }
     }
 
     #[test]

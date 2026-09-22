@@ -13,6 +13,9 @@ body#vvveb-builder{--builder-right-panel-width:300px;display:grid;grid-template-
 /* The bar is 44px with one row. When a narrow host cannot fit every action, the row wraps
    rather than clipping: nothing in it may ever sit outside the host. */
 #studio-toolbar{box-sizing:border-box;display:flex;flex-wrap:wrap;align-items:center;align-content:center;gap:8px;min-width:0;min-height:var(--bar);padding:8px var(--gutter);background:var(--bg);border-bottom:1px solid var(--line);color:var(--text)}
+/* The workspace supplies one native context/action row above the WebKit host. */
+body#vvveb-builder.native-toolbar{grid-template-rows:minmax(0,1fr)}
+.native-toolbar #studio-toolbar{display:none}
 #studio-toolbar .spacer{flex:1 1 0;min-width:0}
 #studio-toolbar .rule{flex:none;width:1px;height:16px;background:var(--line2)}
 #studio-toolbar button,#studio-toolbar select{flex:none;box-sizing:border-box;font:inherit;height:var(--control);color:var(--muted);background:transparent;border:0;border-radius:var(--r-control);padding:0 10px;white-space:nowrap;cursor:default}
@@ -49,6 +52,13 @@ body.inspector-collapsed #right-panel{display:none!important}
 /* The inline editor exposes only its artboard and chrome through the canvas overlay. */
 body#vvveb-builder.inline-canvas,.inline-canvas #layout,#vvveb-builder.inline-canvas #canvas{background:transparent}
 .inline-canvas #studio-toolbar .seg,.prototype-player #studio-toolbar .seg,.prototype-player #studio-toolbar .pair,.prototype-player #studio-toolbar .rule,.prototype-player #status{display:none}
+.inline-canvas #studio-toolbar .zoom,.prototype-player #studio-toolbar .zoom{display:none}
+/* On the canvas the native canvas header already names the screen; this row keeps only the edit tools. */
+.inline-canvas #session-label,.inline-canvas #studio-toolbar .rule{display:none}
+#studio-empty-selection{display:none}
+.element-deselected #right-panel .component-properties{display:none}
+.element-deselected #studio-empty-selection{display:block;background:transparent;color:var(--muted);border:0;padding:24px 16px}
+#studio-empty-selection strong,#studio-empty-selection span{display:block;margin-bottom:8px}
 #session-label{min-width:0;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 /* Stage: the deepest plane, so the authored artboard is the brightest object in the workspace. */
 #vvveb-builder #canvas{overflow:auto;padding:28px;position:relative;inset:auto;margin:0;width:auto;height:auto;min-width:0;min-height:0;background:var(--stage)}

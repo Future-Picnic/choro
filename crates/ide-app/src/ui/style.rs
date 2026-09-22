@@ -27,6 +27,10 @@ use crate::ui::design;
 #[path = "composer_layout_tests.rs"]
 mod composer_layout_tests;
 
+#[cfg(all(test, feature = "ui-layout-tests"))]
+#[path = "studio_header_layout_tests.rs"]
+mod studio_header_layout_tests;
+
 // ---- sizing tokens: forwarded to the design scale (one source of truth) ----
 
 /// Shared clickable shell for Penpot, Figma and Studio entries in Designs.
@@ -3017,10 +3021,71 @@ pub fn stage_bar(cx: &App) -> Div {
         .border_color(design::line(cx))
 }
 
+/// Header band above a design stage — Studio's canvas header. The mirror of
+/// [`stage_bar`]: same height, plane and gutters, with its hairline below so it
+/// reads as a separate row from the project header and the stage.
+pub fn stage_header_bar(cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .w_full()
+        .min_w(px(0.))
+        .min_h(px(44.))
+        .flex_wrap()
+        .py_1()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .bg(design::base(cx))
+        .border_b_1()
+        .border_color(design::line(cx))
+}
+
+/// Project identity and its fixed action group share one row whenever they fit.
+/// At narrow widths the complete action group wraps, remaining right aligned.
+pub fn design_workspace_header(cx: &App) -> Div {
+    design::header::workspace_bar(cx).items_center().flex_wrap()
+        .border_b_1().border_color(design::line(cx))
+}
+
+pub fn design_workspace_identity() -> Div {
+    h_flex().flex_1().min_w(px(180.)).items_center().gap_2()
+}
+
+/// The flexible identity half of a stage header. On narrow stages the action
+/// group wraps as a unit; long screen names truncate inside this boundary.
+pub fn stage_header_context() -> Div {
+    h_flex()
+        .flex_1()
+        .flex_basis(px(240.))
+        .min_w(px(180.))
+        .items_center()
+        .gap_2()
+}
+
+/// Sidebar tabs line up with the neighboring stage header without the legacy
+/// embedded-tool header's positional offsets.
+pub fn stage_sidebar_header(tabs: impl IntoElement, cx: &App) -> Div {
+    h_flex().w_full().h(px(44.)).flex_none().items_center().px_2()
+        .bg(design::base(cx)).border_b_1().border_color(design::line(cx))
+        .child(tabs)
+}
+
+pub fn stage_header_status(label: impl Into<SharedString>, color: Hsla, cx: &App) -> Div {
+    h_flex().flex_none().items_center().gap_1p5().px_1()
+        .text_size(design::text_ui()).text_color(design::t3(cx))
+        .child(div().size(px(6.)).flex_none().rounded_full().bg(color))
+        .child(label.into())
+}
+
 /// Content-width choice track for a [`stage_bar`]. Fill it with
 /// [`stage_bar_choice`] children; it is the same track as the sidebar tabs.
+/// `flex_none` leaves the sidebar track's zero basis in place, which collapses
+/// the track and lets its choices paint over neighbouring actions — size it
+/// from its content instead.
 pub fn stage_bar_choices(cx: &App) -> Div {
-    sidebar_mode_tabs(cx).flex_none()
+    sidebar_mode_tabs(cx)
+        .flex_none()
+        .flex_basis(gpui::Length::Auto)
 }
 
 /// One choice inside [`stage_bar_choices`]. A real `Button`, so it keeps
@@ -4014,4 +4079,37 @@ pub fn delegation_recipient_chip(
                     .text_color(design::t3(cx)),
             ),
     )
+}
+
+/// Saved profile identity, shared by the new-chat selection and chat header.
+/// Static context rather than an action: removal is a separate icon button.
+pub fn bandmate_profile_chip(name: impl Into<SharedString>, cx: &App) -> Div {
+    h_flex()
+        .min_w(px(0.))
+        .max_w(px(320.))
+        .h(design::control_h_sm())
+        .px_2()
+        .gap_1p5()
+        .rounded(design::r_sm())
+        .border_1()
+        .border_color(design::line_2(cx))
+        .text_size(design::text_ui())
+        .child(design::indicator::bandmate_icon(
+            1,
+            design::amber(cx),
+            design::icon_sm(),
+        ))
+        .child(
+            div()
+                .flex_none()
+                .text_color(design::t3(cx))
+                .child("Bandmate"),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .text_color(design::t1(cx))
+                .child(name.into()),
+        )
 }

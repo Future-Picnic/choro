@@ -191,6 +191,7 @@ pub(super) struct Runtime {
     pub html: Option<String>,
     pub ready: bool,
     pub focus_screen: Option<Uuid>,
+    fit_all_requested: bool,
     visible: bool,
     flush_request: Option<Uuid>,
     navigation_ready: bool,
@@ -212,16 +213,7 @@ impl Runtime {
     pub fn new(store: &StudioStore, design: &StudioDesign) -> (Self, Option<String>) {
         let (mut layout,notice,corrupt)=match store.canvas_state(design.manifest.id){Ok(s)=>(s,None,false),Err(e)=>(Default::default(),Some(format!("Saved canvas layout could not be read; using a temporary layout. Arrange can recover it while preserving the original. {e}")),true)};
         let initial = layout.positions.is_empty();
-        // Canvas is enabled by default in the isolated test build. Production
-        // defaults remain gated on the complete native performance measurements.
-        if !store
-            .cache
-            .join(format!("canvas-{}.json", design.manifest.id))
-            .exists()
-            && std::env::var("CHORO_STUDIO_CANVAS_PREVIEW").as_deref() != Ok("1")
-        {
-            layout.overview_mode = StudioOverviewMode::Grid;
-        }
+        // New workspaces open on Canvas; retain each design's explicit view choice.
         layout.reconcile(&design.manifest.screens);
         (
             Self {
@@ -230,6 +222,7 @@ impl Runtime {
                 html: None,
                 ready: false,
                 focus_screen: None,
+                fit_all_requested: false,
                 visible: false,
                 flush_request: None,
                 navigation_ready: false,
@@ -254,7 +247,7 @@ impl Runtime {
     pub fn navigation_pending(&self) -> bool { self.flush_request.is_some() }
     pub fn cancel_navigation(&mut self) { self.flush_request=None;self.navigation_ready=false; }
     pub fn active(&self) -> bool {
-        !self.failed && self.layout.overview_mode == StudioOverviewMode::Canvas
+        !self.failed && self.layout.overview_mode != StudioOverviewMode::Grid
     }
     fn save(&self, store: &StudioStore, id: Uuid) -> anyhow::Result<()> {
         if self.corrupt {
@@ -369,6 +362,7 @@ impl CenterArea {
         let Some(s) = self.studio.as_mut() else {
             return;
         };
+        if command == "fit-all" && !s.canvas.ready {s.canvas.fit_all_requested=true;return;}
         if command == "arrange" {
             s.canvas.layout.arrange(&s.design.manifest.screens);
             let result = if s.canvas.corrupt {
@@ -399,6 +393,29 @@ impl CenterArea {
         mode: StudioOverviewMode,
         cx: &mut Context<Self>,
     ) {
+        // Canvas and Focus share one live editor. A view change must not flush,
+        // reconstruct the iframe, or clear its selection and undo stack.
+        let spatial_switch = self.studio_canvas_active() && mode != StudioOverviewMode::Grid;
+        if spatial_switch {
+            let Some(s) = self.studio.as_mut() else { return; };
+            if s.canvas.layout.overview_mode == mode { return; }
+            s.canvas.layout.overview_mode = mode;
+            if mode == StudioOverviewMode::Focus {
+                s.canvas.layout.selected_screen_id = s.inline_screen
+                    .or(s.canvas.layout.selected_screen_id)
+                    .or_else(|| s.design.manifest.screens.iter().find(|p| !p.archived).map(|p| p.id));
+            }
+            s.canvas.invalidate_metadata();
+            if let Err(e) = s.canvas.save(&s.store, s.design.manifest.id) { s.error = Some(e.to_string()); }
+            let target = s.canvas.layout.selected_screen_id;
+            let needs_editor = mode == StudioOverviewMode::Focus && s.inline_screen.is_none();
+            self.refresh_studio_canvas(cx);
+            if needs_editor { self.studio_inline_select(target, cx); }
+            cx.notify();
+            return;
+        }
+        if self.studio.as_ref().is_some_and(|s|s.screen.is_some())
+            && self.defer_studio_navigation(move |this,cx|this.studio_overview_mode(mode,cx),cx) { return; }
         if self.defer_canvas_navigation(move |this, cx| this.studio_overview_mode(mode, cx), cx) {
             return;
         }
@@ -406,12 +423,25 @@ impl CenterArea {
             return;
         };
         s.canvas.layout.overview_mode = mode;
+        s.screen = None;
+        s.inline_screen = None;
+        s.inline_flush = None;
+        s.editor_html = None;
+        s.selected_element = None;
+        s.prototype = false;
+        s.preview_mode = false;
+        s.viewing_size = None;
+        s.prototype_history.clear();
         s.canvas.failed = false;
         if let Err(e) = s.canvas.save(&s.store, s.design.manifest.id) {
             s.error = Some(format!("Could not save overview preference: {e}"));
         }
         s.canvas.leave();
+        let target = if mode == StudioOverviewMode::Focus {
+            s.canvas.layout.selected_screen_id.or_else(||s.design.manifest.screens.iter().find(|p|!p.archived).map(|p|p.id))
+        } else { None };
         self.refresh_studio_canvas(cx);
+        if target.is_some() { self.studio_inline_select(target,cx); }
         cx.notify();
     }
     pub(super) fn defer_canvas_navigation(
@@ -483,8 +513,10 @@ impl CenterArea {
                 Action::Ready => {
                     s.canvas.ready = true;
                     s.canvas.fingerprint.clear();
+                    let fit_all=std::mem::take(&mut s.canvas.fit_all_requested);
                     self.refresh_studio_canvas(cx);
                     if self.studio.as_ref().is_some_and(|s|s.inline_screen.is_some()) {self.rebuild_studio_editor(cx);}
+                    if fit_all {self.studio_canvas_command("fit-all",cx);}
                 }
                 Action::Failed { error } => {
                     s.error = Some(format!("Canvas unavailable; showing Grid. {error}"));
@@ -663,13 +695,18 @@ impl CenterArea {
                 let job=request.clone();let result=cx.background_executor().spawn(async move{super::studio_editor::canvas_preview(&store,&design,job.screen_id,job.tier)}).await;
                 let _=this.update(cx,|this,cx|{
                     let Some(s)=this.studio.as_mut().filter(|s|s.canvas.worker==Some(worker)) else{return;};s.canvas.busy=false;s.canvas.worker=None;
-                    if s.canvas.session!=session||!s.canvas.desired.contains(&request){this.queue_studio_canvas(cx);cx.notify();return;}
+                    // A completed image remains useful when the camera comes back.
+                    // Cache it even if demand moved on; only current content may
+                    // be delivered, and a coarse result cannot complete a sharp job.
+                    let wanted=s.canvas.session==session && s.canvas.desired.iter().any(|r|
+                        r.screen_id==request.screen_id && r.content_key==request.content_key && r.tier>=request.tier);
                     let value=match result {
-                        Ok(Some(bytes))=>match insert(&request,bytes){Ok(())=>cached(session,&request),Err(e)=>Some(json!({"session":session,"type":"preview-failed","screen_id":request.screen_id,"content_key":request.content_key,"error":e.to_string()}))},
+                        Ok(Some(bytes))=>match insert(&request,bytes){Ok(())=>if wanted {cached(session,&request)} else {None},Err(e)=>Some(json!({"session":session,"type":"preview-failed","screen_id":request.screen_id,"content_key":request.content_key,"error":e.to_string()}))},
                         Ok(None)=>{s.canvas.retry_at=std::time::Instant::now()+std::time::Duration::from_millis(250);None},
                         Err(e)=>Some(json!({"session":session,"type":"preview-failed","screen_id":request.screen_id,"content_key":request.content_key,"error":e.to_string()})),
                     };
-                    if let Some(value)=value{s.canvas.delivered.insert(request);this.web_host.update(cx,|host,_|host.canvas_reply(&value));this.queue_studio_canvas(cx);}
+                    if wanted {if let Some(value)=value{s.canvas.delivered.insert(request);this.web_host.update(cx,|host,_|host.canvas_reply(&value));}}
+                    this.queue_studio_canvas(cx);
                     cx.notify();
                 });
             }).detach();

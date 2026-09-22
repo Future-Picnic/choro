@@ -9,6 +9,17 @@ pub(super) enum StudioTab {
     Screens,
     System,
 }
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum EditorSaveStatus { Saved, Unsaved, Saving, Failed }
+#[derive(Clone, Copy, serde::Deserialize)]
+pub(super) struct StudioEditorToolbar {
+    status: EditorSaveStatus,
+    can_undo: bool,
+    can_redo: bool,
+    inspector_open: bool,
+    recovery_available: bool,
+}
 pub(super) struct StudioWorkspace {
     pub project: ProjectId,
     pub store: StudioStore,
@@ -20,6 +31,8 @@ pub(super) struct StudioWorkspace {
     pub prototype: bool,
     pub prototype_history: Vec<Uuid>,
     pub preview_mode: bool,
+    pub editor_zoom: f64,
+    pub editor_toolbar: Option<StudioEditorToolbar>,
     pub viewing_size: Option<(u32, u32)>,
     pub export_flush: Option<(Uuid, Uuid)>,
     pub exporting: bool,
@@ -63,6 +76,98 @@ enum NameAction {
 }
 
 impl CenterArea {
+    fn studio_design_mode(&mut self, cx: &mut Context<Self>) {
+        if let Some(s)=self.studio.as_ref().filter(|s|s.prototype) {
+            self.studio_overview_mode(s.canvas.layout.overview_mode,cx);
+        }
+    }
+    fn studio_all_screens(&mut self, cx: &mut Context<Self>) {
+        if !self.studio_canvas_active() && self.defer_studio_navigation(|this,cx|this.studio_all_screens(cx),cx){return;}
+        self.studio_overview_mode(StudioOverviewMode::Canvas,cx);
+        self.studio_canvas_command("fit-all",cx);
+    }
+    fn studio_view_controls(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let s=self.studio.as_ref().unwrap();
+        let mode=if s.canvas.failed {StudioOverviewMode::Grid}else{s.canvas.layout.overview_mode};
+        style::stage_bar_choices(cx).children([
+            ("studio-canvas-mode","Canvas",StudioOverviewMode::Canvas,"Arrange and edit screens on a canvas"),
+            ("studio-grid-mode","Grid",StudioOverviewMode::Grid,"Browse screen previews"),
+            ("studio-focus-mode","Focus",StudioOverviewMode::Focus,"Edit the selected screen on its own"),
+        ].into_iter().map(|(id,label,view,hint)|style::stage_bar_choice(id,label,view==mode,hint,cx)
+            .on_click(cx.listener(move|this,_,_,cx|this.studio_overview_mode(view,cx)))))
+    }
+    /// Canvas header: the way back to every screen, then what the stage shows.
+    /// It belongs to the stage column, never to the project header above it.
+    fn studio_canvas_header(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let s=self.studio.as_ref().unwrap();
+        let mode=if s.canvas.failed {StudioOverviewMode::Grid}else{s.canvas.layout.overview_mode};
+        let current=s.editing_screen()
+            .or_else(||(mode==StudioOverviewMode::Focus).then_some(s.canvas.layout.selected_screen_id).flatten())
+            .and_then(|id|s.design.manifest.screens.iter().find(|p|p.id==id&&!p.archived));
+        let (lead,name,detail)=match current {
+            Some(screen) if s.prototype => (Some("Playing"),screen.name.clone(),None),
+            Some(screen) => {
+                let (width,height)=s.viewing_size.filter(|_|s.screen==Some(screen.id)).unwrap_or((screen.width,screen.height));
+                (None,screen.name.clone(),Some(format!("{width} × {height}")))
+            }
+            None => {
+                let count=s.design.manifest.screens.iter().filter(|p|!p.archived).count();
+                (None,if mode==StudioOverviewMode::Grid{"Grid"}else{"Canvas"}.to_string(),
+                    Some(format!("{count} {}",if count==1{"screen"}else{"screens"})))
+            }
+        };
+        let editor=s.editor_toolbar.filter(|_|s.editing_screen().is_some()&&!s.prototype);
+        let status=match editor.map(|state|state.status) {
+            Some(EditorSaveStatus::Failed) => ("Save failed",crate::ui::design::rose(cx)),
+            Some(EditorSaveStatus::Saving) => ("Saving…",crate::ui::design::amber(cx)),
+            Some(EditorSaveStatus::Unsaved) => ("Unsaved",crate::ui::design::amber(cx)),
+            None if s.editing_screen().is_some() => ("Loading…",crate::ui::design::t3(cx)),
+            _ => ("Saved",crate::ui::design::sage(cx)),
+        };
+        style::stage_header_bar(cx)
+            .child(style::stage_header_context()
+            .child(style::context_panel_action_button("studio-all-screens",IconName::LayoutDashboard,"All screens",cx).flex_none()
+                .tooltip("Show every screen on the canvas")
+                .on_click(cx.listener(|this,_,_,cx|this.studio_all_screens(cx))))
+            .child(style::stage_bar_rule(cx))
+            .child(div().flex_1().min_w(px(0.)).truncate()
+                .text_size(crate::ui::design::text_ui())
+                .text_color(crate::ui::design::t2(cx))
+                .child(format!("{}{}{}",lead.map(|v|format!("{v} ")).unwrap_or_default(),name,detail.map(|v|format!(" · {v}")).unwrap_or_default()))))
+            .when(!s.prototype,|bar|bar.child(
+                h_flex().flex_none().ml_auto().items_center().gap_1()
+                    .child(style::header_icon_button("studio-editor-undo",IconName::Undo2,cx)
+                        .disabled(!editor.is_some_and(|s|s.can_undo)).tooltip("Undo edit")
+                        .on_click(cx.listener(|this,_,_,cx|this.studio_editor_command("undo",cx))))
+                    .child(style::header_icon_button("studio-editor-redo",IconName::Redo2,cx)
+                        .disabled(!editor.is_some_and(|s|s.can_redo)).tooltip("Redo edit")
+                        .on_click(cx.listener(|this,_,_,cx|this.studio_editor_command("redo",cx))))
+                    .child(style::stage_header_status(status.0,status.1,cx))
+                    .child(style::context_panel_action_button("studio-editor-inspector",IconName::PanelRight,"Inspector",cx)
+                        .disabled(editor.is_none()).selected(editor.is_some_and(|s|s.inspector_open))
+                        .tooltip(if editor.is_some_and(|s|s.inspector_open){"Hide inspector"}else{"Show inspector"})
+                        .on_click(cx.listener(|this,_,_,cx|this.studio_editor_command("inspector",cx))))
+            ))
+            .when(editor.is_some_and(|s|s.recovery_available),|bar|bar.child(
+                h_flex().w_full().flex_none().justify_end().items_center().gap_2()
+                    .child(style::ghost_button_compact("studio-editor-retry","Retry save")
+                        .disabled(editor.is_some_and(|s|matches!(s.status,EditorSaveStatus::Saving)))
+                        .on_click(cx.listener(|this,_,_,cx|this.studio_editor_command("retry",cx))))
+                    .child(style::ghost_button_compact("studio-editor-recover","Keep draft & reload")
+                        .disabled(editor.is_some_and(|s|matches!(s.status,EditorSaveStatus::Saving)))
+                        .on_click(cx.listener(|this,_,_,cx|this.studio_editor_command("recover",cx))))
+            ))
+    }
+    fn studio_editor_command(&mut self, command: &str, cx: &App) {
+        if let Some(s)=self.studio.as_ref().filter(|s|s.editing_screen().is_some()&&!s.prototype) {
+            self.web_host.read(cx).studio_reply(&json!({"session":s.editor_session,"type":"toolbar-command","command":command}));
+        }
+    }
+    fn studio_player_camera(&mut self, command: &str, cx: &mut Context<Self>) {
+        if let Some(s)=self.studio.as_ref().filter(|s|s.prototype) {
+            self.web_host.read(cx).studio_reply(&json!({"session":s.editor_session,"type":"camera-command","command":command}));
+        }
+    }
     pub(super) fn render_studio_hub_card(
         &self,
         project: ProjectId,
@@ -172,12 +277,16 @@ impl CenterArea {
         let Some((_, root)) = self.project_by_id(project, cx) else {
             return;
         };
+        if !self.studio_catalog_refreshing.insert(project) { return; }
+        self.studio_catalog_refreshed.insert(project, std::time::Instant::now());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let store = StudioStore::for_project(root)?;
                     let designs = store.list()?;
+                    let implementors = designs.iter().map(|design| Ok((design.id, store.implementation_agents(design.id)?)))
+                        .collect::<anyhow::Result<HashMap<_, _>>>()?;
                     let systems = store.systems()?;
                     let mut previews = designs
                         .iter()
@@ -195,15 +304,17 @@ impl CenterArea {
                             previews.insert(system.id, path);
                         }
                     }
-                    Ok::<_, anyhow::Error>((designs, previews, systems))
+                    Ok::<_, anyhow::Error>((designs, previews, systems, implementors))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.studio_catalog_refreshing.remove(&project);
                 match result {
-                    Ok((designs, previews, systems)) => {
+                    Ok((designs, previews, systems, implementors)) => {
                         this.studio_catalog.insert(project, designs);
                         this.studio_system_catalog.insert(project, systems);
                         this.studio_catalog_previews.insert(project, previews);
+                        this.studio_catalog_implementors.insert(project, implementors);
                     }
                     Err(error) => this.design_hub_error = Some(format!("Studio: {error:#}")),
                 }
@@ -272,13 +383,17 @@ impl CenterArea {
                             .and_then(|bytes| {
                                 serde_json::from_slice::<serde_json::Value>(&bytes).ok()
                             });
-                        let screen = selection
+                        let remembered_screen = selection
                             .as_ref()
                             .and_then(|v| v["screen"].as_str())
                             .and_then(|s| s.parse::<Uuid>().ok())
-                            .filter(|id| design.documents.contains_key(id))
-                            .or_else(|| system_workspace.then_some(id));
-                        let (canvas,canvas_notice)=super::studio_canvas::Runtime::new(&store,&design);
+                            .filter(|id| design.manifest.screens.iter().any(|s|s.id==*id&&!s.archived));
+                        let screen = system_workspace.then_some(id);
+                        let (mut canvas,canvas_notice)=super::studio_canvas::Runtime::new(&store,&design);
+                        if canvas.layout.selected_screen_id.is_none() {canvas.layout.selected_screen_id=remembered_screen;}
+                        let inline_screen = (canvas.layout.overview_mode == StudioOverviewMode::Focus && !system_workspace)
+                            .then(||canvas.layout.selected_screen_id.or_else(||design.manifest.screens.iter().find(|s|!s.archived).map(|s|s.id))).flatten();
+                        if inline_screen.is_some(){canvas.layout.selected_screen_id=inline_screen;}
                         this.flush_studio_canvas();
                         this.studio = Some(StudioWorkspace {
                             canvas,
@@ -286,16 +401,17 @@ impl CenterArea {
                             store,
                             design,
                             screen,
-                            inline_screen: None,
+                            inline_screen,
                             inline_flush: None,
                             prototype: false,
                             prototype_history: vec![],
-                            preview_mode: system_workspace
-                                || selection.as_ref().is_some_and(|v| v["preview"] == true),
+                            preview_mode: system_workspace,
+                            editor_zoom: 1.,
+                            editor_toolbar: None,
                             viewing_size: None,
                             export_flush: None,
                             exporting: false,
-                            tab: if system_workspace {
+                            tab: if system_workspace || this.pending_design_assistant_drafts.contains_key(&id) {
                                 StudioTab::Agent
                             } else {
                                 StudioTab::Screens
@@ -495,7 +611,7 @@ impl CenterArea {
                     super::studio_editor::revoke_inline(s.canvas.session);
                     self.web_host.read(cx).canvas_reply(&json!({"session":s.canvas.session,"type":"editor","screen_id":null}));
                 }
-                s.export_flush=None;s.selected_element=None;s.editor_session=Uuid::new_v4();s.editor_html=None;
+                s.export_flush=None;s.selected_element=None;s.editor_session=Uuid::new_v4();s.editor_html=None;s.editor_toolbar=None;
             }
             self.refresh_studio_canvas(cx);
             self.refresh_studio_bootstrap(cx);
@@ -511,6 +627,7 @@ impl CenterArea {
         };
         studio.export_flush = None;
         studio.editor_session = Uuid::new_v4();
+        studio.editor_toolbar = None;
         studio.selected_element = None;
         self.refresh_studio_bootstrap(cx);
     }
@@ -561,6 +678,7 @@ impl CenterArea {
         cx.notify();
     }
     pub(super) fn studio_start_prototype(&mut self, cx: &mut Context<Self>) {
+        if self.studio.as_ref().is_some_and(|s|s.prototype){return;}
         if self.defer_studio_navigation(|this,cx|this.studio_start_prototype(cx),cx){return;}
         let Some(s)=self.studio.as_mut() else{return;};
         let target=s.editing_screen().or(s.canvas.layout.selected_screen_id)
@@ -575,6 +693,15 @@ impl CenterArea {
         if let Some(id)=target {self.studio_select_screen(Some(id),cx);}
     }
     pub(super) fn studio_select_screen(&mut self, screen: Option<Uuid>, cx: &mut Context<Self>) {
+        if screen.is_none() && self.studio.as_ref().is_some_and(|s|!s.design.manifest.system_workspace) {
+            self.studio_all_screens(cx);return;
+        }
+        if screen.is_some() && self.studio.as_ref().is_some_and(|s|!s.prototype&&!s.design.manifest.system_workspace) && !self.studio_canvas_active() {
+            if self.defer_studio_navigation(move|this,cx|this.studio_select_screen(screen,cx),cx){return;}
+            if let Some(s)=self.studio.as_mut(){s.canvas.layout.selected_screen_id=screen;}
+            self.studio_overview_mode(StudioOverviewMode::Focus,cx);
+            return;
+        }
         if self.studio_canvas_active() && !self.studio.as_ref().is_some_and(|s|s.prototype) {
             if let Some(s) = self.studio.as_mut() {
                 s.canvas.focus_screen = screen.filter(|id| s.design.manifest.screens.iter().any(|p| p.id == *id && !p.archived));
@@ -632,6 +759,14 @@ impl CenterArea {
                 continue;
             }
             match message["type"].as_str().unwrap_or("") {
+                "toolbar-state" => {
+                    if let Ok(state)=serde_json::from_value::<StudioEditorToolbar>(message.clone()) {
+                        studio.editor_toolbar=Some(state);
+                    }
+                }
+                "camera" if studio.prototype => {
+                    if let Some(zoom)=message["zoom"].as_f64().filter(|z|z.is_finite()&&(0.02..=4.).contains(z)){studio.editor_zoom=zoom;}
+                }
                 "mode" => {
                     let Some(mode) = message["mode"]
                         .as_str()
@@ -1709,6 +1844,7 @@ impl CenterArea {
             Ok(handoff) => {
                 self.open_new_agent_composer_for_project(project, window, cx);
                 if let Some(composer) = self.new_agent_composer.as_mut() {
+                    composer.reset_source_implementation();
                     let prompt=format!("Implement Studio design ‘{}’. First call studio_handoff_read with handoff_id ‘{}’. Read its manifest, tokens, assets, and each selected screen before changing code. The snapshot is immutable, revision {}. {}",handoff.design.manifest.name,handoff.id,handoff.design.manifest.revision,handoff.instruction);
                     composer
                         .prompt
@@ -1718,6 +1854,11 @@ impl CenterArea {
                         composer.source_doc = Some(path.clone());
                         composer.linked_docs.push(path);
                     }
+                    if let Some(task) = handoff.design.manifest.linked_task() {
+                        composer.source_task = Some(task.clone());
+                        composer.linked_tasks.push(task.clone());
+                    }
+                    composer.selected_mentions.push(ComposerMentionToken::studio_design(&handoff));
                     composer.implementation_target = Some(ImplementationTarget::Studio(handoff.id));
                     composer.design_browser_open_confirmed = true;
                 }
@@ -2130,14 +2271,6 @@ impl CenterArea {
                 StudioTab::Screens => {
                     let mut panel = v_flex()
                         .py_2()
-                        .child(
-                            style::design_sidebar_row("studio-all", selected.is_none(), cx)
-                                .icon(IconName::LayoutDashboard)
-                                .label("All screens")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.studio_select_screen(None, cx)
-                                })),
-                        )
                         .child(h_flex().px_1().pt_1().child({
                             let center = cx.entity();
                             let host = self.web_host.clone();
@@ -2344,6 +2477,10 @@ impl CenterArea {
                     });
                     self.hydrate_doc_assistant_chat_session(&record, &root, cx);
                     let agent = Self::doc_assistant_agent_record(&record, root);
+                    if let Some(draft) = self.pending_design_assistant_drafts.remove(&design_id) {
+                        let input = self.agent_chat_input(&agent, "Describe what you want to design", window, cx);
+                        input.update(cx, |input, cx| { input.set_value(draft, window, cx); input.focus(window, cx); });
+                    }
                     let history = self.studio.as_ref().unwrap().conversations.clone();
                     let can_build_system =
                         system_workspace && !history.entries.iter().any(|entry| entry.started);
@@ -2504,6 +2641,7 @@ impl CenterArea {
                 .floor() as usize)
                 .clamp(1, 4);
             let rows = screens.len().div_ceil(columns);
+            let grid_selection=studio.canvas.layout.selected_screen_id;
             gpui::uniform_list("studio-overview", rows, move |range, window, cx| {
                 super::studio_editor::prioritize(
                     design.manifest.id,
@@ -2558,6 +2696,7 @@ impl CenterArea {
                                             .bg(crate::ui::design::surface(cx))
                                             .border_1()
                                             .border_color(crate::ui::design::line(cx))
+                                            .when(grid_selection==Some(id),|tile|tile.border_color(crate::ui::design::accent_ink(crate::ui::design::surface(cx),cx)))
                                             .group_hover("studio-card", |tile| {
                                                 tile.border_color(crate::ui::design::line_2(cx))
                                             })
@@ -2582,8 +2721,14 @@ impl CenterArea {
                                     )
                                     .on_click(window.listener_for(
                                         &center,
-                                        move |this: &mut Self, _, _, cx| {
-                                            this.studio_select_screen(Some(id), cx)
+                                        move |this: &mut Self, event: &gpui::ClickEvent, _, cx| {
+                                            if matches!(event,gpui::ClickEvent::Keyboard(_)) || matches!(event,gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count>=2) {
+                                                this.studio_select_screen(Some(id), cx);
+                                            } else if let Some(s)=this.studio.as_mut() {
+                                                s.canvas.layout.selected_screen_id=Some(id);
+                                                if !s.canvas.corrupt {if let Err(e)=s.store.save_canvas_state(s.design.manifest.id,&s.canvas.layout){s.error=Some(e.to_string());}}
+                                                cx.notify();
+                                            }
                                         },
                                     )),
                             );
@@ -2603,44 +2748,16 @@ impl CenterArea {
             !system_workspace && (selected.is_none() || viewport.is_some());
         let bar_notice = notice.clone().filter(|_| has_stage_bar);
         let notice = notice.filter(|_| !has_stage_bar);
+        let prototype = self.studio.as_ref().is_some_and(|s| s.prototype);
         let body = if selected.is_none() && !system_workspace {
             let zoom=self.studio.as_ref().map(|s|s.canvas.layout.viewport.zoom).unwrap_or(1.);
             let toolbar = style::stage_bar(cx).h_auto().min_h(px(44.)).flex_wrap().py_1()
-                .child(style::ghost_button_compact("studio-prototype", "Prototype")
-                    .disabled(self.studio.as_ref().is_none_or(|s|!s.design.manifest.screens.iter().any(|p|!p.archived)))
-                    .tooltip("Play the selected screen and follow its screen links")
-                    .on_click(cx.listener(|this,_,_,cx|this.studio_start_prototype(cx))))
-                .when(self.studio.as_ref().is_some_and(|s|s.inline_screen.is_some()), |row|row.child(
-                    style::ghost_button_compact("studio-inline-done", "Done editing")
-                        .on_click(cx.listener(|this,_,_,cx|this.studio_inline_select(None,cx)))))
-                .child(
-                    style::stage_bar_choices(cx)
-                        .child(
-                            style::stage_bar_choice(
-                                "studio-canvas-mode",
-                                "Canvas",
-                                canvas_overview,
-                                "Arrange screens on a free canvas",
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.studio_overview_mode(StudioOverviewMode::Canvas, cx)
-                            })),
-                        )
-                        .child(
-                            style::stage_bar_choice(
-                                "studio-grid-mode",
-                                "Grid",
-                                !canvas_overview,
-                                "Show screens in a grid",
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.studio_overview_mode(StudioOverviewMode::Grid, cx)
-                            })),
-                        ),
-                )
+                .when(!prototype, |row| row.child(self.studio_view_controls(cx)))
                 .child(style::stage_bar_notice(bar_notice.clone(), cx))
+                .when(self.studio.as_ref().is_some_and(|s|s.inline_screen.is_some()), |row|row.child(
+                    style::ghost_button_compact("studio-inline-export",if exporting {"Exporting…"}else{"Export PNG"})
+                        .disabled(export_disabled)
+                        .on_click(cx.listener(|this,_,_,cx|this.studio_export_png(cx)))))
                 .when(canvas_overview, |row| {
                     row.child(
                         h_flex()
@@ -2677,13 +2794,13 @@ impl CenterArea {
                     )
                     .child(style::stage_bar_rule(cx))
                     .child(
-                        style::ghost_button_compact("studio-canvas-fit", "Fit all").on_click(
+                        style::ghost_button_compact("studio-canvas-fit", if self.studio.as_ref().is_some_and(|s|s.canvas.layout.overview_mode==StudioOverviewMode::Focus){"Fit screen"}else{"Fit all"}).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.studio_canvas_command("fit-all", cx)
                             }),
                         ),
                     )
-                    .child(
+                    .when(self.studio.as_ref().is_some_and(|s|s.canvas.layout.overview_mode==StudioOverviewMode::Canvas), |row| row.child(
                         style::ghost_button_compact("studio-canvas-fit-selected", "Fit selected")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.studio_canvas_command("fit-selected", cx)
@@ -2695,13 +2812,14 @@ impl CenterArea {
                                 this.studio_canvas_command("arrange", cx)
                             }),
                         ),
-                    )
+                    ))
                 });
             v_flex()
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
                 .bg(crate::ui::design::stage(cx))
+                .child(self.studio_canvas_header(cx))
                 .child(body)
                 .child(toolbar)
                 .into_any_element()
@@ -2710,6 +2828,7 @@ impl CenterArea {
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
+                .child(self.studio_canvas_header(cx))
                 .child(body)
                 .child(
                     style::stage_bar(cx)
@@ -2717,24 +2836,12 @@ impl CenterArea {
                         .min_h(px(44.))
                         .flex_wrap()
                         .py_1()
-                        .child(
-                            style::ghost_button_compact("studio-editor-all-screens", "All screens")
-                                .tooltip("Return to all screens")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    // Flush even a clean editor: this commits its camera and
-                                    // finishes any active inline edit before navigation.
-                                    if let Some(studio) = this.studio.as_mut() {
-                                        studio.pending_screen = Some(None);
-                                        let reply = json!({"session":studio.editor_session,"type":"flush"});
-                                        this.web_host.update(cx, |host, _| host.studio_reply(&reply));
-                                    }
-                                })),
-                        )
+                        .when(!prototype, |row| row.child(self.studio_view_controls(cx)))
                         .when(self.studio.as_ref().is_some_and(|s|s.prototype), |row|row.child(
                             style::ghost_button_compact("studio-prototype-back", "Back")
                                 .disabled(self.studio.as_ref().is_none_or(|s|s.prototype_history.is_empty()))
                                 .on_click(cx.listener(|this,_,_,cx|this.studio_prototype_back(cx)))))
-                        .child(
+                        .when(prototype, |row| row.child(
                             style::stage_bar_choices(cx)
                                 .child(
                                     style::stage_bar_choice(
@@ -2760,7 +2867,7 @@ impl CenterArea {
                                         this.studio_set_viewing_size(true, cx)
                                     })),
                                 ),
-                        )
+                        ))
                         .child(
                             style::stage_bar_readout(format!("{width} × {height}"), cx).pl_1(),
                         )
@@ -2777,7 +2884,15 @@ impl CenterArea {
                             .disabled(export_disabled)
                             .tooltip("Save this screen as a PNG at the displayed size")
                             .on_click(cx.listener(|this, _, _, cx| this.studio_export_png(cx))),
-                        ),
+                        )
+                        .when(self.studio.as_ref().is_some_and(|s|s.prototype),|row|row
+                            .child(style::header_icon_button("studio-player-minus",IconName::Minus,cx)
+                                .tooltip("Zoom out").on_click(cx.listener(|this,_,_,cx|this.studio_player_camera("zoom-out",cx))))
+                            .child(style::stage_bar_readout(format!("{:.0}%",self.studio.as_ref().map(|s|s.editor_zoom).unwrap_or(1.)*100.),cx))
+                            .child(style::header_icon_button("studio-player-plus",IconName::Plus,cx)
+                                .tooltip("Zoom in").on_click(cx.listener(|this,_,_,cx|this.studio_player_camera("zoom-in",cx))))
+                            .child(style::ghost_button_compact("studio-player-fit","Fit screen")
+                                .on_click(cx.listener(|this,_,_,cx|this.studio_player_camera("fit",cx)))))
                 )
                 .into_any_element()
         } else {
@@ -2824,13 +2939,13 @@ impl CenterArea {
         }
         if indicators.is_empty() {
             if let Some(reference) = source_task {
-                let task = self.tasks.read(cx).board(project).and_then(|board| {
+                let task = self.studio.as_ref().and_then(|s| s.design.manifest.linked_task().cloned()).or_else(|| self.tasks.read(cx).board(project).and_then(|board| {
                     board
                         .issues
                         .into_iter()
                         .map(|issue| issue.reference)
                         .find(|task| reference == format!("{} {}", task.issue_key, task.issue_url))
-                });
+                }));
                 if let Some(task) = task {
                     indicators.push(
                         crate::ui::design::indicator::subline_link(
@@ -2868,7 +2983,8 @@ impl CenterArea {
         v_flex()
             .size_full()
             .child(
-                crate::ui::design::header::workspace_bar(cx)
+                style::design_workspace_header(cx)
+                    .child(style::design_workspace_identity()
                     .child(
                         style::header_icon_button("studio-back", IconName::ArrowLeft, cx)
                             .tooltip("Back to project designs")
@@ -2883,12 +2999,18 @@ impl CenterArea {
                     .child(
                         crate::ui::design::header::title_col(cx)
                             .child(crate::ui::design::header::title(title, cx))
-                            .child(crate::ui::design::header::subline().children(indicators)),
-                    )
+                            .when(!indicators.is_empty(), |column|column.child(crate::ui::design::header::subline().children(indicators))),
+                    ))
                     .child(if system_workspace {
                         self.system_workspace_actions(window, cx)
                     } else {
-                        crate::ui::design::header::actions()
+                        crate::ui::design::header::actions().ml_auto()
+                            .child(style::stage_bar_choices(cx)
+                                .child(style::stage_bar_choice("studio-design-mode","Design",!self.studio.as_ref().is_some_and(|s|s.prototype),"Edit your design",cx)
+                                    .on_click(cx.listener(|this,_,_,cx|this.studio_design_mode(cx))))
+                                .child(style::stage_bar_choice("studio-prototype-mode","Prototype",self.studio.as_ref().is_some_and(|s|s.prototype),"Try the app and follow screen links",cx)
+                                    .disabled(self.studio.as_ref().is_none_or(|s|!s.design.manifest.screens.iter().any(|p|!p.archived)))
+                                    .on_click(cx.listener(|this,_,_,cx|this.studio_start_prototype(cx)))))
                             .child(
                                 style::context_panel_action_button(
                                     "studio-compare",
@@ -2999,7 +3121,7 @@ impl CenterArea {
                             })
                             .border_r_1()
                             .border_color(crate::ui::design::line(cx))
-                            .child(style::design_sidebar_tabs_header(tabs, cx).pb_2())
+                            .child(style::stage_sidebar_header(tabs, cx))
                             .child(
                                 div()
                                     .id("studio-sidebar-content")

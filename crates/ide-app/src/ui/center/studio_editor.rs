@@ -150,7 +150,7 @@ pub fn document_for_surface(
                             .unwrap_or(Value::Null)
             })
     };
-    let bootstrap = json!({"inline":matches!(surface,EditorSurface::Canvas),"prototype":matches!(surface,EditorSurface::Prototype),"system_specimen":design.manifest.system_workspace,"draft":draft,"session":session,"document":design.documents.get(&screen_id),"revision":design.manifest.revision,"fingerprint":design.fingerprint,
+    let bootstrap = json!({"native_toolbar":!thumbnail && !design.manifest.system_workspace && !matches!(surface,EditorSurface::Screen),"inline":matches!(surface,EditorSurface::Canvas),"prototype":matches!(surface,EditorSurface::Prototype),"system_specimen":design.manifest.system_workspace,"draft":draft,"session":session,"document":design.documents.get(&screen_id),"revision":design.manifest.revision,"fingerprint":design.fingerprint,
         "screen_id":screen_id,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":screen.width,"height":screen.height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme});
     // Bootstrap is data, never executable HTML supplied by a design.
     let bootstrap = serde_json::to_string(&bootstrap)?
@@ -215,7 +215,7 @@ pub fn enqueue_inline(canvas: Uuid, raw: &str) -> bool {
     let Some(editor) = entries.get(&canvas) else { return false; };
     let message = &value["message"];
     if message["session"].as_str().and_then(|s|s.parse::<Uuid>().ok()) != Some(*editor)
-        || !matches!(message["type"].as_str(), Some("ready" | "dirty" | "save" | "recover" | "asset" | "selection" | "render-error" | "flushed")) { return false; }
+        || !matches!(message["type"].as_str(), Some("ready" | "dirty" | "save" | "recover" | "asset" | "selection" | "render-error" | "flushed" | "toolbar-state")) { return false; }
     enqueue(message.clone()); true
 }
 
@@ -397,11 +397,14 @@ mod tests {
         assert!(!enqueue_inline(canvas,&payload(editor,"ready")));
         register_inline(canvas,editor);
         assert!(enqueue_inline(canvas,&payload(editor,"ready")));
+        assert!(enqueue_inline(canvas,&payload(editor,"toolbar-state")));
         assert!(!enqueue_inline(Uuid::new_v4(),&payload(editor,"save")));
         assert!(!enqueue_inline(canvas,&payload(next,"save")));
+        assert!(!enqueue_inline(canvas,&payload(next,"toolbar-state")));
         assert!(!enqueue_inline(canvas,&payload(editor,"navigate")));
         register_inline(canvas,next);
         assert!(!enqueue_inline(canvas,&payload(editor,"save")));
+        assert!(!enqueue_inline(canvas,&payload(editor,"toolbar-state")));
         assert!(enqueue_inline(canvas,&payload(next,"selection")));
         revoke_inline(canvas);
         assert!(!enqueue_inline(canvas,&payload(next,"save")));

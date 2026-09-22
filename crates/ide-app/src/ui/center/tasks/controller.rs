@@ -132,6 +132,7 @@ impl CenterArea {
         let Some(composer) = self.new_agent_composer.as_mut() else {
             return;
         };
+        composer.reset_source_implementation();
         composer.prompt.update(cx, |input, cx| {
             input.set_value(prompt.clone(), window, cx);
             input.set_cursor_position(
@@ -154,6 +155,7 @@ impl CenterArea {
         composer.file_mention_selected = 0;
         composer.file_mention_dismissed_query = None;
         self.add_design_mentions_to_new_agent(linked_designs, cx);
+        self.attach_studio_source_designs(project, None, Some(&summary.reference), cx);
         crate::ui::onboarding::emit_for_project(
             project,
             crate::ui::onboarding::OnboardingEvent::TaskImplementOpened,

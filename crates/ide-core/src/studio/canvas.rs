@@ -9,6 +9,7 @@ pub enum StudioOverviewMode {
     #[default]
     Canvas,
     Grid,
+    Focus,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct StudioCanvasPoint {
@@ -94,6 +95,9 @@ impl StudioCanvasState {
             .is_some_and(|id| !screens.iter().any(|s| s.id == id && !s.archived))
         {
             self.selected_screen_id = None;
+        }
+        if self.overview_mode == StudioOverviewMode::Focus && self.selected_screen_id.is_none() {
+            self.selected_screen_id = screens.iter().find(|s| !s.archived).map(|s| s.id);
         }
         let mut y = screens
             .iter()
@@ -186,6 +190,23 @@ mod tests {
             archived: false,
             files: Default::default(),
         }
+    }
+    #[test]
+    fn focus_reconciles_archived_selection_and_round_trips_without_moving_screens() {
+        let mut state=StudioCanvasState::default();
+        assert_eq!(state.overview_mode,StudioOverviewMode::Canvas);
+        let mut screens=vec![screen(1,390),screen(2,1440)];
+        state.reconcile(&screens);
+        let positions=state.positions.clone();
+        state.overview_mode=StudioOverviewMode::Focus;
+        state.selected_screen_id=Some(screens[0].id);
+        screens[0].archived=true;
+        state.reconcile(&screens);
+        assert_eq!(state.selected_screen_id,Some(screens[1].id));
+        assert_eq!(state.positions,positions);
+        let decoded:StudioCanvasState=serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(decoded,state);
+        decoded.validate().unwrap();
     }
     #[test]
     fn layout_appends_without_moving_existing_and_restores_archives() {

@@ -75,7 +75,7 @@ impl Fixture {
         config.projects.push(project.clone());
         store.save_workspace_config(&config).unwrap();
         store
-            .save_beta_features(ide_core::config::BetaFeatures { delegation: true })
+            .save_beta_features(ide_core::config::BetaFeatures { delegation: true, ..Default::default() })
             .unwrap();
         let model = AgentModel::default_for(AgentKind::Codex);
         let mut parent = AgentRecord::new(

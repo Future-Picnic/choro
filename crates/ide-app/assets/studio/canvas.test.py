@@ -65,6 +65,15 @@ for count in [10,50,100,200]:
   if(window.__CHORO_CANVAS__.screens.length===10){
    const f=window.choroCanvasTest.flow;
    const assert=(value,label)=>{if(!value)throw Error(label);};
+   const warm=f.getNode('1').data.preview;
+   assert(warm,'The initial screen has a decoded preview');
+   const requestsBefore=messages.filter(m=>m.type==='previews'&&m.requests.length).length;
+   await f.setViewport({x:-30000,y:-30000,zoom:.35});await sleep(200);
+   assert(!document.querySelector('.artboard img'),'Distant cached images are not mounted');
+   await f.setViewport({x:30,y:50,zoom:.35});await sleep(250);
+   assert(f.getNode('1').data.preview===warm,'Returning reuses the same decoded preview without a placeholder');
+   assert(messages.filter(m=>m.type==='previews'&&m.requests.length).length===requestsBefore,'Returning to cached artboards does not request another render');
+   assert(document.querySelector('.react-flow__node[data-id="1"] img').naturalWidth>0,'The retained custom-protocol image remains displayable');
    const original=f.getNodes().find(n=>n.id==='0');
    original.data.begin();f.setNodes(all=>all.map(n=>n.id==='0'?{...n,width:n.width+100,measured:{width:n.width+100,height:n.height}}:n));await sleep(60);
    dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await sleep(60);
@@ -82,8 +91,13 @@ for count in [10,50,100,200]:
    window.choroCanvasReply({session:'fixture',type:'resize-result',screen_id:'0',request_id:'stale',revision:4,fingerprint:'old',screens:state.screens,positions:state.layout.positions});await sleep(60);
    assert(f.getNodes().find(n=>n.id==='0').width===700,'Stale resize response must not roll state back');
    const count=messages.filter(m=>m.type==='previews').length;
+   const cameraSaves=messages.filter(m=>m.type==='camera').length;
    for(let i=0;i<12;i++){await f.setViewport({x:30+i*10,y:50,zoom:.35});await sleep(25);}
-   assert(messages.filter(m=>m.type==='previews').length>count,'Moving camera must request visible previews');
+   assert(messages.filter(m=>m.type==='previews').length<=count+2,'Panning across cached screens must not spam identical preview demand');
+   assert(messages.filter(m=>m.type==='camera').length===cameraSaves,'Programmatic pan must not persist camera state on every move-end');
+   const saveDeadline=performance.now()+1500;
+   while(messages.filter(m=>m.type==='camera').length===cameraSaves&&performance.now()<saveDeadline)await tick();
+   assert(messages.filter(m=>m.type==='camera').length===cameraSaves+1,'The final camera is persisted once after movement settles: '+cameraSaves+' → '+messages.filter(m=>m.type==='camera').length);
    window.choroCanvasReply({...state,revision:6});await sleep(60);
   }
   if(document.querySelector('iframe'))throw Error('Live HTML mounted in overview');
@@ -93,7 +107,7 @@ for count in [10,50,100,200]:
    flow.setViewport({x:30-(n%90)*12,y:50-(n%60)*4,zoom:.35+(n%60)*.001});
    if(++n<90)frame(step);else resolve();}frame(step);});
   await sleep(250);const stats=window.choroCanvasStats();frames.sort((a,b)=>a-b);
-  if(stats.decoded_bytes>64*1024*1024||stats.decoding>2||stats.iframes!==0)throw Error('Resource budget exceeded');
+  if(stats.decoded_bytes+stats.decoding_bytes>64*1024*1024||stats.decoding>2||stats.iframes!==0)throw Error('Resource budget exceeded');
   if(stats.mounted>=window.__CHORO_CANVAS__.screens.length&&window.__CHORO_CANVAS__.screens.length>=50)throw Error('Offscreen nodes not culled');
   nativeSend(JSON.stringify({type:'canvas-metrics',count:window.__CHORO_CANVAS__.screens.length,ready_ms:readyAt,observer_deferrals:observerDeferrals,protocol_mode:window.__CHORO_CANVAS__.protocol_mode,display_scale:devicePixelRatio,visible_benchmark:window.__CHORO_CANVAS__.visible_benchmark,p95_frame_ms:window.__CHORO_CANVAS__.visible_benchmark?frames[Math.floor(frames.length*.95)]:null,max_frame_ms:window.__CHORO_CANVAS__.visible_benchmark?Math.max(...frames):null,...stats}));
   nativeSend(JSON.stringify({type:'thumbnail-ready'}));

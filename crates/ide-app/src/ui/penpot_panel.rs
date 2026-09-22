@@ -104,6 +104,7 @@ impl Render for PenpotPanel {
             .read(cx)
             .active_project()
             .map(|project| project.id);
+        let penpot_enabled = self.penpot.read(cx).enabled();
         let configured = self.penpot.read(cx).is_configured();
         let creating = self.penpot.read(cx).creating_design();
         let assistant_busy =
@@ -130,6 +131,7 @@ impl Render for PenpotPanel {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let penpot_rows = std::mem::take(&mut rows);
         if let (Some(project), Some(center)) = (active_project, self.center.upgrade()) {
             for (index, design) in center
                 .read(cx)
@@ -151,6 +153,7 @@ impl Render for PenpotPanel {
                 );
             }
         }
+        rows.extend(penpot_rows);
         let center = self.center.clone();
 
         v_flex()
@@ -180,49 +183,20 @@ impl Render for PenpotPanel {
                                     "New Design",
                                     cx,
                                 )
-                                .tooltip("Create a Studio or Penpot design, or add a Figma link")
+                                .tooltip("Create a Studio design or add a design link")
                                 .dropdown_menu(
                                     move |menu, _, _| {
                                         let native_center = center.clone();
                                         let figma_center = center.clone();
                                         let studio_center = center.clone();
-                                        menu.item(
-                                            PopupMenuItem::new("New Choro Design")
-                                                .icon(crate::ui::design::design_icon())
-                                                .disabled(!configured || creating || assistant_busy)
-                                                .on_click(move |_, _, cx| {
-                                                    let _ =
-                                                        native_center.update(cx, |center, cx| {
-                                                            center.create_penpot_design_from_hub(
-                                                                project, cx,
-                                                            );
-                                                        });
-                                                }),
-                                        )
-                                        .item(
-                                            PopupMenuItem::new("Figma")
-                                                .icon(IconName::Globe)
-                                                .on_click(move |_, window, cx| {
-                                                    let _ =
-                                                        figma_center.update(cx, |center, cx| {
-                                                            center.open_figma_design_dialog(
-                                                                project, window, cx,
-                                                            );
-                                                        });
-                                                }),
-                                        )
-                                        .item(
-                                            PopupMenuItem::new("Studio")
-                                                .icon(IconName::LayoutDashboard)
-                                                .on_click(move |_, window, cx| {
-                                                    let _ =
-                                                        studio_center.update(cx, |center, cx| {
-                                                            center.create_studio_from_hub(
-                                                                project, window, cx,
-                                                            )
-                                                        });
-                                                }),
-                                        )
+                                        menu.item(PopupMenuItem::new("New Studio design")
+                                            .icon(crate::ui::design::design_icon())
+                                            .on_click(move |_, window, cx| { let _ = studio_center.update(cx, |center, cx| center.create_studio_from_hub(project, window, cx)); }))
+                                            .item(PopupMenuItem::new("Add Figma link").icon(IconName::Globe)
+                                                .on_click(move |_, window, cx| { let _ = figma_center.update(cx, |center, cx| center.open_figma_design_dialog(project, window, cx)); }))
+                                            .when(penpot_enabled, |menu| menu.item(PopupMenuItem::new("New Penpot design (beta)")
+                                                .icon(crate::ui::design::design_icon()).disabled(!configured || creating || assistant_busy)
+                                                .on_click(move |_, _, cx| { let _ = native_center.update(cx, |center, cx| center.create_penpot_design_from_hub(project, cx)); })))
                                     },
                                 ),
                             )
@@ -256,12 +230,12 @@ impl Render for PenpotPanel {
                 ))
             })
             .when(
-                active_project.is_some() && !configured && rows.is_empty(),
+                active_project.is_some() && rows.is_empty(),
                 |panel| {
                     panel.child(style::empty_state(
-                        IconName::Settings,
-                        "Connect Design",
-                        "Complete the Design connection in the middle screen",
+                        crate::ui::design::design_icon(),
+                        "No designs yet",
+                        "Create a Studio design for this project.",
                         cx,
                     ))
                 },

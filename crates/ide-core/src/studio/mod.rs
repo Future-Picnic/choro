@@ -176,6 +176,30 @@ pub struct StudioSavedRevision {
 pub struct StudioSource {
     pub reference: String,
     pub content: String,
+    /// Stable tracker identity for reciprocal task links, even before its board loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_ref: Option<crate::TaskRef>,
+}
+
+impl StudioDesignManifest {
+    pub fn linked_task(&self) -> Option<&crate::TaskRef> {
+        self.source_context.get("task")?.task_ref.as_ref()
+    }
+
+    pub fn links_task(&self, task: &crate::TaskRef) -> bool {
+        if let Some(source) = self.linked_task() {
+            return source.same_issue(task);
+        }
+        self.source_task
+            .as_ref()
+            .is_some_and(|source| source == &format!("{} {}", task.issue_key, task.issue_url))
+    }
+
+    pub fn links_doc(&self, path: &std::path::Path) -> bool {
+        self.source_doc
+            .as_deref()
+            .is_some_and(|source| std::path::Path::new(source) == path)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioDesign {

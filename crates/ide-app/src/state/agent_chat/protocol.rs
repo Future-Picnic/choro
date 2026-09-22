@@ -649,11 +649,10 @@ fn run_claude_bridge(
         studio_review: StudioReviewGate::default(),
     };
 
-    if runtime.agent.cli_session_id.is_none()
-        && !runtime.agent.hidden_doc_assistant
-        && !runtime.agent.doc.trim().is_empty()
+    if let Some(prompt) =
+        initial_chat_prompt(&runtime.agent, runtime.agent.cli_session_id.is_some())
     {
-        runtime.send_turn(runtime.agent.doc.clone(), initial_mode, false)?;
+        runtime.send_turn(prompt.to_owned(), initial_mode, false)?;
     }
     runtime.run_loop()
 }
@@ -1331,11 +1330,21 @@ fn run_codex_app_server(
             })
             .ok();
     }
-    if !is_resuming_existing_thread && !agent.hidden_doc_assistant && !agent.doc.trim().is_empty() {
-        runtime.send_turn(agent.doc.clone(), initial_mode, false)?;
+    if let Some(prompt) = initial_chat_prompt(&agent, is_resuming_existing_thread) {
+        runtime.send_turn(prompt.to_owned(), initial_mode, false)?;
     }
 
     runtime.run_loop()
+}
+
+/// Managed sessions are started by the durable delivery queue, including when
+/// a lead backend is reconfigured. Only ordinary fresh chats auto-send the doc.
+fn initial_chat_prompt(agent: &AgentRecord, resuming: bool) -> Option<&str> {
+    (!resuming
+        && agent.delegation.is_none()
+        && !agent.hidden_doc_assistant
+        && !agent.doc.trim().is_empty())
+    .then_some(agent.doc.as_str())
 }
 
 fn spawn_json_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<Value>) {
@@ -1538,6 +1547,58 @@ mod tests {
         });
         assert!(is_design_assistant(&dedicated));
         assert!(agent_requires_design_mcp(&dedicated));
+    }
+
+    #[test]
+    fn managed_startup_never_sends_an_implicit_assignment() {
+        for provider in [AgentKind::Codex, AgentKind::Claude] {
+            let mut agent = AgentRecord::new(
+                ide_core::ProjectId(uuid::Uuid::new_v4()),
+                PathBuf::from("/tmp/project"),
+                "Bandmate",
+                "Initial assignment",
+                provider,
+                AgentModel::default_for(provider),
+                AgentEffort::default(),
+                AgentAccessMode::FullAccess,
+            );
+            assert_eq!(
+                initial_chat_prompt(&agent, false),
+                Some("Initial assignment")
+            );
+            assert_eq!(initial_chat_prompt(&agent, true), None);
+            agent.hidden_doc_assistant = true;
+            assert_eq!(initial_chat_prompt(&agent, false), None);
+            agent.hidden_doc_assistant = false;
+            agent.delegation = Some(ide_core::delegation::DelegationBinding {
+                run_id: uuid::Uuid::new_v4(),
+                parent_agent_id: agent.id,
+                task_id: None,
+                attempt_id: None,
+                workspace: None,
+                task_kind: None,
+            });
+            for task_kind in [
+                None,
+                Some(ide_core::delegation::TaskKind::Implementation),
+                Some(ide_core::delegation::TaskKind::Consultation),
+            ] {
+                let binding = agent.delegation.as_mut().unwrap();
+                binding.task_id = task_kind.map(|_| uuid::Uuid::new_v4());
+                binding.task_kind = task_kind;
+                // Fresh children and restarted/reconfigured leads all wait for
+                // the coordinator's durable delivery instead of executing doc.
+                assert_eq!(initial_chat_prompt(&agent, false), None);
+                assert_eq!(initial_chat_prompt(&agent, true), None);
+            }
+            agent.delegation = None;
+            assert_eq!(
+                initial_chat_prompt(&agent, false),
+                Some("Initial assignment")
+            );
+            agent.doc = "  ".into();
+            assert_eq!(initial_chat_prompt(&agent, false), None);
+        }
     }
 
     #[test]

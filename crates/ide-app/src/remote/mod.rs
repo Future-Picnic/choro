@@ -137,11 +137,13 @@ pub enum RemoteCommand {
     },
     SendMessage {
         agent_id: String,
+        permission: DevicePermission,
         request: SendMessageRequest,
         response: oneshot::Sender<RemoteResult<CommandAcceptedResponse>>,
     },
     UpdateAgentConfiguration {
         agent_id: String,
+        permission: DevicePermission,
         request: UpdateAgentConfigurationRequest,
         response: oneshot::Sender<RemoteResult<AgentSnapshotDto>>,
     },
@@ -151,12 +153,14 @@ pub enum RemoteCommand {
     },
     AnswerQuestion {
         agent_id: String,
+        permission: DevicePermission,
         request_id: String,
         request: AnswerQuestionRequest,
         response: oneshot::Sender<RemoteResult<CommandAcceptedResponse>>,
     },
     ResolvePlan {
         agent_id: String,
+        permission: DevicePermission,
         request: ResolvePlanRequest,
         response: oneshot::Sender<RemoteResult<CommandAcceptedResponse>>,
     },
@@ -183,6 +187,7 @@ pub enum RemoteCommand {
     },
     RequestVerificationFix {
         agent_id: String,
+        permission: DevicePermission,
         request: VerificationFixRequest,
         response: oneshot::Sender<RemoteResult<CommandAcceptedResponse>>,
     },

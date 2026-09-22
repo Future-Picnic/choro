@@ -930,7 +930,9 @@ impl CenterArea {
                 if should_auto_arm_choro_preview(&value, preview_was_dismissed) {
                     this.agent_chat_preview_armed.insert(agent_id);
                 }
-                cx.notify();
+                // InputState already notifies and dirties its ancestor views,
+                // updating the composer controls and pickers. Notifying CenterArea
+                // as well broadcasts every keystroke to transcript/hover observers.
             }
         })
         .detach();
@@ -1884,6 +1886,7 @@ impl CenterArea {
             cx,
         );
         if submitted {
+            self.link_studio_mentions_to_agent(agent, &selected_mentions, cx);
             input.update(cx, |input, cx| input.set_value("", window, cx));
             self.agent_chat_attached_files.remove(&agent.id);
             self.agent_chat_pasted_text_blocks.remove(&agent.id);
@@ -2835,6 +2838,7 @@ impl CenterArea {
                     }),
             );
         }
+        designs.splice(0..0, self.studio_design_references(project, &query));
         designs.truncate(COMPOSER_PICKER_VISIBLE_LIMIT / 2);
         matches.truncate(COMPOSER_PICKER_VISIBLE_LIMIT.saturating_sub(designs.len()));
         let total = matches.len() + designs.len();
@@ -3045,7 +3049,10 @@ impl CenterArea {
         if mention.range.start > mention.range.end || mention.range.end > current.len() {
             return;
         }
-        let penpot_token = ComposerMentionToken::penpot_design(&reference);
+        let penpot_token = match self.studio_reference_token(&reference, cx) {
+            Ok(studio) => studio.or_else(|| ComposerMentionToken::penpot_design(&reference)),
+            Err(error) => { self.agent_start_errors.insert(agent_id, format!("Could not attach Studio design: {error:#}")); cx.notify();return; }
+        };
         let preview = crate::state::designs::reference_absolute_preview_path(&reference)
             .filter(|path| path.is_file());
         let replacement = if let Some(token) = penpot_token.as_ref() {

@@ -1,0 +1,264 @@
+<style>
+#studio-nav-proposal{--sn-base:light-dark(#f6f1ef,#22232c);--sn-stage:light-dark(#e9e3e5,#181920);--sn-well:light-dark(#eee7e8,#1a1b22);--sn-raised:light-dark(#fffaf8,#333540);--sn-text:light-dark(#29262d,#eeeef4);--sn-muted:light-dark(#635d6c,#adb1c1);--sn-line:light-dark(#dcd5dd,#363842);--sn-ink:light-dark(#6156a3,#cecaef);--sn-green:light-dark(#31744c,#98c8a8);--sn-shadow:light-dark(#24202a1a,#00000040);font:12.5px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--sn-text);width:100%;isolation:isolate}
+#studio-nav-proposal *{box-sizing:border-box}#studio-nav-proposal [hidden]{display:none!important}
+#studio-nav-proposal button,#studio-nav-proposal input,#studio-nav-proposal textarea,#studio-nav-proposal select{font:inherit;color:inherit}
+#studio-nav-proposal button{border:0;background:transparent;border-radius:5px;min-height:30px;padding:5px 9px;display:inline-flex;gap:7px;align-items:center;justify-content:center;white-space:nowrap}
+#studio-nav-proposal button:hover:not(:disabled){background:var(--sn-raised)}#studio-nav-proposal button:disabled{opacity:.38}
+#studio-nav-proposal svg{width:15px;height:15px;flex-shrink:0}
+#studio-nav-proposal .sn-app{background:var(--sn-base);border:1px solid var(--sn-line);border-radius:10px;overflow:hidden}
+#studio-nav-proposal .sn-top{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--sn-line);min-height:56px}
+#studio-nav-proposal .sn-project{display:flex;align-items:center;gap:9px;flex:1;min-width:160px;font-weight:600}
+#studio-nav-proposal .sn-project small{font-weight:400;color:var(--sn-muted);font-size:11px;display:block}
+#studio-nav-proposal .sn-brand{width:30px;height:30px;display:grid;place-items:center;background:var(--sn-well);border-radius:8px;color:var(--sn-ink)}
+#studio-nav-proposal .sn-track{display:flex;gap:2px;background:var(--sn-well);padding:3px;border-radius:7px}
+#studio-nav-proposal .sn-track button{min-height:27px;padding:4px 12px;color:var(--sn-muted)}
+#studio-nav-proposal .sn-track button[aria-pressed=true]{background:var(--sn-raised);color:var(--sn-text);box-shadow:0 1px 3px var(--sn-shadow);font-weight:600}
+#studio-nav-proposal .sn-top-actions{display:flex;gap:5px}#studio-nav-proposal .sn-primary{background:var(--sn-ink);color:var(--sn-base)}#studio-nav-proposal .sn-primary:hover:not(:disabled){background:var(--sn-ink);filter:brightness(1.06)}
+#studio-nav-proposal .sn-body{display:grid;grid-template-columns:176px minmax(0,1fr);position:relative}
+#studio-nav-proposal .sn-sidebar{padding:12px 9px;border-right:1px solid var(--sn-line);background:var(--sn-base)}
+#studio-nav-proposal .sn-sidebar-label{display:flex;justify-content:space-between;align-items:center;padding:4px 6px 12px;color:var(--sn-muted);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+#studio-nav-proposal .sn-sidebar .sn-track{margin-bottom:16px}#studio-nav-proposal .sn-sidebar .sn-track button{flex:1;padding-inline:8px}
+#studio-nav-proposal .sn-screen-list{display:grid;gap:3px}#studio-nav-proposal .sn-screen-list button{justify-content:flex-start;text-align:left;width:100%;height:34px;color:var(--sn-muted)}
+#studio-nav-proposal .sn-screen-list button[aria-pressed=true]{background:var(--sn-raised);color:var(--sn-text)}
+#studio-nav-proposal .sn-screen-list .sn-edit-dot{margin-left:auto;width:5px;height:5px;border-radius:50%;background:var(--sn-ink)}
+#studio-nav-proposal .sn-sidebar-foot{margin:20px 5px 0;padding-top:14px;border-top:1px solid var(--sn-line);font-size:11px;color:var(--sn-muted)}
+#studio-nav-proposal .sn-main{min-width:0;display:flex;flex-direction:column}
+#studio-nav-proposal .sn-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid var(--sn-line);min-height:46px;background:var(--sn-base)}
+#studio-nav-proposal .sn-back{font-weight:600}#studio-nav-proposal .sn-rule{width:1px;height:18px;background:var(--sn-line);margin:0 3px}
+#studio-nav-proposal .sn-context{min-width:70px;display:flex;gap:6px;align-items:center;flex:1;color:var(--sn-muted)}#studio-nav-proposal .sn-context strong{color:var(--sn-text);font-weight:500}
+#studio-nav-proposal .sn-tools{display:flex;align-items:center;gap:3px}#studio-nav-proposal .sn-save{font-size:11px;color:var(--sn-muted);display:flex;align-items:center;gap:5px;margin:0 6px}#studio-nav-proposal .sn-save:before{content:"";height:5px;width:5px;border-radius:50%;background:var(--sn-green)}
+#studio-nav-proposal .sn-edit-cta{background:var(--sn-raised)}
+#studio-nav-proposal .sn-workspace{display:flex;min-height:560px;position:relative;flex:1}
+#studio-nav-proposal .sn-stage{position:relative;flex:1;min-width:0;overflow:hidden;background:var(--sn-stage);height:560px;touch-action:none}
+#studio-nav-proposal .sn-world{position:absolute;inset:0 auto auto 0;transform-origin:0 0;will-change:transform}
+#studio-nav-proposal .sn-grid{position:absolute;inset:0;overflow:auto;padding:22px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;align-content:start;background:var(--sn-stage)}
+#studio-nav-proposal .sn-grid-item{display:flex;flex-direction:column;align-items:flex-start;min-width:0;padding:0;background:transparent}
+#studio-nav-proposal .sn-grid-preview{height:225px;width:100%;overflow:hidden;position:relative;background:var(--sn-well);border-radius:5px;border:1px solid var(--sn-line)}
+#studio-nav-proposal .sn-grid-preview .sn-phone{position:absolute;width:390px;height:844px;left:50%;top:12px;transform:translateX(-50%) scale(.24);transform-origin:top center;background:#f7f5f2;color:#282326;pointer-events:none}
+#studio-nav-proposal .sn-grid-item>button{justify-content:flex-start;padding-left:0;width:100%}
+#studio-nav-proposal .sn-grid-item small{color:var(--sn-muted);font-size:11px}
+#studio-nav-proposal .sn-artboard{position:absolute;width:390px;height:844px;background:#f7f5f2;color:#282326;box-shadow:0 0 0 1px #0002,0 9px 30px #0002;user-select:none}
+#studio-nav-proposal .sn-artboard.sn-selected{box-shadow:0 0 0 2px var(--sn-ink),0 9px 30px #0002}
+#studio-nav-proposal .sn-artboard-name{position:absolute;bottom:calc(100% + 10px);left:0;display:flex;justify-content:space-between;width:100%;color:var(--sn-muted);font-size:18px;white-space:nowrap}
+#studio-nav-proposal .sn-artboard-name span:last-child{opacity:.75}
+#studio-nav-proposal .sn-phone{padding:26px 22px;height:100%;overflow:hidden;position:relative;font:15px/1.45 -apple-system,BlinkMacSystemFont,sans-serif}
+#studio-nav-proposal .sn-phone h2{font-size:31px;line-height:1.08;letter-spacing:-1.2px;margin:6px 0 22px;font-weight:750;color:#282326}
+#studio-nav-proposal .sn-phone p{margin:0 0 10px}#studio-nav-proposal .sn-phone .sn-eyebrow{font-size:12px;color:#756e6d}
+#studio-nav-proposal .sn-phone small{font-size:12px;color:#736b68}#studio-nav-proposal .sn-phone strong{font-weight:700}
+#studio-nav-proposal .sn-phone-card{padding:16px;background:#fff;border:1px solid #e7e2dd;border-radius:17px;margin:14px 0}
+#studio-nav-proposal .sn-orbit{width:165px;height:165px;border:1px dashed #dad0c9;border-radius:50%;margin:26px auto;display:grid;place-items:center}
+#studio-nav-proposal .sn-orbit>div{width:125px;height:125px;background:#ffd6cd;border:9px solid #ffe6df;border-radius:50%;display:flex;flex-direction:column;justify-content:center;text-align:center}
+#studio-nav-proposal .sn-orbit b{font-size:45px;line-height:1.2}#studio-nav-proposal .sn-orbit small{color:#44342f}
+#studio-nav-proposal .sn-autopilot{text-align:center;margin:-16px auto 22px;font-size:11px;color:#356748}
+#studio-nav-proposal .sn-poster{background:linear-gradient(125deg,#fac66a,#f18f79 65%,#ad89c7);border-radius:12px;padding:25px 15px;color:#fff;font-size:21px;line-height:1.1;font-weight:750;margin:10px 0}
+#studio-nav-proposal .sn-phone button{font-size:14px;min-height:38px;color:#cf2854}#studio-nav-proposal .sn-phone button:hover:not(:disabled){background:#f6ecec}
+#studio-nav-proposal .sn-phone .sn-phone-primary{background:#d72c57;color:#fff;width:100%;border-radius:10px;padding:11px;margin-top:10px}
+#studio-nav-proposal .sn-quick{display:flex;gap:10px}#studio-nav-proposal .sn-quick button{flex:1;display:block;text-align:left;border:1px solid #e7e2dd;background:#fff;color:#30292a;padding:15px;border-radius:13px}
+#studio-nav-proposal .sn-quick small{display:block;font-size:10px;margin-top:3px}
+#studio-nav-proposal .sn-phone-nav{position:absolute;bottom:0;left:0;right:0;padding:12px 16px;background:#fff;border-top:1px solid #eae5e1;display:flex;justify-content:space-between}
+#studio-nav-proposal .sn-phone-nav button{font-size:11px;min-height:44px;color:#776e6f;display:flex;flex-direction:column;gap:3px}
+#studio-nav-proposal .sn-phone-nav button.sn-current{color:#ce2854}
+#studio-nav-proposal .sn-note{padding:15px;background:#f7f5f2;border-radius:10px;min-height:110px;border:1px solid #e7e2dd;margin:12px 0;font-size:14px}
+#studio-nav-proposal .sn-format{display:flex;align-items:center;gap:12px;padding:14px;background:#fff;border:1px solid #e7e2dd;border-radius:12px;margin:10px 0;font-size:14px}
+#studio-nav-proposal .sn-format>span{display:grid;place-items:center;width:38px;height:38px;background:#e9e1ff;color:#6b4da7;border-radius:10px;font-size:18px}
+#studio-nav-proposal .sn-format small{display:block;font-size:12px}
+#studio-nav-proposal .sn-week{display:flex;justify-content:space-around;border:1px solid #e7e2dd;border-radius:14px;background:#fff;padding:12px;margin:18px 0}
+#studio-nav-proposal .sn-week span{text-align:center;font-size:11px;color:#756e6d}#studio-nav-proposal .sn-week b{display:block;font-size:17px;color:#282326}
+#studio-nav-proposal .sn-schedule{padding:20px;border-radius:14px;background:#ffe2dd;margin:13px 0}#studio-nav-proposal .sn-schedule:nth-of-type(even){background:#e1f0e9}
+#studio-nav-proposal .sn-schedule strong{display:block;margin:8px 0}#studio-nav-proposal .sn-healthy{padding:20px;background:#2c3430;color:#e5f5e7;border-radius:15px;margin:20px 0}
+#studio-nav-proposal .sn-queue-item{display:flex;gap:14px;background:#fff;border:1px solid #e7e2dd;padding:14px;border-radius:14px;margin:13px 0;align-items:center}
+#studio-nav-proposal .sn-queue-item>span{height:60px;width:60px;border-radius:10px;background:#f7b18d;display:grid;place-items:center;font-weight:750;font-size:23px;flex-shrink:0}
+#studio-nav-proposal .sn-queue-item strong{font-size:13px;display:block}
+#studio-nav-proposal .sn-heading-selected{outline:2px solid #766ad1;outline-offset:4px}
+#studio-nav-proposal .sn-inspector{width:210px;flex-shrink:0;background:var(--sn-base);border-left:1px solid var(--sn-line);padding:14px;z-index:4}
+#studio-nav-proposal .sn-inspector-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}#studio-nav-proposal .sn-inspector-head strong{font-weight:600}
+#studio-nav-proposal .sn-inspector .sn-track{margin-bottom:20px}#studio-nav-proposal .sn-inspector .sn-track button{padding:4px 8px;flex:1}
+#studio-nav-proposal .sn-inspector label{display:block;font-size:11px;color:var(--sn-muted);margin:15px 0 6px}
+#studio-nav-proposal .sn-inspector textarea,#studio-nav-proposal .sn-inspector input,#studio-nav-proposal .sn-inspector select{width:100%;border:1px solid var(--sn-line);border-radius:6px;background:var(--sn-well);padding:9px;resize:vertical}
+#studio-nav-proposal .sn-inspector textarea{min-height:90px}#studio-nav-proposal .sn-field-pair{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+#studio-nav-proposal .sn-inspector-note{margin-top:20px;padding-top:14px;border-top:1px solid var(--sn-line);font-size:11px;color:var(--sn-muted)}
+#studio-nav-proposal .sn-camera{position:absolute;bottom:14px;right:14px;display:flex;align-items:center;gap:2px;padding:4px;background:var(--sn-base);border:1px solid var(--sn-line);border-radius:8px;box-shadow:0 4px 14px var(--sn-shadow);z-index:5}
+#studio-nav-proposal .sn-camera select{border:0;background:var(--sn-base);padding:5px 7px;border-radius:5px;min-height:30px;max-width:110px}
+#studio-nav-proposal .sn-camera .sn-percent{font-variant-numeric:tabular-nums;min-width:48px;text-align:center;color:var(--sn-muted)}
+#studio-nav-proposal .sn-hint{position:absolute;bottom:65px;left:16px;right:16px;text-align:center;color:var(--sn-muted);font-size:11px;pointer-events:none}
+#studio-nav-proposal .sn-mobile-sidebar{display:none}
+#studio-nav-proposal .sn-menu{position:absolute;top:45px;right:10px;background:var(--sn-base);border:1px solid var(--sn-line);box-shadow:0 8px 26px var(--sn-shadow);padding:6px;border-radius:8px;z-index:8;width:180px}#studio-nav-proposal .sn-menu button{width:100%;justify-content:flex-start}
+#studio-nav-proposal .sn-toolbar{position:relative}#studio-nav-proposal .sn-camera-host-top{display:none}
+#studio-nav-proposal[data-camera=top] .sn-camera-host-top{display:flex;margin-left:auto}#studio-nav-proposal[data-camera=top] .sn-camera{position:static;box-shadow:none;border:0;padding:0}
+#studio-nav-proposal .sn-message{position:absolute;inset:0;background:#0004;z-index:12;display:flex;align-items:center;justify-content:center;padding:20px}
+#studio-nav-proposal .sn-dialog{background:var(--sn-base);padding:22px;border:1px solid var(--sn-line);border-radius:12px;width:340px;max-width:100%;box-shadow:0 12px 35px var(--sn-shadow)}#studio-nav-proposal .sn-dialog h3{font-size:16px;margin:0 0 10px}#studio-nav-proposal .sn-dialog p{color:var(--sn-muted);margin:0 0 16px}
+#studio-nav-proposal .sn-live{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%)}
+@media(max-width:800px){#studio-nav-proposal .sn-body{grid-template-columns:142px minmax(0,1fr)}#studio-nav-proposal .sn-inspector{position:absolute;right:0;top:0;bottom:0;width:210px;box-shadow:-8px 0 18px var(--sn-shadow)}#studio-nav-proposal .sn-save{display:none}#studio-nav-proposal .sn-project small{display:none}}
+@media(max-width:580px){#studio-nav-proposal .sn-body{grid-template-columns:minmax(0,1fr)}#studio-nav-proposal .sn-sidebar{display:none;position:absolute;left:0;top:0;bottom:0;width:185px;z-index:9;box-shadow:8px 0 20px var(--sn-shadow)}#studio-nav-proposal[data-sidebar=open] .sn-sidebar{display:block}#studio-nav-proposal .sn-mobile-sidebar{display:inline-flex}#studio-nav-proposal .sn-top{gap:8px;padding:10px}#studio-nav-proposal .sn-project{flex-basis:100%}#studio-nav-proposal .sn-top-actions{margin-left:auto}#studio-nav-proposal .sn-top-actions button{padding:5px 7px}#studio-nav-proposal .sn-top-actions button svg{display:none}#studio-nav-proposal .sn-track button{padding-inline:8px}#studio-nav-proposal .sn-context{font-size:11px}#studio-nav-proposal .sn-context .sn-dim{display:none}#studio-nav-proposal .sn-toolbar{gap:3px;padding:6px}#studio-nav-proposal .sn-tools{margin-left:auto}#studio-nav-proposal .sn-workspace,#studio-nav-proposal .sn-stage{height:520px;min-height:520px}#studio-nav-proposal .sn-inspector-label{display:none}#studio-nav-proposal .sn-hint{font-size:11px}#studio-nav-proposal .sn-camera{right:10px;bottom:10px}#studio-nav-proposal .sn-toolbar>.sn-rule{display:none}}
+@media(pointer:coarse){#studio-nav-proposal button,#studio-nav-proposal select{min-height:44px}#studio-nav-proposal .sn-track button{min-height:40px}#studio-nav-proposal .sn-inspector textarea,#studio-nav-proposal .sn-inspector input{font-size:16px}}
+@media(max-width:800px){#studio-nav-proposal .sn-inspector{bottom:84px;overflow-y:auto}#studio-nav-proposal .sn-hint{bottom:59px;left:10px;right:10px;font-size:11px;background:var(--sn-stage);padding:3px;z-index:5}}
+#studio-nav-proposal .sn-body{grid-template-columns:270px minmax(0,1fr)}
+#studio-nav-proposal .sn-sidebar{display:flex;flex-direction:column;padding:10px}
+#studio-nav-proposal .sn-sidebar-tabs{flex-shrink:0;margin-bottom:18px}
+#studio-nav-proposal .sn-sidebar .sn-sidebar-tabs button{padding-inline:7px;font-size:12px}
+#studio-nav-proposal .sn-side-panel{flex:1;min-height:0}
+#studio-nav-proposal .sn-agent-panel{display:flex;flex-direction:column;gap:18px;padding:4px 5px}
+#studio-nav-proposal .sn-agent-caption{color:var(--sn-muted);font-size:11px}
+#studio-nav-proposal .sn-agent-message{line-height:1.65;color:var(--sn-muted)}
+#studio-nav-proposal .sn-agent-message strong{display:block;color:var(--sn-text);margin-bottom:8px}
+#studio-nav-proposal .sn-composer{margin-top:auto;background:var(--sn-well);border:1px solid var(--sn-line);border-radius:9px;padding:9px}
+#studio-nav-proposal .sn-composer textarea{width:100%;min-height:85px;resize:vertical;border:0;background:transparent;padding:3px}
+#studio-nav-proposal .sn-composer-bottom{display:flex;justify-content:space-between;align-items:center;color:var(--sn-muted);font-size:11px}
+#studio-nav-proposal .sn-system-panel{padding:3px 6px}
+#studio-nav-proposal .sn-system-panel h3{font-size:12px;margin:8px 0 16px}
+#studio-nav-proposal .sn-token{display:flex;gap:10px;align-items:center;margin:15px 0;color:var(--sn-muted)}
+#studio-nav-proposal .sn-token span{width:24px;height:24px;border-radius:6px;border:1px solid var(--sn-line)}
+#studio-nav-proposal .sn-footer{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:7px 12px;min-height:48px;border-top:1px solid var(--sn-line);background:var(--sn-base)}
+#studio-nav-proposal .sn-camera-host-bottom{margin-left:auto}
+#studio-nav-proposal .sn-footer .sn-camera{position:static;box-shadow:none;border:0;padding:0}
+#studio-nav-proposal .sn-hint{bottom:14px}
+@media(max-width:800px){#studio-nav-proposal .sn-body{grid-template-columns:245px minmax(0,1fr)}#studio-nav-proposal .sn-sidebar .sn-sidebar-tabs button{padding-inline:5px}#studio-nav-proposal .sn-inspector{bottom:46px}#studio-nav-proposal .sn-hint{bottom:8px}}
+@media(max-width:580px){#studio-nav-proposal .sn-body{grid-template-columns:minmax(0,1fr)}#studio-nav-proposal .sn-sidebar{display:none;width:270px}#studio-nav-proposal[data-sidebar=open] .sn-sidebar{display:flex}#studio-nav-proposal .sn-footer{padding:7px 9px}}
+</style>
+<div id="studio-nav-proposal" aria-label="Studio navigation proposal" data-camera="bottom">
+ <div class="sn-app">
+  <header class="sn-top">
+   <div class="sn-project"><span class="sn-brand"><i data-lucide="panels-top-left" aria-hidden="true"></i></span><span>PostPilot <small>Studio · Social Autopilot</small></span></div>
+   <div class="sn-track" aria-label="Workspace mode"><button class="cursor-interaction" data-mode="design" aria-pressed="true" data-tooltip="Arrange screens and edit their design"><i data-lucide="mouse-pointer-2" aria-hidden="true"></i>Design</button><button class="cursor-interaction" data-mode="prototype" aria-pressed="false" data-tooltip="Try the app: follow links between screens"><i data-lucide="play" aria-hidden="true"></i>Prototype</button></div>
+   <div class="sn-top-actions"><button class="cursor-interaction" data-action="compare" data-tooltip="Compare the design with the implemented app"><i data-lucide="columns-2" aria-hidden="true"></i>Compare</button><button class="cursor-interaction sn-primary" data-action="implement" data-tooltip="Ask the agent to implement your design"><i data-lucide="bot" aria-hidden="true"></i>Implement</button></div>
+  </header>
+  <div class="sn-body">
+   <aside class="sn-sidebar" aria-label="Studio sidebar">
+    <div class="sn-track sn-sidebar-tabs" aria-label="Sidebar section"><button class="cursor-interaction" data-side="agent" aria-pressed="false">Agent</button><button class="cursor-interaction" data-side="screens" aria-pressed="true">Screens</button><button class="cursor-interaction" data-side="system" aria-pressed="false">Design system</button></div>
+    <section class="sn-side-panel" data-side-panel="screens" aria-label="Screens">
+    <div class="sn-sidebar-label"><span>Screens · 4</span><button class="cursor-interaction" data-action="arrange" aria-label="Arrange screens" data-tooltip="Arrange artboards into a tidy grid"><i data-lucide="layout-grid" aria-hidden="true"></i></button></div>
+    <nav class="sn-screen-list" aria-label="Choose a screen"></nav>
+    <div class="sn-sidebar-foot">PostPilot<br>Mobile · 390 × 844</div>
+    </section>
+    <section class="sn-side-panel sn-agent-panel" data-side-panel="agent" aria-label="Studio agent" hidden>
+     <div class="sn-agent-caption">PostPilot · Design conversation</div>
+     <div class="sn-agent-message"><strong>Refine your design</strong>Ask for a change to the selected screen, or work across the whole app.</div>
+     <div class="sn-composer"><label for="sn-agent-prompt" class="sn-agent-caption">Message the Studio agent</label><textarea id="sn-agent-prompt" placeholder="What would you like to change?"></textarea><div class="sn-composer-bottom"><span class="sn-agent-target">Today</span><button class="cursor-interaction" data-action="agent-send" aria-label="Send message" data-tooltip="Preview the agent composer"><i data-lucide="arrow-up" aria-hidden="true"></i></button></div></div>
+    </section>
+    <section class="sn-side-panel sn-system-panel" data-side-panel="system" aria-label="Design system" hidden>
+     <h3>PostPilot foundations</h3><div class="sn-agent-caption">Sample design tokens</div>
+     <div class="sn-token"><span style="background:#d72c57"></span>Primary · Rose</div><div class="sn-token"><span style="background:#f7f5f2"></span>Surface · Warm white</div><div class="sn-token"><span style="background:#282326"></span>Text · Ink</div>
+     <div class="sn-sidebar-foot">Typography<br><strong style="color:var(--sn-text)">System sans</strong><br>Headings · 31px / Bold<br>Body · 15px / Regular</div>
+    </section>
+   </aside>
+   <main class="sn-main">
+    <div class="sn-toolbar" aria-label="Screen actions">
+     <button class="cursor-interaction sn-mobile-sidebar" data-action="sidebar" aria-label="Show Studio sidebar" aria-expanded="false"><i data-lucide="panel-left" aria-hidden="true"></i></button>
+     <button class="cursor-interaction sn-back" data-action="all" data-tooltip="Show every screen on the canvas"><i data-lucide="grid-2x2" aria-hidden="true"></i>All screens</button>
+     <span class="sn-rule"></span><div class="sn-context" aria-live="polite"></div>
+     <div class="sn-tools"><button class="cursor-interaction" data-action="undo" aria-label="Undo text change" data-tooltip="Undo the last edit" disabled><i data-lucide="undo-2" aria-hidden="true"></i></button><button class="cursor-interaction" data-action="redo" aria-label="Redo text change" data-tooltip="Redo the last edit" disabled><i data-lucide="redo-2" aria-hidden="true"></i></button><span class="sn-save">Saved</span><button class="cursor-interaction" data-action="inspector" aria-pressed="true" data-tooltip="Show or hide element properties"><i data-lucide="panel-right" aria-hidden="true"></i><span class="sn-inspector-label">Inspector</span></button><button class="cursor-interaction" data-action="menu" aria-expanded="false" aria-label="More screen actions" data-tooltip="Export and screen actions"><i data-lucide="ellipsis" aria-hidden="true"></i></button></div>
+     <div class="sn-camera-host-top"></div>
+     <div class="sn-menu" hidden><button class="cursor-interaction" data-action="export"><i data-lucide="image-down" aria-hidden="true"></i>Export PNG</button><button class="cursor-interaction" data-action="rename"><i data-lucide="pencil" aria-hidden="true"></i>Rename screen</button></div>
+    </div>
+    <div class="sn-workspace">
+     <section class="sn-stage" aria-label="Design canvas"><div class="sn-world"></div><div class="sn-grid" hidden aria-label="Screen grid"></div><div class="sn-hint">Scroll to pan · Pinch to zoom · Double-click a screen to edit</div>
+      <div class="sn-camera" aria-label="Canvas zoom"><button class="cursor-interaction" data-action="minus" aria-label="Zoom out" data-tooltip="Zoom out"><i data-lucide="minus" aria-hidden="true"></i></button><span class="sn-percent">57%</span><button class="cursor-interaction" data-action="plus" aria-label="Zoom in" data-tooltip="Zoom in"><i data-lucide="plus" aria-hidden="true"></i></button><span class="sn-rule"></span><select class="cursor-interaction" aria-label="Fit view"><option value="">Fit view</option><option value="selected">Fit selected</option><option value="all">Fit all</option><option value="actual">Actual size · 100%</option></select></div>
+     </section>
+     <aside class="sn-inspector" aria-label="Element properties">
+      <div class="sn-inspector-head"><strong>Heading</strong><span style="color:var(--sn-muted);font-size:11px">H1</span></div>
+      <div class="sn-track" aria-label="Property category"><button class="cursor-interaction" data-property="content" aria-pressed="true">Content</button><button class="cursor-interaction" data-property="style" aria-pressed="false">Style</button><button class="cursor-interaction" data-property="advanced" aria-pressed="false">More</button></div>
+      <div data-panel="content"><label for="sn-heading-text">Text</label><textarea id="sn-heading-text">Everything is flowing.</textarea><label for="sn-heading-level">Text style</label><select id="sn-heading-level"><option value="31">Heading 1</option><option value="26">Heading 2</option></select></div>
+      <div data-panel="style" hidden><div class="sn-field-pair"><div><label for="sn-font-size">Size</label><input id="sn-font-size" type="number" min="14" max="64" value="31"></div><div><label for="sn-font-weight">Weight</label><select id="sn-font-weight"><option value="750">Bold</option><option value="500">Medium</option><option value="400">Regular</option></select></div></div><label for="sn-text-align">Alignment</label><select id="sn-text-align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div>
+      <div data-panel="advanced" hidden><label for="sn-element-id">Element ID</label><input id="sn-element-id" value="welcome-heading"><label for="sn-element-class">CSS class</label><input id="sn-element-class" value="welcome-title"></div>
+      <div class="sn-inspector-note">Editing <strong class="sn-current-name">Today</strong><br>390 × 844 · Zoom changes your view, not the screen size.</div>
+     </aside>
+    </div>
+    <footer class="sn-footer" aria-label="Canvas view controls"><div class="sn-track" aria-label="Design view"><button class="cursor-interaction" data-view="canvas" aria-pressed="true" data-tooltip="Arrange screens and edit directly on the canvas">Canvas</button><button class="cursor-interaction" data-view="grid" aria-pressed="false" data-tooltip="Browse screens; double-click one to focus">Grid</button><button class="cursor-interaction" data-view="focus" aria-pressed="false" data-tooltip="Work on one screen at its authored dimensions">Focus</button></div><div class="sn-camera-host-bottom"></div></footer>
+   </main>
+   <div class="sn-message" hidden><div class="sn-dialog" role="dialog" aria-modal="true" aria-labelledby="sn-dialog-title"><h3 id="sn-dialog-title"></h3><p></p><label class="sn-rename-label" hidden>Screen name <input class="sn-rename-input" style="width:100%;padding:8px;margin:10px 0;background:var(--sn-well);border:1px solid var(--sn-line);border-radius:5px"></label><button class="cursor-interaction sn-primary" data-action="close-message">Got it</button></div></div>
+  </div>
+ </div>
+ <div class="sn-live" role="status" aria-live="polite"></div>
+</div>
+<script>
+(()=>{
+ const root=document.getElementById('studio-nav-proposal');
+ const q=s=>root.querySelector(s),qa=s=>[...root.querySelectorAll(s)];
+ const stage=q('.sn-stage'),world=q('.sn-world'),camera=q('.sn-camera');
+ const defaults={schema:3,mode:'design',editing:false,selected:0,inspector:true,view:'canvas',cameraPlacement:'Bottom right',side:'screens'};
+ const state={...defaults};let zoom=.57,x=30,y=44,property='content',space=false,drag=null,history=[],future=[],dialogAction='';
+ const screens=[{name:'Today',title:'Everything is flowing.'},{name:'Create',title:'What are we making?'},{name:'Calendar',title:'Your rhythm'},{name:'Queue',title:'Posting queue'}];
+ const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const icon=n=>'<i data-lucide="'+n+'" aria-hidden="true"></i>';
+ const nav='<nav class="sn-phone-nav" aria-label="PostPilot navigation"><button class="cursor-interaction" data-go="0">'+icon('house')+'Today</button><button class="cursor-interaction" data-go="2">'+icon('calendar-days')+'Plan</button><button class="cursor-interaction" data-go="1">'+icon('plus')+'Create</button><button class="cursor-interaction" data-go="3">'+icon('list-checks')+'Queue</button></nav>';
+ const body=[
+ '<div class="sn-orbit"><div><b>8</b><small>posts ready</small></div></div><div class="sn-autopilot">● Autopilot is on</div><div class="sn-phone-card"><small style="color:#b35133">Up next · 11:30</small><p><strong>3 ways I reset after a busy week</strong></p><div class="sn-poster">Slow mornings.<br>Make bold weeks.</div><small>Instagram · Carousel</small><button class="cursor-interaction" data-go="3" style="float:right">Review</button></div><strong>Quick start</strong><div class="sn-quick" style="margin-top:12px"><button class="cursor-interaction" data-go="1">Create post<small>From any idea</small></button><button class="cursor-interaction" data-go="1">Find an idea<small>AI-curated for you</small></button></div>',
+ '<div class="sn-phone-card"><strong>Start with a stashed thought</strong><p><small>Type anything. PostPilot will shape it for every network.</small></p><strong style="font-size:13px">Your idea</strong><div class="sn-note">How I plan a calm week without losing momentum</div><button class="cursor-interaction sn-phone-primary" data-go="3">Shape this idea →</button></div><p style="text-align:center;color:#837772;font-size:12px;margin-top:22px">or choose a format</p><div class="sn-format"><span>▶</span><div><strong>Short video</strong><small>Script, hooks & shot list</small></div></div><div class="sn-format"><span>▤</span><div><strong>Carousel</strong><small>Swipe-worthy story</small></div></div><div class="sn-format"><span>Aa</span><div><strong>Text post</strong><small>A crisp thought, polished</small></div></div>',
+ '<small><strong>12 scheduled</strong> · Autopilot on</small><div class="sn-week"><span>Mon<b>14</b></span><span>Tue<b>15</b></span><span>Wed<b>16</b></span><span>Thu<b>17</b></span><span>Fri<b>18</b></span><span>Sat<b>19</b></span><span>Sun<b>20</b></span></div><p><strong>Wednesday, Sep 16</strong></p><div class="sn-schedule"><small>09:00 · LinkedIn · Published</small><strong>The quiet system behind my busiest weeks</strong><small>18% above average</small></div><div class="sn-schedule"><small>13:30 · Instagram · Scheduled</small><strong>Behind the scenes: planning one calm week</strong><small>Carousel · 5 slides</small></div><div class="sn-schedule" style="background:#eae2fc"><small>20:15 · TikTok · Ready</small><strong>3 tiny rituals for switching off</strong><small>Video · 24 sec</small></div><button class="cursor-interaction sn-phone-primary" data-go="3">View posting queue</button>',
+ '<div class="sn-healthy"><strong>Healthy rhythm</strong><br><small style="color:#c2d4c8">8 posts cover the next 6 days</small></div><strong>Up next</strong><div class="sn-queue-item"><span>Slow.</span><div><small>Instagram · Ready</small><strong>3 ways I reset after a busy week</strong><small>Today · 11:30</small></div></div><div class="sn-queue-item"><span style="background:#c4e5d8">POV</span><div><small>TikTok · Review</small><strong>Stop chasing every trend</strong><small>Today · 20:15</small></div></div><div class="sn-queue-item"><span style="background:#e7ddfb">5</span><div><small>LinkedIn · Ready</small><strong>5 honest lessons from building in public</strong><small>Thu · 09:00</small></div></div><div class="sn-queue-item"><span>Q&A</span><div><small>Instagram · Ready</small><strong>The question I hear every week</strong><small>Fri · 11:30</small></div></div><button class="cursor-interaction sn-phone-primary" data-go="1">Create another post</button>'
+ ];
+ screens.forEach((s,i)=>{let el=document.createElement('article');el.className='sn-artboard cursor-interaction';el.dataset.screen=i;el.setAttribute('aria-label',s.name+' artboard, 390 by 844');el.innerHTML='<div class="sn-artboard-name"><span>'+s.name+'</span><span>390 × 844</span></div><div class="sn-phone"><p class="sn-eyebrow">'+['Good morning, Maya','New post','September 2026','Autopilot'][i]+'</p><h2>'+escape(s.title)+'</h2>'+body[i]+nav+'</div>';world.append(el);});
+ function icons(){if(globalThis.lucide)lucide.createIcons({attrs:{width:16,height:16}})}
+ function save(){const snapshot={modelContent:{proposal:'Fixed Studio navigation',mode:state.mode,editing:state.editing,cameraPlacement:state.cameraPlacement},privateContent:{...state}};try{window.openai?.setWidgetState?.(snapshot)?.catch(()=>{});}catch{}}
+ function restore(saved){if(saved?.privateContent?.schema!==3)return;let s=saved.privateContent;if(['design','prototype'].includes(s.mode))state.mode=s.mode;if(Number.isInteger(s.selected)&&s.selected>=0&&s.selected<4)state.selected=s.selected;for(const k of ['editing','inspector'])if(typeof s[k]==='boolean')state[k]=s[k];if(['canvas','grid','focus'].includes(s.view))state.view=s.view;if(['Bottom right','Top toolbar'].includes(s.cameraPlacement))state.cameraPlacement=s.cameraPlacement;if(['agent','screens','system'].includes(s.side))state.side=s.side;}
+ function announce(s){q('.sn-live').textContent=s}
+ function coords(i){return{x:(i%2)*510,y:Math.floor(i/2)*974};}
+ function cameraUpdate(){world.style.transform='translate('+x+'px,'+y+'px) scale('+zoom+')';q('.sn-percent').textContent=Math.round(zoom*100)+'%';}
+ function bounds(){let reserve=state.editing&&state.inspector&&root.clientWidth<=800?210:0;return{w:Math.max(180,stage.clientWidth-reserve),h:stage.clientHeight-100};}
+ function fit(all=false){const b=bounds();if(state.mode==='prototype'||state.view==='focus')all=false;const c=all?{x:0,y:0}:coords(state.selected);const w=all?900:390,h=all?1818:844;zoom=Math.max(.08,Math.min(1,(b.w-48)/w,(b.h-32)/h));x=(b.w-w*zoom)/2-c.x*zoom;y=34-c.y*zoom;cameraUpdate();}
+ function changeZoom(n,px=stage.clientWidth/2,py=(stage.clientHeight-70)/2){const next=Math.max(.02,Math.min(2,n));x=px-(px-x)*next/zoom;y=py-(py-y)*next/zoom;zoom=next;cameraUpdate();}
+ function select(i,edit=state.editing){state.selected=i;state.editing=state.mode==='design'&&edit;root.dataset.sidebar='closed';q('[data-action=sidebar]').setAttribute('aria-expanded','false');render();fit(false);save();}
+ function commitHeading(i,value){if(value===screens[i].title)return;history.push({index:i,title:screens[i].title});future=[];screens[i].title=value;q('#sn-heading-text').value=value;q('[data-action=undo]').disabled=false;q('[data-action=redo]').disabled=true;}
+ function editHeading(i){select(i,true);const h=qa('.sn-artboard')[i].querySelector('h2');h.contentEditable='true';h.style.userSelect='text';h.focus();const range=document.createRange();range.selectNodeContents(h);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);}
+ function render(){
+ const grid=state.mode==='design'&&state.view==='grid'&&!state.editing;
+ q('.sn-grid').hidden=!grid;world.hidden=grid;q('.sn-hint').hidden=grid;camera.hidden=false;
+ camera.querySelectorAll('button,select').forEach(el=>el.disabled=grid);
+ qa('[data-side]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.side===state.side));qa('[data-side-panel]').forEach(p=>p.hidden=p.dataset.sidePanel!==state.side);
+ q('.sn-agent-target').textContent='Screen · '+screens[state.selected].name;
+ if(grid){q('.sn-grid').innerHTML=screens.map((s,i)=>'<div class="sn-grid-item"><div class="sn-grid-preview">'+qa('.sn-artboard')[i].querySelector('.sn-phone').outerHTML+'</div><button class="cursor-interaction" data-open="'+i+'">'+escape(s.name)+' '+icon('arrow-up-right')+'</button><small>390 × 844</small></div>').join('');q('.sn-grid').querySelectorAll('.sn-phone button').forEach(b=>{b.disabled=true;b.setAttribute('aria-hidden','true');});}
+ if(grid)q('.sn-grid').querySelectorAll('[contenteditable]').forEach(el=>el.contentEditable='false');
+ root.dataset.camera=state.cameraPlacement==='Top toolbar'?'top':'bottom';const dest=state.cameraPlacement==='Top toolbar'?q('.sn-camera-host-top'):q('.sn-camera-host-bottom');if(camera.parentNode!==dest)dest.append(camera);
+ qa('[data-mode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mode===state.mode));qa('[data-view]').forEach(b=>{b.setAttribute('aria-pressed',b.dataset.view===state.view);b.disabled=state.mode==='prototype';});
+ const editing=state.mode==='design'&&state.editing;const inspector=editing&&state.inspector;
+ q('.sn-inspector').hidden=!inspector;q('[data-action=inspector]').disabled=!editing;q('[data-action=inspector]').setAttribute('aria-pressed',inspector);
+ q('[data-action=undo]').disabled=state.mode!=='design'||!history.length;q('[data-action=redo]').disabled=state.mode!=='design'||!future.length;
+ q('.sn-save').style.visibility=state.mode==='design'?'visible':'hidden';q('.sn-context').innerHTML=state.mode==='prototype'?'Playing <strong>'+escape(screens[state.selected].name)+'</strong>':editing||state.view==='focus'?'<strong>'+escape(screens[state.selected].name)+'</strong> · 390 × 844':'<strong>'+ (state.view==='grid'?'Grid':'Canvas')+'</strong> · 4 screens';
+ q('.sn-hint').textContent=state.mode==='prototype'?'Click the app’s buttons to move between screens':'Scroll to pan · Pinch to zoom · Double-click text to edit';
+ q('.sn-screen-list').innerHTML=screens.map((s,i)=>'<button class="cursor-interaction" data-select="'+i+'" aria-pressed="'+(i===state.selected)+'">'+icon('smartphone')+escape(s.name)+(editing&&i===state.selected?'<span class="sn-edit-dot"></span>':'')+'</button>').join('');
+ qa('.sn-artboard').forEach((el,i)=>{const c=coords(i);el.style.left=c.x+'px';el.style.top=c.y+'px';el.hidden=(state.mode==='prototype'||state.view==='focus')&&i!==state.selected;el.classList.toggle('sn-selected',state.mode==='design'&&i===state.selected);el.querySelector('h2').textContent=screens[i].title;el.querySelector('h2').contentEditable=editing&&i===state.selected?'true':'false';el.querySelector('h2').classList.toggle('sn-heading-selected',editing&&i===state.selected);el.querySelector('.sn-artboard-name').hidden=state.mode==='prototype';el.querySelector('.sn-artboard-name span').textContent=screens[i].name;el.querySelectorAll('[data-go]').forEach(b=>b.classList.toggle('sn-current',Number(b.dataset.go)===i));});
+ q('#sn-heading-text').value=screens[state.selected].title;q('.sn-current-name').textContent=screens[state.selected].name;
+ qa('[data-property]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.property===property));qa('[data-panel]').forEach(p=>p.hidden=p.dataset.panel!==property);icons();
+ }
+ function showMessage(title,text,rename=false){q('#sn-dialog-title').textContent=title;q('.sn-dialog p').textContent=text;q('.sn-rename-label').hidden=!rename;q('.sn-rename-input').value=screens[state.selected].name;q('[data-action=close-message]').textContent=rename?'Save name':'Got it';q('.sn-message').hidden=false;dialogAction=rename?'rename':'';(rename?q('.sn-rename-input'):q('[data-action=close-message]')).focus();}
+ let returnFocus=null;
+ root.addEventListener('click',e=>{
+ const b=e.target.closest('button');if(!b||b.disabled)return;
+ if(b.dataset.side){state.side=b.dataset.side;render();save();return;}
+ if(b.dataset.mode){state.mode=b.dataset.mode;state.editing=false;state.view='canvas';render();fit(state.mode==='design');announce(state.mode==='prototype'?'Prototype. Click app links to navigate.':'Design canvas. All screens visible.');save();return;}
+ if(b.dataset.view){state.view=b.dataset.view;state.mode='design';if(state.view==='grid')state.editing=false;render();fit(state.view!=='focus');if(state.view==='grid')announce('Grid overview. Double-click a screen to open Focus.');save();return;}
+ if(b.dataset.select!==undefined){select(Number(b.dataset.select));if(!state.editing&&state.mode==='design')fit(false);return;}
+ if(b.dataset.open!==undefined){state.view='focus';select(Number(b.dataset.open),false);return;}
+ if(b.dataset.property){property=b.dataset.property;render();return;}
+ if(b.dataset.go!==undefined){if(state.mode==='prototype')select(Number(b.dataset.go),false);else{const a=b.closest('[data-screen]');if(a)select(Number(a.dataset.screen),false);}return;}
+ const a=b.dataset.action;
+ if(a==='agent-send'){returnFocus=b;showMessage('Studio agent','This proposal shows where your existing agent conversation stays. No message is sent from this mockup.');}
+ else if(a==='all'){state.mode='design';state.view='canvas';render();fit(true);announce('All screens visible on canvas.');}
+ else if(a==='inspector'){state.inspector=!state.inspector;render();fit(false);}
+ else if(a==='sidebar'){const open=root.dataset.sidebar!=='open';root.dataset.sidebar=open?'open':'closed';b.setAttribute('aria-expanded',open);}
+ else if(a==='plus')changeZoom(zoom*1.2);
+ else if(a==='minus')changeZoom(zoom/1.2);
+ else if(a==='arrange'){state.mode='design';state.editing=false;state.view='canvas';render();fit(true);announce('Screens arranged into two columns.');}
+ else if(a==='undo'||a==='redo'){const from=a==='undo'?history:future,to=a==='undo'?future:history;if(from.length){let prev=from.pop();to.push({index:prev.index,title:screens[prev.index].title});screens[prev.index].title=prev.title;render();}}
+ else if(a==='menu'){q('.sn-menu').hidden=!q('.sn-menu').hidden;b.setAttribute('aria-expanded',!q('.sn-menu').hidden);}
+ else if(['export','rename','compare','implement'].includes(a)){returnFocus=b;q('.sn-menu').hidden=true;q('[data-action=menu]').setAttribute('aria-expanded','false');const messages={export:['Export '+screens[state.selected].name,'This opens the existing full-resolution PNG export. Zoom and canvas position do not affect the exported screen.'],compare:['Compare with your app','This opens the existing comparison view. The workspace navigation keeps the same position.'],implement:['Implement this design','This opens the existing implementation action for the Studio agent. No agent runs from this proposal.'],rename:['Rename screen','Change the selected screen’s name in this proposal.']};showMessage(...messages[a],a==='rename');}
+ else if(a==='close-message'){if(dialogAction==='rename'){const name=q('.sn-rename-input').value.trim();if(name)screens[state.selected].name=name;render();}q('.sn-message').hidden=true;(returnFocus&&returnFocus.offsetWidth?returnFocus:q('[data-action=menu]')).focus();}
+ save();
+ });
+ stage.addEventListener('dblclick',e=>{if(state.mode==='prototype')return;const tile=e.target.closest('.sn-grid-item');if(tile){state.view='focus';select(Number(tile.querySelector('[data-open]').dataset.open),false);return;}let el=e.target.closest('[data-screen]');if(el)editHeading(Number(el.dataset.screen));});
+ world.addEventListener('input',e=>{if(!e.target.matches('h2[contenteditable=true]'))return;const i=Number(e.target.closest('[data-screen]').dataset.screen);commitHeading(i,e.target.textContent);});
+ q('#sn-heading-text').addEventListener('change',e=>{commitHeading(state.selected,e.target.value);render();announce('Heading updated in this proposal.');});
+ q('#sn-heading-text').addEventListener('input',e=>{commitHeading(state.selected,e.target.value);qa('.sn-artboard')[state.selected].querySelector('h2').textContent=e.target.value;});
+ ['sn-font-size','sn-font-weight','sn-text-align','sn-heading-level','sn-element-id','sn-element-class'].forEach(id=>q('#'+id).addEventListener('change',e=>{let h=qa('.sn-artboard')[state.selected].querySelector('h2');if(id==='sn-font-size'||id==='sn-heading-level')h.style.fontSize=Math.max(14,Math.min(64,Number(e.target.value)||31))+'px';if(id==='sn-font-weight')h.style.fontWeight=e.target.value;if(id==='sn-text-align')h.style.textAlign=e.target.value;if(id==='sn-element-id')h.dataset.proposedId=e.target.value;if(id==='sn-element-class')h.dataset.proposedClass=e.target.value;}));
+ camera.querySelector('select').addEventListener('change',e=>{if(e.target.value==='actual')changeZoom(1);else fit(e.target.value==='all');e.target.value='';});
+ stage.addEventListener('wheel',e=>{if(e.target.closest('.sn-camera')||state.view==='grid')return;e.preventDefault();if(e.ctrlKey||e.metaKey){const r=stage.getBoundingClientRect();changeZoom(zoom*Math.exp(-e.deltaY*.006),e.clientX-r.left,e.clientY-r.top);}else{x-=e.deltaX;y-=e.deltaY;cameraUpdate();}},{passive:false});
+ root.addEventListener('keydown',e=>{if(e.target.matches('input,textarea,select')||e.target.isContentEditable)return;if(e.code==='Space'){space=true;e.preventDefault();}if(e.key==='Escape'){q('.sn-menu').hidden=true;q('[data-action=menu]').setAttribute('aria-expanded','false');if(!q('.sn-message').hidden){q('.sn-message').hidden=true;q('[data-action=menu]').focus();}}});
+ root.addEventListener('keyup',e=>{if(e.code==='Space')space=false;});root.addEventListener('focusout',()=>{space=false});
+ stage.addEventListener('pointerdown',e=>{if(e.target.closest('.sn-camera')||e.target.closest('button')||state.view==='grid')return;if(e.target.isContentEditable&&!space&&e.button!==1)return;if(space||e.button===1||!e.target.closest('.sn-artboard')){if(!space&&e.button!==1&&state.editing){state.editing=false;render();}e.preventDefault();drag={x:e.clientX,y:e.clientY,ox:x,oy:y};stage.setPointerCapture(e.pointerId);}else if(state.mode==='design'){state.selected=Number(e.target.closest('[data-screen]').dataset.screen);state.editing=false;render();}});
+ stage.addEventListener('pointermove',e=>{if(drag){x=drag.ox+e.clientX-drag.x;y=drag.oy+e.clientY-drag.y;cameraUpdate();}});stage.addEventListener('pointerup',()=>{drag=null});stage.addEventListener('pointercancel',()=>{drag=null});
+ restore(window.openai?.widgetState);render();fit(!state.editing&&state.mode==='design');new ResizeObserver(()=>fit(!state.editing&&state.mode==='design')).observe(stage);
+ window.addEventListener('openai:set_globals',e=>{restore(e.detail?.globals?.widgetState);render();fit(!state.editing&&state.mode==='design');});
+ if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:()=>{render();fit(!state.editing&&state.mode==='design');save();}});tweak.addSelect(state,'cameraPlacement',{label:'One zoom control',options:['Bottom right','Top toolbar']});}
+ icons();
+})();
+</script>
