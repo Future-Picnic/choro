@@ -2,6 +2,92 @@ use std::time::{Duration, Instant};
 
 const UI_SLOW_OPERATION_THRESHOLD: Duration = Duration::from_millis(50);
 
+/// Compile-time opt-in counters. No timers, allocation, or logging in ordinary
+/// builds. Profiling builds report local five-second windows to stderr.
+pub(crate) struct UiProbe {
+    #[cfg(any(test, feature = "ui-performance"))]
+    label: &'static str,
+    #[cfg(any(test, feature = "ui-performance"))]
+    start: Instant,
+}
+
+impl UiProbe {
+    #[inline]
+    pub(crate) fn new(_label: &'static str) -> Self {
+        Self {
+            #[cfg(any(test, feature = "ui-performance"))]
+            label: _label,
+            #[cfg(any(test, feature = "ui-performance"))]
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Drop for UiProbe {
+    #[inline]
+    fn drop(&mut self) {
+        #[cfg(any(test, feature = "ui-performance"))]
+        probes::record(self.label, self.start.elapsed());
+    }
+}
+
+#[cfg(any(test, feature = "ui-performance"))]
+pub(crate) mod probes {
+    use super::*;
+    use std::{cell::RefCell, collections::BTreeMap};
+
+    #[derive(Default, Clone)]
+    pub(crate) struct Samples {
+        pub count: u64,
+        pub micros: Vec<u64>,
+    }
+
+    impl Samples {
+        pub fn percentile(&self, percentile: usize) -> u64 {
+            let mut sorted = self.micros.clone();
+            sorted.sort_unstable();
+            sorted
+                .get(sorted.len().saturating_sub(1) * percentile / 100)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    thread_local! {
+        static DATA: RefCell<(Instant, BTreeMap<&'static str, Samples>)> =
+            RefCell::new((Instant::now(), BTreeMap::new()));
+    }
+
+    pub(crate) fn record(label: &'static str, elapsed: Duration) {
+        DATA.with(|data| {
+            let mut data = data.borrow_mut();
+            let samples = data.1.entry(label).or_default();
+            samples.count += 1;
+            if samples.micros.len() < 20_000 {
+                samples.micros.push(elapsed.as_micros() as u64);
+            }
+            #[cfg(not(test))]
+            if data.0.elapsed() >= Duration::from_secs(5) {
+                for (label, samples) in &data.1 {
+                    eprintln!(
+                        "[ui-profile] {label}: count={} p95={}us p99={}us",
+                        samples.count,
+                        samples.percentile(95),
+                        samples.percentile(99)
+                    );
+                }
+                data.0 = Instant::now();
+                data.1.clear();
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot() -> BTreeMap<&'static str, Samples> {
+        DATA.with(|data| data.borrow().1.clone())
+    }
+}
+
 /// Emits a local diagnostic when work performed during a GPUI callback takes
 /// long enough to be perceptible. This never sends data off the machine.
 pub(crate) struct UiOperationTimer {

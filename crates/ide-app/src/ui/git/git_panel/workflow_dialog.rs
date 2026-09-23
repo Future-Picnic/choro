@@ -537,7 +537,9 @@ impl WorkflowDialog {
         } else {
             self.destination_branch.clone()
         };
-        let branches = self.branches.clone();
+        let mut branches = self.branches.clone();
+        branches
+            .sort_by_key(|branch| crate::ui::branch_order::branch_priority(&branch.name, false));
         let dialog = cx.entity();
         v_flex()
             .flex_1()

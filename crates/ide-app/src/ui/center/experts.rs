@@ -73,36 +73,13 @@ pub(super) fn authorize(
     if !ide_core::delegation::enabled() {
         return Ok(None);
     }
-    let store = LocalStore::open_default()?;
-    // Discussing stopped work must not authorize or restart an assignment,
-    // even when the user's message names one of its Experts.
-    if store
-        .load_delegations()?
-        .iter()
-        .any(|r| r.parent_agent_id == parent && r.status.stopped())
-    {
-        return Ok(None);
-    }
-    let authorization = store.authorize_experts(parent, Uuid::new_v4(), text, explicit, plan)?;
-    let has_run = store
-        .load_delegations()?
-        .iter()
-        .any(|r| r.parent_agent_id == parent && !r.status.terminal());
-    if !has_run && !store.beta_features()?.delegation {
-        anyhow::ensure!(
-            explicit.is_empty(),
-            "{}",
-            ide_core::delegation::BETA_DISABLED
-        );
-        return Ok(None);
-    }
-    if !explicit.is_empty() || has_run {
-        authorization
-            .map(|a| store.begin_delegation(parent, a.id).map(|r| r.id))
-            .transpose()
-    } else {
-        Ok(None)
-    }
+    LocalStore::open_default()?.prepare_delegation_submission(
+        parent,
+        Uuid::new_v4(),
+        text,
+        explicit,
+        plan,
+    )
 }
 
 /// The last path component of a repository, for compact metadata.
@@ -113,6 +90,38 @@ fn repository_name(path: &std::path::Path) -> Option<String> {
 }
 
 impl CenterArea {
+    /// A new explicit user request may resume a stopped Band through the
+    /// normal reconciliation path. Tool output and ordinary chat cannot do so.
+    pub(super) fn resume_delegation_for_submission(
+        &mut self,
+        run: Option<Uuid>,
+        text: &str,
+        explicit: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<bool> {
+        if !explicit && !ide_core::experts::requests_delegation(text) {
+            return Ok(false);
+        }
+        let Some(run) = run else {
+            return Ok(false);
+        };
+        if !LocalStore::open_default()?
+            .load_delegation(run)?
+            .status
+            .stopped()
+        {
+            return Ok(false);
+        }
+        let handle = cx
+            .try_global::<DelegationHandle>()
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("Band coordinator is unavailable. Your request is retained.")
+            })?;
+        handle.0.update(cx, |s, cx| s.resume(run, cx))?;
+        Ok(true)
+    }
+
     pub(super) fn can_delegate_from(&self, parent: Uuid, cx: &App) -> bool {
         ide_core::delegation::enabled()
             && (self.workspace.read(cx).beta_features.delegation
@@ -534,6 +543,22 @@ impl CenterArea {
                         })),
                     ),
             )
+            .child(
+                v_flex()
+                    .gap_1p5()
+                    .px(crate::ui::design::chat_card_body_pad_x())
+                    .pb_2()
+                    .when(run.status.stopped(), |col| {
+                        col.child(self.render_delegation_recovery(
+                            run.id,
+                            run.parent_agent_id,
+                            "bandmate-panel",
+                            cx,
+                        ))
+                    })
+                    .children(self.render_delegation_task_control(run, task, "bandmate-panel", cx))
+                    .children(self.render_delegation_panel_error(run.parent_agent_id, cx)),
+            )
             .when(expanded, |card| {
                 card.child(
                     v_flex()
@@ -635,6 +660,26 @@ impl CenterArea {
         let mut row = h_flex().gap_2().flex_wrap().items_center();
         if let Some(binding) = agent.delegation.as_ref().filter(|b| b.task_id.is_some()) {
             let parent = binding.parent_agent_id;
+            let pause_hint = cx.try_global::<DelegationHandle>().and_then(|h| {
+                let run = h.0.read(cx).runs.iter().find(|r| r.id == binding.run_id)?;
+                if run.status.stopped() {
+                    Some("Messages queue until the Band resumes")
+                } else if run.task(binding.task_id?).ok()?.status
+                    == ide_core::delegation::TaskStatus::Paused
+                {
+                    Some("Sending a message resumes this bandmate")
+                } else {
+                    None
+                }
+            });
+            if let Some(hint) = pause_hint {
+                row = row.child(
+                    div()
+                        .text_size(crate::ui::design::text_ui())
+                        .text_color(crate::ui::design::t3(cx))
+                        .child(hint),
+                );
+            }
             row = row.child(
                 crate::ui::style::dialog_neutral_button(
                     ("expert-parent", id.as_u128() as u64),
@@ -700,6 +745,22 @@ impl CenterArea {
             row = row.child(self.render_delegation_recovery(run_id, id, "composer", cx));
         }
         row.into_any_element()
+    }
+
+    pub(super) fn render_delegation_panel_error(
+        &self,
+        parent: Uuid,
+        cx: &App,
+    ) -> Option<gpui::AnyElement> {
+        self.agent_start_errors.get(&parent).map(|error| {
+            div()
+                .w_full()
+                .whitespace_normal()
+                .text_size(crate::ui::design::text_ui())
+                .text_color(crate::ui::design::rose(cx))
+                .child(error.clone())
+                .into_any_element()
+        })
     }
 
     pub(super) fn render_delegation_recovery(

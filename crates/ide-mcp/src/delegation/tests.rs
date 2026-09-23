@@ -219,7 +219,7 @@ fn empty_authorization_discovery_requires_clarification_instead_of_a_plan_retry(
         .call_enabled(&ctx, &plan(&ctx, source, &expert))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("confirm the exact names"));
+    assert!(error.contains("No delegation authority was recorded"));
     assert!(ctx.store().unwrap().load_delegations().unwrap().is_empty());
 }
 
@@ -524,6 +524,46 @@ fn temporary_teammates_share_inherited_config_but_have_distinct_tasks() {
 }
 
 #[test]
+fn natural_on_demand_request_stays_ready_after_clarification_without_a_picker() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    let parent = store.load_agents().unwrap()[0].clone();
+    let source = Uuid::new_v4();
+    let id = store.prepare_delegation_submission(parent.id, source,
+        "I want to \"redesign\" our video using its current source and compare different approaches. Please delagte four on-demand teammates without requiring saved profiles.",
+        &[], false).unwrap().unwrap();
+    store
+        .prepare_delegation_submission(
+            parent.id,
+            Uuid::new_v4(),
+            "They can simply be created on demand without specific profiles",
+            &[],
+            false,
+        )
+        .unwrap();
+    let listed = content(
+        DelegationTool("experts_list")
+            .call(&ctx, &json!({}))
+            .unwrap(),
+    );
+    assert_eq!(listed["authorization_status"], "ready");
+    assert_eq!(listed["on_demand_expert_ids"], json!([source]));
+    assert_eq!(listed["active_run"]["id"], json!(id));
+    let tasks = (0..4).map(|i| json!({
+        "key":format!("approach-{i}"), "expert_id":source,
+        "goal":format!("Propose video approach {i}"), "brief":"Inspect the source and propose an approach",
+        "expected_outcome":"A concrete proposal with evidence", "repository":parent.project_path,
+        "kind":"consultation"
+    })).collect::<Vec<_>>();
+    let args = json!({"authorization_id":listed["authorization_id"],"operation_key":"natural-plan",
+        "expected_revision":0,"tasks":tasks});
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    assert_eq!(store.load_delegation(id).unwrap().tasks.len(), 4);
+    assert_eq!(store.load_delegations().unwrap().len(), 1);
+}
+
+#[test]
 fn ordinary_text_cannot_authorize_temporary_teammates() {
     let (_dir, ctx, _, _) = fixture();
     let store = ctx.store().unwrap();
@@ -540,4 +580,274 @@ fn ordinary_text_cannot_authorize_temporary_teammates() {
             .unwrap(),
     );
     assert_eq!(listed["on_demand_expert_ids"], json!([]));
+}
+
+#[test]
+fn on_demand_model_comparison_resolves_user_typos_without_changing_the_lead() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    let parent = store.load_agents().unwrap()[0].clone();
+    let profiles = store.load_experts().unwrap();
+    let source = Uuid::new_v4();
+    store.authorize_experts(parent.id, source,
+        "Delegate four on-demand teammates using GPT6 asrta, GPT-6 Sol, Fabel 5.1 and Sonnet 5. Keep outputs separate and compare results.", &[], false).unwrap().unwrap();
+    let listed = content(
+        DelegationTool("experts_list")
+            .call(&ctx, &json!({}))
+            .unwrap(),
+    );
+    let temporary = listed["on_demand_expert_ids"][0].as_str().unwrap();
+    let names = ["GPT6 asrta", "GPT-6 Sol", "Fabel 5.1", "Sonnet 5"];
+    let tasks = names.iter().enumerate().map(|(i, name)| json!({
+        "key":format!("variant-{i}"), "expert_id":temporary, "model_request":name,
+        "goal":format!("Create variant {i}"), "brief":"Use the same source brief and keep output separate",
+        "expected_outcome":"Independent deliverable with checks", "repository":parent.project_path, "kind":"implementation"
+    })).collect::<Vec<_>>();
+    let args = json!({"authorization_id":source,"operation_key":"model-comparison","expected_revision":0,"tasks":tasks});
+    let first = DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    assert_eq!(
+        DelegationTool("delegation_plan").call(&ctx, &args).unwrap(),
+        first
+    );
+    let runs = store.load_delegations().unwrap();
+    let run = &runs[0];
+    assert_eq!(run.tasks.len(), 4);
+    assert_eq!(
+        run.tasks
+            .iter()
+            .map(|t| t.expert.profile.model)
+            .collect::<Vec<_>>(),
+        vec![
+            AgentModel::CodexGpt6Astra,
+            AgentModel::CodexGpt6Sol,
+            AgentModel::ClaudeFable51,
+            AgentModel::ClaudeSonnet
+        ]
+    );
+    let mut schedulable = run.clone();
+    schedulable.status = RunStatus::Active;
+    assert_eq!(
+        schedulable.ready_tasks(0).len(),
+        3,
+        "Concurrency limits still apply"
+    );
+    assert_eq!(store.load_agents().unwrap()[0].model, parent.model);
+    assert_eq!(store.load_agents().unwrap()[0].provider, parent.provider);
+    assert_eq!(store.load_experts().unwrap(), profiles);
+    assert_eq!(
+        run.temporary_model_authorizations.get(&source).unwrap(),
+        &run.original_assignment
+    );
+}
+
+#[test]
+fn model_requests_fail_closed_for_unknown_ambiguous_and_unmentioned_names() {
+    for (typed, requested) in [
+        ("Fable", "Fable"),
+        ("Gemini", "Gemini"),
+        ("Astra", "Sonnet 5"),
+        ("Sonnnet 5", "Sonnet 5"),
+    ] {
+        let (_dir, ctx, _, _) = fixture();
+        let store = ctx.store().unwrap();
+        let parent = store.load_agents().unwrap()[0].clone();
+        let source = Uuid::new_v4();
+        store
+            .authorize_experts(
+                parent.id,
+                source,
+                &format!("Delegate a teammate using {typed}"),
+                &[],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        let args = json!({"authorization_id":source,"operation_key":"invalid-model","expected_revision":0,
+            "tasks":[{"key":"variant","expert_id":source,"model_request":requested,"goal":"Build variant",
+            "brief":"Build the requested output","expected_outcome":"Checked","repository":parent.project_path,"kind":"implementation"}]});
+        assert!(
+            DelegationTool("delegation_plan").call(&ctx, &args).is_err(),
+            "{typed}/{requested}"
+        );
+        assert!(store.load_delegations().unwrap()[0].tasks.is_empty());
+        assert_eq!(store.load_agents().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn followup_model_authority_is_bound_to_its_own_temporary_teammate() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    let parent = store.load_agents().unwrap()[0].clone();
+    let first = Uuid::new_v4();
+    store
+        .authorize_experts(parent.id, first, "Delegate using Astra", &[], false)
+        .unwrap();
+    let run = store.begin_delegation(parent.id, first).unwrap();
+    let second = Uuid::new_v4();
+    store
+        .authorize_experts(
+            parent.id,
+            second,
+            "Delegate another teammate using Sonnet 5",
+            &[],
+            false,
+        )
+        .unwrap();
+    let updated = store.begin_delegation(parent.id, second).unwrap();
+    assert_eq!(run.id, updated.id);
+    let mut args = json!({"run_id":run.id,"operation_key":"followup-model","expected_revision":updated.revision,
+        "tasks":[{"key":"followup","expert_id":first,"model_request":"Sonnet 5","goal":"Another variant",
+        "brief":"Use the user requested model","expected_outcome":"Checked","repository":parent.project_path,"kind":"consultation"}]});
+    assert!(DelegationTool("delegation_plan").call(&ctx, &args).is_err());
+    args["tasks"][0]["expert_id"] = json!(second);
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    assert_eq!(
+        store.load_delegation(run.id).unwrap().tasks[0]
+            .expert
+            .profile
+            .model,
+        AgentModel::ClaudeSonnet
+    );
+}
+
+#[test]
+fn ended_band_can_be_requested_again_with_a_correction_and_model_context() {
+    let (_dir, ctx, _, _) = fixture();
+    let store = ctx.store().unwrap();
+    let parent = ctx.agent_id().unwrap();
+    let first = store
+        .prepare_delegation_submission(
+            parent,
+            Uuid::new_v4(),
+            "Please delegate four teammates using GPT-6 Astra and GPT-6 Sol",
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    store
+        .update_delegation(first, None, |r| {
+            r.status = RunStatus::Cancelled;
+            Ok(())
+        })
+        .unwrap();
+    assert!(store
+        .prepare_delegation_submission(
+            parent,
+            Uuid::new_v4(),
+            "Sorry, I mean three teammates: GPT-6 Astra, GPT-6 Sol and Sonnet 5",
+            &[],
+            false
+        )
+        .unwrap()
+        .is_none());
+    let source = Uuid::new_v4();
+    let second = store
+        .prepare_delegation_submission(parent, source, "please deleage it", &[], false)
+        .unwrap()
+        .unwrap();
+    assert_ne!(first, second);
+    let listed = content(
+        DelegationTool("experts_list")
+            .call(&ctx, &json!({}))
+            .unwrap(),
+    );
+    assert_eq!(listed["authorization_status"], "ready");
+    let repo = store.load_agents().unwrap()[0].project_path.clone();
+    let tasks = ["GPT-6 Astra", "GPT-6 Sol", "Sonnet 5"].iter().enumerate().map(|(i, model)| json!({
+        "key":format!("variant-{i}"), "expert_id":source, "model_request":model,
+        "goal":"An independent video approach", "brief":"Keep voiceover and compare the result",
+        "expected_outcome":"A checked proposal", "repository":repo, "kind":"consultation"
+    })).collect::<Vec<_>>();
+    let args = json!({"run_id":second,"operation_key":"retry-three","expected_revision":listed["active_run"]["revision"],"tasks":tasks});
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    assert_eq!(store.load_delegation(second).unwrap().tasks.len(), 3);
+    assert_eq!(
+        store.load_delegation(first).unwrap().status,
+        RunStatus::Cancelled
+    );
+}
+
+#[test]
+fn adding_a_teammate_during_a_run_preserves_existing_assignments() {
+    let (_dir, ctx, source, expert) = fixture();
+    let store = ctx.store().unwrap();
+    DelegationTool("delegation_plan")
+        .call(&ctx, &plan(&ctx, source, &expert))
+        .unwrap();
+    let before = store.load_delegations().unwrap().pop().unwrap();
+    let added = Uuid::new_v4();
+    assert_eq!(
+        store
+            .prepare_delegation_submission(
+                ctx.agent_id().unwrap(),
+                added,
+                "Add another teammate to check the tests",
+                &[],
+                false
+            )
+            .unwrap(),
+        Some(before.id)
+    );
+    let listed = content(
+        DelegationTool("experts_list")
+            .call(&ctx, &json!({}))
+            .unwrap(),
+    );
+    let args = json!({"run_id":before.id,"operation_key":"add-tester","expected_revision":listed["active_run"]["revision"],"tasks":[{
+        "key":"tester", "expert_id":added,"goal":"Check the tests", "brief":"Review tests in the repository",
+        "expected_outcome":"Evidence and gaps", "repository":before.tasks[0].plan.repository,"kind":"consultation"
+    }]});
+    DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+    let after = store.load_delegation(before.id).unwrap();
+    assert_eq!(after.tasks.len(), before.tasks.len() + 1);
+    assert_eq!(after.tasks[0].id, before.tasks[0].id);
+    assert_eq!(after.tasks[0].revision, before.tasks[0].revision);
+}
+
+#[test]
+fn retry_model_authority_is_not_a_global_preference() {
+    for (status, request) in [
+        (
+            RunStatus::Cancelled,
+            "Delegate a teammate to build another feature",
+        ),
+        (RunStatus::Completed, "Please delegate it again"),
+    ] {
+        let (_dir, ctx, _, _) = fixture();
+        let store = ctx.store().unwrap();
+        let parent = ctx.agent_id().unwrap();
+        let first = store
+            .prepare_delegation_submission(
+                parent,
+                Uuid::new_v4(),
+                "Delegate an on-demand teammate using Sonnet 5",
+                &[],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        store
+            .update_delegation(first, None, |r| {
+                r.status = status;
+                Ok(())
+            })
+            .unwrap();
+        let source = Uuid::new_v4();
+        let second = store
+            .prepare_delegation_submission(parent, source, request, &[], false)
+            .unwrap()
+            .unwrap();
+        let run = store.load_delegation(second).unwrap();
+        assert_eq!(run.temporary_model_authorizations[&source], request);
+        let repo = store.load_agents().unwrap()[0].project_path.clone();
+        let args = json!({"run_id":second,"operation_key":"unauthorized-model","expected_revision":run.revision,"tasks":[{
+            "key":"different-task", "expert_id":source,"model_request":"Sonnet 5", "goal":"New work",
+            "brief":"New task", "expected_outcome":"Checked result", "repository":repo,"kind":"consultation"
+        }]});
+        assert!(DelegationTool("delegation_plan").call(&ctx, &args).is_err());
+        assert!(store.load_delegation(second).unwrap().tasks.is_empty());
+    }
 }

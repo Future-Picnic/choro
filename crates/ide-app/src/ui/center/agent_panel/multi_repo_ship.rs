@@ -661,7 +661,8 @@ impl Render for MultiRepoShipDialog {
         let pr_title = repository.pr_title.clone();
         let pr_description = repository.pr_description.clone();
         let pr_base_branch = repository.pr_base_branch.clone();
-        let pr_base_options = repository.pr_base_branch_options.clone();
+        let mut pr_base_options = repository.pr_base_branch_options.clone();
+        pr_base_options.sort_by_key(|name| crate::ui::branch_order::branch_priority(name, false));
         let dialog_entity = cx.entity().clone();
         let repository_labels = self
             .repositories

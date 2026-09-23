@@ -152,8 +152,8 @@ impl CenterArea {
             forward: std::mem::take(&mut self.view_history_forward),
         };
         let restored = self.project_navigation.switch_to(project, current);
-        if self.penpot_compare_open {
-            self.close_penpot_compare(cx);
+        if self.design_compare_open {
+            self.close_design_compare(cx);
         }
         self.view_mode = restored.mode;
         self.context_mode = restored.context;
@@ -237,8 +237,8 @@ impl CenterArea {
         if self.view_mode == mode {
             return;
         }
-        if mode != CenterMode::Design && self.penpot_compare_open {
-            self.close_penpot_compare(cx);
+        if mode != CenterMode::Design && self.design_compare_open {
+            self.close_design_compare(cx);
         }
         self.view_history_back.push(self.view_mode);
         if self.view_history_back.len() > 80 {
@@ -254,8 +254,8 @@ impl CenterArea {
         let Some(previous) = self.view_history_back.pop() else {
             return;
         };
-        if previous != CenterMode::Design && self.penpot_compare_open {
-            self.close_penpot_compare(cx);
+        if previous != CenterMode::Design && self.design_compare_open {
+            self.close_design_compare(cx);
         }
         self.view_history_forward.push(self.view_mode);
         if self.view_history_forward.len() > 80 {
@@ -274,8 +274,8 @@ impl CenterArea {
         let Some(next) = self.view_history_forward.pop() else {
             return;
         };
-        if next != CenterMode::Design && self.penpot_compare_open {
-            self.close_penpot_compare(cx);
+        if next != CenterMode::Design && self.design_compare_open {
+            self.close_design_compare(cx);
         }
         self.view_history_back.push(self.view_mode);
         if self.view_history_back.len() > 80 {
@@ -387,23 +387,7 @@ impl CenterArea {
         if let Some((project, _)) = self.active_project(cx) {
             self.refresh_studio_catalog(project, cx);
         }
-        let active_project = self.active_project(cx).map(|(project, _)| project);
-        let has_open_design = active_project.is_some_and(|project| {
-            self.studio.as_ref().is_some_and(|studio| studio.project == project) || self.penpot_open_design
-                .is_some_and(|(open_project, _)| open_project == project)
-                || self
-                    .figma_open_design
-                    .is_some_and(|(open_project, _)| open_project == project)
-        });
-        if !has_open_design {
-            if let Some(project) = active_project {
-                self.penpot.update(cx, |penpot, cx| {
-                    penpot.refresh_design_thumbnails(project, cx)
-                });
-            }
-        }
         self.set_view_mode(CenterMode::Design, cx);
-        self.reconnect_penpot(cx);
         cx.notify();
     }
 
@@ -501,7 +485,7 @@ impl CenterArea {
         self.agent_chats.update(cx, |chats, cx| {
             let session = chats.ensure_session(agent.id, title, cx);
             session.interaction_mode = mode;
-            cx.notify();
+            chats.publish_change(agent.id, crate::state::agent_chat::ChatChangeCategories::CONTROLS, cx);
         });
         cx.notify();
     }

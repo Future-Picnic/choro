@@ -7,16 +7,39 @@ impl CenterArea {
         mentions: &[ComposerMentionToken],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        h_flex()
+        v_flex()
             .w_full()
             .min_w(px(0.))
-            .gap_1()
-            .items_center()
-            .overflow_hidden()
+            .gap_2()
             .children(
-                mentions.iter().enumerate().map(|(index, mention)| {
-                    self.render_new_agent_mention_token(index, mention, cx)
-                }),
+                mentions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, mention)| mention.studio_attachment.is_some())
+                    .map(|(index, mention)| {
+                        self.render_studio_composer_attachment(index, mention, cx)
+                    }),
+            )
+            .when(
+                mentions.iter().any(|mention| mention.studio_attachment.is_none()),
+                |column| {
+                    column.child(
+                        h_flex()
+                            .w_full()
+                            .min_w(px(0.))
+                            .flex_wrap()
+                            .gap_1()
+                            .children(
+                                mentions
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, mention)| mention.studio_attachment.is_none())
+                                    .map(|(index, mention)| {
+                                        self.render_new_agent_mention_token(index, mention, cx)
+                                    }),
+                            ),
+                    )
+                },
             )
             .into_any_element()
     }
@@ -33,7 +56,7 @@ impl CenterArea {
             }
             ComposerMentionKind::File => (IconName::File, crate::ui::design::sage(cx)),
             ComposerMentionKind::Folder => (IconName::FolderOpen, crate::ui::design::sage(cx)),
-            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => (
+            ComposerMentionKind::StudioDesign => (
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),
@@ -60,15 +83,7 @@ impl CenterArea {
             .hover(move |chip| chip.bg(color.opacity(0.18)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(composer) = this.new_agent_composer.as_mut() {
-                    if index < composer.selected_mentions.len() {
-                        let removed = composer.selected_mentions.remove(index);
-                        if removed.kind == ComposerMentionKind::Doc {
-                            composer
-                                .linked_docs
-                                .retain(|path| path.to_string_lossy() != removed.path_label);
-                        }
-                        composer.error = None;
-                    }
+                    composer.remove_context_mention(index);
                 }
                 cx.notify();
             }))

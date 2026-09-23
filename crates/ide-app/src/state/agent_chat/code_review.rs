@@ -116,7 +116,20 @@ impl CodeReview {
                 .map(|line| line.trim().trim_matches('`'))
                 .filter(|line| line.to_ascii_lowercase().starts_with("completion:"))
                 .collect::<Vec<_>>();
-            statuses.len() == 1 && statuses[0].eq_ignore_ascii_case("Completion: complete")
+            if statuses.len() != 1
+                || coverage.to_ascii_lowercase().matches("completion:").count() != 1
+            {
+                return false;
+            }
+            // Providers often continue the coverage explanation in the same
+            // paragraph: "Completion: complete. Reviewed both files ...".
+            // Accept that sentence boundary without accepting qualifications
+            // such as "complete except for ..." or conflicting declarations.
+            let declaration = statuses[0].split_once(". ").map_or_else(
+                || statuses[0].strip_suffix('.').unwrap_or(statuses[0]),
+                |(declaration, _)| declaration,
+            );
+            declaration.eq_ignore_ascii_case("Completion: complete")
         })
     }
 
@@ -440,8 +453,21 @@ mod tests {
             "I could not read the repository.",
             "## Coverage\nCompletion: partial\nReviewed 24 of 88 files. No findings so far.",
             "## Coverage\nCompletion: complete\nCompletion: partial\nSome files remain.",
+            "## Coverage\nCompletion: complete except for the remaining files.",
+            "## Coverage\nCompletion: complete. Completion: partial. Some files remain.",
         ] {
             assert!(!CodeReview::new("partial", markdown).is_clean());
+        }
+    }
+
+    #[test]
+    fn completed_review_accepts_a_coverage_sentence_with_its_explanation() {
+        for coverage in [
+            "Completion: complete.",
+            "Completion: complete. Reviewed both files attributed to this conversation and checked their current contents against the original request and the recorded patch.",
+        ] {
+            let review = CodeReview::new("demo", format!("## Coverage\n{coverage}\n\nThe inspected changes look clean."));
+            assert!(review.is_clean());
         }
     }
 

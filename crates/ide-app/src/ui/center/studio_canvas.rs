@@ -4,7 +4,7 @@ use ide_core::studio::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -206,6 +206,9 @@ pub(super) struct Runtime {
     seen: VecDeque<Uuid>,
     fingerprint: String,
     theme: String,
+    activity: String,
+    designing: BTreeMap<Uuid, StudioScreenActivity>,
+    designing_checked: Option<std::time::Instant>,
     opened: std::time::Instant,
     initial: bool,
 }
@@ -237,6 +240,9 @@ impl Runtime {
                 seen: VecDeque::new(),
                 fingerprint: String::new(),
                 theme: String::new(),
+                activity: String::new(),
+                designing: BTreeMap::new(),
+                designing_checked: None,
                 opened: std::time::Instant::now(),
                 initial,
             },
@@ -265,6 +271,9 @@ impl Runtime {
         self.desired.clear();
         self.delivered.clear();
         self.fingerprint.clear();
+        self.activity.clear();
+        self.designing.clear();
+        self.designing_checked = None;
         self.opened = std::time::Instant::now();
     }
 }
@@ -285,8 +294,16 @@ fn content_key(store: &StudioStore, design: &StudioDesign, id: Uuid) -> String {
             .to_string_lossy()
     )
 }
-fn metadata(store: &StudioStore, design: &StudioDesign) -> Value {
-    json!(design.manifest.screens.iter().map(|s|json!({"id":s.id,"name":s.name,"width":s.width,"height":s.height,"archived":s.archived,"content_key":content_key(store,design,s.id)})).collect::<Vec<_>>())
+/// Screens plus freshly derived agent activity, for replies outside the refresh path.
+fn screens_value(store: &StudioStore, design: &StudioDesign) -> Value {
+    metadata(store, design, &designing_screens(store, design))
+}
+fn metadata(
+    store: &StudioStore,
+    design: &StudioDesign,
+    activity: &BTreeMap<Uuid, StudioScreenActivity>,
+) -> Value {
+    json!(design.manifest.screens.iter().map(|s|json!({"id":s.id,"name":s.name,"width":s.width,"height":s.height,"archived":s.archived,"content_key":content_key(store,design,s.id),"activity":activity.get(&s.id).map(|state|state.as_str())})).collect::<Vec<_>>())
 }
 fn document(bootstrap: Value) -> String {
     let data = bootstrap
@@ -325,14 +342,26 @@ impl CenterArea {
         }
         let theme = super::studio_editor::web_theme(cx);
         let theme_key = theme.to_string();
+        // Agent progress moves without touching the design fingerprint, so it is
+        // polled here rather than derived from it. This runs on every frame;
+        // re-reading the scope directory that often would be wasteful.
+        let elapsed = |t: std::time::Instant| t.elapsed() >= Duration::from_millis(400);
+        if s.canvas.designing_checked.is_none_or(|t| elapsed(t)) {
+            s.canvas.designing = designing_screens(&s.store, &s.design);
+            s.canvas.designing_checked = Some(std::time::Instant::now());
+        }
+        let designing = s.canvas.designing.clone();
+        let activity_key = activity_key(&designing);
         if s.canvas.html.is_some()
             && (!s.canvas.ready
-                || (s.canvas.fingerprint == s.design.fingerprint && s.canvas.theme == theme_key))
+                || (s.canvas.fingerprint == s.design.fingerprint
+                    && s.canvas.theme == theme_key
+                    && s.canvas.activity == activity_key))
         {
             return;
         }
         s.canvas.layout.reconcile(&s.design.manifest.screens);
-        let screens = metadata(&s.store, &s.design);
+        let screens = metadata(&s.store, &s.design, &designing);
         s.canvas.keys = screens
             .as_array()
             .into_iter()
@@ -357,6 +386,7 @@ impl CenterArea {
         }
         s.canvas.fingerprint = s.design.fingerprint.clone();
         s.canvas.theme = theme_key;
+        s.canvas.activity = activity_key;
     }
     pub(super) fn studio_canvas_command(&mut self, command: &str, cx: &mut Context<Self>) {
         let Some(s) = self.studio.as_mut() else {
@@ -707,7 +737,8 @@ impl CenterArea {
                     };
                     if wanted {if let Some(value)=value{s.canvas.delivered.insert(request);this.web_host.update(cx,|host,_|host.canvas_reply(&value));}}
                     this.queue_studio_canvas(cx);
-                    cx.notify();
+                    // The WebView consumes this image reply directly. No GPUI
+                    // presentation changed, so keep chat/history caches intact.
                 });
             }).detach();
             break;
@@ -735,14 +766,14 @@ impl CenterArea {
             .find(|screen| screen.id == id && !screen.archived)
             .cloned()
         else {
-            let reply = json!({"session":s.canvas.session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":metadata(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":"This screen was archived or removed while resizing."});
+            let reply = json!({"session":s.canvas.session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens_value(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":"This screen was archived or removed while resizing."});
             self.web_host
                 .update(cx, |host, _| host.canvas_reply(&reply));
             return;
         };
         if s.saving || revision != s.design.manifest.revision || fingerprint != s.design.fingerprint
         {
-            let reply = json!({"session":s.canvas.session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":metadata(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":"Screen changed while resizing. Try again after the current edit finishes."});
+            let reply = json!({"session":s.canvas.session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens_value(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":"Screen changed while resizing. Try again after the current edit finishes."});
             self.web_host
                 .update(cx, |host, _| host.canvas_reply(&reply));
             return;
@@ -767,7 +798,7 @@ impl CenterArea {
             let _=this.update(cx,|this,cx|{
                 let Some(s)=this.studio.as_mut().filter(|s|s.design.manifest.id==design_id) else{return;};s.saving=false;
                 let error=match result.0{Ok(design)=>{s.design=design;s.redo=false;s.canvas.layout.positions.insert(id,position);s.canvas.save(&s.store,design_id).err().map(|e|e.to_string())},Err(e)=>{if let Ok(design)=result.1{s.design=design;}Some(e.to_string())}};
-                if s.canvas.session==session{let reply=json!({"session":session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":metadata(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":error});this.web_host.update(cx,|host,_|host.canvas_reply(&reply));}
+                if s.canvas.session==session{let reply=json!({"session":session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens_value(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":error});this.web_host.update(cx,|host,_|host.canvas_reply(&reply));}
                 if let Some(error)=error{s.error=Some(error);}
                 let navigation=if s.canvas.navigation_ready{s.canvas.navigation_ready=false;s.inline_screen=None;s.inline_flush=None;s.editor_html=None;s.dirty=false;s.canvas.leave();s.pending_navigation.take()}else{None};
                 this.refresh_studio_canvas(cx);if let Some(action)=navigation{action(this,cx);}cx.notify();

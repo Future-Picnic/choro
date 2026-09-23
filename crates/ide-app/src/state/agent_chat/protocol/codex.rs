@@ -163,16 +163,8 @@ impl CodexRuntime {
         );
         let developer_instructions =
             super::managed::instructions(developer_instructions, &self.agent)?;
-        let design_assistant = is_design_assistant(&self.agent);
-        let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
         let mut sandbox_policy = if read_only || self.agent.studio_context.is_some() {
             json!({ "type": "readOnly" })
-        } else if design_assistant && !design_preview_review {
-            json!({ "type": "readOnly" })
-        } else if design_assistant {
-            // Compare Review writes implementation code, but remains confined
-            // to the project even when the saved access mode is Full Access.
-            codex_turn_workspace_sandbox_policy(self.visualization_dir.as_deref())
         } else {
             codex_turn_sandbox_policy(self.access_mode, self.visualization_dir.as_deref())
         };
@@ -183,11 +175,8 @@ impl CodexRuntime {
         allow_pocketcomet_chat_network(&mut sandbox_policy, self.agent.origin.as_ref());
         let approval_policy = if self.agent.studio_context.is_some()
             || consultation
-            || (design_assistant && !design_preview_review)
         {
             "never"
-        } else if design_assistant {
-            self.access_mode.codex_approval_policy()
         } else {
             self.access_mode.codex_approval_policy()
         };
@@ -228,7 +217,7 @@ impl CodexRuntime {
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
-            ChatBackendCommand::UpdateModelEffort { model, effort } => {
+            ChatBackendCommand::UpdateModelEffort { model, effort, .. } => {
                 self.model = model.cli_value().map(str::to_string);
                 self.effort = effort.cli_value().to_string();
             }
@@ -259,7 +248,7 @@ impl CodexRuntime {
                 Ok(ChatBackendCommand::UpdateAccessMode { access_mode }) => {
                     self.access_mode = access_mode;
                 }
-                Ok(ChatBackendCommand::UpdateModelEffort { model, effort }) => {
+                Ok(ChatBackendCommand::UpdateModelEffort { model, effort, .. }) => {
                     self.model = model.cli_value().map(str::to_string);
                     self.effort = effort.cli_value().to_string();
                 }
@@ -1156,29 +1145,35 @@ pub(super) fn capture_changed_files_snapshot(
         return summary;
     }
 
-    let wanted_paths = summary
+    let owned_diffs = summary
+        .conversation_files()
+        .filter_map(|file| attributed_file_diff(file, &repo_path))
+        .collect::<Vec<_>>();
+    let owned_paths = owned_diffs
+        .iter()
+        .map(|diff| diff.path.clone())
+        .collect::<HashSet<_>>();
+    let fallback_paths = summary
         .conversation_files()
         .map(|file| normalize_repo_path(&repo_path, &file.path))
+        .filter(|path| !owned_paths.contains(path))
         .collect::<HashSet<_>>();
-    if wanted_paths.is_empty() {
-        return summary;
-    }
-
-    let diffs_result = if agent.repository_path.is_none() && !agent.is_active_solo() {
-        ide_core::git::workspace_worktree_diffs(&agent.project_path)
-    } else {
-        ide_core::git::worktree_diffs(&repo_path)
-    };
-    let diffs = match diffs_result {
-        Ok(diffs) => diffs
-            .into_iter()
-            .filter(|diff| wanted_paths.contains(&normalize_repo_path(&repo_path, &diff.path)))
-            .collect::<Vec<_>>(),
-        Err(error) => {
-            eprintln!("failed to capture changed-files diff snapshot: {error:#}");
-            Vec::new()
+    let mut diffs = owned_diffs;
+    if !fallback_paths.is_empty() {
+        let diffs_result = if agent.repository_path.is_none() && !agent.is_active_solo() {
+            ide_core::git::workspace_worktree_diffs(&agent.project_path)
+        } else {
+            ide_core::git::worktree_diffs(&repo_path)
+        };
+        match diffs_result {
+            Ok(fallback) => diffs.extend(fallback.into_iter().filter(|diff| {
+                fallback_paths.contains(&normalize_repo_path(&repo_path, &diff.path))
+            })),
+            Err(error) => {
+                eprintln!("failed to capture changed-files diff snapshot: {error:#}");
+            }
         }
-    };
+    }
     if diffs.is_empty() {
         return summary;
     }
@@ -1206,6 +1201,26 @@ pub(super) fn capture_changed_files_snapshot(
     summary
 }
 
+fn attributed_file_diff(
+    file: &FileChangeStat,
+    repo_path: &Path,
+) -> Option<ide_core::git::FileDiff> {
+    let mut diff = if let Some(diff) = &file.attributed_diff {
+        diff.clone()
+    } else {
+        let (before, after) = file
+            .baseline_content
+            .as_deref()
+            .zip(file.result_content.as_deref())?;
+        ide_core::git::diff::diff_from_contents(&file.path, before, after).unwrap_or_else(|error| {
+            eprintln!("failed to render attributed file contents: {error:#}");
+            ide_core::git::FileDiff::default()
+        })
+    };
+    diff.path = normalize_repo_path(repo_path, &file.path);
+    Some(diff)
+}
+
 fn normalize_repo_path(repo_path: &Path, path: &Path) -> PathBuf {
     let relative = path.strip_prefix(repo_path).unwrap_or(path);
     let mut normalized = PathBuf::new();
@@ -1230,4 +1245,57 @@ fn git_head_sha(repo_path: &Path) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use ide_core::git::LineOrigin;
+
+    #[test]
+    fn captured_contents_do_not_attribute_preexisting_lines_to_this_turn() {
+        let file = FileChangeStat::new("/project/shared.txt", 1, 0).with_content_projection(
+            Some("other-agent-first\nother-agent-second\n".into()),
+            Some("other-agent-first\nother-agent-second\nthis-agent-third\n".into()),
+        );
+        let diff = attributed_file_diff(&file, Path::new("/project")).unwrap();
+        assert_eq!(diff.path, Path::new("shared.txt"));
+        let additions = diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.origin == LineOrigin::Add)
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(additions, vec!["this-agent-third"]);
+    }
+
+    #[test]
+    fn multiple_owned_actions_survive_turn_receipt_but_not_ledger_patch_history() {
+        let first = file_stat_from_patch_change(&json!({"path": "/project/shared.txt",
+            "kind": {"type": "update"}, "diff": "@@ -1 +1,2 @@\n other-agent\n+first-edit\n"}))
+        .unwrap();
+        let second = file_stat_from_patch_change(&json!({"path": "/project/shared.txt",
+            "kind": {"type": "update"}, "diff": "@@ -1,2 +1,3 @@\n other-agent\n first-edit\n+second-edit\n"})).unwrap();
+        let activities = [
+            FileChangeActivity::new("one", "turn", first, false, 1),
+            FileChangeActivity::new("two", "turn", second, false, 2),
+        ];
+        let summary = ChangedFilesSummary::from_activities("turn", &activities);
+        assert_eq!(summary.files.len(), 1);
+        assert_eq!(summary.total_additions(), 2);
+        let diff = attributed_file_diff(&summary.files[0], Path::new("/project")).unwrap();
+        let additions = diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.origin == LineOrigin::Add)
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(additions, vec!["first-edit", "second-edit"]);
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&summary);
+        assert!(ledger.files[0].attributed_diff.is_none());
+        assert!(summary.files[0].attributed_diff.is_some());
+    }
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import { managedDelegationOptions, isChoroCoordinationTool, permissionModeFor, toolPolicyDenial, toolPolicyHook } from "./claude_bridge.mjs";
 
 test("managed sessions restrict every native spawning and peer-coordination tool", () => {
@@ -71,7 +72,7 @@ test("Studio rejects mutations and unrelated MCP even when normal access is bypa
   for (const name of ["Read", "Glob", "Grep", "AskUserQuestion", "mcp__choro__studio_apply", "mcp__ide__studio_read", "mcp__choro__studio_project_read"]) {
     assert.equal(toolPolicyDenial(name, policy), null, name);
   }
-  for (const name of ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "mcp__penpot__update", "mcp__other__studio_apply", "mcp__choro__create_choro_doc", "mcp__choro__delegation_plan", "mcp__choro__studio_apply_extra"]) {
+  for (const name of ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "mcp__penpot__update", "mcp__other__studio_apply", "mcp__choro__create_choro_doc", "mcp__choro__delegation_plan", "mcp__choro__studio_apply_extra", "mcp__other__studio_import_propose", "mcp__choro__studio_import_propose_extra", "mcp__choro__studio_handoff_read"]) {
     assert.ok(toolPolicyDenial(name, policy), name);
     assert.equal(toolPolicyHook(name, policy).hookSpecificOutput.permissionDecision, "deny");
   }
@@ -86,8 +87,27 @@ test("Studio preflight rejects missing capabilities, disconnected or unrestricte
   await assert.rejects(preflightStudioRuntime({},['choro']),/repair/);
   await assert.rejects(preflightStudioRuntime(runtime([{...server,status:'failed'}]),['choro']),/repair/);
   await assert.rejects(preflightStudioRuntime(runtime([{...server,tools:[]}]),['choro']),/Missing/);
-  await assert.rejects(preflightStudioRuntime(runtime([{...server,tools:[...server.tools,{name:'create_choro_doc'}]}]),['choro']),/Unexpected/);
+  await assert.rejects(preflightStudioRuntime(runtime([{...server,tools:[...server.tools,{name:'create_choro_doc'}]}]),['choro']),/Unexpected MCP tool: choro: create_choro_doc/);
   await assert.rejects(preflightStudioRuntime(runtime([server,{name:'other',status:'connected'}]),['choro']),/repair/);
+});
+
+test("Studio preflight accepts every tool exposed by Choro's Studio server", async () => {
+  const { preflightStudioRuntime } = await import("./claude_bridge.mjs");
+  const source = await readFile(new URL("../../../ide-mcp/src/studio.rs", import.meta.url), "utf8");
+  const allowed = source.match(/fn allowed\(name: &str\) -> bool \{([\s\S]*?)\n\}/);
+  assert.ok(allowed, "locate the server's Studio allowlist");
+  const names = [...allowed[1].matchAll(/"([a-z_]+)"/g)].map(match => match[1]);
+  assert.ok(names.includes("studio_import_propose"));
+  for (const serverName of ["choro", "ide"]) {
+    for (const name of names) {
+      assert.equal(toolPolicyDenial(`mcp__${serverName}__${name}`, { studio: true }), null, name);
+      assert.deepEqual(toolPolicyHook(`mcp__${serverName}__${name}`, { studio: true }), {}, name);
+    }
+    await preflightStudioRuntime({
+      initializationResult: async () => ({}),
+      mcpServerStatus: async () => [{ name: serverName, status: "connected", tools: names.map(name => ({ name })) }],
+    }, [serverName]);
+  }
 });
 
 

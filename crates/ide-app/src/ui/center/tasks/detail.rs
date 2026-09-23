@@ -664,18 +664,6 @@ impl CenterArea {
         for design in self.studio_designs_for_task(project, &summary.reference) {
             items.push(self.render_linked_studio_indicator("task-linked-studio", project, design, cx));
         }
-        let linked_designs = self
-            .penpot
-            .read(cx)
-            .designs_for_task(project, &summary.reference);
-        for design in linked_designs {
-            items.push(self.render_linked_design_indicator(
-                ("task-linked-design", design.id.as_u128() as u64),
-                design,
-                cx,
-            ));
-        }
-
         if let Some(agent) = implementation_agents.first() {
             let agent_id = agent.id;
             let short_id = agent_id

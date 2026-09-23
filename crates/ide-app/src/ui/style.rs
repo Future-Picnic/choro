@@ -33,7 +33,7 @@ mod studio_header_layout_tests;
 
 // ---- sizing tokens: forwarded to the design scale (one source of truth) ----
 
-/// Shared clickable shell for Penpot, Figma and Studio entries in Designs.
+/// Shared clickable shell for Figma and Studio entries in Designs.
 pub fn design_hub_card(id: impl Into<ElementId>, cx: &App) -> Stateful<Div> {
     v_flex()
         .id(id)
@@ -2843,7 +2843,7 @@ pub fn sidebar_mode_tabs(cx: &App) -> Div {
         .bg(track)
 }
 
-/// Fixed native design-sidebar header, shared by Penpot and Studio. The tab
+/// Fixed native design-sidebar header, used by Studio. The tab
 /// track flexes horizontally within this row, never vertically in the panel.
 pub fn design_sidebar_tabs_header(tabs: impl IntoElement, cx: &App) -> Div {
     div()
@@ -2880,15 +2880,15 @@ pub fn sidebar_mode_icon_tab(id: impl Into<ElementId>, icon: IconName, cx: &App)
         .rounded(design::r_xs())
         .icon(
             Icon::new(icon)
-                // The panel glyph has more internal whitespace than Penpot's
+                // The panel glyph has more internal whitespace than the compact
                 // masked icon. Size it generously so its visible mark matches
-                // Penpot's 16px collapse glyph in the neighboring sidebar.
+                // 16px collapse glyph in the neighboring sidebar.
                 .size(px(22.))
                 .text_color(design::t3(cx)),
         )
 }
 
-/// Flat rows for native design-tool lists, matching the Penpot layers density.
+/// Flat rows for native design-tool lists, using the compact layers density.
 pub fn design_sidebar_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Button {
     ghost_button_compact(id, "")
         .w_full()
@@ -3019,6 +3019,12 @@ pub fn stage_bar(cx: &App) -> Div {
         .bg(design::base(cx))
         .border_t_1()
         .border_color(design::line(cx))
+}
+
+/// Cached views lay out their rendered content as an independent root. Explicit
+/// dimensions keep Studio content filling the space assigned to its cache.
+pub fn studio_region_root() -> Div {
+    v_flex().size_full().min_w(px(0.)).min_h(px(0.))
 }
 
 /// Header band above a design stage — Studio's canvas header. The mirror of
@@ -3863,6 +3869,33 @@ pub fn delegation_activity_chip(
         .when(live, |button| button.text_color(design::amber(cx)))
 }
 
+/// Stable two-line activity preview. Provider titles can contain an entire
+/// multiline command; bound the excerpt before shaping and retain the full
+/// content only in the conversation, not in a growing assignment card.
+pub fn delegation_activity_preview(text: &str, cx: &App) -> Div {
+    let mut chars = text
+        .split_whitespace()
+        .flat_map(|word| std::iter::once(' ').chain(word.chars()))
+        .skip(1);
+    let mut excerpt: String = chars.by_ref().take(320).collect();
+    if chars.next().is_some() {
+        excerpt.push('…');
+    }
+    let line_height = design::text_ui() * 1.45;
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .h(line_height * 2.)
+        .flex_none()
+        .text_size(design::text_ui())
+        .line_height(line_height)
+        .whitespace_normal()
+        .line_clamp(2)
+        .text_ellipsis()
+        .text_color(design::t3(cx))
+        .child(excerpt)
+}
+
 /// Full-width keyboard-accessible assignment row, with caller-owned content.
 pub fn delegation_row_button(id: impl Into<ElementId>, content: AnyElement, cx: &App) -> Button {
     // Stretch Button's internal label wrapper so custom row content fills the
@@ -3904,6 +3937,23 @@ pub fn sidebar_expert_row_button(
         .min_h(px(26.))
         .px_1p5()
         .py_1()
+}
+
+/// Disclosure at the end of a project's virtualized agent list.
+pub fn sidebar_more_agents_button(
+    id: impl Into<ElementId>,
+    hidden: usize,
+    expanded: bool,
+    cx: &App,
+) -> Button {
+    // Fill Button's centered label wrapper to preserve the agent-row indent.
+    let content = h_flex().w_full().min_w(px(0.)).gap_1p5().items_center()
+        .text_size(crate::ui::design::text_ui())
+        .text_color(crate::ui::design::t3(cx))
+        .child(Icon::new(if expanded { IconName::ChevronDown } else { IconName::ChevronRight })
+            .size(crate::ui::design::icon_sm()))
+        .child(if expanded { "Show fewer agents".to_string() } else { format!("Show {hidden} more agents") });
+    sidebar_expert_row_button(id, content.into_any_element(), cx).pl(px(34.)).pr_2()
 }
 
 /// A bordered inline row in the chat — a tool call, a source/citation, a

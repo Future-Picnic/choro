@@ -53,6 +53,7 @@ pub(crate) fn persist_agent_store_snapshot(
 }
 
 pub enum AgentRecordsEvent {
+    RecordChanged { agent_id: Uuid, sequence: u64 },
     Changed,
     SelectionChanged,
 }
@@ -62,11 +63,17 @@ pub struct AgentRecords {
     records: Vec<AgentRecord>,
     selected: HashMap<ProjectId, Uuid>,
     save_scheduled: bool,
+    change_sequence: u64,
 }
 
 impl EventEmitter<AgentRecordsEvent> for AgentRecords {}
 
 impl AgentRecords {
+    #[cfg(test)]
+    pub(crate) fn in_memory(records: Vec<AgentRecord>) -> Self {
+        Self { records, selected: HashMap::new(), save_scheduled: false, change_sequence: 0 }
+    }
+
     pub fn load() -> Self {
         let legacy = AgentStoreFile::load().agents;
         let mut records = match LocalStore::open_default().and_then(|store| store.load_agents()) {
@@ -86,7 +93,14 @@ impl AgentRecords {
             records,
             selected: HashMap::new(),
             save_scheduled: false,
+            change_sequence: 0,
         }
+    }
+
+    fn publish_record_change(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        self.change_sequence = self.change_sequence.checked_add(1).expect("record sequence exhausted");
+        cx.emit(AgentRecordsEvent::RecordChanged { agent_id: id, sequence: self.change_sequence });
+        cx.emit(AgentRecordsEvent::Changed);
     }
 
     pub fn records_for_project(&self, project: ProjectId) -> Vec<AgentRecord> {
@@ -113,6 +127,10 @@ impl AgentRecords {
             .into_iter()
             .cloned()
             .collect()
+    }
+
+    pub(crate) fn iter_records(&self) -> impl Iterator<Item = &AgentRecord> {
+        self.records.iter()
     }
 
     pub fn all_records(&self) -> Vec<AgentRecord> {
@@ -182,13 +200,14 @@ impl AgentRecords {
 
     /// The authoritative record owner adopts managed chats without selecting them.
     pub(crate) fn adopt_managed(&mut self, agent: AgentRecord, cx: &mut Context<Self>) {
+        let id = agent.id;
         if let Some(current) = self.records.iter_mut().find(|a| a.id == agent.id) {
             apply_managed_configuration(current, agent);
         } else {
             self.records.push(agent);
         }
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -273,7 +292,7 @@ impl AgentRecords {
         agent.source_task = source_task;
         let id = self.insert_created_agent(agent, expert_snapshot);
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.emit(AgentRecordsEvent::SelectionChanged);
         cx.notify();
         id
@@ -308,7 +327,7 @@ impl AgentRecords {
             self.selected.remove(&project);
         }
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.emit(AgentRecordsEvent::SelectionChanged);
         cx.notify();
         true
@@ -324,7 +343,7 @@ impl AgentRecords {
         agent.doc = doc;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -338,7 +357,7 @@ impl AgentRecords {
         agent.notes = notes;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -352,7 +371,7 @@ impl AgentRecords {
         agent.origin = Some(origin);
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -366,7 +385,7 @@ impl AgentRecords {
         agent.effort = effort;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -393,7 +412,7 @@ impl AgentRecords {
         agent.effort = effort;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -411,7 +430,7 @@ impl AgentRecords {
         agent.set_external_model(model_id, label, variants);
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -435,7 +454,7 @@ impl AgentRecords {
         agent.lane_profile = Some(profile);
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -451,7 +470,7 @@ impl AgentRecords {
         agent.solo_rejoined_branch = Some(base);
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -467,7 +486,7 @@ impl AgentRecords {
         agent.lane_path = lane_path;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -486,7 +505,7 @@ impl AgentRecords {
         agent.access_mode = access_mode;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -505,7 +524,7 @@ impl AgentRecords {
         agent.linked_docs = linked_docs;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -524,7 +543,7 @@ impl AgentRecords {
         agent.linked_tasks = linked_tasks;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -576,7 +595,7 @@ impl AgentRecords {
         agent.ship_pr_branch = Some(branch);
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -626,7 +645,7 @@ impl AgentRecords {
         agent.changed_files.sort_by(|a, b| a.path.cmp(&b.path));
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
         true
     }
@@ -667,7 +686,7 @@ impl AgentRecords {
         agent.changed_files = next;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
         true
     }
@@ -710,7 +729,9 @@ impl AgentRecords {
         }
         if changed {
             self.schedule_save(cx);
-            cx.emit(AgentRecordsEvent::Changed);
+            for id in self.records.iter().filter(|a| a.project_id == project).map(|a| a.id).collect::<Vec<_>>() {
+                self.publish_record_change(id, cx);
+            }
             cx.notify();
         }
     }
@@ -741,7 +762,9 @@ impl AgentRecords {
         }
         if changed {
             self.schedule_save(cx);
-            cx.emit(AgentRecordsEvent::Changed);
+            for id in self.records.iter().filter(|a| a.project_id == project).map(|a| a.id).collect::<Vec<_>>() {
+                self.publish_record_change(id, cx);
+            }
             cx.notify();
         }
     }
@@ -760,7 +783,7 @@ impl AgentRecords {
         agent.title = title;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -774,7 +797,7 @@ impl AgentRecords {
         agent.status = status;
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -801,7 +824,7 @@ impl AgentRecords {
         } else {
             self.schedule_save(cx);
         }
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -821,7 +844,7 @@ impl AgentRecords {
         // A dismissal must survive the next app launch even if the process
         // exits before the normal debounced save runs.
         self.save_durable(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -842,7 +865,7 @@ impl AgentRecords {
         agent.updated_at = now;
         // Both completion evidence and the hard gate must survive restart.
         self.save_durable(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -856,7 +879,7 @@ impl AgentRecords {
         agent.cli_session_id = Some(cli_session_id);
         agent.updated_at = agents::unix_now();
         self.save_durable(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -875,7 +898,7 @@ impl AgentRecords {
         agent.chat_session_id = Some(chat_session_id);
         agent.updated_at = agents::unix_now();
         self.save_durable(cx);
-        cx.emit(AgentRecordsEvent::Changed);
+        self.publish_record_change(id, cx);
         cx.notify();
     }
 
@@ -1002,6 +1025,7 @@ mod tests {
             records: Vec::new(),
             selected: HashMap::new(),
             save_scheduled: false,
+            change_sequence: 0,
         };
         for provider in [AgentKind::Codex, AgentKind::Claude] {
             let model = AgentModel::default_for(provider);
@@ -1130,6 +1154,7 @@ mod tests {
             records: vec![older, newest.clone()],
             selected: HashMap::new(),
             save_scheduled: false,
+            change_sequence: 0,
         };
 
         assert_eq!(
@@ -1159,6 +1184,7 @@ mod tests {
             records: vec![agent.clone()],
             selected: HashMap::new(),
             save_scheduled: false,
+            change_sequence: 0,
         };
 
         let matched = records
@@ -1206,6 +1232,7 @@ mod tests {
             records: vec![older.clone(), assistant, newest.clone()],
             selected: HashMap::new(),
             save_scheduled: false,
+            change_sequence: 0,
         };
 
         assert_eq!(
@@ -1259,6 +1286,7 @@ mod tests {
             records: vec![visible.clone(), chat.clone()],
             selected: HashMap::new(),
             save_scheduled: false,
+            change_sequence: 0,
         };
 
         assert_eq!(records.records_for_project(project), vec![visible.clone()]);

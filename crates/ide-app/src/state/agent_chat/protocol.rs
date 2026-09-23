@@ -186,6 +186,7 @@ pub enum ChatBackendCommand {
         access_mode: AgentAccessMode,
     },
     UpdateModelEffort {
+        external_model: Option<(String, Vec<String>)>,
         model: AgentModel,
         effort: AgentEffort,
     },
@@ -283,17 +284,8 @@ pub fn spawn_chat_backend(
 )> {
     agent.doc =
         prompt_with_connected_context(&agent.doc, &agent, &AgentConnectedContextExtras::default());
-    if is_design_assistant(&agent) {
-        if agent.provider == AgentKind::OpenCode {
-            return Err(anyhow!(
-                "The dedicated Design Assistant currently supports Codex and Claude"
-            ));
-        }
-        choro_mcp_binary_path()
-            .context("The Choro MCP server is unavailable for the Design Assistant")?;
-        crate::state::penpot::configured_mcp_url()
-            .context("The Design MCP connection is unavailable")?;
-    }
+    anyhow::ensure!(agent.design_context.is_none(),
+        "This legacy design conversation is retired. Open Design Studio to continue.");
     if let Some(context) = agent.studio_context.as_ref() {
         anyhow::ensure!(
             matches!(agent.provider, AgentKind::Codex | AgentKind::Claude),
@@ -682,33 +674,6 @@ fn choro_mcp_binary_path() -> Option<PathBuf> {
     legacy.exists().then_some(legacy)
 }
 
-fn penpot_http_mcp_server(url: &str) -> Value {
-    json!({
-        "type": "http",
-        "url": url,
-    })
-}
-
-fn penpot_acp_mcp_server(url: &str) -> Value {
-    json!({
-        "type": "http",
-        "name": "penpot",
-        "url": url,
-        "headers": [],
-    })
-}
-
-fn codex_mcp_url_config_arg(name: &str, url: &str) -> String {
-    format!(
-        "mcp_servers.{name}.url={}",
-        serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string())
-    )
-}
-
-fn codex_penpot_config_arg(url: &str) -> String {
-    codex_mcp_url_config_arg("penpot", url)
-}
-
 fn choro_mcp_scope_args(project_id: &str, agent_id: &str, data_root: &Path) -> Vec<String> {
     vec![
         "--project-id".to_string(),
@@ -738,7 +703,7 @@ fn codex_mcp_args_config_arg(name: &str, agent: &AgentRecord) -> String {
     format!("mcp_servers.{name}.args={args}")
 }
 
-fn codex_penpot_approval_config_arg(name: &str) -> String {
+fn codex_scoped_mcp_approval_config_arg(name: &str) -> String {
     // The dedicated assistant is already file-bound and can only write through
     // this isolated Design MCP server. Without this server-level override,
     // `approvalPolicy=never` turns every Design tool invocation into
@@ -761,14 +726,6 @@ fn configure_codex_child_coordination(command: &mut Command, agent: &AgentRecord
             "mcp_servers.ide.tools.{tool}.approval_mode=\"approve\""
         ));
     }
-}
-
-fn is_design_assistant(agent: &AgentRecord) -> bool {
-    agent.design_context.is_some()
-}
-
-fn agent_requires_design_mcp(agent: &AgentRecord) -> bool {
-    agent.design_context.is_some() || ide_core::penpot_assistant::requires_design_mcp(&agent.doc)
 }
 
 fn configured_codex_mcp_names(
@@ -898,82 +855,12 @@ fn configure_codex_studio(
         .arg("-c")
         .arg(format!("mcp_servers.{name}.required=true"))
         .arg("-c")
-        .arg(codex_penpot_approval_config_arg(&name));
+        .arg(codex_scoped_mcp_approval_config_arg(&name));
     Ok(())
-}
-
-fn configure_codex_design_assistant(
-    command: &mut Command,
-    codex_path: &Path,
-    agent: &AgentRecord,
-    path_env: &str,
-) -> anyhow::Result<()> {
-    let mcp = choro_mcp_binary_path()
-        .context("The Choro MCP server is unavailable for the Design Assistant")?;
-    let design_url = crate::state::penpot::configured_mcp_url()
-        .context("The Design MCP connection is not configured")?;
-    let inherited_names = configured_codex_mcp_names(codex_path, agent.runtime_path(), path_env)?;
-    append_codex_design_assistant_config(command, &mcp, agent, &design_url, inherited_names);
-    Ok(())
-}
-
-fn append_codex_design_assistant_config(
-    command: &mut Command,
-    mcp: &Path,
-    agent: &AgentRecord,
-    design_url: &str,
-    inherited_names: impl IntoIterator<Item = String>,
-) {
-    let suffix = agent.id.simple();
-    let choro_name = format!("choro_design_{suffix}");
-    let penpot_name = format!("penpot_design_{suffix}");
-
-    command
-        .arg("-c")
-        .arg("features.plugins=false")
-        .arg("-c")
-        .arg("features.apps=false")
-        .arg("-c")
-        .arg("agents.enabled=false")
-        .arg("-c")
-        .arg("tools.web_search=false")
-        .arg("-c")
-        .arg("tools.view_image=false");
-    for name in inherited_names {
-        command
-            .arg("-c")
-            .arg(format!("mcp_servers.{name}.enabled=false"));
-    }
-    command
-        .arg("-c")
-        .arg(format!(
-            "mcp_servers.{choro_name}.command={}",
-            mcp.display()
-        ))
-        .arg("-c")
-        .arg(codex_mcp_args_config_arg(&choro_name, agent))
-        .arg("-c")
-        .arg(format!(
-            "mcp_servers.{choro_name}.enabled_tools=[\"task_read\",\"task_list\",\"task_image\"]"
-        ))
-        .arg("-c")
-        .arg(format!("mcp_servers.{choro_name}.enabled=true"))
-        .arg("-c")
-        .arg(format!("mcp_servers.{choro_name}.required=true"))
-        .arg("-c")
-        .arg(codex_mcp_url_config_arg(&penpot_name, &design_url))
-        .arg("-c")
-        .arg(format!("mcp_servers.{penpot_name}.enabled=true"))
-        .arg("-c")
-        .arg(codex_penpot_approval_config_arg(&penpot_name))
-        .arg("-c")
-        .arg(format!("mcp_servers.{penpot_name}.required=true"));
 }
 
 /// The `mcpServers` object handed to the Claude Agent SDK, scoped to this Choro
-/// chat and project. Design access is capability-based: only the dedicated
-/// Design Assistant or an agent carrying an explicit Choro design reference
-/// receives the Design MCP server.
+/// chat and project. Studio roles use the scoped first-party server.
 fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
     let mut servers = serde_json::Map::new();
     if let Some(mcp) = choro_mcp_binary_path() {
@@ -986,11 +873,6 @@ fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
             }),
         );
     }
-    if agent_requires_design_mcp(agent) {
-        if let Some(url) = crate::state::penpot::configured_mcp_url() {
-            servers.insert("penpot".to_string(), penpot_http_mcp_server(&url));
-        }
-    }
     if servers.is_empty() {
         Value::Null
     } else {
@@ -1002,7 +884,7 @@ fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
 /// as a list (rather than the named object used by Claude), but it launches the
 /// same project- and chat-scoped Choro server.
 fn choro_acp_mcp_servers_json(agent: &AgentRecord) -> Value {
-    let mut servers = match choro_mcp_binary_path() {
+    let servers = match choro_mcp_binary_path() {
         Some(mcp) => choro_acp_mcp_servers_json_at(
             &mcp,
             &agent.project_id.0.to_string(),
@@ -1014,11 +896,6 @@ fn choro_acp_mcp_servers_json(agent: &AgentRecord) -> Value {
         .unwrap_or_default(),
         None => Vec::new(),
     };
-    if agent_requires_design_mcp(agent) {
-        if let Some(url) = crate::state::penpot::configured_mcp_url() {
-            servers.push(penpot_acp_mcp_server(&url));
-        }
-    }
     Value::Array(servers)
 }
 
@@ -1152,12 +1029,6 @@ fn run_codex_app_server(
         .current_dir(agent.runtime_path());
     if agent.studio_context.is_some() {
         configure_codex_studio(&mut command, &codex_path, &agent, &path_env)?;
-    } else if is_design_assistant(&agent) {
-        // Codex `-c` values merge with the user's config. A dedicated Design
-        // Assistant must therefore disable every inherited explicit MCP server,
-        // disable plugin/app MCP contributions, and require only Choro + the
-        // exact Design connection. If isolation cannot be proven, fail closed.
-        configure_codex_design_assistant(&mut command, &codex_path, &agent, &path_env)?;
     } else {
         if let Some(mcp) = choro_mcp_binary_path() {
             command
@@ -1180,11 +1051,6 @@ fn run_codex_app_server(
             if agent.delegation.is_some() {
                 command.args(["-c", "mcp_servers.ide.required=true"]);
                 configure_codex_child_coordination(&mut command, &agent);
-            }
-        }
-        if agent_requires_design_mcp(&agent) {
-            if let Some(url) = crate::state::penpot::configured_mcp_url() {
-                command.arg("-c").arg(codex_penpot_config_arg(&url));
             }
         }
     }
@@ -1265,7 +1131,7 @@ fn run_codex_app_server(
         }),
     )?;
     runtime.notify("initialized", Value::Null)?;
-    let design_assistant = is_design_assistant(&agent) || agent.studio_context.is_some();
+    let design_assistant = agent.studio_context.is_some();
     let approval_policy = if design_assistant {
         "never"
     } else {
@@ -1477,7 +1343,27 @@ mod tests {
         }
     }
     #[test]
-    fn studio_mcp_scope_is_distinct_from_penpot_and_survives_full_access() {
+    fn retired_design_conversation_cannot_launch_a_backend() {
+        let mut agent = AgentRecord::new(
+            ide_core::ProjectId(uuid::Uuid::new_v4()), PathBuf::from("/tmp/project"),
+            "Legacy design", "Continue", AgentKind::Codex,
+            AgentModel::default_for(AgentKind::Codex), AgentEffort::default(),
+            AgentAccessMode::FullAccess,
+        );
+        agent.design_context = Some(ide_core::AgentDesignContext {
+            design_id: uuid::Uuid::new_v4(), file_id: uuid::Uuid::new_v4(),
+        });
+        let result = spawn_chat_backend(agent.clone(), AgentInteractionMode::Default);
+        assert!(matches!(result, Err(error) if error.to_string().contains("retired")));
+        agent.design_context = None;
+        agent.doc.push_str("\n<choro-penpot-design local-id=\"legacy\" />");
+        assert!(choro_mcp_servers_json(&agent).get("penpot").is_none());
+        assert!(choro_acp_mcp_servers_json(&agent).as_array().unwrap().iter()
+            .all(|server| server.get("name").and_then(Value::as_str) != Some("penpot")));
+    }
+
+    #[test]
+    fn studio_mcp_scope_survives_full_access() {
         let mut agent = AgentRecord::new(
             ide_core::ProjectId(uuid::Uuid::new_v4()),
             PathBuf::from("/tmp/project"),
@@ -1494,7 +1380,6 @@ mod tests {
             conversation_id: uuid::Uuid::new_v4(),
         });
         assert!(agent_choro_mcp_scope_args(&agent).contains(&"--studio".to_string()));
-        assert!(!agent_requires_design_mcp(&agent));
         let value = serde_json::to_value(&agent).unwrap();
         assert_eq!(
             serde_json::from_value::<AgentRecord>(value)
@@ -1518,35 +1403,6 @@ mod tests {
     fn jsonrpc_id_key_preserves_numeric_request_ids() {
         assert_eq!(jsonrpc_id_key(&json!(77)), "77");
         assert_eq!(jsonrpc_id_key(&json!("abc")), "abc");
-    }
-
-    #[test]
-    fn design_mcp_capability_is_not_granted_by_generic_design_language() {
-        let agent = AgentRecord::new(
-            ide_core::ProjectId(uuid::Uuid::new_v4()),
-            PathBuf::from("/tmp/project"),
-            "Generic agent",
-            "Please implement the design.",
-            AgentKind::Codex,
-            AgentModel::default_for(AgentKind::Codex),
-            AgentEffort::default(),
-            AgentAccessMode::default(),
-        );
-        assert!(!agent_requires_design_mcp(&agent));
-
-        let mut linked = agent.clone();
-        linked
-            .doc
-            .push_str("\n<choro-penpot-design local-id=\"design\" file-id=\"file\" />");
-        assert!(agent_requires_design_mcp(&linked));
-
-        let mut dedicated = agent;
-        dedicated.design_context = Some(ide_core::AgentDesignContext {
-            design_id: uuid::Uuid::new_v4(),
-            file_id: uuid::Uuid::new_v4(),
-        });
-        assert!(is_design_assistant(&dedicated));
-        assert!(agent_requires_design_mcp(&dedicated));
     }
 
     #[test]
@@ -1655,50 +1511,9 @@ mod tests {
     #[test]
     fn dedicated_design_mcp_tools_are_preapproved() {
         assert_eq!(
-            codex_penpot_approval_config_arg("penpot_design_123"),
-            "mcp_servers.penpot_design_123.default_tools_approval_mode=\"approve\""
+            codex_scoped_mcp_approval_config_arg("studio_123"),
+            "mcp_servers.studio_123.default_tools_approval_mode=\"approve\""
         );
-    }
-
-    #[test]
-    fn dedicated_codex_design_session_disables_inherited_mcp_servers() {
-        let mut agent = AgentRecord::new(
-            ide_core::ProjectId(uuid::Uuid::new_v4()),
-            PathBuf::from("/tmp/project"),
-            "Design Assistant",
-            "Dedicated design session",
-            AgentKind::Codex,
-            AgentModel::default_for(AgentKind::Codex),
-            AgentEffort::default(),
-            AgentAccessMode::default(),
-        );
-        agent.id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000123").unwrap();
-        agent.design_context = Some(ide_core::AgentDesignContext {
-            design_id: uuid::Uuid::new_v4(),
-            file_id: uuid::Uuid::new_v4(),
-        });
-        let mut command = Command::new("codex");
-
-        append_codex_design_assistant_config(
-            &mut command,
-            Path::new("/Applications/Choro.app/choro-mcp"),
-            &agent,
-            "https://design.example/mcp/stream?userToken=secret",
-            ["choro".to_string(), "github".to_string()],
-        );
-
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(args.contains("mcp_servers.choro.enabled=false"));
-        assert!(args.contains("mcp_servers.github.enabled=false"));
-        assert!(args
-            .contains("mcp_servers.choro_design_00000000000000000000000000000123.required=true"));
-        assert!(args
-            .contains("mcp_servers.penpot_design_00000000000000000000000000000123.required=true"));
-        assert!(!args.contains("mcp_servers.penpot.url="));
     }
 
     #[test]
@@ -1859,32 +1674,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_chat_backend_receives_the_configured_penpot_mcp_server_shape() {
-        let url = "https://design.penpot.app/mcp/stream?userToken=redacted";
-
-        assert_eq!(
-            penpot_http_mcp_server(url),
-            json!({
-                "type": "http",
-                "url": url,
-            })
-        );
-        assert_eq!(
-            penpot_acp_mcp_server(url),
-            json!({
-                "type": "http",
-                "name": "penpot",
-                "url": url,
-                "headers": [],
-            })
-        );
-        assert_eq!(
-            codex_penpot_config_arg(url),
-            format!(
-                "mcp_servers.penpot.url={}",
-                serde_json::to_string(url).unwrap()
-            )
-        );
-    }
 }

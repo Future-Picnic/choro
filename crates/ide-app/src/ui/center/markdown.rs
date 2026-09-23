@@ -27,7 +27,13 @@ struct ChatListItem {
 }
 
 pub(super) fn chat_message_display_markdown(text: &str) -> String {
-    text.lines()
+    chat_message_display_markdown_in_directory(text, None)
+}
+
+fn chat_message_display_markdown_in_directory(text: &str, directory: Option<&Path>) -> String {
+    let linked = normalize_local_markdown_links(text, directory);
+    linked
+        .lines()
         .map(|line| {
             if let Some(path) = standalone_image_path_from_text(line) {
                 return format!("![Generated image]({})", path.display());
@@ -40,66 +46,130 @@ pub(super) fn chat_message_display_markdown(text: &str) -> String {
             if let Some(item) = markdown_list_item(trimmed.trim_end()) {
                 format!("{leading}- {}", format_chat_list_item(item))
             } else {
-                normalize_local_markdown_links(line)
+                line.to_string()
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn normalize_local_markdown_links(text: &str) -> String {
+/// Keep local links as links. TextView dispatches their file URLs through the
+/// platform opener, which opens folders in Finder and files in their default app.
+/// Parse the whole message so reference links work and code examples stay literal.
+fn normalize_local_markdown_links(text: &str, directory: Option<&Path>) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
     let mut output = String::with_capacity(text.len());
-    let mut rest = text;
-
-    while let Some(open) = rest.find('[') {
-        output.push_str(&rest[..open]);
-        let after_open = &rest[open + 1..];
-        let Some(close) = after_open.find(']') else {
-            output.push_str(&rest[open..]);
-            return output;
-        };
-        let label = &after_open[..close];
-        let after_label = &after_open[close + 1..];
-        if !after_label.starts_with('(') {
-            output.push_str(&rest[open..open + close + 2]);
-            rest = after_label;
-            continue;
+    let mut copied = 0;
+    let mut local_link: Option<(Range<usize>, String, String)> = None;
+    for (event, range) in Parser::new_ext(text, Options::ENABLE_TABLES).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                if let Some(url) = local_chat_link_url(&dest_url, directory) {
+                    local_link = Some((range, url, String::new()));
+                }
+            }
+            Event::Text(value) | Event::Code(value) => {
+                if let Some((_, _, label)) = local_link.as_mut() {
+                    label.push_str(&value);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, _, label)) = local_link.as_mut() {
+                    label.push(' ');
+                }
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some((span, url, label)) = local_link.take() {
+                    output.push_str(&text[copied..span.start]);
+                    output.push('[');
+                    // A filename or label can itself contain Markdown punctuation.
+                    for ch in label.chars() {
+                        if matches!(ch, '\\' | '[' | ']' | '*' | '_' | '`' | '<' | '>') {
+                            output.push('\\');
+                        }
+                        output.push(ch);
+                    }
+                    output.push_str("](<");
+                    output.push_str(&url);
+                    output.push_str(">)");
+                    copied = range.end;
+                }
+            }
+            _ => {}
         }
-        let Some(target_close) = after_label[1..].find(')') else {
-            output.push_str(&rest[open..]);
-            return output;
-        };
-        let target = &after_label[1..1 + target_close];
-        let consumed = open + 1 + close + 1 + 1 + target_close + 1;
-
-        if is_local_code_link(label, target) {
-            output.push('`');
-            output.push_str(label);
-            output.push('`');
-        } else {
-            output.push_str(&rest[open..consumed]);
-        }
-        rest = &rest[consumed..];
     }
-
-    output.push_str(rest);
+    output.push_str(&text[copied..]);
     output
 }
 
-fn is_local_code_link(label: &str, target: &str) -> bool {
-    let lower_label = label.to_ascii_lowercase();
-    let looks_like_file = [".html", ".css", ".js", ".ts", ".tsx", ".rs", ".json", ".md"]
-        .iter()
-        .any(|extension| lower_label.ends_with(extension));
-    looks_like_file
-        || label.contains('/')
-        || target.starts_with('/')
-        || target.starts_with("./")
-        || target.starts_with("../")
+fn local_chat_link_url(target: &str, directory: Option<&Path>) -> Option<String> {
+    // Classify the destination, never the visible label: a website may be
+    // labelled `README.md` or `org/repo` and must still open as a website.
+    if target.is_empty() || target.starts_with('#') || target.starts_with("//") {
+        return None;
+    }
+    // Agent citations often append :line[:column] or #Lline[-Lline]. These
+    // identify a source location, not part of the filename the OS should open.
+    let target = match target.rsplit_once('#') {
+        Some((path, anchor)) if is_chat_source_anchor(anchor) => path,
+        _ => target,
+    };
+    let mut path = target;
+    for _ in 0..2 {
+        match path.rsplit_once(':') {
+            Some((prefix, number))
+                if !number.is_empty() && number.bytes().all(|ch| ch.is_ascii_digit()) =>
+            {
+                path = prefix;
+            }
+            _ => break,
+        }
+    }
+
+    if let Ok(url) = url::Url::parse(target) {
+        // A bare `main.rs:42` is parsed as a URL scheme, but is a file
+        // citation. Keep actual schemes (including numeric tel: links) intact.
+        let bare_file_citation =
+            path != target && !path.contains(':') && Path::new(path).extension().is_some();
+        if url.scheme() != "file" && !bare_file_citation {
+            return None;
+        }
+    }
+    let mut url = if path.starts_with("file:") {
+        url::Url::parse(path).ok()?
+    } else if let Some(relative) = path.strip_prefix("~/") {
+        url::Url::from_directory_path(dirs::home_dir()?)
+            .ok()?
+            .join(relative)
+            .ok()?
+    } else {
+        let base = if path.starts_with('/') {
+            url::Url::parse("file:///").ok()?
+        } else {
+            url::Url::from_directory_path(directory?).ok()?
+        };
+        base.join(path).ok()?
+    };
+    // Only local file URLs can be dispatched as filesystem destinations.
+    url.to_file_path().ok()?;
+    url.set_fragment(None);
+    Some(url.to_string())
+}
+
+fn is_chat_source_anchor(anchor: &str) -> bool {
+    let Some(line) = anchor.strip_prefix('L') else {
+        return false;
+    };
+    !line.is_empty()
+        && line
+            .bytes()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, b'L' | b'C' | b'-'))
+        && line.as_bytes()[0].is_ascii_digit()
 }
 
 fn format_chat_list_item(item: &str) -> String {
-    let normalized = normalize_local_markdown_links(item);
+    let normalized = item.to_string();
     let plain = strip_inline_markdown(&normalized);
     // A Markdown link target naturally contains `/`. Do not mistake that URL
     // for a file path and wrap the whole link in `**...**`: the Markdown text
@@ -240,7 +310,10 @@ fn render_chat_blocks(
     window: &mut Window,
     cx: &mut Context<CenterArea>,
 ) -> gpui::AnyElement {
-    let normalized = chat_message_display_markdown(text);
+    let normalized = chat_message_display_markdown_in_directory(
+        text,
+        visualization.map(|context| context.files.project_path.as_path()),
+    );
     let lines = normalized.lines().collect::<Vec<_>>();
     let list_indent_unit = markdown_list_indent_unit(&lines);
     let mut elements = Vec::new();
@@ -335,7 +408,7 @@ fn render_chat_blocks(
 
         if let Some((_, heading)) = markdown_heading(line) {
             ix += 1;
-            let markdown = format!("**{}**", strip_inline_markdown(heading));
+            let markdown = heading.to_string();
             match warm.filter(|_| trailing_lines_are_empty(&lines, ix)) {
                 Some((warm_chars, warmth)) => elements.push(render_warm_heading_block(
                     markdown,
@@ -1642,5 +1715,115 @@ mod streaming_list_tests {
         ];
 
         assert_eq!(streaming_table_row(2, &lines, 2, Some((16, 1.0))), None);
+    }
+}
+
+#[cfg(test)]
+mod local_link_tests {
+    use super::*;
+
+    fn normalize(text: &str) -> String {
+        normalize_local_markdown_links(text, Some(Path::new("/work/agent")))
+    }
+
+    #[test]
+    fn chat_local_links_preserve_the_screenshot_label_and_destination() {
+        assert_eq!(
+            normalize("The demo is open. [Results and screenshots.](/tmp/choro-demo/results.html)"),
+            "The demo is open. [Results and screenshots.](<file:///tmp/choro-demo/results.html>)"
+        );
+    }
+
+    #[test]
+    fn chat_local_links_resolve_files_and_folders_in_the_agent_worktree() {
+        for (target, expected) in [
+            ("src/main.rs", "file:///work/agent/src/main.rs"),
+            ("./screenshots/", "file:///work/agent/screenshots/"),
+            ("../results", "file:///work/results"),
+            ("/tmp/screenshots/", "file:///tmp/screenshots/"),
+        ] {
+            assert_eq!(
+                normalize(&format!("[Open]({target})")),
+                format!("[Open](<{expected}>)")
+            );
+        }
+    }
+
+    #[test]
+    fn chat_local_links_open_the_file_without_source_location_suffixes() {
+        for target in [
+            "src/main.rs:42",
+            "src/main.rs:42:7",
+            "src/main.rs#L42",
+            "src/main.rs#L42-L50",
+            "file:///work/agent/src/main.rs:42",
+        ] {
+            assert_eq!(
+                normalize(&format!("[main.rs]({target})")),
+                "[main.rs](<file:///work/agent/src/main.rs>)"
+            );
+        }
+        assert_eq!(
+            normalize("[README](README.md:12)"),
+            "[README](<file:///work/agent/README.md>)"
+        );
+    }
+
+    #[test]
+    fn chat_local_links_support_spaces_unicode_parentheses_and_encoded_paths() {
+        for target in [
+            "</tmp/My Results/צילום (1).html>",
+            "/tmp/My%20Results/%D7%A6%D7%99%D7%9C%D7%95%D7%9D%20(1).html",
+        ] {
+            let normalized = normalize(&format!("[Results]({target})"));
+            let destination = normalized
+                .strip_prefix("[Results](<")
+                .unwrap()
+                .strip_suffix(">)")
+                .unwrap();
+            assert_eq!(
+                url::Url::parse(destination)
+                    .unwrap()
+                    .to_file_path()
+                    .unwrap(),
+                Path::new("/tmp/My Results/צילום (1).html")
+            );
+        }
+    }
+
+    #[test]
+    fn chat_local_links_do_not_reclassify_websites_based_on_their_labels() {
+        let markdown = "- [README.md](https://example.com/README.md)\n- [org/repo](https://example.com/org/repo)\n[Email](mailto:test@example.com)\n[Call](tel:123456789)";
+        assert_eq!(normalize(markdown), markdown);
+    }
+
+    #[test]
+    fn chat_local_links_handle_reference_links_and_code_labels() {
+        assert!(
+            normalize("[Results][report]\n\n[report]: /tmp/results.html")
+                .starts_with("[Results](<file:///tmp/results.html>)")
+        );
+        assert_eq!(
+            normalize("[`main.rs`](src/main.rs)"),
+            "[main.rs](<file:///work/agent/src/main.rs>)"
+        );
+    }
+
+    #[test]
+    fn chat_local_links_leave_code_examples_and_images_untouched() {
+        let markdown = "`[Results](/tmp/results.html)`\n\n```md\n[Results](/tmp/results.html)\n```\n\n![Shot](/tmp/shot.png)";
+        assert_eq!(normalize(markdown), markdown);
+    }
+
+    #[test]
+    fn chat_local_links_preserve_multiple_links_in_lists_and_tables() {
+        assert_eq!(
+            normalize("- [File](src/main.rs) and [Folder](./images/)"),
+            "- [File](<file:///work/agent/src/main.rs>) and [Folder](<file:///work/agent/images/>)"
+        );
+        assert_eq!(
+            normalize("| Result |\n| --- |\n| [Open](/tmp/results.html) |"),
+            "| Result |\n| --- |\n| [Open](<file:///tmp/results.html>) |"
+        );
     }
 }

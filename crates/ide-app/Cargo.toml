@@ -1,4 +1,5 @@
 [package]
+autobins = false
 name = "ide-app"
 version = "0.1.0"
 edition = "2021"
@@ -10,14 +11,13 @@ unexpected_cfgs = "allow"
 [features]
 # Native layout fixtures use an in-memory test window, never the live app.
 ui-layout-tests = ["gpui/test-support"]
+# Local profiling counters; absent from normal production builds.
+ui-performance = []
 
 [[bin]]
 name = "choro"
 path = "src/main.rs"
 
-[[bin]]
-name = "choro-cef-helper"
-path = "src/bin/choro_cef_helper.rs"
 
 [dependencies]
 ide-core = { workspace = true, features = ["app-update-bridge"] }
@@ -63,11 +63,6 @@ moonshine-rs = { version = "0.1.3", default-features = false }
 smart-turn-rs = "0.1.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Chromium Embedded Framework powers the Design/Penpot surface. Keep the
-# version exact because the Rust bindings and bundled CEF framework must match.
-# CEF 151.3.18 repeatedly crashes in its macOS browser-process message loop;
-# use the previous stable branch until that upstream regression is resolved.
-cef = { version = "=150.2.1", default-features = false, features = ["sandbox"] }
 security-framework = "3.7"
 block2 = "0.6"
 objc = "0.2"
@@ -75,12 +70,10 @@ objc2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSAccessibility", "NSWorkspace", "NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSSound", "NSSpeechSynthesizer", "NSView", "NSWindow"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSTimer", "NSURL", "NSValue"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSNotification", "NSOperation", "block2", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSTimer", "NSURL", "NSValue"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKNavigation", "WKWebView", "WKSnapshotConfiguration", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript"] }
-# System WebKit remains the lightweight engine for docs, previews, and
-# visualizations, and is the automatic fallback if the bundled Chromium runtime
-# cannot start.
+# System WebKit hosts Studio, Docs, previews and visualizations.
 wry = "0.52"
 # Shared with gpui/wry (0.6.x); used to read the window's NSView for the
 # keyboard focus handback when the webview is torn down.

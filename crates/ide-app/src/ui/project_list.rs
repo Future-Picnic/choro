@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use gpui::{
     div, ease_in_out, ease_out_quint, prelude::FluentBuilder, px, uniform_list, Animation,
@@ -18,30 +18,34 @@ use gpui_component::{
     v_flex, Icon, IconName, Sizable, WindowExt,
 };
 use ide_core::{
-    agents, AgentRecord, AgentRuntimeKind, AgentStatus, ProjectId, ProjectSectionId,
+    AgentStatus, ProjectId, ProjectSectionId,
     CUSTOM_PROJECT_SVG_ICON,
 };
 use uuid::Uuid;
 
-use crate::state::agent_chat::AgentChatStatus;
 use crate::state::agents::AgentRecordsEvent;
 use crate::state::delegation::display::DelegationActivity;
 use crate::state::{
     AgentActivityCache, AgentChatState, AgentRecords, GitStates, TerminalManager, Workspace,
 };
 use crate::ui::center::CenterArea;
-use crate::ui::logo_spinner::{delegation_spinner, logo_spinner};
+use activity_layer::{ActivityAnchors, SidebarActivityLayer};
+mod activity_layer;
+mod virtual_rows;
+#[cfg(all(test, feature = "ui-layout-tests"))]
+mod performance_tests;
 use crate::ui::project_visuals::{
     import_project_svg, project_color_options, project_icon_color, project_icon_element,
     project_icon_glyph, project_icon_options, project_icon_visual_glyph, POPULAR_PROJECT_ICONS,
 };
 use crate::ui::style;
 
-mod agent_hover_card;
+// Hover-card implementation is retained on disk but no longer mounted.
+use crate::state::sidebar::{SidebarAgent, SidebarModel};
 mod delegation_rows;
 
 /// Everything a sidebar row displays for one project.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct RowInfo {
     ix: usize,
     id: ProjectId,
@@ -64,7 +68,8 @@ struct RowInfo {
     /// Agents waiting for user attention.
     agents_waiting: usize,
     /// Agents included by the selected view (the In progress lane in All agents).
-    in_progress_agents: Vec<AgentRecord>,
+    in_progress_agents: Vec<SidebarAgent>,
+    agent_count: usize,
 }
 
 /// Budget for the list's 16px padding and card's 24px padding. Script chips
@@ -106,13 +111,14 @@ fn visible_sidebar_script_count(scripts: &[(SharedString, bool)], sidebar_width:
         .count()
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SidebarSectionKind {
     Favorites,
     Projects,
     Custom(ProjectSectionId),
 }
 
+#[derive(Clone, PartialEq, Eq)]
 struct SidebarSection {
     ix: usize,
     label: SharedString,
@@ -145,23 +151,7 @@ impl Render for DragProjectSection {
     }
 }
 
-/// Live activity rolled up per project for the collapsed row indicator.
-#[derive(Clone, Copy, Default)]
-struct ProjectActivity {
-    working: bool,
-    delegating: bool,
-    waiting: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ProjectAgentRuntime {
-    NotStarted,
-    Working,
-    Waiting,
-    Open,
-    Idle,
-    Ended,
-}
+use crate::state::agent_navigation::AgentNavigationRuntime as ProjectAgentRuntime;
 
 /// Active work has its own single expanded project; normal project expansion
 /// remains in Workspace and is restored when returning to All agents.
@@ -190,14 +180,7 @@ impl AgentListView {
         status: AgentStatus,
         runtime: ProjectAgentRuntime,
     ) -> bool {
-        if !self.active_work {
-            return status == AgentStatus::InProgress;
-        }
-        !status.is_finished()
-            && (matches!(
-                runtime,
-                ProjectAgentRuntime::Working | ProjectAgentRuntime::Waiting
-            ) || (self.expanded_project == Some(project) && status == AgentStatus::InProgress))
+        ide_core::agent_navigation::includes_agent(status,self.active_work,runtime==ProjectAgentRuntime::Working,runtime==ProjectAgentRuntime::Waiting,self.expanded_project==Some(project))
     }
 }
 
@@ -578,12 +561,8 @@ impl Render for ProjectIconDialog {
 /// Left panel: the list of managed projects with live status indicators.
 pub struct ProjectList {
     workspace: Entity<Workspace>,
-    git_states: Entity<GitStates>,
-    terminals: Entity<TerminalManager>,
-    agent_chats: Entity<AgentChatState>,
     agents: Entity<AgentRecords>,
-    agent_activity: Entity<AgentActivityCache>,
-    center: WeakEntity<CenterArea>,
+    center: Option<WeakEntity<CenterArea>>,
     hovered_project: Option<ProjectId>,
     hovered_section: Option<ProjectSectionId>,
     /// Row whose actions menu is open. The trigger only renders while the row is
@@ -600,7 +579,11 @@ pub struct ProjectList {
     /// agent is opened, so the row doesn't vanish under the click.
     attention_pinned: Option<Uuid>,
     hovered_agent: Option<HoveredAgentRow>,
-    agent_hover: agent_hover_card::SidebarAgentHover,
+    model: Entity<SidebarModel>,
+    virtual_rows: virtual_rows::SidebarRows,
+    is_visible: bool,
+    activity_anchors: ActivityAnchors,
+    pub(crate) activity_layer: Entity<SidebarActivityLayer>,
     /// Waiting agent ids seen on the last refresh; `None` until the first scan.
     /// A newly waiting agent auto-expands a collapsed attention section, but the
     /// baseline scan at startup respects the persisted collapse.
@@ -613,32 +596,27 @@ pub struct ProjectList {
 }
 
 impl ProjectList {
-    fn refresh_agent_title_animations(&mut self, records: Vec<AgentRecord>) {
-        let next_titles = records
-            .into_iter()
-            .map(|agent| (agent.id, agent.title))
-            .collect::<HashMap<_, _>>();
-        for (agent_id, title) in &next_titles {
-            if self
-                .known_agent_titles
-                .get(agent_id)
-                .is_some_and(|known| known != title)
-            {
-                let epoch = self
-                    .agent_title_animation_epochs
-                    .entry(*agent_id)
-                    .or_insert(0);
-                *epoch = epoch.wrapping_add(1);
-            }
+    pub(crate) fn agent_runtime(&self, agent_id: Uuid, cx: &App) -> Option<ProjectAgentRuntime> {
+        self.model
+            .read(cx)
+            .agents
+            .get(&agent_id)
+            .map(|agent| agent.runtime)
+    }
+
+    pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.is_visible == visible { return; }
+        self.is_visible = visible;
+        if !visible {
+            self.activity_anchors.clear(); self.virtual_rows.received_at = None;
+            self.activity_layer.update(cx, |layer, _| layer.pause());
         }
-        self.agent_title_animation_epochs
-            .retain(|agent_id, _| next_titles.contains_key(agent_id));
-        self.known_agent_titles = next_titles;
+        self.virtual_rows.dirty = true;
     }
 
     fn render_agent_title(
         &self,
-        agent: &AgentRecord,
+        agent: &SidebarAgent,
         hovered: bool,
         weight: FontWeight,
         color: gpui::Hsla,
@@ -815,10 +793,20 @@ impl ProjectList {
         agent_chats: Entity<AgentChatState>,
         agents: Entity<AgentRecords>,
         agent_activity: Entity<AgentActivityCache>,
-        center: WeakEntity<CenterArea>,
+        center: impl Into<Option<WeakEntity<CenterArea>>>,
         cx: &mut App,
     ) -> Entity<Self> {
+        let center = center.into();
+        let model = SidebarModel::new(workspace.clone(), agents.clone(), agent_chats.clone(), agent_activity.clone(), terminals.clone(), git_states.clone(), cx);
+        let activity_anchors = ActivityAnchors::default();
+        let activity_layer = SidebarActivityLayer::new(activity_anchors.clone(), cx);
         cx.new(|cx| {
+            cx.observe(&cx.entity(), |this: &mut Self, _, cx| {
+                // Resolve presentation before drawing, so child cache invalidations
+                // participate in the very next frame rather than the frame after it.
+                this.virtual_rows.dirty = true;
+                if this.is_visible { this.reconcile_virtual_rows(cx); }
+            }).detach();
             let known_agent_titles = agents
                 .read(cx)
                 .all_records()
@@ -826,27 +814,29 @@ impl ProjectList {
                 .map(|agent| (agent.id, agent.title))
                 .collect();
             cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
-            cx.observe(&git_states, |_, _, cx| cx.notify()).detach();
-            cx.observe(&terminals, |this: &mut Self, _, cx| {
+            cx.subscribe(&model, |this: &mut Self, _, change, cx| {
+                debug_assert!(!change.agents.is_empty() || !change.projects.is_empty());
+                if this.is_visible { this.virtual_rows.received_at = Some(change.received_at); }
+                if let Some(center) = this.center.as_ref().and_then(WeakEntity::upgrade) {
+                    center.update(cx, |center, cx| center.sidebar_status_changed(&change.agents, cx));
+                }
                 this.refresh_attention_autoexpand(cx);
                 cx.notify();
-            })
-            .detach();
-            cx.observe(&agent_chats, |this: &mut Self, _, cx| {
-                this.refresh_attention_autoexpand(cx);
-                cx.notify();
-            })
-            .detach();
-            cx.observe(&agents, |this: &mut Self, _, cx| {
-                this.refresh_attention_autoexpand(cx);
-                cx.notify();
-            })
-            .detach();
+            }).detach();
             cx.subscribe(
                 &agents,
                 |this: &mut Self, agents, event: &AgentRecordsEvent, cx| {
-                    if matches!(event, AgentRecordsEvent::Changed) {
-                        this.refresh_agent_title_animations(agents.read(cx).all_records());
+                    if let AgentRecordsEvent::RecordChanged { agent_id, .. } = event {
+                        if let Some(agent) = agents.read(cx).agent(*agent_id) {
+                            if this.known_agent_titles.get(agent_id).is_some_and(|title| title != &agent.title) {
+                                let epoch = this.agent_title_animation_epochs.entry(*agent_id).or_default();
+                                *epoch = epoch.wrapping_add(1);
+                            }
+                            this.known_agent_titles.insert(*agent_id, agent.title.clone());
+                        } else {
+                            this.known_agent_titles.remove(agent_id);
+                            this.agent_title_animation_epochs.remove(agent_id);
+                        }
                     }
                     if matches!(event, AgentRecordsEvent::SelectionChanged) {
                         let selected = this.workspace.read(cx).active.and_then(|project| {
@@ -856,35 +846,15 @@ impl ProjectList {
                         {
                             this.attention_pinned = None;
                         }
+                        cx.notify();
                     }
                 },
             )
             .detach();
-            cx.observe(&agent_activity, |this: &mut Self, _, cx| {
-                this.refresh_attention_autoexpand(cx);
-                cx.notify();
-            })
-            .detach();
-            // Delegation is application-owned: a lead's in-progress state must
-            // update here even while a different chat is selected.
-            if let Some(handle) = cx
-                .try_global::<crate::state::delegation::DelegationHandle>()
-                .cloned()
-            {
-                cx.observe(&handle.0, |this: &mut Self, _, cx| {
-                    this.refresh_attention_autoexpand(cx);
-                    cx.notify();
-                })
-                .detach();
-            }
             let sidebar_active_work = workspace.read(cx).sidebar_active_work;
             Self {
                 workspace,
-                git_states,
-                terminals,
-                agent_chats,
                 agents,
-                agent_activity,
                 center,
                 hovered_project: None,
                 hovered_section: None,
@@ -898,7 +868,11 @@ impl ProjectList {
                 },
                 attention_pinned: None,
                 hovered_agent: None,
-                agent_hover: Default::default(),
+                model,
+                virtual_rows: virtual_rows::SidebarRows::new(),
+                is_visible: false,
+                activity_anchors,
+                activity_layer,
                 known_waiting: None,
                 known_agent_titles,
                 agent_title_animation_epochs: HashMap::new(),
@@ -906,59 +880,21 @@ impl ProjectList {
         })
     }
 
-    fn agent_activity(
-        &self,
-        project: ProjectId,
-        records: &[AgentRecord],
-        cx: &App,
-    ) -> ProjectActivity {
-        let mut activity = ProjectActivity::default();
-        for agent in records
-            .iter()
-            .filter(|agent| agent.project_id == project && !agent.status.is_finished())
-        {
-            match self.runtime_for_agent(project, agent, cx) {
-                ProjectAgentRuntime::Working => {
-                    activity.working = true;
-                    if self.delegation_activity_for(agent.id, cx) == DelegationActivity::Working {
-                        activity.delegating = true;
-                    }
-                }
-                ProjectAgentRuntime::Waiting => activity.waiting += 1,
-                _ => {}
-            }
-        }
-        activity
-    }
-
     fn collect_rows(&self, cx: &App) -> Vec<RowInfo> {
+        let _probe = crate::ui::performance::UiProbe::new("sidebar.collect");
         let state = self.workspace.read(cx);
-        let git_states = self.git_states.read(cx);
-        let terminals = self.terminals.read(cx);
-        let agent_records: Vec<AgentRecord> = state
+        let agent_records: Vec<SidebarAgent> = state
             .projects
             .iter()
-            .flat_map(|project| self.agents.read(cx).records_for_project(project.id))
+            .flat_map(|project| self.model.read(cx).records_for_project(project.id))
             .collect();
         state
             .projects
             .iter()
             .enumerate()
             .map(|(ix, p)| {
-                let git = git_states.get(p.id);
-                let changes = git
-                    .map(|git| {
-                        let git = git.read(cx);
-                        if git.is_repo {
-                            let snapshot = git.snapshot.as_ref();
-                            snapshot.map(|s| s.entries.len()).unwrap_or(0)
-                        } else {
-                            0
-                        }
-                    })
-                    .unwrap_or(0);
-                let activity = self.agent_activity(p.id, &agent_records, cx);
-                let in_progress_agents = agent_records
+                let totals = self.model.read(cx).projects.get(&p.id).cloned().unwrap_or_default();
+                let in_progress_agents: Vec<_> = agent_records
                     .iter()
                     .filter(|agent| {
                         agent.project_id == p.id
@@ -985,11 +921,12 @@ impl ProjectList {
                     section_id: p.section_id,
                     is_favorite: p.is_favorite,
                     is_active: state.active == Some(p.id),
-                    changes,
-                    scripts: terminals.running_scripts(p.id),
-                    agents_working: activity.working,
-                    agents_delegating: activity.delegating,
-                    agents_waiting: activity.waiting,
+                    changes: totals.changes,
+                    scripts: totals.scripts,
+                    agents_working: totals.working > 0,
+                    agents_delegating: totals.delegating > 0,
+                    agents_waiting: totals.waiting,
+                    agent_count: in_progress_agents.len(),
                     in_progress_agents,
                 }
             })
@@ -1146,14 +1083,9 @@ impl ProjectList {
 
         if row.agents_working && project_collapsed {
             if row.agents_delegating {
-                return delegation_spinner(
-                    16.,
-                    "project-row-delegation",
-                    row.ix,
-                    crate::ui::design::amber(cx),
-                );
+                return self.activity_anchors.placeholder(16., Some(crate::ui::design::amber(cx)));
             }
-            return logo_spinner(16., "project-row-logo", row.ix, crate::ui::design::t3(cx));
+            return self.activity_anchors.placeholder(16., None);
         }
 
         div().into_any_element()
@@ -1163,123 +1095,8 @@ impl ProjectList {
     /// state: a lead whose Experts are busy is in progress even while its own
     /// provider sits idle, and an Expert waiting on a person is real attention.
     /// Provider status itself is never rewritten.
-    fn runtime_for_agent(
-        &self,
-        project: ProjectId,
-        agent: &AgentRecord,
-        cx: &App,
-    ) -> ProjectAgentRuntime {
-        let provider = self.provider_runtime_for_agent(project, agent, cx);
-        if agent.status.is_finished() || provider == ProjectAgentRuntime::Waiting {
-            return provider;
-        }
-        match self.delegation_activity_for(agent.id, cx) {
-            DelegationActivity::Attention => ProjectAgentRuntime::Waiting,
-            DelegationActivity::Working => ProjectAgentRuntime::Working,
-            DelegationActivity::Paused | DelegationActivity::Idle => provider,
-        }
-    }
-
-    fn provider_runtime_for_agent(
-        &self,
-        project: ProjectId,
-        agent: &AgentRecord,
-        cx: &App,
-    ) -> ProjectAgentRuntime {
-        if agent.status.is_finished() {
-            return ProjectAgentRuntime::Idle;
-        }
-        if agent.runtime == AgentRuntimeKind::Chat {
-            let (status, session_id, last_activity_at) = self
-                .agent_chats
-                .read(cx)
-                .session(agent.id)
-                .map(|session| {
-                    (
-                        Some(session.status),
-                        session
-                            .chat_session_id
-                            .clone()
-                            .or_else(|| session.cli_session_id.clone()),
-                        Some(session.last_activity_at),
-                    )
-                })
-                .unwrap_or((None, None, None));
-            return match status {
-                Some(AgentChatStatus::Running | AgentChatStatus::Cancelling) => {
-                    ProjectAgentRuntime::Working
-                }
-                Some(AgentChatStatus::WaitingForUser | AgentChatStatus::PlanReady) => {
-                    ProjectAgentRuntime::Waiting
-                }
-                Some(AgentChatStatus::Failed) => ProjectAgentRuntime::Ended,
-                _ if agent.started_at.is_some() => {
-                    let manager = self.terminals.read(cx);
-                    if let Some(session_id) = session_id
-                        .as_deref()
-                        .or(agent.chat_session_id.as_deref())
-                        .or(agent.cli_session_id.as_deref())
-                    {
-                        let updated_at =
-                            self.agent_activity
-                                .read(cx)
-                                .updated_at(agent.id)
-                                .or_else(|| {
-                                    last_activity_at
-                                        .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
-                                });
-                        if let Some(updated_at) = updated_at {
-                            let working = std::time::SystemTime::now()
-                                .duration_since(updated_at)
-                                .map(|age| age < agents::WORKING_WINDOW)
-                                .unwrap_or(false);
-                            if working {
-                                return ProjectAgentRuntime::Working;
-                            }
-                            if !manager.attention_suppressed(session_id, updated_at) {
-                                return ProjectAgentRuntime::Waiting;
-                            }
-                        }
-                    }
-                    ProjectAgentRuntime::Idle
-                }
-                _ => ProjectAgentRuntime::NotStarted,
-            };
-        }
-
-        let manager = self.terminals.read(cx);
-        if let Some(session) = manager.agent_record_session(project, agent.id) {
-            if session.exited {
-                return ProjectAgentRuntime::Ended;
-            }
-
-            let session_id = session
-                .agent_session_id
-                .as_deref()
-                .or(agent.cli_session_id.as_deref());
-            if let Some(session_id) = session_id {
-                if let Some(updated_at) = self.agent_activity.read(cx).updated_at(agent.id) {
-                    let working = std::time::SystemTime::now()
-                        .duration_since(updated_at)
-                        .map(|age| age < agents::WORKING_WINDOW)
-                        .unwrap_or(false);
-                    if working {
-                        return ProjectAgentRuntime::Working;
-                    }
-                    if !manager.attention_suppressed(session_id, updated_at) {
-                        return ProjectAgentRuntime::Waiting;
-                    }
-                }
-            }
-
-            return ProjectAgentRuntime::Open;
-        }
-
-        if agent.started_at.is_some() || agent.cli_session_id.is_some() {
-            ProjectAgentRuntime::Idle
-        } else {
-            ProjectAgentRuntime::NotStarted
-        }
+    fn runtime_for_agent(&self, _project: ProjectId, agent: &SidebarAgent, _cx: &App) -> ProjectAgentRuntime {
+        agent.runtime
     }
 
     fn open_agent(
@@ -1296,7 +1113,7 @@ impl ProjectList {
             .update(cx, |workspace, cx| workspace.set_active(project, cx));
         self.agents
             .update(cx, |agents, cx| agents.select(project, agent_id, cx));
-        if let Some(center) = self.center.upgrade() {
+        if let Some(center) = self.center.as_ref().and_then(WeakEntity::upgrade) {
             center.update(cx, |center, cx| {
                 center.open_agent(agent_id, window, cx);
             });
@@ -1311,7 +1128,7 @@ impl ProjectList {
     ) {
         self.workspace
             .update(cx, |workspace, cx| workspace.set_active(project, cx));
-        if let Some(center) = self.center.upgrade() {
+        if let Some(center) = self.center.as_ref().and_then(WeakEntity::upgrade) {
             center.update(cx, |center, cx| {
                 center.open_new_agent_composer(window, cx);
             });
@@ -1348,10 +1165,10 @@ impl ProjectList {
 
     fn render_project_agent(
         &self,
-        row_ix: usize,
-        agent_ix: usize,
+        _row_ix: usize,
+        _agent_ix: usize,
         project: ProjectId,
-        agent: &AgentRecord,
+        agent: &SidebarAgent,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
@@ -1364,13 +1181,11 @@ impl ProjectList {
         let hover_key = HoveredAgentRow::Project(agent_id);
         let hovered = self.hovered_agent == Some(hover_key);
         let pinned = self.workspace.read(cx).is_agent_pinned(agent_id);
-        let delegation = self.delegation_state_for(agent_id, cx);
-        let has_delegations = !delegation.tasks.is_empty();
-        let delegations_expanded = has_delegations && self.expanded_delegations.contains(&agent_id);
+        let has_delegations = agent.has_delegations;
 
         let row = h_flex()
             .id(("project-agent-row", agent_id.as_u128() as u64))
-            .child(self.agent_hover_anchor(hover_key, cx))
+
             .w_full()
             .pl(px(34.))
             .pr_2()
@@ -1381,8 +1196,8 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
-            .on_hover(cx.listener(move |this, is_hovered, window, cx| {
-                this.set_agent_card_hover(hover_key, agent_id, *is_hovered, window, cx);
+            .on_hover(cx.listener(move |this, is_hovered, _window, cx| {
+
                 this.hovered_agent = if *is_hovered {
                     Some(hover_key)
                 } else if this.hovered_agent == Some(hover_key) {
@@ -1397,10 +1212,7 @@ impl ProjectList {
                 this.open_agent(project, agent_id, window, cx);
             }))
             .when(
-                agent
-                    .origin
-                    .as_ref()
-                    .is_some_and(|origin| origin.is_pocketcomet()),
+                agent.pocketcomet,
                 |row| {
                     row.child(crate::ui::design::indicator::pocketcomet_icon(
                         crate::ui::design::accent(cx),
@@ -1440,7 +1252,7 @@ impl ProjectList {
             .when(has_delegations, |row| {
                 row.child(self.render_delegation_toggle(
                     agent_id,
-                    &delegation,
+                    self.delegation_activity_for(agent_id, cx),
                     runtime == ProjectAgentRuntime::Working,
                     hovered,
                     cx,
@@ -1450,12 +1262,7 @@ impl ProjectList {
                 !has_delegations && !hovered && runtime == ProjectAgentRuntime::Working,
                 |row| {
                     row.child(div().flex_none().w(px(34.)).flex().justify_end().child(
-                        logo_spinner(
-                            16.,
-                            "project-agent-logo",
-                            row_ix * 1000 + agent_ix,
-                            crate::ui::design::t3(cx),
-                        ),
+                        self.activity_anchors.placeholder(16., None),
                     ))
                 },
             )
@@ -1470,15 +1277,7 @@ impl ProjectList {
                         .child(div().size(px(6.)).rounded_full().bg(warning)),
                 )
             });
-        if !delegations_expanded {
-            return row.into_any_element();
-        }
-        v_flex()
-            .w_full()
-            .gap_0p5()
-            .child(row)
-            .child(self.render_delegated_task_rows(project, agent_id, px(34.), &delegation, cx))
-            .into_any_element()
+        row.into_any_element()
     }
 
     fn render_agent_actions(
@@ -1540,7 +1339,7 @@ impl ProjectList {
         &self,
         row_ix: usize,
         project: ProjectId,
-        agents: &[AgentRecord],
+        agents: &[SidebarAgent],
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         const PREVIEW_LIMIT: usize = 5;
@@ -1608,12 +1407,12 @@ impl ProjectList {
     fn collect_attention_agents(
         &self,
         cx: &App,
-    ) -> Vec<(ProjectId, SharedString, String, AgentRecord)> {
+    ) -> Vec<(ProjectId, SharedString, String, SidebarAgent)> {
         let state = self.workspace.read(cx);
         let mut waiting = Vec::new();
         for project in &state.projects {
             let project_name = SharedString::from(project.name.clone());
-            for agent in self.agents.read(cx).records_for_project(project.id) {
+            for agent in self.model.read(cx).records_for_project(project.id) {
                 if agent.status.is_finished() {
                     continue;
                 }
@@ -1637,16 +1436,13 @@ impl ProjectList {
     fn collect_pinned_agents(
         &self,
         cx: &App,
-    ) -> Vec<(ProjectId, SharedString, String, AgentRecord)> {
+    ) -> Vec<(ProjectId, SharedString, String, SidebarAgent)> {
         let state = self.workspace.read(cx);
         let mut pinned = Vec::new();
         for project in &state.projects {
             let project_name = SharedString::from(project.name.clone());
-            for agent in self.agents.read(cx).records_for_project(project.id) {
-                if agent.status.is_finished()
-                    || !state.is_agent_pinned(agent.id)
-                    || self.runtime_for_agent(project.id, &agent, cx)
-                        == ProjectAgentRuntime::Waiting
+            for agent in self.model.read(cx).records_for_project(project.id) {
+                if !ide_core::agent_navigation::pinned_eligible(agent.status,state.is_agent_pinned(agent.id),self.runtime_for_agent(project.id,&agent,cx)==ProjectAgentRuntime::Waiting)
                 {
                     continue;
                 }
@@ -1664,11 +1460,11 @@ impl ProjectList {
 
     fn render_pinned_agent(
         &self,
-        ix: usize,
+        _ix: usize,
         project: ProjectId,
         project_name: SharedString,
         project_icon_id: &str,
-        agent: &AgentRecord,
+        agent: &SidebarAgent,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
@@ -1686,12 +1482,10 @@ impl ProjectList {
             .find(|candidate| candidate.id == project)
             .and_then(|candidate| candidate.icon_image_path.clone());
 
-        let delegation = self.delegation_state_for(agent_id, cx);
-        let has_delegations = !delegation.tasks.is_empty();
-        let expanded = self.expanded_delegations.contains(&agent_id);
+        let has_delegations = agent.has_delegations;
         let row = h_flex()
             .id(("pinned-agent-row", agent_id.as_u128() as u64))
-            .child(self.agent_hover_anchor(hover_key, cx))
+
             .w_full()
             .min_h(px(30.))
             .pl_3()
@@ -1703,8 +1497,8 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
-            .on_hover(cx.listener(move |this, is_hovered, window, cx| {
-                this.set_agent_card_hover(hover_key, agent_id, *is_hovered, window, cx);
+            .on_hover(cx.listener(move |this, is_hovered, _window, cx| {
+
                 this.hovered_agent = if *is_hovered {
                     Some(hover_key)
                 } else if this.hovered_agent == Some(hover_key) {
@@ -1741,7 +1535,7 @@ impl ProjectList {
             .when(has_delegations, |row| {
                 row.child(self.render_delegation_toggle(
                     agent_id,
-                    &delegation,
+                    self.delegation_activity_for(agent_id, cx),
                     runtime == ProjectAgentRuntime::Working,
                     hovered,
                     cx,
@@ -1751,7 +1545,7 @@ impl ProjectList {
                 !has_delegations && !hovered && runtime == ProjectAgentRuntime::Working,
                 |row| {
                     row.child(div().flex_none().w(px(34.)).flex().justify_end().child(
-                        logo_spinner(16., "pinned-agent-logo", ix, crate::ui::design::t3(cx)),
+                        self.activity_anchors.placeholder(16., None),
                     ))
                 },
             )
@@ -1776,22 +1570,10 @@ impl ProjectList {
                 )
             })
             .into_any_element();
-        v_flex()
-            .w_full()
-            .child(row)
-            .when(expanded && !delegation.tasks.is_empty(), |col| {
-                col.child(self.render_delegated_task_rows(
-                    project,
-                    agent_id,
-                    px(12.),
-                    &delegation,
-                    cx,
-                ))
-            })
-            .into_any_element()
+        row.into_any_element()
     }
 
-    fn render_pinned_section(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_pinned_section(&self, header_only: bool, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let pinned = self.collect_pinned_agents(cx);
         if pinned.is_empty() {
             return None;
@@ -1802,7 +1584,7 @@ impl ProjectList {
             v_flex()
                 .w_full()
                 .gap_0p5()
-                .mb_3()
+                .when(!header_only, |section| section.mb_3())
                 .child(
                     h_flex()
                         .id("pinned-agents-section-header")
@@ -1838,7 +1620,7 @@ impl ProjectList {
                                 .child("PINNED"),
                         ),
                 )
-                .when(!collapsed, |section| {
+                .when(!collapsed && !header_only, |section| {
                     section.children(
                         pinned
                             .into_iter()
@@ -1887,7 +1669,7 @@ impl ProjectList {
         project: ProjectId,
         project_name: SharedString,
         project_icon_id: &str,
-        agent: &AgentRecord,
+        agent: &SidebarAgent,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
@@ -1906,7 +1688,7 @@ impl ProjectList {
 
         h_flex()
             .id(("attention-agent-row", agent_id.as_u128() as u64))
-            .child(self.agent_hover_anchor(hover_key, cx))
+
             .w_full()
             .min_h(px(30.))
             .pl_3()
@@ -1918,8 +1700,7 @@ impl ProjectList {
             .cursor_pointer()
             .when(selected, |row| row.bg(crate::ui::design::surface_2(cx)))
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.5)))
-            .on_hover(cx.listener(move |this, hovered, window, cx| {
-                this.set_agent_card_hover(hover_key, agent_id, *hovered, window, cx);
+            .on_hover(cx.listener(move |this, hovered, _window, cx| {
                 this.hovered_agent = if *hovered {
                     Some(hover_key)
                 } else if this.hovered_agent == Some(hover_key) {
@@ -1967,7 +1748,7 @@ impl ProjectList {
             .into_any_element()
     }
 
-    fn render_attention_section(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_attention_section(&self, header_only: bool, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let waiting = self.collect_attention_agents(cx);
         if waiting.is_empty() {
             return None;
@@ -1979,7 +1760,7 @@ impl ProjectList {
             v_flex()
                 .w_full()
                 .gap_0p5()
-                .mb_3()
+                .when(!header_only, |section| section.mb_3())
                 .child(
                     h_flex()
                         .id("attention-section-header")
@@ -2025,7 +1806,7 @@ impl ProjectList {
                             )
                         }),
                 )
-                .when(!collapsed, |section| {
+                .when(!collapsed && !header_only, |section| {
                     section.children(
                         waiting
                             .into_iter()
@@ -2464,32 +2245,6 @@ impl ProjectList {
         }
     }
 
-    fn render_sidebar_section(
-        &self,
-        section: SidebarSection,
-        after_rows: bool,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let collapsed = section.collapsed;
-        v_flex()
-            .id(("project-sidebar-section", section.ix))
-            .w_full()
-            .gap_0p5()
-            .when(section.ix > 0 && after_rows, |section| section.mt_4())
-            .when(section.ix > 0 && !after_rows, |section| section.mt_1())
-            .child(self.render_section_header(&section, cx))
-            .when(!collapsed, |column| {
-                column.children(
-                    section
-                        .rows
-                        .into_iter()
-                        .map(|row| self.render_row(row, cx))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .into_any_element()
-    }
-
     fn render_script_indicators(
         &self,
         row_ix: usize,
@@ -2584,7 +2339,7 @@ impl ProjectList {
             })
     }
 
-    fn render_row(&self, row: RowInfo, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&self, row: RowInfo, header_only: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = self.workspace.clone();
         let dropdown_workspace = self.workspace.clone();
         let context_workspace = self.workspace.clone();
@@ -2602,9 +2357,10 @@ impl ProjectList {
         };
         let hovered = self.hovered_project == Some(id);
         let show_actions = hovered || row.is_active || self.menu_project == Some(id);
-        let has_in_progress_agents = !row.in_progress_agents.is_empty();
-        let agents_section =
-            self.render_project_agents_section(row.ix, id, &row.in_progress_agents, cx);
+        let has_in_progress_agents = row.agent_count > 0;
+        let agents_section = if header_only { div().into_any_element() } else {
+            self.render_project_agents_section(row.ix, id, &row.in_progress_agents, cx)
+        };
 
         v_flex()
             .id(("project-row", row.ix))
@@ -2835,7 +2591,7 @@ impl ProjectList {
                     }),
             )
             .when(
-                (!collapsed || self.agent_list_view.active_work) && has_in_progress_agents,
+                !header_only && (!collapsed || self.agent_list_view.active_work) && has_in_progress_agents,
                 |column| column.child(agents_section),
             )
     }
@@ -2843,110 +2599,22 @@ impl ProjectList {
 
 impl Render for ProjectList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.agent_hover.begin_render();
-        // The Active/All choice lives in Workspace (persisted, switched from the
-        // sidebar footer). Mirror it before collecting rows so the filter agrees.
-        self.agent_list_view.active_work = self.workspace.read(cx).sidebar_active_work;
-        let rows = self.collect_rows(cx);
-        let (project_sections, favorites_collapsed, projects_collapsed) = {
-            let workspace = self.workspace.read(cx);
-            (
-                workspace.project_sections.clone(),
-                workspace.favorites_collapsed,
-                workspace.projects_collapsed,
-            )
-        };
-        let mut sections = Vec::new();
-        let favorite_rows = rows
-            .iter()
-            .filter(|row| row.is_favorite)
-            .cloned()
-            .collect::<Vec<_>>();
-        if !favorite_rows.is_empty() {
-            sections.push(SidebarSection {
-                ix: sections.len(),
-                label: "Favorites".into(),
-                kind: SidebarSectionKind::Favorites,
-                collapsed: favorites_collapsed,
-                rows: favorite_rows,
-            });
-        }
-        let project_rows = rows
-            .iter()
-            .filter(|row| !row.is_favorite && row.section_id.is_none())
-            .cloned()
-            .collect::<Vec<_>>();
-        for project_section in project_sections {
-            let section_id = project_section.id;
-            let section_rows = rows
-                .iter()
-                .filter(|row| !row.is_favorite && row.section_id == Some(section_id))
-                .cloned()
-                .collect::<Vec<_>>();
-            sections.push(SidebarSection {
-                ix: sections.len(),
-                label: SharedString::from(project_section.name),
-                kind: SidebarSectionKind::Custom(section_id),
-                collapsed: project_section.collapsed,
-                rows: section_rows,
-            });
-        }
-        if !project_rows.is_empty() {
-            sections.push(SidebarSection {
-                ix: sections.len(),
-                label: "Projects".into(),
-                kind: SidebarSectionKind::Projects,
-                collapsed: projects_collapsed,
-                rows: project_rows,
-            });
-        }
-        let is_empty = sections.is_empty();
-        let attention_section = self.render_attention_section(cx);
-        let pinned_section = self.render_pinned_section(cx);
-        // The 16px section break exists to close a list of projects. A header
-        // that follows a closed (or empty) section has no list to close, so it
-        // stacks at row rhythm instead of floating in its own band.
-        let mut previous_section_had_rows = false;
-        let section_elements = sections
-            .into_iter()
-            .map(|section| {
-                let had_rows = !section.collapsed && !section.rows.is_empty();
-                let element = self.render_sidebar_section(section, previous_section_had_rows, cx);
-                previous_section_had_rows = had_rows;
-                element
-            })
-            .collect::<Vec<_>>();
-
-        self.agent_hover.finish_render();
-
-        v_flex()
-            .child(self.agent_sidebar_bounds(cx))
-            .size_full()
-            .px_2()
-            .py_2()
-            .gap_1p5()
-            .child(
-                v_flex()
-                    .id("project-rows")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .gap_0p5()
-                    .overflow_y_scroll()
-                    .children(attention_section)
-                    .children(pinned_section)
-                    .children(section_elements)
-                    .when(is_empty, |list| {
-                        list.child(
-                            div()
-                                .px_2()
-                                .py_4()
-                                .text_size(crate::ui::design::text_body())
-                                .text_color(crate::ui::design::t3(cx))
-                                .child("No projects yet.\nAdd a project to get started."),
-                        )
-                    }),
-            )
-            .min_w(px(0.))
+        let _probe = crate::ui::performance::UiProbe::new("sidebar.shell");
+        if self.virtual_rows.dirty { self.reconcile_virtual_rows(cx); }
+        let rows = self.virtual_rows.visible.clone();
+        let anchors = self.activity_anchors.clone();
+        let list = gpui::list(self.virtual_rows.list.clone(), move |index, _, cx| {
+            let row = &rows[index];
+            // Register this cached view as a dependency on every visible frame.
+            let _ = row.view.read(cx);
+            div().id(gpui::ElementId::View(row.view.entity_id())).w_full().relative()
+                .child(anchors.visible_group(&row.anchors))
+                .child(gpui::AnyView::from(row.view.clone()).cached(
+                    gpui::StyleRefinement::default().w_full().h(px(row.height))))
+                .into_any_element()
+        }).size_full();
+        v_flex().size_full().px_2().py_2().min_w(px(0.))
+            .child(self.activity_anchors.begin_prepaint()).child(list)
     }
 }
 

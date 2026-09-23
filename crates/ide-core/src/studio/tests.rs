@@ -1233,3 +1233,151 @@ fn reviewed_publication_rejects_external_edits_without_revision_bump() {
         .is_err());
     assert!(store.system(record.id).unwrap().applied.is_none());
 }
+
+#[test]
+fn blank_screen_detection_ignores_document_shell_but_not_content() {
+    let blank = |html: &str| {
+        is_blank_screen(Some(&StudioDocument {
+            html: html.into(),
+            ..Default::default()
+        }))
+    };
+    assert!(blank(""));
+    assert!(blank("<!doctype html><html><head></head><body></body></html>"));
+    assert!(blank("<!doctype html><html><body>\n  \n</body></html>"));
+    assert!(blank("<html><BODY class=\"x\">   </BODY></html>"));
+    assert!(!blank("<!doctype html><html><body><h1>Cart</h1></body></html>"));
+    assert!(!blank("<h1>No shell, still authored</h1>"));
+    assert!(is_blank_screen(None));
+}
+
+#[test]
+fn only_the_first_unwritten_screen_of_a_live_turn_reads_as_working() {
+    let (_directory, store, design) = fixture();
+    let agent = Uuid::new_v4();
+    let scope = StudioTurnScope::whole_design(&design);
+    // No live turn: blank screens are just blank.
+    assert!(designing_screens(&store, &design).is_empty());
+
+    store.save_scope(agent, &scope).unwrap();
+    let mut create = edit(&design, &scope);
+    let (cart, checkout) = (Uuid::new_v4(), Uuid::new_v4());
+    create.operations = [cart, checkout]
+        .iter()
+        .map(|id| StudioOperation::CreateScreen {
+            screen: StudioScreen {
+                id: *id,
+                name: format!("Screen {id}"),
+                ..design.manifest.screens[0].clone()
+            },
+            document: StudioDocument {
+                html: "<!doctype html><html><body></body></html>".into(),
+                ..Default::default()
+            },
+        })
+        .collect();
+    let created = store.apply_for_agent(agent, &create).unwrap();
+
+    // Home was authored by the fixture, so the two published shells are next.
+    let activity = designing_screens(&store, &created);
+    assert_eq!(activity.get(&cart), Some(&StudioScreenActivity::Working));
+    assert_eq!(activity.get(&checkout), Some(&StudioScreenActivity::Queued));
+    assert_eq!(activity.len(), 2);
+
+    // Writing the active screen hands the animation to the next one.
+    let scope = store.scope(agent).unwrap();
+    let mut write = edit(&created, &scope);
+    write.operations = vec![StudioOperation::WriteScreen {
+        screen_id: cart,
+        document: StudioDocument {
+            html: "<!doctype html><html><body><h1>Cart</h1></body></html>".into(),
+            ..Default::default()
+        },
+    }];
+    let written = store.apply_for_agent(agent, &write).unwrap();
+    let activity = designing_screens(&store, &written);
+    assert_eq!(activity.get(&cart), None);
+    assert_eq!(activity.get(&checkout), Some(&StudioScreenActivity::Working));
+
+    // Revoking the turn clears every indicator, even with a shell left blank.
+    let mut ended = store.scope(agent).unwrap();
+    ended.active = false;
+    store.save_scope(agent, &ended).unwrap();
+    assert!(designing_screens(&store, &written).is_empty());
+}
+
+#[test]
+fn focus_reports_an_edit_to_an_authored_screen_and_clears_on_review() {
+    let (_directory, store, design) = fixture();
+    let agent = Uuid::new_v4();
+    let scope = StudioTurnScope::whole_design(&design);
+    store.save_scope(agent, &scope).unwrap();
+    let home = design.manifest.screens[0].id;
+
+    // A live turn with no focus and no blank screens says nothing.
+    assert!(designing_screens(&store, &design).is_empty());
+
+    // Reading an authored screen is the pre-edit signal.
+    store
+        .record_focus(agent, scope.id, design.manifest.id, home)
+        .unwrap();
+    assert_eq!(
+        designing_screens(&store, &design).get(&home),
+        Some(&StudioScreenActivity::Editing)
+    );
+
+    // A marker from a finished turn must never read as live work.
+    let stale = StudioTurnScope::whole_design(&design);
+    assert_ne!(stale.id, scope.id);
+    store.save_scope(agent, &stale).unwrap();
+    assert!(designing_screens(&store, &design).is_empty());
+
+    store
+        .record_focus(agent, stale.id, design.manifest.id, home)
+        .unwrap();
+    assert_eq!(
+        designing_screens(&store, &design).get(&home),
+        Some(&StudioScreenActivity::Editing)
+    );
+    store.clear_focus(agent, home);
+    assert!(designing_screens(&store, &design).is_empty());
+}
+
+#[test]
+fn focus_overrides_manifest_order_when_the_agent_works_out_of_sequence() {
+    let (_directory, store, design) = fixture();
+    let agent = Uuid::new_v4();
+    let scope = StudioTurnScope::whole_design(&design);
+    store.save_scope(agent, &scope).unwrap();
+    let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut create = edit(&design, &scope);
+    create.operations = [first, second]
+        .iter()
+        .map(|id| StudioOperation::CreateScreen {
+            screen: StudioScreen {
+                id: *id,
+                name: format!("Screen {id}"),
+                ..design.manifest.screens[0].clone()
+            },
+            document: StudioDocument {
+                html: "<!doctype html><html><body></body></html>".into(),
+                ..Default::default()
+            },
+        })
+        .collect();
+    let created = store.apply_for_agent(agent, &create).unwrap();
+    let scope = store.scope(agent).unwrap();
+
+    // Without a marker, manifest order decides.
+    let activity = designing_screens(&store, &created);
+    assert_eq!(activity.get(&first), Some(&StudioScreenActivity::Working));
+    assert_eq!(activity.get(&second), Some(&StudioScreenActivity::Queued));
+
+    // With one, the agent's actual target wins and the other waits.
+    store
+        .record_focus(agent, scope.id, created.manifest.id, second)
+        .unwrap();
+    let activity = designing_screens(&store, &created);
+    assert_eq!(activity.get(&second), Some(&StudioScreenActivity::Working));
+    assert_eq!(activity.get(&first), Some(&StudioScreenActivity::Queued));
+}

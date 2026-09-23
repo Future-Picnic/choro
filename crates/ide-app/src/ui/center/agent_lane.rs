@@ -1525,7 +1525,7 @@ impl CenterArea {
             }
             session.timeline.push(AgentChatTimelineItem::Rejoined(card));
             timeline_to_persist = Some(session.timeline.clone());
-            cx.notify();
+            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
         });
         if let Some(timeline) = timeline_to_persist {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
@@ -1553,7 +1553,7 @@ impl CenterArea {
             }
             if changed {
                 timeline_to_persist = Some(session.timeline.clone());
-                cx.notify();
+                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             }
         });
         if let Some(timeline) = timeline_to_persist {
@@ -1671,7 +1671,7 @@ impl CenterArea {
                 .timeline
                 .push(AgentChatTimelineItem::RejoinConflict(card));
             timeline_to_persist = Some(session.timeline.clone());
-            cx.notify();
+            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
         });
         if let Some(timeline) = timeline_to_persist {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {
@@ -1705,7 +1705,7 @@ impl CenterArea {
             }
             if found.is_some() {
                 timeline_to_persist = Some(session.timeline.clone());
-                cx.notify();
+                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             }
         });
         let Some((target, files)) = found else {
@@ -1765,7 +1765,7 @@ impl CenterArea {
             }
             if dismissed {
                 timeline_to_persist = Some(session.timeline.clone());
-                cx.notify();
+                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             }
         });
         if let Some(timeline) = timeline_to_persist {
@@ -1881,7 +1881,7 @@ impl CenterArea {
                 let card = session.timeline.remove(index);
                 session.timeline.push(card);
                 timeline_to_persist = Some(session.timeline.clone());
-                cx.notify();
+                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             }
         });
         if let Some(timeline) = timeline_to_persist {

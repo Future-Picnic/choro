@@ -9,10 +9,10 @@ pub(super) enum StudioTab {
     Screens,
     System,
 }
-#[derive(Clone, Copy, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum EditorSaveStatus { Saved, Unsaved, Saving, Failed }
-#[derive(Clone, Copy, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
 pub(super) struct StudioEditorToolbar {
     status: EditorSaveStatus,
     can_undo: bool,
@@ -58,12 +58,22 @@ pub(super) struct StudioWorkspace {
     pub refreshing: bool,
     pub thumbnails_busy: bool,
     pub thumbnail_revision: Option<String>,
+    thumbnail_paths: std::rc::Rc<HashMap<Uuid, PathBuf>>,
     pub redo: bool,
     pub pending_mode: Option<CenterMode>,
     pub pending_navigation: Option<Box<dyn FnOnce(&mut CenterArea, &mut Context<CenterArea>)>>,
     pub poll_id: Uuid,
     pub overview_scroll: gpui::UniformListScrollHandle,
 }
+// Called by background loading/rendering jobs, never a GPUI render callback.
+fn studio_thumbnail_paths(store: &StudioStore, design: &StudioDesign) -> HashMap<Uuid, PathBuf> {
+    design.manifest.screens.iter().filter(|screen| !screen.archived).filter_map(|screen| {
+        let current = store.thumbnail_path(design, screen.id);
+        let path = if current.is_file() { Some(current) } else { store.last_thumbnail(screen.id) };
+        path.map(|path| (screen.id, path))
+    }).collect()
+}
+
 impl StudioWorkspace {
     pub fn editing_screen(&self) -> Option<Uuid> { self.screen.or(self.inline_screen) }
 }
@@ -311,12 +321,20 @@ impl CenterArea {
                 this.studio_catalog_refreshing.remove(&project);
                 match result {
                     Ok((designs, previews, systems, implementors)) => {
+                        if this.studio_catalog.get(&project) == Some(&designs)
+                            && this.studio_system_catalog.get(&project) == Some(&systems)
+                            && this.studio_catalog_previews.get(&project) == Some(&previews)
+                            && this.studio_catalog_implementors.get(&project) == Some(&implementors) { return; }
                         this.studio_catalog.insert(project, designs);
                         this.studio_system_catalog.insert(project, systems);
                         this.studio_catalog_previews.insert(project, previews);
                         this.studio_catalog_implementors.insert(project, implementors);
                     }
-                    Err(error) => this.design_hub_error = Some(format!("Studio: {error:#}")),
+                    Err(error) => {
+                        let error = Some(format!("Studio: {error:#}"));
+                        if this.design_hub_error == error { return; }
+                        this.design_hub_error = error;
+                    },
                 }
                 cx.notify();
             });
@@ -367,17 +385,17 @@ impl CenterArea {
                     let design = store.load(id)?;
                     let conversations = store.conversations(id)?;
                     let implementation_agents = store.implementation_agents(id)?;
-                    Ok::<_, anyhow::Error>((store, design, conversations, implementation_agents))
+                    let thumbnail_paths = studio_thumbnail_paths(&store, &design);
+                    Ok::<_, anyhow::Error>((store, design, conversations, implementation_agents, thumbnail_paths))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match result {
-                    Ok((store, design, conversations, implementation_agents)) => {
+                    Ok((store, design, conversations, implementation_agents, thumbnail_paths)) => {
                         this.studio_system_library = None;
-                        this.penpot_open_design = None;
                         let system_workspace = design.manifest.system_workspace;
                         this.figma_open_design = None;
-                        this.penpot_compare_open = false;
+                        this.design_compare_open = false;
                         let selection = fs::read(store.cache.join(format!("selection-{id}.json")))
                             .ok()
                             .and_then(|bytes| {
@@ -411,7 +429,7 @@ impl CenterArea {
                             viewing_size: None,
                             export_flush: None,
                             exporting: false,
-                            tab: if system_workspace || this.pending_design_assistant_drafts.contains_key(&id) {
+                            tab: if system_workspace || this.pending_studio_drafts.contains_key(&id) {
                                 StudioTab::Agent
                             } else {
                                 StudioTab::Screens
@@ -444,6 +462,7 @@ impl CenterArea {
                             refreshing: false,
                             thumbnails_busy: false,
                             thumbnail_revision: None,
+                            thumbnail_paths: std::rc::Rc::new(thumbnail_paths),
                             redo: false,
                             pending_mode: None,
                             pending_navigation: None,
@@ -583,16 +602,17 @@ impl CenterArea {
                         super::studio_editor::render_thumbnails(store.clone(), revision)?;
                     }
                     if visible && !canvas_overview {
-                        super::studio_editor::render_thumbnails(store, design)?;
+                        super::studio_editor::render_thumbnails(store.clone(), design.clone())?;
                     }
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<_, anyhow::Error>(studio_thumbnail_paths(&store, &design))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(s) = this.studio.as_mut().filter(|s| s.design.manifest.id == id) {
                     s.thumbnails_busy = false;
-                    if let Err(error) = result {
-                        s.error = Some(format!("Thumbnails: {error:#}"));
+                    match result {
+                        Ok(paths) => s.thumbnail_paths = std::rc::Rc::new(paths),
+                        Err(error) => s.error = Some(format!("Thumbnails: {error:#}")),
                     }
                 }
                 // A batch can finish after Back. Refresh the hub's cached image
@@ -1520,6 +1540,9 @@ impl CenterArea {
         let Some(context) = agent.studio_context.as_ref() else {
             return true;
         };
+        if context.target == StudioAgentTarget::DesignSystemImport {
+            return self.prepare_code_import_turn(agent, cx);
+        }
         let Some(studio) = self
             .studio
             .as_mut()
@@ -1845,7 +1868,8 @@ impl CenterArea {
                 self.open_new_agent_composer_for_project(project, window, cx);
                 if let Some(composer) = self.new_agent_composer.as_mut() {
                     composer.reset_source_implementation();
-                    let prompt=format!("Implement Studio design ‘{}’. First call studio_handoff_read with handoff_id ‘{}’. Read its manifest, tokens, assets, and each selected screen before changing code. The snapshot is immutable, revision {}. {}",handoff.design.manifest.name,handoff.id,handoff.design.manifest.revision,handoff.instruction);
+                    let prompt = super::studio_links::studio_implementation_request(&handoff);
+                    composer.suggested_title = Some(format!("Implement {}", handoff.design.manifest.name));
                     composer
                         .prompt
                         .update(cx, |input, cx| input.set_value(prompt, window, cx));
@@ -1860,7 +1884,6 @@ impl CenterArea {
                     }
                     composer.selected_mentions.push(ComposerMentionToken::studio_design(&handoff));
                     composer.implementation_target = Some(ImplementationTarget::Studio(handoff.id));
-                    composer.design_browser_open_confirmed = true;
                 }
             }
             Err(error) => {
@@ -2192,12 +2215,35 @@ impl CenterArea {
             .into_any_element()
     }
 
-    pub(super) fn render_studio(
-        &mut self,
-        project: ProjectId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
+    pub(super) fn sync_studio_regions(&mut self, cx: &mut Context<Self>) {
+        let Some(studio) = &self.studio else { return; };
+        let project = studio.project;
+        for (sidebar, view) in [(false, self.studio_stage_view.clone()), (true, self.studio_sidebar_view.clone())] {
+            if let Some(view) = view {
+                let key = self.studio_region_key(sidebar);
+                view.update(cx, |view, cx| {
+                    if view.project != project || view.key != key {
+                        view.project = project; view.key = key; cx.notify();
+                    }
+                });
+            }
+        }
+    }
+
+    pub(super) fn studio_region_key(&self, sidebar: bool) -> String {
+        let Some(s) = self.studio.as_ref() else { return String::new(); };
+        let mut folds = s.folded_sections.iter().cloned().collect::<Vec<_>>();
+        folds.sort();
+        // Only presentation metadata; never clone documents or conversations for a cache key.
+        format!("{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+            s.design.fingerprint, s.screen, s.inline_screen, s.canvas.layout.selected_screen_id,
+            s.viewing_size, s.prototype, s.editor_zoom, s.canvas.active(), s.canvas.layout.overview_mode,
+            (s.exporting, s.export_flush.is_some(), s.implementation_flush.is_some()),
+            (s.dirty, s.saving, s.redo), s.editor_toolbar, s.sidebar_collapsed,
+            if sidebar { Some((s.tab as usize, folds)) } else { None }, (s.editor_session, s.canvas.layout.viewport.zoom, &s.notice, &s.error, &s.thumbnail_revision, s.thumbnails_busy))
+    }
+
+    fn render_studio_sidebar(&mut self, project: ProjectId, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(studio) = self.studio.as_ref() else {
             return div().into_any_element();
         };
@@ -2207,63 +2253,11 @@ impl CenterArea {
         let sidebar_scroll = studio.sidebar_scroll[tab as usize].clone();
         let selected = studio.screen;
         let selected_artboard = studio.editing_screen().or(studio.canvas.layout.selected_screen_id);
-        let title = studio.design.manifest.name.clone();
         let design_id = studio.design.manifest.id;
-        let source_doc = studio.design.manifest.source_doc.clone();
-        let source_task = studio.design.manifest.source_task.clone();
-        let project_root = studio.store.project.clone();
-        let implementor_ids = studio.implementation_agents.clone();
-        let viewport =
-            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size));
-        let exporting = studio.exporting || studio.export_flush.is_some();
-        let export_disabled = exporting || studio.implementation_flush.is_some();
-        let dirty = studio.dirty || studio.saving;
-        let redo = studio.redo;
-        let error = studio.error.clone();
-        let notice = studio.notice.clone();
         let screens = studio.design.manifest.screens.clone();
         let chat = studio.relative_chat.clone();
-        let tabs = style::sidebar_mode_tabs(cx)
-            .font_family(crate::theme::UI_FONT_FAMILY)
-            .children(
-                [
-                    (StudioTab::Agent, "Agent"),
-                    (StudioTab::Screens, "Screens"),
-                    (
-                        StudioTab::System,
-                        if system_workspace {
-                            "Library"
-                        } else {
-                            "Design system"
-                        },
-                    ),
-                ]
-                .into_iter()
-                .filter(|(tab, _)| !system_workspace || *tab != StudioTab::Screens)
-                .enumerate()
-                .map(|(i, (tab_id, label))| {
-                    style::sidebar_named_tab(("studio-tab", i), label, tab == tab_id, cx).on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            if let Some(s) = this.studio.as_mut() {
-                                s.tab = tab_id;
-                            }
-                            cx.notify();
-                        }),
-                    )
-                }),
-            );
-        let tabs = h_flex().w_full().gap_1().items_center().child(tabs).child(
-            style::sidebar_mode_icon_tab("studio-collapse-sidebar", IconName::PanelLeftClose, cx)
-                .flex_none()
-                .tooltip("Collapse design sidebar")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(studio) = this.studio.as_mut() {
-                        studio.sidebar_collapsed = true;
-                    }
-                    this.composer_model_expanded = false;
-                    cx.notify();
-                })),
-        );
+        let dirty = studio.dirty || studio.saving;
+        let redo = studio.redo;
         let panel = if sidebar_collapsed {
             div().into_any_element()
         } else {
@@ -2477,7 +2471,7 @@ impl CenterArea {
                     });
                     self.hydrate_doc_assistant_chat_session(&record, &root, cx);
                     let agent = Self::doc_assistant_agent_record(&record, root);
-                    if let Some(draft) = self.pending_design_assistant_drafts.remove(&design_id) {
+                    if let Some(draft) = self.pending_studio_drafts.remove(&design_id) {
                         let input = self.agent_chat_input(&agent, "Describe what you want to design", window, cx);
                         input.update(cx, |input, cx| { input.set_value(draft, window, cx); input.focus(window, cx); });
                     }
@@ -2607,6 +2601,25 @@ impl CenterArea {
                 }
             }
         };
+        if tab == StudioTab::Agent { panel } else {
+            div().id("studio-sidebar-scroll").size_full().overflow_y_scroll()
+                .track_scroll(&sidebar_scroll).child(panel).into_any_element()
+        }
+    }
+
+    fn render_studio_stage(&mut self, _project: ProjectId, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(studio) = self.studio.as_ref() else {
+            return div().into_any_element();
+        };
+        let system_workspace = studio.design.manifest.system_workspace;
+        let sidebar_collapsed = studio.sidebar_collapsed;
+        let selected = studio.screen;
+        let viewport =
+            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size));
+        let exporting = studio.exporting || studio.export_flush.is_some();
+        let export_disabled = exporting || studio.implementation_flush.is_some();
+        let notice = studio.notice.clone();
+        let screens = studio.design.manifest.screens.clone();
         let canvas_overview=self.studio_canvas_active();
         let body = if selected.is_some() || canvas_overview {
             let host = self.web_host.clone();
@@ -2629,6 +2642,7 @@ impl CenterArea {
         } else {
             let studio = self.studio.as_ref().unwrap();
             let store = studio.store.clone();
+            let thumbnail_paths = studio.thumbnail_paths.clone();
             let design = studio.design.clone();
             let center = cx.entity();
             let screens = screens
@@ -2658,13 +2672,8 @@ impl CenterArea {
                         for index in row * columns..((row + 1) * columns).min(screens.len()) {
                             let screen = &screens[index];
                             let id = screen.id;
-                            let path = store.thumbnail_path(&design, id);
-                            let fresh = path.exists();
-                            let path = if fresh {
-                                Some(path)
-                            } else {
-                                store.last_thumbnail(id)
-                            };
+                            let path = thumbnail_paths.get(&id).cloned();
+                            let fresh = path.as_ref().is_some_and(|path| *path == store.thumbnail_path(&design, id));
                             let preview = if let Some(path) = path {
                                 img(path)
                                     .w_full()
@@ -2747,7 +2756,6 @@ impl CenterArea {
         let has_stage_bar =
             !system_workspace && (selected.is_none() || viewport.is_some());
         let bar_notice = notice.clone().filter(|_| has_stage_bar);
-        let notice = notice.filter(|_| !has_stage_bar);
         let prototype = self.studio.as_ref().is_some_and(|s| s.prototype);
         let body = if selected.is_none() && !system_workspace {
             let zoom=self.studio.as_ref().map(|s|s.canvas.layout.viewport.zoom).unwrap_or(1.);
@@ -2898,13 +2906,99 @@ impl CenterArea {
         } else {
             body
         };
+        body
+    }
+
+    pub(super) fn render_studio(
+        &mut self,
+        project: ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(studio) = self.studio.as_ref() else {
+            return div().into_any_element();
+        };
+        let system_workspace = studio.design.manifest.system_workspace;
+        let tab = studio.tab;
+        let sidebar_collapsed = studio.sidebar_collapsed;
+        let sidebar_scroll = studio.sidebar_scroll[tab as usize].clone();
+        let selected = studio.screen;
+        let title = studio.design.manifest.name.clone();
+        let design_id = studio.design.manifest.id;
+        let source_doc = studio.design.manifest.source_doc.clone();
+        let source_task = studio.design.manifest.source_task.clone();
+        let project_root = studio.store.project.clone();
+        let implementor_ids = studio.implementation_agents.clone();
+        let viewport =
+            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size));
+        let exporting = studio.exporting || studio.export_flush.is_some();
+        let error = studio.error.clone();
+        let notice = studio.notice.clone();
+        let notice = notice.filter(|_| system_workspace || (selected.is_some() && viewport.is_none()));
+        let tabs = style::sidebar_mode_tabs(cx)
+            .font_family(crate::theme::UI_FONT_FAMILY)
+            .children(
+                [
+                    (StudioTab::Agent, "Agent"),
+                    (StudioTab::Screens, "Screens"),
+                    (
+                        StudioTab::System,
+                        if system_workspace {
+                            "Library"
+                        } else {
+                            "Design system"
+                        },
+                    ),
+                ]
+                .into_iter()
+                .filter(|(tab, _)| !system_workspace || *tab != StudioTab::Screens)
+                .enumerate()
+                .map(|(i, (tab_id, label))| {
+                    style::sidebar_named_tab(("studio-tab", i), label, tab == tab_id, cx).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            if let Some(s) = this.studio.as_mut() {
+                                s.tab = tab_id;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                }),
+            );
+        let tabs = h_flex().w_full().gap_1().items_center().child(tabs).child(
+            style::sidebar_mode_icon_tab("studio-collapse-sidebar", IconName::PanelLeftClose, cx)
+                .flex_none()
+                .tooltip("Collapse design sidebar")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(studio) = this.studio.as_mut() {
+                        studio.sidebar_collapsed = true;
+                    }
+                    this.composer_model_expanded = false;
+                    cx.notify();
+                })),
+        );
+        let stage_key = self.studio_region_key(false);
+        let sidebar_key = self.studio_region_key(true);
+        let owner = cx.entity().downgrade();
+        let stage_view = self.studio_stage_view.get_or_insert_with(|| cx.new(|_| StudioRegion { owner: owner.clone(), project, sidebar: false, key: stage_key.clone() }));
+        stage_view.update(cx, |view, cx| { if view.project != project || view.key != stage_key { view.project = project; view.key = stage_key; cx.notify(); } });
+        let _ = stage_view.read(cx);
+        let body = gpui::AnyView::from(stage_view.clone()).cached(gpui::StyleRefinement::default().flex_1().h_full().min_w(px(0.))).into_any_element();
+        let panel = if sidebar_collapsed {
+            div().into_any_element()
+        } else if tab == StudioTab::Agent {
+            self.render_studio_sidebar(project, window, cx)
+        } else {
+            let view = self.studio_sidebar_view.get_or_insert_with(|| cx.new(|_| StudioRegion { owner, project, sidebar: true, key: sidebar_key.clone() }));
+            view.update(cx, |view, cx| { if view.project != project || view.key != sidebar_key { view.project = project; view.key = sidebar_key; cx.notify(); } });
+            let _ = view.read(cx);
+            gpui::AnyView::from(view.clone()).cached(gpui::StyleRefinement::default().size_full()).into_any_element()
+        };
         let active_implementor = self
             .agents
             .read(cx)
-            .records_for_project(project)
-            .into_iter()
+            .iter_records()
             .filter(|agent| {
-                implementor_ids.contains(&agent.id)
+                agent.project_id == project && implementor_ids.contains(&agent.id)
                     && !agent.hidden_doc_assistant
                     && (agent.started_at.is_some()
                         || agent.cli_session_id.is_some()
@@ -2917,7 +3011,7 @@ impl CenterArea {
                     agent.updated_at,
                     agent.id,
                 )
-            });
+            }).cloned();
         let mut indicators = Vec::new();
         if let Some(relative) = source_doc {
             let relative = PathBuf::from(relative);
@@ -2975,9 +3069,9 @@ impl CenterArea {
             }
         }
         if let Some(agent) = active_implementor.as_ref() {
-            indicators.push(self.penpot_design_agent_indicator(agent, design_id, cx));
+            indicators.push(self.design_agent_indicator(agent, design_id, cx));
         }
-        if let Some(pr) = self.penpot_design_pull_request(active_implementor.as_ref(), cx) {
+        if let Some(pr) = self.design_pull_request(active_implementor.as_ref(), cx) {
             indicators.push(self.render_agent_ship_pr_indicator(&pr, cx));
         }
         v_flex()
@@ -2992,7 +3086,7 @@ impl CenterArea {
                                 if system_workspace {
                                     this.open_system_library(project, cx);
                                 } else {
-                                    this.show_penpot_hub(cx);
+                                    this.show_design_hub(cx);
                                 }
                             })),
                     )
@@ -3015,7 +3109,7 @@ impl CenterArea {
                                 style::context_panel_action_button(
                                     "studio-compare",
                                     IconName::Replace,
-                                    if self.penpot_compare_open {
+                                    if self.design_compare_open {
                                         "Close Compare"
                                     } else {
                                         "Compare"
@@ -3025,9 +3119,9 @@ impl CenterArea {
                                 .tooltip("Compare this design with the live implementation")
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.set_penpot_compare_open(
+                                        this.set_design_compare_open(
                                             project,
-                                            !this.penpot_compare_open,
+                                            !this.design_compare_open,
                                             cx,
                                         );
                                     },
@@ -3131,9 +3225,7 @@ impl CenterArea {
                                     .flex_1()
                                     .min_h(px(0.))
                                     .min_w(px(0.))
-                                    .when(tab != StudioTab::Agent, |panel| {
-                                        panel.overflow_y_scroll()
-                                    })
+                                    .overflow_hidden()
                                     .when(tab == StudioTab::Agent, |panel| panel.overflow_hidden())
                                     .child(panel),
                             )
@@ -3198,4 +3290,23 @@ fn screens_for_viewport(
         .iter()
         .find(|s| s.id == screen)
         .map(|s| override_size.unwrap_or((s.width, s.height)))
+}
+
+/// Studio's expensive stage is a sibling of the chat composer, so input and
+/// sidebar animation never dirty a cached ancestor of either transcript or stage.
+pub(super) struct StudioRegion {
+    owner: gpui::WeakEntity<CenterArea>,
+    project: ProjectId,
+    sidebar: bool,
+    key: String,
+}
+impl Render for StudioRegion {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _probe = crate::ui::performance::UiProbe::new(if self.sidebar { "studio.sidebar" } else { "studio.render" });
+        let content = self.owner.update(cx, |owner, cx| {
+            if self.sidebar { owner.render_studio_sidebar(self.project, window, cx) }
+            else { owner.render_studio_stage(self.project, window, cx) }
+        }).unwrap_or_else(|_| div().into_any_element());
+        style::studio_region_root().child(content)
+    }
 }

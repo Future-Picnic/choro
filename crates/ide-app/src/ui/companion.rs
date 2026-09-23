@@ -14,11 +14,14 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex, Disableable, IconName, Root,
 };
-use ide_core::{AgentRuntimeKind, ProjectId};
+use ide_core::{AgentRecord, AgentRuntimeKind, ProjectId};
 use uuid::Uuid;
 
 use crate::companion_music::CompanionMusicState;
-use crate::state::agent_chat::{AgentChatMessage, AgentChatStatus, AgentChatTimelineItem};
+use crate::state::agent_chat::{
+    AgentChatMessage, AgentChatStatus, AgentChatTimelineItem, REVIEW_CHECKLIST_REQUEST_MARKER,
+};
+use crate::state::agent_navigation::AgentNavigationRuntime;
 use crate::state::{AgentChatState, AgentRecords, Workspace};
 use crate::ui::center::CenterArea;
 use crate::ui::project_list::ProjectList;
@@ -328,7 +331,7 @@ enum ProcessMetric {
 }
 
 pub(crate) struct CompanionView {
-    _project_list: Entity<ProjectList>,
+    project_list: Entity<ProjectList>,
     workspace: Entity<Workspace>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
@@ -853,11 +856,18 @@ impl CompanionView {
         let chats = self.agent_chats.read(cx);
         let mut items = Vec::new();
 
-        // Running chat sessions are live state, not unread attention. Sending a
+        // Running agents are live state, not unread attention. Sending a chat
         // turn sets this status synchronously, so the companion responds before
         // the backend has produced its first event.
         for agent in &records {
-            if agent.runtime != AgentRuntimeKind::Chat {
+            let Some(project_name) = project_names.get(&agent.project_id) else {
+                continue;
+            };
+            if agent.runtime == AgentRuntimeKind::Terminal {
+                let runtime = self.project_list.read(cx).agent_runtime(agent.id, cx);
+                if let Some(item) = terminal_working_item(agent, project_name, runtime) {
+                    items.push(item);
+                }
                 continue;
             }
             let Some(session) = chats.session(agent.id) else {
@@ -871,9 +881,6 @@ impl CompanionView {
             {
                 continue;
             }
-            let Some(project_name) = project_names.get(&agent.project_id) else {
-                continue;
-            };
             let animation = CompanionAnimation::Working;
             items.push(CompanionItem {
                 project_id: agent.project_id,
@@ -1481,7 +1488,11 @@ pub(crate) fn view(
         })
         .detach();
         cx.observe(&agents, |_, _, cx| cx.notify()).detach();
-        cx.observe(&agent_chats, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&agent_chats, |_, _, event, cx| {
+            if let crate::state::agent_chat::AgentChatEvent::SessionChanged(change) = event {
+                if change.categories.navigation || change.categories.identity || change.categories.controls { cx.notify(); }
+            }
+        }).detach();
         cx.observe(&voice, |_, _, cx| cx.notify()).detach();
         cx.subscribe(
             &voice,
@@ -1543,7 +1554,7 @@ pub(crate) fn view(
         })
         .detach();
         CompanionView {
-            _project_list: project_list,
+            project_list,
             workspace,
             agents,
             agent_chats,
@@ -1656,9 +1667,35 @@ fn process_memory_share(bytes: u64, total_bytes: u64) -> f64 {
     }
 }
 
+// Reuse the sidebar's activity state and expiry timer so terminal Working
+// appears and clears even when the companion has no unread notifications.
+fn terminal_working_item(
+    agent: &AgentRecord,
+    project_name: &str,
+    runtime: Option<AgentNavigationRuntime>,
+) -> Option<CompanionItem> {
+    if runtime != Some(AgentNavigationRuntime::Working) {
+        return None;
+    }
+    Some(CompanionItem {
+        project_id: agent.project_id,
+        agent_id: agent.id,
+        title: agent.title.clone(),
+        project_name: project_name.to_string(),
+        status: "Working".to_string(),
+        animation: CompanionAnimation::Working,
+        created_at: agent.updated_at,
+        acknowledge_on_open: false,
+    })
+}
+
 fn current_turn_changed_file_count(timeline: &[AgentChatTimelineItem]) -> usize {
     for item in timeline.iter().rev() {
         match item {
+            // "What to check" is a hidden, read-only continuation of the edit.
+            // It must not hide that edit's receipt, including on checklist retry.
+            AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. })
+                if text.starts_with(REVIEW_CHECKLIST_REQUEST_MARKER) => {}
             AgentChatTimelineItem::Message(AgentChatMessage::User { .. }) => return 0,
             AgentChatTimelineItem::ChangedFiles(summary) => return summary.files.len(),
             _ => {}
@@ -1775,6 +1812,48 @@ mod tests {
     }
 
     #[test]
+    fn terminal_working_tracks_runtime_without_acknowledging_attention() {
+        let provider = ide_core::AgentKind::Codex;
+        let model = ide_core::AgentModel::default_for(provider);
+        let mut agent = AgentRecord::new(
+            ProjectId::new(),
+            "/in-memory/companion".into(),
+            "Terminal agent",
+            "",
+            provider,
+            model,
+            model.default_effort(),
+            Default::default(),
+        );
+        agent.runtime = AgentRuntimeKind::Terminal;
+        let working = terminal_working_item(
+            &agent,
+            "Project",
+            Some(AgentNavigationRuntime::Working),
+        )
+        .expect("active terminal agents must appear in the companion");
+        assert_eq!(working.agent_id, agent.id);
+        assert_eq!(working.project_id, agent.project_id);
+        assert_eq!(working.title, "Terminal agent");
+        assert_eq!(working.status, "Working");
+        assert_eq!(working.animation, CompanionAnimation::Working);
+        assert!(!working.acknowledge_on_open);
+
+        // An open process alone is not proof of work, and a terminal that has
+        // settled or exited must leave Working for the attention coordinator.
+        for runtime in [
+            None,
+            Some(AgentNavigationRuntime::NotStarted),
+            Some(AgentNavigationRuntime::Open),
+            Some(AgentNavigationRuntime::Idle),
+            Some(AgentNavigationRuntime::Waiting),
+            Some(AgentNavigationRuntime::Ended),
+        ] {
+            assert!(terminal_working_item(&agent, "Project", runtime).is_none());
+        }
+    }
+
+    #[test]
     fn completed_work_with_changed_files_uses_done() {
         assert_eq!(
             attention_animation(AttentionCategory::Completed, 2),
@@ -1882,6 +1961,59 @@ mod tests {
             assistant_message("Only the title.", 4),
         ];
 
+        assert_eq!(current_turn_changed_file_count(&timeline), 0);
+    }
+
+    #[test]
+    fn review_checklist_followup_preserves_done_with_unchecked_items() {
+        let mut timeline = vec![
+            user_message("Create a mock page", 1),
+            assistant_message("Created mock.html.", 2),
+            changed_files(&["mock.html"]),
+            AgentChatTimelineItem::ReviewChecklist(
+                crate::state::agent_chat::ReviewChecklist::ready(
+                    "edit-turn",
+                    "- [ ] Open mock.html — The page loads",
+                    3,
+                ),
+            ),
+            user_message(
+                &format!("{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: edit-turn"),
+                3,
+            ),
+        ];
+        let count = current_turn_changed_file_count(&timeline);
+        assert_eq!(count, 1);
+        assert_eq!(
+            attention_animation(AttentionCategory::Completed, count),
+            CompanionAnimation::Done
+        );
+
+        // Retrying the automatic pass still belongs to the original edit.
+        timeline.push(user_message(
+            &format!("{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: edit-turn"),
+            4,
+        ));
+        assert_eq!(current_turn_changed_file_count(&timeline), 1);
+
+        // A real follow-up ends that scope even though the old checklist remains.
+        timeline.push(user_message("Explain the page", 5));
+        timeline.push(assistant_message("It is a standalone mock page.", 6));
+        assert_eq!(current_turn_changed_file_count(&timeline), 0);
+    }
+
+    #[test]
+    fn review_checklist_does_not_reuse_changes_before_a_real_user_turn() {
+        let timeline = vec![
+            user_message("Old edit", 1),
+            changed_files(&["old.html"]),
+            user_message("Explain the page", 2),
+            assistant_message("It is a standalone mock page.", 3),
+            user_message(
+                &format!("{REVIEW_CHECKLIST_REQUEST_MARKER}\nSource turn: old-turn"),
+                4,
+            ),
+        ];
         assert_eq!(current_turn_changed_file_count(&timeline), 0);
     }
 

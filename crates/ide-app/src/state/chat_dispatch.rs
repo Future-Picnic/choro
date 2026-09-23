@@ -122,6 +122,7 @@ pub(crate) fn managed_send(
         .as_ref()
         .is_some_and(|b| b.task_id.is_some());
     session.interaction_mode = mode;
+    chats.publish_change(id, super::agent_chat::ChatChangeCategories::CONTENT, cx);
     chats.start_backend(agent, mode, cx)?;
     dispatch_loaded(
         chats,

@@ -1,8 +1,6 @@
 mod actions;
 mod app_assets;
 mod app_update;
-#[cfg(target_os = "macos")]
-mod chromium;
 mod companion_music;
 mod demo;
 #[cfg(target_os = "macos")]
@@ -34,18 +32,10 @@ fn main() {
     if let Some(exit_code) = ide_core::git::handle_git_credential() {
         std::process::exit(exit_code);
     }
-    // Seed an isolated demo before Chromium opens files in its data directory.
+    // Seed an isolated demo before application startup.
     if let Err(error) = demo::prepare() {
         eprintln!("failed to prepare Choro Demo: {error:#}");
     }
-    #[cfg(target_os = "macos")]
-    let _chromium_runtime = match chromium::Runtime::prepare() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("Chromium Design engine unavailable; using WebKit: {error}");
-            None
-        }
-    };
     if let Err(error) = onboarding::prepare() {
         eprintln!("failed to prepare Choro onboarding: {error:#}");
     }

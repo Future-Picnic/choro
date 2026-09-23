@@ -68,7 +68,7 @@ impl DocAssistantState {
         record
     }
 
-    /// Keep a database-backed specialized assistant (such as a Penpot design
+    /// Keep a database-backed specialized assistant (such as a Studio design
     /// conversation) in the existing chat runtime without making the JSON file
     /// its source of truth.
     pub fn upsert_external_record(

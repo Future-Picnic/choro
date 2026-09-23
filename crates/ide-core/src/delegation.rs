@@ -152,6 +152,9 @@ pub enum TaskKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TaskPlan {
+    /// Optional user-spelled model for a fresh on-demand assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_request: Option<String>,
     pub key: String,
     pub expert_id: Uuid,
     pub goal: String,
@@ -278,6 +281,9 @@ pub struct DelegationRun {
     pub authorized_experts: Vec<Uuid>,
     #[serde(default)]
     pub temporary_experts: Vec<ExpertSnapshot>,
+    /// Trusted source submission per temporary setup, including follow-up grants.
+    #[serde(default)]
+    pub temporary_model_authorizations: BTreeMap<Uuid, String>,
     pub revision: u64,
     pub status: RunStatus,
     pub pause_reason: Option<String>,
@@ -309,6 +315,7 @@ impl DelegationRun {
             original_assignment: text,
             authorized_experts: experts,
             temporary_experts: Vec::new(),
+            temporary_model_authorizations: BTreeMap::new(),
             revision: 1,
             status: RunStatus::Preparing,
             pause_reason: None,
@@ -434,16 +441,46 @@ impl DelegationRun {
                 !self.plan_mode || plan.kind == TaskKind::Consultation,
                 "Plan mode only permits consultation tasks."
             );
-            let mut expert = experts
-                .iter()
-                .find(|e| e.profile.id == plan.expert_id)
-                .ok_or_else(|| anyhow::anyhow!("Bandmate configuration is unavailable."))?
-                .clone();
-            if self
+            let temporary = self
                 .temporary_experts
                 .iter()
-                .any(|e| e.profile.id == plan.expert_id)
-            {
+                .find(|e| e.profile.id == plan.expert_id);
+            let mut expert = temporary
+                .or_else(|| experts.iter().find(|e| e.profile.id == plan.expert_id))
+                .ok_or_else(|| anyhow::anyhow!("Bandmate configuration is unavailable."))?
+                .clone();
+            if plan.model_request.is_none() {
+                if let Some(existing) = tasks
+                    .iter()
+                    .find(|t| t.plan.key == plan.key && !t.attempts.is_empty())
+                {
+                    expert.profile.provider = existing.expert.profile.provider;
+                    expert.profile.model = existing.expert.profile.model;
+                    expert.profile.effort = existing.expert.profile.effort;
+                }
+            }
+            if let Some(request) = &plan.model_request {
+                ensure!(
+                    !request.trim().is_empty() && request.len() <= 120,
+                    "Provide a short model name copied from the user's request."
+                );
+                ensure!(temporary.is_some(), "Model overrides apply only to on-demand teammates. Saved Bandmates keep their configured model.");
+                let source = self.temporary_model_authorizations.get(&plan.expert_id)
+                    .or_else(|| (plan.expert_id == self.source_message_id).then_some(&self.original_assignment))
+                    .ok_or_else(|| anyhow::anyhow!("This teammate has no saved user model authorization. Ask the user for a new assignment."))?;
+                ensure!(crate::experts::models::contains_model_request(source, request),
+                    "Copy the model name exactly as the user typed it in this teammate's assignment. Other messages cannot authorize a model change.");
+                let (provider, model) = crate::experts::models::resolve_model_request(request)?;
+                expert.profile.provider = provider;
+                expert.profile.model = model;
+                // Keep the inherited effort when supported; otherwise use the
+                // selected model's normal effort rather than an invalid setting.
+                if !model.efforts().contains(&expert.profile.effort) {
+                    expert.profile.effort = model.default_effort();
+                }
+                expert.profile.validate()?;
+            }
+            if temporary.is_some() {
                 expert.profile.name = plan.goal.chars().take(80).collect();
             }
             let status = if plan.held {
@@ -457,6 +494,10 @@ impl DelegationRun {
                     existing.attempts.is_empty() || existing.plan.expert_id == plan.expert_id,
                     "A task chat cannot switch Bandmates. Create another assignment instead."
                 );
+                ensure!(existing.attempts.is_empty() || (
+                    existing.expert.profile.provider == expert.profile.provider
+                    && existing.expert.profile.model == expert.profile.model
+                ), "A started task cannot switch models. Create another assignment to preserve its session and history.");
                 existing.plan = plan;
                 existing.revision += 1;
                 existing.status = status;
@@ -527,7 +568,12 @@ impl DelegationRun {
         let parent = self.parent_agent_id;
         let task = self.task_mut(task_id)?;
         ensure!(
-            matches!(task.status,TaskStatus::Running|TaskStatus::WaitingForLead|TaskStatus::CompletionRequested),
+            task.paused_status != Some(TaskStatus::Integrating),
+            "Finish integration recovery before changing this assignment."
+        );
+        ensure!(
+            matches!(task.status,TaskStatus::Running|TaskStatus::WaitingForLead|TaskStatus::CompletionRequested)
+                || (caller == parent && task.status == TaskStatus::Paused),
             "This Bandmate task is not running. Resume a paused task or request_changes for a finished result."
         );
         let child = task
@@ -553,7 +599,13 @@ impl DelegationRun {
                 a.completed_snapshot = None;
                 a.report_requested = false;
             }
-            task.status = TaskStatus::Running;
+            if task.status == TaskStatus::Paused {
+                if task.attempt().is_some_and(|a| a.snapshot.is_some()) {
+                    task.paused_status = Some(TaskStatus::Running);
+                }
+            } else {
+                task.status = TaskStatus::Running;
+            }
         }
         let text = if caller == parent {
             format!(
@@ -630,33 +682,41 @@ impl DelegationRun {
             "This assignment has ended. Send the correction to the lead for a new assignment."
         );
         ensure!(
-            !task.status.satisfied(),
-            "Integrated work needs a new revision from the lead. Send this correction to the lead."
-        );
-        ensure!(
-            task.status != TaskStatus::Integrating,
-            "Integration is in progress. Stop the run before correcting this result."
+            task.status != TaskStatus::Integrating && task.paused_status != Some(TaskStatus::Integrating),
+            "Changes are being combined. Finish integration recovery before changing this assignment. Your draft is preserved."
         );
         let task = self.task_mut(task_id)?;
+        let fresh_baseline = task.status.satisfied() || task.status == TaskStatus::Failed;
         task.revision += 1;
         task.plan.brief.push_str(&format!(
             "\n\nUser correction (revision {}):\n{text}",
             task.revision
         ));
         let revision = task.revision;
-        let a = task
-            .attempt_mut()
-            .ok_or_else(|| anyhow::anyhow!("This Bandmate has not started yet."))?;
-        let child = a.child_agent_id;
-        a.result = None;
-        a.result_revision = None;
-        a.completed_snapshot = None;
-        a.report_requested = false;
+        let child = task.attempt_mut().map(|a| {
+            // An integrated result remains history. The next attempt captures
+            // a new parent baseline rather than applying the old delta twice.
+            if !fresh_baseline {
+                a.result = None;
+                a.result_revision = None;
+                a.completed_snapshot = None;
+                a.report_requested = false;
+            }
+            a.child_agent_id
+        });
         task.integration = None;
         task.deletion_confirmation = None;
-        if task.status == TaskStatus::Paused {
-            task.paused_status = Some(TaskStatus::Running);
-        } else {
+        if fresh_baseline {
+            task.status = TaskStatus::Queued;
+            task.reason = None;
+        } else if task.status == TaskStatus::Paused {
+            if task.attempt().is_some_and(|a| a.snapshot.is_some()) {
+                task.paused_status = Some(TaskStatus::Running);
+            }
+        } else if !matches!(
+            task.status,
+            TaskStatus::Planned | TaskStatus::Queued | TaskStatus::Preparing
+        ) {
             task.status = TaskStatus::Running;
         }
         self.event(
@@ -665,7 +725,9 @@ impl DelegationRun {
             "user_correction",
             text.clone(),
         );
-        self.queue(child,Some(task_id),format!("User correction. Task revision is now {revision}; previous results are invalid.\n{text}"));
+        if let Some(child) = child.filter(|_| !fresh_baseline) {
+            self.queue(child,Some(task_id),format!("User correction. Task revision is now {revision}; previous results are invalid.\n{text}"));
+        }
         self.queue(
             self.parent_agent_id,
             Some(task_id),
@@ -748,6 +810,63 @@ impl DelegationRun {
         self.event(caller, Some(task_id), action, reason);
         Ok(())
     }
+
+    /// Trusted user Resume/Send only, after provider history is reconciled by
+    /// the coordinator. No model tool may clear a user's pause.
+    pub fn resume_user_task(&mut self, task_id: Uuid) -> Result<()> {
+        ensure!(self.status.dispatchable(), "Resume the parent task first.");
+        let task = self.task(task_id)?;
+        ensure!(
+            task.status == TaskStatus::Paused,
+            "This Bandmate is not paused."
+        );
+        let child = task.attempt().map(|a| a.child_agent_id);
+        ensure!(
+            !self
+                .deliveries
+                .iter()
+                .any(|d| Some(d.target) == child && d.status == DeliveryStatus::Uncertain),
+            "Reconcile the saved conversation before resuming this Bandmate."
+        );
+        let task = self.task_mut(task_id)?;
+        let previous = task.paused_status.take().unwrap_or(TaskStatus::Running);
+        task.reason = None;
+        task.status = previous;
+        if previous == TaskStatus::Preparing
+            && task
+                .attempt()
+                .is_some_and(|a| a.generation == 0 && a.snapshot.is_none())
+        {
+            // No child execution began. A capture interrupted by restart must
+            // be prepared again instead of leaving the task stuck Preparing.
+            task.status = TaskStatus::Queued;
+        }
+        let continuation = matches!(
+            previous,
+            TaskStatus::Running | TaskStatus::CompletionRequested
+        );
+        if continuation {
+            task.revision += 1;
+            task.status = TaskStatus::Running;
+            if let Some(a) = task.attempt_mut() {
+                a.result = None;
+                a.result_revision = None;
+                a.completed_snapshot = None;
+                a.report_requested = false;
+            }
+        }
+        let revision = task.revision;
+        if let Some(child) = child.filter(|_| continuation) {
+            self.queue(child, Some(task_id), format!("User resumed this Bandmate. Task revision is {revision}. Apply queued corrections, reconcile existing work, and finish the remaining assignment. Do not repeat external side effects."));
+        }
+        self.event(
+            self.parent_agent_id,
+            Some(task_id),
+            "resumed",
+            "User resumed this Bandmate",
+        );
+        Ok(())
+    }
     /// Runtime errors stop dispatch with the same uncertain-delivery gate as
     /// Stop. Resume must reconcile any command that may have reached a provider.
     pub fn block(&mut self, reason: &str) {
@@ -799,7 +918,7 @@ impl DelegationRun {
                         || e.task_id.is_some_and(|id| wait.tasks.contains(&id)))
                     && matches!(
                         e.kind.as_str(),
-                        "result" | "question" | "failed" | "integrated"
+                        "result" | "question" | "failed" | "integrated" | "user_correction"
                     )
             })
         })
@@ -901,6 +1020,7 @@ mod tests {
     }
     fn plan(expert: &ExpertSnapshot, key: &str, dependencies: Vec<&str>) -> TaskPlan {
         TaskPlan {
+            model_request: None,
             key: key.into(),
             expert_id: expert.profile.id,
             goal: "Build".into(),
@@ -912,6 +1032,114 @@ mod tests {
             held: false,
         }
     }
+    #[test]
+    fn model_override_requires_temporary_user_authority_and_never_mutates_presets() {
+        let (mut run, expert) = fixture();
+        let mut request = plan(&expert, "variant", vec![]);
+        request.model_request = Some("Sonnet 5".into());
+        assert!(run
+            .add_plans(
+                run.parent_agent_id,
+                vec![request.clone()],
+                &[expert.clone()]
+            )
+            .is_err());
+        run.temporary_experts.push(expert.clone());
+        run.temporary_model_authorizations
+            .insert(expert.profile.id, "Delegate using Astra".into());
+        assert!(run
+            .add_plans(
+                run.parent_agent_id,
+                vec![request.clone()],
+                &[expert.clone()]
+            )
+            .is_err());
+        run.temporary_model_authorizations
+            .insert(expert.profile.id, "Delegate using Sonnet 5".into());
+        run.add_plans(run.parent_agent_id, vec![request], &[expert.clone()])
+            .unwrap();
+        assert_eq!(run.tasks[0].expert.profile.model, AgentModel::ClaudeSonnet);
+        assert_eq!(run.tasks[0].expert.profile.provider, AgentKind::Claude);
+        assert_eq!(run.temporary_experts[0], expert);
+        let json = serde_json::to_value(&run).unwrap();
+        let restored: DelegationRun = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            restored.temporary_model_authorizations,
+            run.temporary_model_authorizations
+        );
+        assert_eq!(restored.tasks[0].expert, run.tasks[0].expert);
+    }
+
+    #[test]
+    fn started_teammate_keeps_its_model_on_revision_and_rejects_switches() {
+        let (mut run, expert) = fixture();
+        run.temporary_experts.push(expert.clone());
+        run.temporary_model_authorizations.insert(
+            expert.profile.id,
+            "Delegate using Sonnet 5 and Astra".into(),
+        );
+        let mut request = plan(&expert, "variant", vec![]);
+        request.model_request = Some("Sonnet 5".into());
+        run.add_plans(
+            run.parent_agent_id,
+            vec![request.clone()],
+            &[expert.clone()],
+        )
+        .unwrap();
+        run.tasks[0].attempts.push(DelegationAttempt {
+            id: Uuid::new_v4(),
+            child_agent_id: Uuid::new_v4(),
+            generation: 1,
+            workspace: "/tmp/test-only".into(),
+            snapshot: None,
+            completed_snapshot: None,
+            archive_snapshot: None,
+            working_copy_cleaned: false,
+            result: None,
+            result_revision: None,
+            report_requested: false,
+            session_id: Some("saved-session".into()),
+            progress: String::new(),
+            usage: None,
+        });
+        // A queued follow-up without another model request keeps this session's
+        // selected model, not the temporary preset's inherited lead model.
+        request.model_request = None;
+        run.add_plans(
+            run.parent_agent_id,
+            vec![request.clone()],
+            &[expert.clone()],
+        )
+        .unwrap();
+        assert_eq!(run.tasks[0].expert.profile.model, AgentModel::ClaudeSonnet);
+        request.model_request = Some("Astra".into());
+        assert!(run
+            .add_plans(run.parent_agent_id, vec![request], &[expert])
+            .is_err());
+        assert_eq!(run.tasks[0].expert.profile.model, AgentModel::ClaudeSonnet);
+        assert_eq!(
+            run.tasks[0].attempt().unwrap().session_id.as_deref(),
+            Some("saved-session")
+        );
+    }
+
+    #[test]
+    fn old_task_plans_and_runs_deserialize_without_model_overrides() {
+        let (run, expert) = fixture();
+        let mut json = serde_json::to_value(run).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("temporary_model_authorizations");
+        let restored: DelegationRun = serde_json::from_value(json).unwrap();
+        assert!(restored.temporary_model_authorizations.is_empty());
+        let json = serde_json::to_value(plan(&expert, "old", vec![])).unwrap();
+        assert!(json.get("model_request").is_none());
+        assert!(serde_json::from_value::<TaskPlan>(json)
+            .unwrap()
+            .model_request
+            .is_none());
+    }
+
     #[test]
     fn dependency_waits_for_integration_and_rejects_cycles_atomically() {
         let (mut run, expert) = fixture();

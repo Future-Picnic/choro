@@ -34,12 +34,7 @@ impl GitPanel {
                         .is_some_and(|normalized| name.contains(normalized))
             });
         }
-        branches.sort_by(|a, b| {
-            (!a.is_head, a.is_remote)
-                .cmp(&(!b.is_head, b.is_remote))
-                .then_with(|| b.tip_time.cmp(&a.tip_time))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        branches.sort_by(crate::ui::branch_order::compare_branches);
 
         v_flex()
             .w_full()

@@ -29,7 +29,6 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export CHORO_DATA_DIR="$HOME/Library/Application Support/com.ritmus.choro.new-user/__INSTANCE_ID__"
 export CHORO_INSTALLATION_KEYCHAIN_SERVICE="com.ritmus.choro.installation.new-user.__INSTANCE_ID__"
-export CHORO_PENPOT_KEYCHAIN_SERVICE="com.ritmus.choro.penpot.new-user.__INSTANCE_ID__"
 
 # The unique, empty data directory intentionally exercises the same automatic
 # onboarding and managed Design provisioning path as a real first installation.

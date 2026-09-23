@@ -41,6 +41,25 @@ pub fn parse_unified_diff(patch: &str) -> Result<Vec<FileDiff>> {
     diffs_from(&Diff::from_buffer(patch.as_bytes())?)
 }
 
+/// Diff an attributed edit's captured contents without consulting the shared
+/// worktree, where another writer may have changed the same file.
+pub fn diff_from_contents(path: &Path, before: &str, after: &str) -> Result<FileDiff> {
+    let patch = Patch::from_buffers(
+        before.as_bytes(),
+        Some(path),
+        after.as_bytes(),
+        Some(path),
+        None,
+    )?;
+    let mut result = FileDiff {
+        path: path.to_path_buf(),
+        is_binary: patch.delta().flags().is_binary(),
+        ..Default::default()
+    };
+    extract_patch(&patch, &mut result)?;
+    Ok(result)
+}
+
 pub(crate) fn is_internal_untracked_delta(delta: &DiffDelta<'_>) -> bool {
     delta.status() == Delta::Untracked
         && delta.new_file().path().is_some_and(|path| {
@@ -120,6 +139,10 @@ fn extract_delta(diff: &Diff, delta_index: usize, result: &mut FileDiff) -> Resu
         return Ok(());
     };
 
+    extract_patch(&patch, result)
+}
+
+fn extract_patch(patch: &Patch<'_>, result: &mut FileDiff) -> Result<()> {
     for hunk_index in 0..patch.num_hunks() {
         let (hunk, line_count) = patch.hunk(hunk_index)?;
         let header = String::from_utf8_lossy(hunk.header())

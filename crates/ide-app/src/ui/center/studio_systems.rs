@@ -9,8 +9,9 @@ impl CenterArea {
         if self.defer_studio_navigation(move |this, cx| this.open_system_library(project, cx), cx) {
             return;
         }
-        self.show_penpot_hub(cx);
+        self.show_design_hub(cx);
         self.studio_system_library = Some(project);
+        if let Some(import) = self.studio_code_imports.get_mut(&project) { import.visible = false; }
         self.set_view_mode(CenterMode::Design, cx);
         self.refresh_studio_catalog(project, cx);
         cx.notify();
@@ -26,9 +27,12 @@ impl CenterArea {
     pub(super) fn render_system_library(
         &mut self,
         project: ProjectId,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if self.studio_code_imports.get(&project).is_some_and(|import| import.visible) {
+            return self.render_code_import(project, window, cx);
+        }
         let records = self
             .studio_system_catalog
             .get(&project)
@@ -110,9 +114,12 @@ impl CenterArea {
         }
         v_flex().size_full()
             .child(crate::ui::design::header::workspace_bar(cx)
-                .child(style::header_icon_button("system-library-back",IconName::ArrowLeft,cx).tooltip("Back to designs").on_click(cx.listener(|this,_,_,cx| this.show_penpot_hub(cx))))
+                .child(style::header_icon_button("system-library-back",IconName::ArrowLeft,cx).tooltip("Back to designs").on_click(cx.listener(|this,_,_,cx| this.show_design_hub(cx))))
                 .child(crate::ui::design::header::title_col(cx).child(crate::ui::design::header::title("Design systems",cx)))
-                .child(crate::ui::design::header::actions().child(style::primary_button_compact("system-create","New system",cx).on_click(cx.listener(move |this,_,window,cx| this.system_name_dialog(project,None,false,window,cx))))))
+                .child(crate::ui::design::header::actions()
+                    .child(style::ghost_button_compact("system-from-code", "From code").icon(IconName::SquareTerminal)
+                        .on_click(cx.listener(move |this,_,window,cx| this.open_code_import(project, false, window, cx))))
+                    .child(style::primary_button_compact("system-create","New system",cx).on_click(cx.listener(move |this,_,window,cx| this.system_name_dialog(project,None,false,window,cx))))))
             .when_some(self.design_hub_error.clone(), |view,error| view.child(div().px_4().py_2().text_color(crate::ui::design::rose(cx)).child(error)))
             .child(div().id("system-library-scroll").flex_1().overflow_y_scroll().p_6()
                 .child(div().mb_5().text_color(crate::ui::design::t2(cx)).child("Build a visual language for each part of your product. Choose a system inside each Studio design."))

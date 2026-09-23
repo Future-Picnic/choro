@@ -1,4 +1,6 @@
+//! Legacy archive compatibility only; no live design integration.
 use super::*;
+#[cfg(test)]
 use crate::DocAssistantRecord;
 use crate::{AgentAccessMode, AgentEffort, AgentKind, AgentModel};
 
@@ -73,6 +75,7 @@ pub struct StoredPenpotDesignConversation {
     pub deleted_at: Option<u64>,
 }
 
+#[cfg(test)]
 impl LocalStore {
     pub fn active_penpot_connection(&self) -> Result<Option<StoredPenpotConnection>> {
         self.rt.block_on(async {
@@ -422,6 +425,7 @@ pub(super) async fn insert_penpot_connection_async(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn load_active_penpot_connection_async(
     conn: &Connection,
 ) -> Result<Option<StoredPenpotConnection>> {
@@ -501,6 +505,7 @@ pub(super) async fn insert_project_penpot_binding_async(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn load_project_penpot_binding_async(
     conn: &Connection,
     project_id: ProjectId,
@@ -636,6 +641,7 @@ fn penpot_design_from_row(row: &turso::Row) -> Result<StoredPenpotDesign> {
     })
 }
 
+#[cfg(test)]
 async fn create_penpot_conversation_async(
     conn: &Connection,
     design_id: Uuid,
@@ -768,6 +774,7 @@ pub(super) async fn insert_penpot_conversation_async(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn load_current_penpot_conversation_async(
     conn: &Connection,
     design_id: Uuid,
@@ -776,6 +783,7 @@ pub(super) async fn load_current_penpot_conversation_async(
     Ok(values.into_iter().find(|value| value.is_current))
 }
 
+#[cfg(test)]
 pub(super) async fn load_penpot_conversations_async(
     conn: &Connection,
     design_id: Uuid,

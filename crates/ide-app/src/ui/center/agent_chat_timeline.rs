@@ -20,6 +20,9 @@ impl Render for AgentChatTranscript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.owner
             .update(cx, |center, cx| {
+                if center.active_chat_visualization.as_ref().is_some_and(|active| active.agent_id == self.agent.id) {
+                    center.web_host.update(cx, |host, _| host.begin_transcript_layout());
+                }
                 center.render_agent_chat_transcript(
                     &self.agent,
                     &self.session,
@@ -91,6 +94,7 @@ impl CenterArea {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let _probe = crate::ui::performance::UiProbe::new("transcript.render");
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
         let is_running = matches!(
             session.status,
@@ -248,11 +252,12 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        self.rendered_chat_agents.insert(agent.id);
         let _slow_operation = crate::ui::performance::UiOperationTimer::start("agent_chat.render");
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
         let searchable = matches!(&surface, AgentChatSurface::Standard);
-        let compact_design_surface = surface.is_design() || agent.studio_context.is_some();
+        let compact_design_surface = agent.studio_context.is_some();
         let compact_assistant_controls = surface.is_document();
         let artifact_filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
         let placeholder = if agent.studio_context.is_some() {
@@ -1214,6 +1219,7 @@ impl CenterArea {
                                                         );
                                                         session.interaction_mode =
                                                             AgentInteractionMode::Default;
+                                                        chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTROLS, cx);
                                                     });
                                                     cx.notify();
                                                 }

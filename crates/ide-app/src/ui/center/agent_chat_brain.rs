@@ -664,7 +664,7 @@ impl CenterArea {
                             cx,
                         );
                     }
-                    cx.notify();
+                    chats.publish_change(summary.agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
                 }
             });
             if summary.updated_at > previous_updated_at && !background_maintenance {
@@ -714,7 +714,7 @@ impl CenterArea {
                     ComposerMentionKind::Doc => "Document",
                     ComposerMentionKind::File => "File",
                     ComposerMentionKind::Folder => "Folder",
-                    ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => "Design",
+                    ComposerMentionKind::StudioDesign => "Design",
                     ComposerMentionKind::Project => "Project",
                 };
                 format!(
@@ -996,7 +996,7 @@ impl CenterArea {
                                         AgentChatTimelineItem::AgentMessage(card),
                                         cx,
                                     );
-                                    cx.notify();
+                                    chats.publish_change(source_agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
                                 });
                             }
                             Err(error) => {
@@ -1113,7 +1113,7 @@ impl CenterArea {
                         AgentChatTimelineItem::AgentMessage(card.clone()),
                         cx,
                     );
-                    cx.notify();
+                    chats.publish_change(message.target_agent_id, crate::state::agent_chat::ChatChangeCategories::CONVERSATION, cx);
                 }
             });
 
@@ -1281,6 +1281,26 @@ impl CenterArea {
         };
         let collapsible = card.summary_text.lines().count() > SUMMARY_PREVIEW_LINES;
         let pending = self.agent_summary_requests_pending.contains_key(&agent_id);
+        let chats = self.agent_chats.read(cx);
+        let has_saved_session = chats.session(agent_id).is_some_and(|session| {
+            session.chat_session_id.is_some() || session.cli_session_id.is_some()
+        }) || self
+            .agents
+            .read(cx)
+            .agent(agent_id)
+            .is_some_and(agent_has_backend_resume_id);
+        // Summary-only timelines suppress the empty-chat Resume panel. Keep
+        // its action here, while managed children use their Band controls.
+        let can_resume = has_saved_session
+            && !chats.has_backend(agent_id)
+            && self.agents.read(cx).agent(agent_id).is_some_and(|agent| {
+                agent.runtime == AgentRuntimeKind::Chat
+                    && agent
+                        .delegation
+                        .as_ref()
+                        .is_none_or(|b| b.task_id.is_none())
+            });
+        let resuming = self.agent_chat_hydrating.contains(&agent_id);
         crate::ui::style::chat_card(cx)
             .child(
                 crate::ui::style::chat_card_head(cx)
@@ -1304,7 +1324,27 @@ impl CenterArea {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.request_agent_summary(agent_id, cx);
                         })),
-                    ),
+                    )
+                    .when(can_resume, |head| {
+                        head.child(
+                            crate::ui::style::primary_button_compact(
+                                ("agent-summary-resume", agent_id.as_u128() as u64),
+                                if resuming { "Resuming…" } else { "Resume" },
+                                cx,
+                            )
+                            .disabled(resuming)
+                            .tooltip("Load the saved chat history and reconnect the agent")
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    if !this.agent_chat_hydrating.contains(&agent_id)
+                                        && !this.agent_chats.read(cx).has_backend(agent_id)
+                                    {
+                                        this.start_agent(agent_id, window, cx);
+                                    }
+                                },
+                            )),
+                        )
+                    }),
             )
             .child(
                 div()

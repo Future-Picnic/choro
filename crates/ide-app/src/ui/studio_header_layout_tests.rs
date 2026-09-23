@@ -67,3 +67,51 @@ fn studio_header_groups_keep_intrinsic_width_and_never_overlap(cx: &mut gpui::Te
         assert!(views.size.width > px(170.) && views.right() <= zoom.left(), "view track overlaps zoom at {width}");
     }
 }
+
+struct CachedStudioStage;
+impl Render for CachedStudioStage {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        studio_region_root().child(
+            v_flex().flex_1().min_w(px(0.)).h_full()
+                .child(div().w_full().h(px(44.)).debug_selector(|| "cached-header".into())
+                    .child(div().w(px(480.)).h(px(28.))))
+                .child(div().flex_1().w_full().debug_selector(|| "cached-canvas".into()))
+                .child(div().w_full().h(px(44.)).debug_selector(|| "cached-footer".into()))
+        )
+    }
+}
+struct StudioCachedLayout {
+    stage: gpui::Entity<CachedStudioStage>,
+    sidebar_width: f32,
+}
+impl Render for StudioCachedLayout {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        h_flex().size_full().debug_selector(|| "studio-workspace".into())
+            .child(div().w(px(self.sidebar_width)).h_full().flex_none())
+            .child(gpui::AnyView::from(self.stage.clone()).cached(
+                gpui::StyleRefinement::default().flex_1().h_full().min_w(px(0.))))
+    }
+}
+#[gpui::test]
+fn studio_cached_stage_fills_remaining_width_on_resize_and_sidebar_toggle(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let mut layout = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let stage = cx.new(|_| CachedStudioStage);
+        let view = cx.new(|_| StudioCachedLayout { stage, sidebar_width: 318. });
+        layout = Some(view.clone());
+        gpui_component::Root::new(view, window, cx)
+    });
+    let layout = layout.unwrap();
+    for (width, sidebar) in [(1500.,318.), (1000.,318.), (1000.,38.), (1700.,38.), (1700.,318.)] {
+        layout.update(cx, |view, cx| { view.sidebar_width = sidebar; cx.notify(); });
+        cx.simulate_resize(gpui::size(px(width), px(800.)));
+        cx.run_until_parked();
+        let workspace = cx.debug_bounds("studio-workspace").unwrap();
+        for selector in ["cached-header", "cached-canvas", "cached-footer"] {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            assert_eq!(bounds.left(), workspace.left() + px(sidebar), "{selector}: left edge");
+            assert_eq!(bounds.right(), workspace.right(), "{selector}: unused horizontal space at {width}, sidebar {sidebar}");
+        }
+    }
+}

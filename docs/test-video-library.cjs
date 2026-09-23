@@ -52,8 +52,37 @@ async function check(mode, initialHash = 'start') {
   const manifest=JSON.parse(q('#completed-video-files').textContent);
   const drafts=JSON.parse(q('#draft-video-files').textContent);
   const planned=JSON.parse(q('#planned-video-scripts').textContent);
+  const agentQuestionTitle='Let Your Agents Ask Each Other';
+  assert.equal(planned[agentQuestionTitle],undefined);
+  const agentQuestionScript=JSON.parse(q('#draft-video-scripts').textContent)[agentQuestionTitle];
+  assert.equal(agentQuestionScript.playlist,'productivity');
+  assert.equal(agentQuestionScript.scenes.length,5);
+  assert.match(agentQuestionScript.review.outcome,/same-project/);
+  assert.ok([...d.querySelectorAll('#panel-productivity .video-title')].some(el=>el.textContent===agentQuestionTitle));
+  const agentQuestionVideo=manifest.find(video=>video.title===agentQuestionTitle);
+  assert.equal(agentQuestionVideo.avatar,true);
+  assert.equal(agentQuestionVideo.duration,39.7);
   const socials=JSON.parse(q('#social-video-files').textContent);
   const available=[...manifest,...drafts];
+  const studioTitles=['Design, Build, and Preview with Studio','Meet Choro Studio','Create a Design from Scratch','Build and Use a Design System','Create a Design from a Doc or Task','Refine a Design with the Assistant','Implement a Design with an Agent','Use Visual References with an Agent'];
+  const tutorialScripts=JSON.parse(q('#draft-video-scripts').textContent);
+  for(const title of studioTitles){
+    const video=manifest.find(v=>v.title===title);
+    assert.ok(video,`${title} must have a finished native Studio export`);
+    assert.equal(video.avatar,true);
+    assert.equal(planned[title],undefined);
+    assert.ok(tutorialScripts[title]?.scenes.length>=3);
+  }
+  assert.equal(manifest.some(v=>v.title==='Compare the Design with the Live Result'),false,'Blank live Compare pane must not be published as success');
+  const companionTitles=['Meet Choro Companion','Set the Mood with Companion Music','Show or Hide Choro Companion'];
+  for(const title of companionTitles){
+    const video=manifest.find(v=>v.title===title);
+    assert.ok(video,`${title} must have a completed Alex export`);
+    assert.equal(video.avatar,true);
+    assert.equal(video.draft,false);
+    assert.equal(drafts.some(v=>v.title===title),false);
+    assert.equal(planned[title],undefined,'Completed Companion videos must not retain planned-only state');
+  }
   const rows=[...d.querySelectorAll('[role="tabpanel"]:not([data-format="social"]) tbody tr')];
   assert.equal(new Set(rows.map(row=>row.querySelector('.video-title').textContent)).size,rows.length);
   assert.equal(q('#panel-companion').querySelectorAll('tbody tr').length,3);
@@ -68,6 +97,9 @@ async function check(mode, initialHash = 'start') {
   assert.equal(new Set(concepts.map(item=>item.id)).size,concepts.length);
   assert.equal(concepts.length,24);
   assert.equal(concepts.filter(item=>item.stage==='idea').length,6);
+  const reviewBatch=concepts.filter(item=>item.reviewBatch==='five-promos-20260922');
+  assert.deepEqual(reviewBatch.map(item=>item.id).sort(),['doc-context','on-demand','rough-idea','safe-experiment','studio']);
+  assert.equal(concepts.find(item=>item.id==='phone-decision').mediaId,undefined,'Choro Mobile stays outside this batch');
   assert.equal(q('#tab-tiktok'),null,'Archive must not occupy a tutorial category tab');
   q('#nav-shorts').click();
   assert.equal(w.location.hash,'#shorts');
@@ -101,7 +133,19 @@ async function check(mode, initialHash = 'start') {
       assert.equal(Boolean(concept.mediaId),false);
     } else assert.match(q('#recording-scenes').textContent,/Your home for building products/);
     assert.equal(q('#finished-video').hidden,!concept.mediaId);
-    if(concept.mediaId) assert.ok(socials.some(video=>video.id===concept.mediaId));
+    if(concept.mediaId) {
+      const media=socials.find(video=>video.id===concept.mediaId);
+      assert.ok(media);
+      if(concept.reviewBatch==='five-promos-20260922') {
+        assert.match(button.textContent,/Review new video/);
+        assert.match(q('#recording-intro').textContent,/ready for review/);
+        assert.ok(media.duration>20&&media.duration<30);
+        assert.match(media.folder,/^social-five-review-20260922\//);
+        assert.match(q('#video-link').href,/social-five-|social-five-review-20260922/);
+        assert.equal(concept.scenes[0][0],'hook');
+        assert.equal(concept.scenes.at(-1)[0],'outro');
+      }
+    }
     else {
       assert.equal(q('#video-preview').hasAttribute('src'),false);
       assert.equal(q('#video-link').hasAttribute('href'),false);
@@ -160,10 +204,23 @@ async function check(mode, initialHash = 'start') {
   assert.equal(new Set(available.map(video=>video.id)).size, available.length);
   assert.equal(Number(q('#draft-count').textContent), drafts.length);
   assert.equal(rows.filter(row=>row.dataset.status==='completed').length, manifest.length);
+  for(const row of rows.filter(row=>row.dataset.status==='completed')) {
+    assert.equal(row.querySelector('.completion-badge')?.textContent,'Completed','Every completed video must show a visible badge');
+  }
   const key=(node,k,more={})=>node.dispatchEvent(new w.KeyboardEvent('keydown',{key:k,bubbles:true,cancelable:true,...more}));
   for(const video of available) {
     const row=rows.find(r=>r.querySelector('.video-title').textContent===video.title);
     assert.ok(row); row.click();
+    if(companionTitles.includes(video.title)||['Start a Chat with a Bandmate','Save a Git Workflow: Dev to Main'].includes(video.title)) {
+      const script=JSON.parse(q('#draft-video-scripts').textContent)[video.title];
+      assert.equal(row.dataset.status,'completed');
+      assert.equal(q('#recording-scenes').children.length,script.scenes.length+1);
+      assert.match(q('#recording-scenes').textContent,/Hey, I’m Alex from Choro/);
+      assert.match(q('#video-file').textContent,/Alex D narration \+ HeyGen/);
+      assert.equal(q('#draft-production-note').hidden,true);
+      q('.modal-done').click(); row.click();
+      assert.equal(q('#recording-scenes').children.length,script.scenes.length+1,'Reopening must not duplicate greeting');
+    }
     if(video.draft) {
       assert.notEqual(row.dataset.status,'completed');
       assert.match(q('#video-file').textContent,/review draft/);
@@ -174,6 +231,12 @@ async function check(mode, initialHash = 'start') {
         assert.match(q('#video-file').textContent, /Free local AI voice.*No avatar/);
         assert.match(q('.scene-guidance').textContent, /Free local AI narration, no avatar/);
         assert.doesNotMatch(q('#draft-production-note').textContent, /Avatar blocked/);
+        if(companionTitles.includes(video.title)){
+          const script=JSON.parse(q('#draft-video-scripts').textContent)[video.title];
+          assert.equal(q('#recording-scenes').children.length,script.scenes.length);
+          assert.match(row.querySelector('.completion-badge').textContent,/Draft ready/);
+          assert.doesNotMatch(q('.scene-guidance').textContent,/to be selected|not yet recorded/);
+        }
       }
       if (video.avatarPending) {
         assert.equal(planned[video.title], undefined);
@@ -249,7 +312,7 @@ async function check(mode, initialHash = 'start') {
       if(planned[title]) {
         assert.equal(q('#recording-scenes').children.length,planned[title].scenes.length);
         assert.match(q('.scene-guidance').textContent,/not yet recorded/);
-        assert.match(q('#recording-scenes').textContent,/Companion/);
+        for (const scene of planned[title].scenes) assert.ok(q('#recording-scenes').textContent.includes(scene.text));
       }
     }
     q('.modal-done').click();

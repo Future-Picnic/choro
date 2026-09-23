@@ -633,6 +633,11 @@ struct ActiveWorktreeWatcher {
 }
 
 impl GitStates {
+    #[cfg(test)]
+    pub(crate) fn in_memory(workspace: Entity<Workspace>) -> Self {
+        Self { workspace, states: HashMap::new(), active_repositories: HashMap::new(), active_worktree: None, sync_seq: 0 }
+    }
+
     pub fn new(workspace: Entity<Workspace>, cx: &mut Context<Self>) -> Self {
         cx.subscribe(&workspace, |this: &mut Self, workspace, event, cx| {
             if matches!(event, WorkspaceEvent::ProjectsChanged) {

@@ -37,6 +37,26 @@ checks = r'''
  window.addEventListener('message',e=>{if(e.source===frame().contentWindow&&e.data?.type==='prototype-result')prototypeResult=e.data;});
  const title=()=>Vvveb.Builder.iframe===frame()?frame().contentDocument?.querySelector('h1'):null;
  const click=()=>title().dispatchEvent(new MouseEvent('click',{bubbles:true}));
+ if(window.__CHORO_STUDIO__.prototype){
+   const KEY='choro.studio.camera.v1:test-screen:800x600', SEEDED=localStorage.getItem(KEY);
+   // The player frame is opaque (allow-scripts only), so readiness arrives by message.
+   await wait(()=>prototypeResult,'prototype screen');
+   await wait(()=>frame().getBoundingClientRect().width>0,'prototype fit');
+   // Navigation rebuilds the player per screen. If a saved camera were restored
+   // here, every screen of a flow would land somewhere different.
+   assert(document.getElementById('zoom').value==='fit','The player opens fitted, ignoring a camera saved for this screen');
+   const fitted=frame().getBoundingClientRect();
+   const area=document.getElementById('canvas').getBoundingClientRect();
+   assert(close((fitted.left+fitted.right)/2,(area.left+area.right)/2),'A fitted screen is centred, so every screen of a flow lands in the same place');
+   document.getElementById('canvas').dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,clientX:400,clientY:300,deltaY:-40}));
+   await wait(()=>frame().getBoundingClientRect().width>fitted.width,'prototype ctrl-wheel zoom');
+   // Zooming still works; it just never outlives the screen you did it on.
+   window.dispatchEvent(new Event('pagehide'));
+   assert(localStorage.getItem(KEY)===SEEDED,'The player never writes a per-screen camera');
+   assert(window.testErrors.length===0,'Unexpected errors: '+JSON.stringify(window.testErrors));
+   originalSend(JSON.stringify({type:'thumbnail-ready'}));
+   return;
+ }
  if(window.__CHORO_STUDIO__.system_specimen){
    assert(document.body.classList.contains('preview'),'System specimen hides editing inspector');
    assert(frame().getAttribute('sandbox')==='allow-same-origin allow-scripts','System uses the Edit isolation boundary for host selection');
@@ -401,6 +421,14 @@ checks = r'''
  frame().contentWindow.postMessage('test-camera-gesture','*');
  await wait(()=>frame().getBoundingClientRect().width>beforeOpaqueGesture,'gesture from opaque Preview document');
  assert(frame()===previewFrame&&frame().style.width===initialWidth+'px','The actual Preview input relay preserves its live authored viewport');
+ // A prototype page scrolls itself. Delta that chains out of the frame must not
+ // also pan the stage; only the relayed zoom gesture above may move the camera.
+ const beforeChained=frame().getBoundingClientRect();
+ frame().dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:200,clientY:150,deltaX:40,deltaY:120}));
+ const afterChained=frame().getBoundingClientRect();
+ assert(close(afterChained.left,beforeChained.left)&&close(afterChained.top,beforeChained.top)&&close(afterChained.width,beforeChained.width),'Scrolling inside the Preview page never pans or zooms the stage');
+ const stageBefore=document.getElementById('canvas');
+ assert(stageBefore.scrollTop===0&&stageBefore.scrollLeft===0,'The Preview stage itself never scrolls');
 
 
  zoom.value='fit';zoom.dispatchEvent(new Event('change'));
@@ -428,6 +456,7 @@ checks = r'''
 boot={'session':'test','screen_id':'test-screen','document':{'html':'<!doctype html><html><head></head><body onload="window.bad=true"><h1 data-studio-id="title">Original</h1><p>Unchanged neighbor</p><script>window.originalScript=true</script></body></html>','css':'body{font:24px system-ui;padding:32px;background:white;color:#202124;--fixture-layout:desktop}@media(max-width:600px){body{--fixture-layout:mobile}}','js':"const initialViewportWidth=innerWidth,desktopLayout=matchMedia('(min-width: 601px)').matches;let parentBlocked=false;try{parent.document.body}catch(e){parentBlocked=true};const node=document.createElement('div');node.dataset.runtime='true';document.body.append(node);let networkBlocked=false;document.addEventListener('securitypolicyviolation',e=>{if(e.effectiveDirective==='connect-src')networkBlocked=true});fetch('https://example.invalid/studio-isolation-test').catch(()=>{});setTimeout(()=>parent.postMessage({type:'prototype-result',parentBlocked,networkBlocked,bridgeBlocked:!window.ipc,viewportWidth:initialViewportWidth,desktopLayout},'*'),50);"},'revision':0,'fingerprint':'initial','tokens':{'color-primary':'#335cff'},'tokens_css':':root{--color-primary:#335cff}','screens':[],'width':800,'height':600,'assets':{},'thumbnail':False}
 boot['document']['js'] += ";window.addEventListener('message',event=>{if(event.source===parent&&event.data==='test-camera-gesture')document.body.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,clientX:200,clientY:100,deltaY:-20}));});"
 boot['testCameraState']='--camera-state' in sys.argv or '--camera-native-state' in sys.argv
+boot['prototype']='--prototype' in sys.argv
 boot['system_specimen']='--system' in sys.argv
 boot['testAssets']='--assets' in sys.argv
 if boot['testAssets']:
@@ -447,13 +476,16 @@ if boot['testSemanticText']:
       <table><tbody><tr><td data-text-case="date">18 Sep</td></tr></tbody></table>
       <input value="Search invoices" />
     </section></body>''')
-boot['mode'] = 'preview' if '--preview-start' in sys.argv else 'edit'
+boot['mode'] = 'preview' if '--preview-start' in sys.argv or boot['prototype'] else 'edit'
 boot['document']['css'] += '/* </style><script>parent.__editEscaped=true</script> */'
 encoded=json.dumps(boot).replace('<','\\u003c').replace('>','\\u003e')
 def bundle(boot):
     encoded=json.dumps(boot).replace('<','\\u003c').replace('>','\\u003e')
     names=['upstream/popper.min.js','upstream/bootstrap.min.js','upstream/builder.js','templates.js','upstream/undo.js','upstream/inputs.js','upstream/autocomplete.js','upstream/components-common.js','upstream/components-html.js','upstream/coloris.js']
-    storage="Object.defineProperty(window,'localStorage',{value:{data:new Map(),getItem(key){return this.data.get(key)||null},setItem(key,value){this.data.set(key,String(value))}}});" if '--camera-state' in sys.argv else ''
+    stub="Object.defineProperty(window,'localStorage',{value:{data:new Map(),getItem(key){return this.data.get(key)||null},setItem(key,value){this.data.set(key,String(value))}}});"
+    # The player must ignore a stored camera, so seed one it would otherwise use.
+    seed=stub+"localStorage.setItem('choro.studio.camera.v1:test-screen:800x600','{\"mode\":\"free\",\"zoom\":2,\"x\":10,\"y\":10}');"
+    storage=seed if '--prototype' in sys.argv else stub if '--camera-state' in sys.argv else ''
     vendor=storage+'window.__CHORO_STUDIO__='+encoded+';\n'+'\n'.join((root/'vendor'/name).read_text() for name in names)
     css='\n'.join((root/'vendor'/name).read_text() for name in ['upstream/editor.css','fonts.css','upstream/coloris.min.css'])
     return (root/'editor.html').read_text().replace('/*STUDIO_VENDOR_CSS*/',css).replace('<!--STUDIO_RIGHT_PANEL-->',(root/'vendor/upstream/right-panel.html').read_text()).replace('<!--STUDIO_INLINE_TOOLBAR-->',(root/'vendor/upstream/inline-toolbar.html').read_text()).replace('/*STUDIO_VENDOR*/',vendor.replace('</script','<\\/script')).replace('/*STUDIO_EDITOR*/',(root/'editor.js').read_text())
@@ -469,7 +501,7 @@ assert result.returncode==0, result.stderr
 response=json.loads(result.stdout.strip())
 assert response.get('error') is None, (response,result.stderr)
 assert output.stat().st_size>1000
-print('PASS: keyboard undo/redo through 12 saved edits, active typing, property changes, redo branching and input/Preview exclusions' if boot['testHistoryShortcuts'] else 'PASS: semantic text double-click, focus, inline toolbar, typed saves, undo/redo and intact neighbors' if boot['testSemanticText'] else 'PASS: system specimen isolation and disabled screen editing' if boot['system_specimen'] else 'PASS: local image selection, clean asset paths, and revisioned native upload/assignment' if boot['testAssets'] else 'PASS: upstream controls, focus preservation, custom-token undo, partial-text formatting and inline undo/redo' if boot['testProperties'] else 'PASS: text, tokens, autosave, undo/redo, correlated Implement flush, failed-save recovery, Edit isolation, Preview sandbox and clean source round trip')
+print('PASS: the prototype player opens every screen fitted and stores no camera' if boot['prototype'] else 'PASS: keyboard undo/redo through 12 saved edits, active typing, property changes, redo branching and input/Preview exclusions' if boot['testHistoryShortcuts'] else 'PASS: semantic text double-click, focus, inline toolbar, typed saves, undo/redo and intact neighbors' if boot['testSemanticText'] else 'PASS: system specimen isolation and disabled screen editing' if boot['system_specimen'] else 'PASS: local image selection, clean asset paths, and revisioned native upload/assignment' if boot['testAssets'] else 'PASS: upstream controls, focus preservation, custom-token undo, partial-text formatting and inline undo/redo' if boot['testProperties'] else 'PASS: text, tokens, autosave, undo/redo, correlated Implement flush, failed-save recovery, Edit isolation, Preview sandbox and clean source round trip')
 print('Screenshot:',output)
 
 if '--export' in sys.argv:

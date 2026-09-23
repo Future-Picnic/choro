@@ -14,7 +14,6 @@ impl CenterArea {
         services: Entity<ServicesState>,
         orbit: Entity<OrbitState>,
         doc_assistants: Entity<DocAssistantState>,
-        penpot: Entity<PenpotState>,
         voice: Entity<VoiceState>,
         quick_ask: Entity<QuickAskState>,
         window: &mut Window,
@@ -30,33 +29,15 @@ impl CenterArea {
         let quick_ask_history_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search questions, answers, or projects")
         });
-        let penpot_config = penpot.read(cx).config().clone();
-        let penpot_instance_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(penpot_config.instance_url)
-                .placeholder("https://design.example")
-        });
-        let penpot_mcp_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(penpot_config.mcp_url)
-                .placeholder("https://design.example/mcp/stream")
-        });
-        let penpot_key_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Paste the one-time Design MCP key")
-                .masked(true)
-        });
-        let penpot_access_token_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Paste a Design access token")
-                .masked(true)
-        });
         let simulator_bridge = Arc::new(parking_lot::Mutex::new(
             ios_simulator_preview::SimulatorBridgeController::default(),
         ));
         let simulator_bridge_task = simulator_bridge.clone();
-        let web_app = cx.to_async();
+        let (web_wake, web_messages) = async_channel::bounded(1);
+        let web_app = web_preview::WebPreviewWake::new(web_wake);
+        let native_wake = web_app.clone();
         let compare_web_app = web_app.clone();
+        let web_window = window.window_handle();
         let web_host = cx.new(|_| web_preview::WebPreviewHost::new(web_app));
         let compare_web_host = cx.new(|_| web_preview::WebPreviewHost::new(compare_web_app));
         let preview_control_root = ide_core::AppConfig::config_path()
@@ -83,6 +64,11 @@ impl CenterArea {
             .map(|agent| (agent.id, agent.status))
             .collect();
         let center = cx.new(move |cx| {
+            cx.observe(&cx.entity(), |this: &mut Self, _, cx| {
+                this.native_surface_dirty = true;
+                this.sync_studio_regions(cx);
+            }).detach();
+            cx.observe_global::<gpui_component::Theme>(|_: &mut Self, cx| cx.notify()).detach();
             let project_navigation =
                 center_navigation::ProjectNavigation::new(workspace.read(cx).active);
             cx.observe(&workspace, |this: &mut Self, _, cx| {
@@ -93,30 +79,25 @@ impl CenterArea {
             })
             .detach();
             cx.observe(&terminals, |_, _, cx| cx.notify()).detach();
-            cx.observe(&agents, |_, _, cx| cx.notify()).detach();
+            cx.subscribe(&agents, |this: &mut Self, _, event, cx| {
+                if let crate::state::agents::AgentRecordsEvent::RecordChanged { agent_id, .. } = event {
+                    if this.rendered_chat_agents.contains(agent_id)
+                        || (this.view_mode == CenterMode::Agents && this.rendered_chat_agents.is_empty())
+                        || (this.view_mode == CenterMode::Design && this.studio.as_ref().is_some_and(|s| s.implementation_agents.contains(agent_id))) {
+                        cx.notify();
+                    }
+                }
+            }).detach();
             // Transcript freshness drives the chat's working indicator when the
             // session status has gone stale, so a cache refresh must repaint.
-            cx.observe(&agent_activity, |_, _, cx| cx.notify()).detach();
+            cx.subscribe(&agent_activity, |this: &mut Self, _, change, cx| {
+                if change.0.iter().any(|id| this.rendered_chat_agents.contains(id)) {
+                    cx.notify();
+                }
+            }).detach();
             cx.observe(&quick_ask, |_, _, cx| cx.notify()).detach();
             cx.observe(&quick_ask_history_search, |_, _, cx| cx.notify())
                 .detach();
-            cx.observe(&penpot, |_, _, cx| cx.notify()).detach();
-            cx.subscribe(&penpot, |this: &mut Self, _, event: &PenpotEvent, cx| {
-                if let PenpotEvent::DesignCreated {
-                    project,
-                    design_id,
-                    initial_draft,
-                } = event
-                {
-                    this.open_penpot_design_request(
-                        *project,
-                        *design_id,
-                        initial_draft.clone(),
-                        cx,
-                    );
-                }
-            })
-            .detach();
             cx.subscribe(
                 &agents,
                 |this: &mut Self, _, event: &crate::state::agents::AgentRecordsEvent, cx| {
@@ -140,18 +121,31 @@ impl CenterArea {
                 },
             )
             .detach();
-            cx.observe(&agent_chats, |this: &mut Self, _, cx| {
-                this.agent_chat_render_sessions.clear();
-                this.sync_chat_session_ids(cx);
-                this.sync_doc_assistant_chat_session_ids(cx);
-                this.maybe_finalize_doc_assistant_titles(cx);
-                this.maybe_auto_verify(cx);
-                this.maybe_finish_summary_maintenance(cx);
-                this.maybe_start_pending_pocketcomet_handoffs(cx);
-                this.schedule_agent_chat_search_live_refresh(cx);
-                cx.notify();
-            })
-            .detach();
+            cx.subscribe(&agent_chats, |this: &mut Self, _, event, cx| {
+                let AgentChatEvent::SessionChanged(change) = event else { return; };
+                this.agent_chat_render_sessions.remove(&change.agent_id);
+                if change.categories.identity || change.categories.controls {
+                    this.sync_chat_session_ids_for(Some(change.agent_id), cx);
+                    this.sync_doc_assistant_chat_session_ids(cx);
+                }
+                if change.categories.navigation || change.categories.controls {
+                    this.maybe_finalize_doc_assistant_titles(cx);
+                    this.maybe_auto_verify(cx);
+                    this.maybe_finish_summary_maintenance(cx);
+                    this.maybe_start_pending_pocketcomet_handoffs(cx);
+                }
+                let affects_parent = (change.categories.navigation || change.categories.identity)
+                    && this.agents.read(cx).agent(change.agent_id)
+                        .and_then(|agent| agent.delegation.as_ref())
+                        .is_some_and(|binding| this.rendered_chat_agents.contains(&binding.parent_agent_id));
+                if this.rendered_chat_agents.contains(&change.agent_id) || affects_parent {
+                    this.schedule_agent_chat_search_live_refresh(cx);
+                    cx.notify();
+                } else if change.categories.navigation || change.categories.identity {
+                    // Agent listings and Band overviews show status without a transcript.
+                    if this.view_mode == CenterMode::Agents && this.rendered_chat_agents.is_empty() { cx.notify(); }
+                }
+            }).detach();
             cx.subscribe(
                 &agent_chats,
                 |this: &mut Self, _, event: &AgentChatEvent, cx| match event {
@@ -182,7 +176,7 @@ impl CenterArea {
                         this.docs.update(cx, |docs, cx| docs.refresh(cx));
                         this.schedule_pocketcomet_handoff(*agent_id, false, cx);
                     }
-                    AgentChatEvent::Changed => {}
+                    AgentChatEvent::SessionChanged(_) => {}
                 },
             )
             .detach();
@@ -190,7 +184,13 @@ impl CenterArea {
                 .try_global::<crate::state::delegation::DelegationHandle>()
                 .cloned()
             {
-                cx.observe(&handle.0, |_, _, cx| cx.notify()).detach();
+                cx.subscribe(&handle.0, |this: &mut Self, _, change, cx| {
+                    let selected = this.workspace.read(cx).active.and_then(|project| this.agents.read(cx).selected_agent_id(project));
+                    if change.parents.iter().any(|id| this.rendered_chat_agents.contains(id) || (this.view_mode == CenterMode::Agents && selected == Some(*id)))
+                        || (change.error_changed && (this.delegated_overview.is_some() || this.delegated_panel.is_some())) {
+                        cx.notify();
+                    }
+                }).detach();
             }
             cx.observe(&docs, |_, _, cx| cx.notify()).detach();
             cx.subscribe(&docs, |this: &mut Self, _docs, event: &DocsEvent, cx| {
@@ -415,6 +415,7 @@ impl CenterArea {
             })
             .detach();
             cx.spawn(async move |this, cx| {
+                let mut preview_services = HashMap::new();
                 loop {
                     let Some(center) = this.upgrade() else {
                         break;
@@ -515,12 +516,15 @@ impl CenterArea {
                                 }
                             }
                             this.project_preview_records = records;
-                            // PTY URL discovery writes into session-owned shared
-                            // state. Repaint an open panel even if the DB list did
-                            // not change so newly announced dev-server URLs appear.
-                            if changed || this.project_preview_ui.values().any(|ui| ui.open) {
-                                cx.notify();
-                            }
+                            // PTY discovery changes shared terminal data without
+                            // a model event. Compare its small presentation snapshot
+                            // instead of invalidating chat history on every idle poll.
+                            let services = this.project_preview_ui.iter().filter(|(_, ui)| ui.open)
+                                .map(|(project, _)| (*project, this.terminals.read(cx).project_preview_services(*project)))
+                                .collect::<HashMap<_, _>>();
+                            let services_changed = preview_services != services;
+                            preview_services = services;
+                            if changed || services_changed { cx.notify(); }
                         })
                         .ok();
                     cx.background_executor()
@@ -529,6 +533,43 @@ impl CenterArea {
                 }
             })
             .detach();
+            // Native messages wake their handler even when no animation is mounted.
+            // The timer maintains external activity/catalog recovery, not redraws.
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let timer = cx.background_executor().timer(Duration::from_millis(400));
+                    let signal = futures_util::future::select(Box::pin(web_messages.recv()), Box::pin(timer)).await;
+                    if matches!(signal, futures_util::future::Either::Left((Err(_), _))) { break; }
+                    let result = web_window.update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| {
+                            let previous_studio = this.studio_region_key(true);
+                            let general = native_wake.take_general();
+                            this.process_native_messages(window, cx);
+                            if let Some((project, _)) = this.active_project(cx) {
+                                let effective_mode = this.view_mode;
+                                if matches!(effective_mode, CenterMode::Design | CenterMode::Tasks | CenterMode::MyTasks | CenterMode::Docs | CenterMode::Agents)
+                                    && this.studio_catalog_refreshed.get(&project).is_none_or(|last| last.elapsed() > Duration::from_secs(2)) {
+                                    this.refresh_studio_catalog(project, cx);
+                                }
+                            }
+                            // IPC updates state; only that state can request a redraw.
+                            // A message may arrive just after the recovery timer wins
+                            // select. Its flag still requires a redraw in this pass.
+                            if general {
+                                cx.notify();
+                            } else if previous_studio != this.studio_region_key(true) {
+                                this.native_surface_dirty = true;
+                                if let Some(stage) = &this.studio_stage_view {
+                                    // A canvas/control change dirties its region and the thin
+                                    // layout shell, without broadcasting to chat history.
+                                    stage.update(cx, |_, cx| cx.notify());
+                                } else { cx.notify(); }
+                            }
+                        })
+                    });
+                    if result.is_err() { break; }
+                }
+            }).detach();
             cx.spawn(async move |this, cx| {
                 while let Ok(envelope) = preview_control_receiver.recv().await {
                     let Some(center) = this.upgrade() else {
@@ -536,7 +577,24 @@ impl CenterArea {
                     };
                     center
                         .update(cx, |this: &mut Self, cx| {
-                            this.enqueue_project_preview_control_command(envelope, cx);
+                            if envelope.request.action == ide_core::preview_control::DELEGATION_CHANGED_ACTION {
+                                // Authentication and framing were checked by the IPC server.
+                                // The payload is only a reload hint, never trusted state.
+                                let valid = serde_json::from_str::<Uuid>(&envelope.request.payload_json).is_ok();
+                                if valid {
+                                    if let Some(handle) = cx.try_global::<crate::state::delegation::DelegationHandle>().cloned() {
+                                        handle.0.update(cx, |coordinator, _| coordinator.request_reload());
+                                    }
+                                }
+                                let response = if valid {
+                                    ide_core::preview_control::PreviewControlResponse::success(envelope.request.id, "{}".into(), None)
+                                } else {
+                                    ide_core::preview_control::PreviewControlResponse::failure(envelope.request.id, "Invalid delegation hint")
+                                };
+                                let _ = envelope.respond_to.try_send(response);
+                            } else {
+                                this.enqueue_project_preview_control_command(envelope, cx);
+                            }
                         })
                         .ok();
                 }
@@ -711,24 +769,15 @@ impl CenterArea {
                 orbit_active_invocations: HashMap::new(),
                 orbit_pending_invocations: HashMap::new(),
                 doc_assistants,
-                penpot,
                 voice,
-                penpot_instance_input,
-                penpot_mcp_input,
-                penpot_key_input,
-                penpot_access_token_input,
-                penpot_setup_error: None,
                 design_hub_error: None,
-                penpot_editing_settings: false,
-                penpot_assistant_open: false,
-                design_mcp_readiness: HashMap::new(),
-                pending_design_assistant_drafts: HashMap::new(),
-                pending_design_assistant_submissions: HashMap::new(),
-                design_mcp_disconnect_tokens: HashMap::new(),
-                penpot_compare_open: false,
-                penpot_open_design: None,
+                design_compare_open: false,
+                pending_studio_drafts: HashMap::new(),
                 studio: None,
+                studio_stage_view: None,
+                studio_sidebar_view: None,
                 studio_system_library: None,
+                studio_code_imports: HashMap::new(),
                 studio_system_catalog: HashMap::new(),
                 studio_catalog: HashMap::new(),
                 studio_catalog_refreshing: HashSet::new(),
@@ -737,7 +786,6 @@ impl CenterArea {
                 studio_creating: HashSet::new(),
                 studio_catalog_previews: HashMap::new(),
                 figma_open_design: None,
-                penpot_external_mcp_design: None,
                 web_host,
                 compare_web_host,
                 editors: Vec::new(),
@@ -800,6 +848,9 @@ impl CenterArea {
                 agent_chat_queue_expanded: HashSet::new(),
                 agent_chat_usage_expanded: HashSet::new(),
                 agent_chat_render_sessions: HashMap::new(),
+                rendered_chat_agents: HashSet::new(),
+                native_surface_dirty: true,
+                native_overlay_open: false,
                 agent_chat_transcript_views: HashMap::new(),
                 agent_status_seen: HashMap::new(),
                 agent_verify_scan_seen: HashMap::new(),
@@ -917,5 +968,38 @@ impl CenterArea {
         });
         center.update(cx, |this, cx| this.schedule_solo_docs_refresh(cx));
         center
+    }
+}
+
+impl CenterArea {
+    fn process_native_messages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let doc_messages = self
+            .web_host
+            .update(cx, |host, _| host.take_doc_editor_messages());
+        for message in doc_messages {
+            match message {
+                web_preview::DocEditorMessage::Change { path, document } => {
+                    if let Err(error) = self
+                        .docs
+                        .update(cx, |docs, cx| docs.apply_web_document(path, document, cx))
+                    {
+                        eprintln!("failed to apply document editor change: {error:#}");
+                    }
+                }
+                web_preview::DocEditorMessage::OpenReference { path, target } => {
+                    self.pending_reference_open = Some((path, target));
+                }
+                _ => {}
+            }
+        }
+        self.handle_project_preview_messages(window, cx);
+        self.apply_pending_reference_open(window, cx);
+
+        self.process_studio_messages(window, cx);
+        let studio_active = self.view_mode == CenterMode::Design
+            && self.studio.as_ref().is_some_and(|s| self.workspace.read(cx).active == Some(s.project));
+        if !studio_active && self.studio.as_ref().is_some_and(|s| s.screen.is_none() && s.canvas.html.is_some()) { self.flush_studio_canvas(); }
+        self.process_studio_canvas(studio_active && !window.has_active_dialog(cx) && !window.has_active_sheet(cx), cx);
+        self.refresh_studio_canvas(cx);
     }
 }

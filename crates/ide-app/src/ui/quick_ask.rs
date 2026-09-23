@@ -24,7 +24,10 @@ use crate::ui::center::attachment_helpers::{
 };
 use crate::ui::center::{provider_brand_icon, CenterArea};
 
-actions!(quick_ask, [QuickAskSubmit, QuickAskDismiss]);
+actions!(
+    quick_ask,
+    [QuickAskSubmit, QuickAskDismiss, QuickAskNewSession]
+);
 
 const CONTEXT: &str = "QuickAsk";
 
@@ -37,6 +40,7 @@ pub fn bindings() -> Vec<KeyBinding> {
             Some("QuickAsk > Input"),
         ),
         KeyBinding::new("escape", QuickAskDismiss, Some(CONTEXT)),
+        KeyBinding::new("cmd-n", QuickAskNewSession, Some(CONTEXT)),
     ]
 }
 
@@ -393,7 +397,7 @@ impl QuickAskPanel {
                     .children(start_agent)
                     .child(
                         crate::ui::style::header_icon_button("quick-ask-new", IconName::Plus, cx)
-                            .tooltip("New ask")
+                            .tooltip("New ask (⌘N)")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.start_new_session(window, cx);
                             })),
@@ -1069,6 +1073,9 @@ impl Render for QuickAskPanel {
         v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(|this, _: &QuickAskSubmit, window, cx| this.submit(window, cx)))
+            .on_action(cx.listener(|this, _: &QuickAskNewSession, window, cx| {
+                this.start_new_session(window, cx);
+            }))
             .on_action(cx.listener(|_, _: &QuickAskDismiss, _, cx| {
                 cx.emit(QuickAskPanelEvent::Dismissed);
             }))

@@ -549,8 +549,53 @@ pub(super) fn format_plan_detail(params: &Value) -> Option<String> {
 pub(super) fn file_stat_from_patch_change(change: &Value) -> Option<FileChangeStat> {
     let path = change.get("path").and_then(Value::as_str)?;
     let diff = change.get("diff").and_then(Value::as_str).unwrap_or("");
-    let (additions, deletions) = count_unified_diff_lines(diff);
-    Some(FileChangeStat::new(path, additions, deletions))
+    // Current Codex FileUpdateChange events carry full, unprefixed content for
+    // adds/deletes. Only updates (and legacy patch-shaped events) carry hunks.
+    // Counting '+'/'-' prefixes in raw content silently reports zero for most
+    // new files and miscounts source text that happens to start with a sign.
+    let kind = change
+        .get("kind")
+        .and_then(|kind| kind.get("type"))
+        .and_then(Value::as_str);
+    let (additions, deletions) = match kind {
+        Some("add") => (diff.lines().count(), 0),
+        Some("delete") => (0, diff.lines().count()),
+        _ => count_unified_diff_lines(diff),
+    };
+    let mut file = FileChangeStat::new(path, additions, deletions);
+    let owned_diff = match kind {
+        Some("add") => ide_core::git::diff::diff_from_contents(Path::new(path), "", diff),
+        Some("delete") => ide_core::git::diff::diff_from_contents(Path::new(path), diff, ""),
+        _ => {
+            // Native update events contain only hunks. Use a synthetic header
+            // so spaces, tabs, and absolute paths cannot affect patch parsing.
+            let patch = if diff.starts_with("@@ ") {
+                format!("diff --git a/file b/file\n--- a/file\n+++ b/file\n{diff}")
+            } else if diff.starts_with("--- ") {
+                let hunks = diff.splitn(3, '\n').nth(2).unwrap_or("");
+                format!("diff --git a/file b/file\n--- a/file\n+++ b/file\n{hunks}")
+            } else {
+                diff.to_string()
+            };
+            ide_core::git::diff::parse_unified_diff(&patch).map(|diffs| {
+                let mut result = ide_core::git::FileDiff::default();
+                for diff in diffs {
+                    result.hunks.extend(diff.hunks);
+                    result.is_binary |= diff.is_binary;
+                }
+                result
+            })
+        }
+    };
+    // Even if the provider patch cannot be rendered, do not substitute a Git
+    // diff containing unrelated edits by another conversation on this path.
+    let mut owned_diff = owned_diff.unwrap_or_else(|error| {
+        eprintln!("failed to parse attributed file-change diff: {error:#}");
+        ide_core::git::FileDiff::default()
+    });
+    owned_diff.path = file.path.clone();
+    file.attributed_diff = Some(owned_diff);
+    Some(file)
 }
 
 pub(super) fn completed_file_change_stats(params: &Value) -> Vec<FileChangeStat> {
@@ -805,6 +850,70 @@ mod work_log_tests {
     use super::*;
 
     #[test]
+    fn codex_raw_file_content_has_correct_counts_for_creations_and_deletions() {
+        // The first case is the actual event shape from the desktop demo test.
+        for (kind, content, expected) in [
+            ("add", "beta-owned-by-B\n", (1, 0)),
+            ("add", "alpha-owned-by-A\nsecond-line-A\n", (2, 0)),
+            ("add", "+source text\n-source text\n@@ not a hunk", (3, 0)),
+            ("delete", "first\nsecond\n", (0, 2)),
+            ("add", "", (0, 0)),
+        ] {
+            let params = json!({"item": {
+                "type": "fileChange", "status": "completed",
+                "changes": [{"path": "qa.txt", "kind": {"type": kind}, "diff": content}]
+            }});
+            let files = completed_file_change_stats(&params);
+            assert_eq!(files.len(), 1);
+            assert_eq!((files[0].additions, files[0].deletions), expected);
+            let snapshot = files[0].attributed_diff.as_ref().unwrap();
+            let lines = snapshot.hunks.iter().flat_map(|hunk| &hunk.lines);
+            assert_eq!(
+                lines
+                    .filter(|line| line.origin != ide_core::git::LineOrigin::Context)
+                    .count(),
+                expected.0 + expected.1
+            );
+        }
+        let update = json!({"path": "qa.txt", "kind": {"type": "update", "move_path": null},
+            "diff": "@@ -1 +1,2 @@\n beta-owned-by-B\n+beta-second-line-B\n"});
+        let file = file_stat_from_patch_change(&update).unwrap();
+        assert_eq!((file.additions, file.deletions), (1, 0));
+    }
+
+    #[test]
+    fn codex_shared_file_snapshot_highlights_only_the_completed_edit() {
+        use ide_core::git::LineOrigin;
+        let change = json!({"path": "/project/space and\ttab.txt",
+            "kind": {"type": "update", "move_path": null},
+            "diff": "@@ -1,2 +1,3 @@\n alpha-owned-by-A\n second-line-A\n+third-line-written-by-B\n"});
+        let file = file_stat_from_patch_change(&change).unwrap();
+        let diff = file.attributed_diff.as_ref().unwrap();
+        assert_eq!(diff.path, file.path);
+        assert_eq!((file.additions, file.deletions), (1, 0));
+        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(
+            diff.hunks[0]
+                .lines
+                .iter()
+                .map(|line| line.origin)
+                .collect::<Vec<_>>(),
+            vec![LineOrigin::Context, LineOrigin::Context, LineOrigin::Add]
+        );
+        assert_eq!(diff.hunks[0].lines[2].text, "third-line-written-by-B");
+    }
+
+    #[test]
+    fn malformed_owned_patch_does_not_allow_shared_worktree_substitution() {
+        let file = file_stat_from_patch_change(&json!({
+            "path": "shared.txt", "kind": {"type": "update"}, "diff": "not a patch"
+        }))
+        .unwrap();
+        assert!(file.attributed_diff.is_some());
+        assert!(file.attributed_diff.unwrap().hunks.is_empty());
+    }
+
+    #[test]
     fn diff_receipt_preserves_deletions_renames_binary_and_quoted_paths() {
         let patch = concat!(
             "diff --git a/first.txt b/first.txt\n--- a/first.txt\n+++ b/first.txt\n@@ -1 +1 @@\n-old\n+new\n",
@@ -865,9 +974,15 @@ mod work_log_tests {
             }
         });
 
+        let files = completed_file_change_stats(&params);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, Path::new("simple-mock.html"));
+        assert_eq!((files[0].additions, files[0].deletions), (2, 0));
         assert_eq!(
-            completed_file_change_stats(&params),
-            vec![FileChangeStat::new("simple-mock.html", 2, 0)]
+            files[0].attributed_diff.as_ref().unwrap().hunks[0]
+                .lines
+                .len(),
+            2
         );
     }
 

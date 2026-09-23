@@ -1305,14 +1305,12 @@
   {
     "key": "9.1",
     "collection": "Design & Studio",
-    "title": "Choose a design workflow: Studio, Penpot, or Figma",
+    "title": "Choose a design workflow: Studio or Figma",
     "summary": "Choose the design workflow that matches the source you want to create or use.",
-    "before": "Open a project and enable Design through Manage if it is not visible. Studio, connected Choro Design/Penpot, and a Figma reference have different setup requirements.",
+    "before": "Open a project and enable Design through Manage if it is not visible. Studio creates local designs; Figma links provide external references.",
     "steps": [
       "Open Design and choose New Design to see the available workflows.",
       "Choose Studio for a project-local design with screens, a visual editor, and a design agent. You can begin without connecting a separate design account; the agent still needs a working coding provider.",
-      "Choose New Choro Design for the connected design workflow. Review Settings → Design and complete its displayed connection setup before using actions that require it.",
-      "Use the Penpot Cloud option in Design settings when your existing Penpot account is the intended source. Verify the connection rather than assuming Studio provider access signs you into Penpot.",
       "Choose Figma when you want to add an existing design link as a reference. Keep the source accessible to the people and tools that will use it.",
       "Before implementation, state which design or screens are authoritative and which behavior the agent should build. Review the implementation against that source."
     ],

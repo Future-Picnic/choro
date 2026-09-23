@@ -47,7 +47,6 @@ environment = {
     'CHORO_RELAY_URL': 'disabled',
     'CHORO_REMOTE_ADDR': '127.0.0.1:0',
     'CHORO_INSTALLATION_KEYCHAIN_SERVICE': f'com.ritmus.choro.installation.experts-demo.{instance}',
-    'CHORO_PENPOT_KEYCHAIN_SERVICE': f'com.ritmus.choro.penpot.experts-demo.{instance}',
     'CHORO_RELAY_KEYCHAIN_SERVICE': f'com.ritmus.choro.relay.experts-demo.{instance}',
 }
 wrapper = bundle / 'Contents/MacOS/choro-experts-demo'

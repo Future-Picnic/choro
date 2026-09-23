@@ -214,12 +214,13 @@ impl PullRequestDialog {
         };
 
         let selected = self.base_branch.clone();
-        let rows: Vec<(String, SharedString, bool)> = self
+        let mut rows: Vec<(String, SharedString, bool)> = self
             .base_branch_options
             .iter()
             .filter(|name| needle.is_empty() || name.to_lowercase().contains(&needle))
             .map(|name| (name.clone(), detail_for(name), *name == selected))
             .collect();
+        rows.sort_by_key(|(name, _, _)| crate::ui::branch_order::branch_priority(name, false));
 
         v_flex()
             .w_full()

@@ -60,6 +60,7 @@ impl CenterArea {
         record: &DocAssistantRecord,
         cx: &mut Context<Self>,
     ) {
+        self.agent_chat_post_hydration_submissions.remove(&record.chat_agent_id);
         self.sync_doc_assistant_chat_session_ids(cx);
         self.agent_chats.update(cx, |chats, cx| {
             chats.stop_backend(record.chat_agent_id, cx);
@@ -78,6 +79,7 @@ impl CenterArea {
             .read(cx)
             .record_for(project, &relative_doc_path)
         {
+            self.cancel_agent_chat_hydration(record.chat_agent_id);
             self.agent_chats.update(cx, |chats, cx| {
                 chats.reset_session(record.chat_agent_id, cx);
             });
@@ -377,42 +379,6 @@ impl CenterArea {
                     design_count += 1;
                     if design_count >= 6 {
                         break;
-                    }
-                }
-                if design_count < 6 {
-                    let penpot = self.penpot.read(cx);
-                    for design in penpot.designs_for_project(project) {
-                        let Some(source) = penpot.design_url(&design) else {
-                            continue;
-                        };
-                        if !query.is_empty()
-                            && !design.name.to_ascii_lowercase().contains(&query)
-                            && !source.to_ascii_lowercase().contains(&query)
-                        {
-                            continue;
-                        }
-                        let data = velotype::ReferenceData {
-                            kind: "penpot_design".to_string(),
-                            title: design.name.clone(),
-                            target: format!("ref:penpot:{}", design.id),
-                            subtitle: Some(source.clone()),
-                            preview: None,
-                            badge: Some("Design".to_string()),
-                            status: None,
-                            tags: vec![format!("File {}", design.penpot_file_id)],
-                            open_label: Some("Open Design".to_string()),
-                        };
-                        candidates.push(velotype::MentionCandidate {
-                            label: design.name.clone(),
-                            sublabel: source,
-                            badge: "Design".to_string(),
-                            markdown: velotype::reference_fence_markdown(&data),
-                            is_block: true,
-                        });
-                        design_count += 1;
-                        if design_count >= 6 {
-                            break;
-                        }
                     }
                 }
             }

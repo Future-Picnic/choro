@@ -58,7 +58,7 @@ impl CenterArea {
                     .push(AgentChatTimelineItem::Memorized(card.clone()));
                 persist_timeline_item(agent_id, AgentChatTimelineItem::Memorized(card.clone()), cx);
                 surfaced = true;
-                cx.notify();
+                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             });
             if surfaced {
                 self.memory_card_ids_seen.insert(memory.id);
@@ -100,7 +100,7 @@ impl CenterArea {
                                         if card.memory_id == memory_id
                                 )
                             });
-                            cx.notify();
+                            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
                         });
                     }
                     Err(error) => {

@@ -2,15 +2,92 @@
 
 ## Top-level navigation
 
-**Tutorials**, **Short Videos**, and **Social Media Plan** are separate main-menu destinations. The existing HTML filename stays unchanged so saved links still work. Open `http://127.0.0.1:8769/how-to-video-library.html#shorts` for shorts or `#social-plan` for the plan, with the local launcher running; the same hashes work on a direct-file copy.
+**Tutorials**, **Short Videos**, **Social Media Plan**, **Competitors**, and **Influencers** are separate main-menu destinations. The existing HTML filename stays unchanged so saved links still work. Open `http://127.0.0.1:8769/how-to-video-library.html#shorts` for shorts, `#social-plan` for the plan, `#competitors` for the comparison, or `#influencers` for the creator outreach list, with the local launcher running; the same hashes work on a direct-file copy.
+
+**Influencers** links to the [YouTube creator outreach Google Sheet](https://docs.google.com/spreadsheets/d/1ShgXVGWHKBcDKf0Ii3fbD7LPj_qtRcwPWn_8RiLNDIo/edit?gid=0) and previews 12 channels spanning the compared tools. Aside researched and created the Sheet on September 23, 2026, reporting 118 distinct independent creators and 25 publicly sourced business email addresses. The Sheet is the editable source of truth for channel URLs, subscriber snapshots, relevant video links, tool coverage, email sources, and later outreach tracking. Blank email cells mean no public address was confirmed; do not infer one. The HTML preview is a dated snapshot, and no creators have been contacted.
+
+Competitors has a feature-by-feature table for Choro, Nimbalyst, Orca, Emdash, Conductor, Superset, T3 Code, Codex desktop, and Claude Code Desktop. The latter two are first-party agent apps, included because their desktop workflows compete directly with Choro. The table compares agent choice, parallel work, docs, tasks, design, previews, database tools, review, shipping, scheduled runs, remote execution, cloud agent runtimes, and desktop platform support, then names each product's standout feature. Each rated feature cell has a ✓ for dedicated support, ◐ for partial or adjacent support, or × when no dedicated current feature is documented, with a larger mark above its reason. Product header links include locally embedded logos. Choro's column has an accent background and stays visible during desktop horizontal scrolling. **Show ratings only** hides explanations and the text-only Core focus and Killer feature rows; **Show all details** restores them. Specific availability caveats link to public sources. Choro's × ratings make current gaps visible: no in-app scheduler, no SSH runner or hosted cloud workspace, and no Windows/Linux desktop build. Its integrated agent roster is limited to Claude Code, Codex, and OpenCode. Its mobile cell is ◐ because iPhone agent control exists while Docs, Tasks, Studio, and push notifications are missing; Android readiness was not verified in the [September 22 mobile parity audit](mobile-parity-audit-2026-09-22.md). This comparison is for internal positioning and should be revalidated before external use; it does not change tutorial or completion counts. The comparison logos are embedded into the HTML so the direct-file copy works without extra assets. The local launcher allows `data:` images for those logos; other CSP directives remain unchanged.
+
+The first comparison row, **View type**, uses category labels instead of ✓/◐/×. It describes how the user talks to the coding agent, not whether the app has a shell for commands. Choro, Orca, Emdash, Conductor, and Superset offer both chat UI and terminal agent sessions; Orca's chat and Conductor's terminal agent mode are experimental, and Emdash's chat depends on ACP-capable agents. Nimbalyst, T3 Code, Codex desktop, and Claude Code Desktop use chat UI for their desktop agent conversations, even though some include a separate terminal or have a separate CLI product. The category label remains visible in **Show ratings only**; the source-linked explanation hides with other details.
+
+**Remote agent execution** means the agent runs on another machine, including an SSH host supplied by the user. **Cloud agent runtime** separately asks whether the product offers provider-hosted work that continues when the laptop is off. In that row, ✓ means vendor-hosted compute (Conductor, Codex, Claude), ◐ means the product can use a server or cloud account the user supplies (Orca, Emdash, Superset, T3 Code), and × means no cloud agent runtime is documented (Choro, Nimbalyst). Explanations state who pays for compute and whether the user can keep an existing agent subscription: Conductor charges for Pro cloud access but accepts agent subscriptions or API keys; Codex uses ChatGPT plan allowance or credits; Claude cloud counts against Claude subscription limits without a separate compute fee. Bring-your-own-host options can incur the user's own VM bill and use agent credentials on that host. Conductor's published pricing says extra compute usage fees are planned. Prices and access rules are a September 23, 2026 snapshot, not a promise of future terms. For Choro, managed cloud work would add infrastructure, storage, credential, and usage-management costs; retaining users' existing Claude or Codex access where permitted is a product preference, not a shipped capability.
+
+The Competitors tab ends with **Choro gaps to track**, a short internal summary of the current comparison: managed cloud workspaces, user-owned remote hosts, scheduled agent runs, broader agent compatibility, fuller iPhone workflows, and Windows/Linux desktop support. Cloud comes first because it would let work continue when the Mac sleeps, while introducing compute, storage, credential, and usage costs. The list describes gaps, not committed roadmap items. It remains visible when the table is switched to ratings-only mode.
+
+Logo sources: Choro uses `crates/ide-app/assets/brand/choro-riff.svg`; Codex and Claude use the existing `crates/ide-app/assets/agent-icons/` SVGs. Nimbalyst, Orca, Emdash, Conductor, Superset, and T3 Code use icon files published on their official websites. The embedded copies are fixed to the September 23, 2026 comparison snapshot.
 
 Social Media Plan embeds the existing `social-media-plan.html`, loaded on first selection, with a full-page link. Plan contents are not duplicated. Links back to the library leave the frame instead of nesting the hub. The launcher explicitly serves only the plan and its linked `social-launch/README.md` record in addition to existing media routes. Same-origin framing is allowed for the plan only; the hub still rejects framing. Restart the launcher after changing its routes or the hub HTML. Direct-file iframe behavior remains subject to browser permissions; the full-page link is available as a fallback.
 
-Short Videos contains 24 audience-first concepts in five benefit-led groups: one playable upbeat reference, 17 existing proposed scripts, and six new idea-only outlines. The additions cover saved-work continuity, backlog-to-result, concrete visual references, narrow-screen quality, mid-task direction changes, and Choro's broader product-home story. Idea-only entries contain a hook, suggested product moment, payoff and proof requirements; they have no drafted narration, runtime or media. Nothing new was recorded, generated or scheduled. Once produced and approved, 24 shorts could cover eight weeks at three posts per week. Studio still requires verification against the new native tool before production. Planned runtimes on scripted concepts are edit targets, never counted as finished media. No voice/avatar credits were spent for this library change.
+Short Videos contains 24 audience-first concepts in five benefit-led groups: **five newly finished promotional shorts awaiting review**, the existing upbeat reference, 12 other proposed scripts, and six idea-only outlines. The five new shorts have fresh upbeat ElevenLabs narration and HeyGen Alex, genuine recorded product evidence, full-screen Alex openings, circular Alex over the demonstration, lower captions, and the shared motto/free-download outro. They are independent promotional stories, not shortened tutorial scripts. No Choro Mobile video was made. Production stopped at the user's five-video review limit; nothing is published or scheduled. Unproduced runtimes remain edit targets, never finished-media counts.
+
+### Five-short review batch — September 22
+
+| Subject | Actual MP4 duration |
+| --- | --- |
+| You wrote the brief. Why explain it twice? | 26.067 seconds |
+| A rough idea is enough to start. | 24.633 seconds |
+| The specialist you need doesn't exist yet. That's okay. | 24.633 seconds |
+| Try the idea without disturbing the main project. | 27.500 seconds |
+| Change the headline. Keep the design. | 22.467 seconds |
+
+Find the **Review new video** badges in Short Videos. Each modal includes the playable 1080×1920 export, actual script, local file link and folder action. Assets, source camera selections, paid-generation receipts, transcripts, full-decode checks, sampled-frame review and audio-envelope checks are preserved in `social-five-review-20260922`. The audio check verifies soundtrack timing, not mouth-shape quality. Creative approval remains with the user. No product code changed. Main tutorial totals are unchanged.
 
 `short-video-concepts` is the editorial manifest, separate from the playable media allowlists. Its optional `mediaId` references a real entry in `social-video-files`. Existing tutorial totals are unchanged. “Earlier vertical cuts” links to the retained archive at `#tiktok`; old archive deep links still work, but the archive is no longer a tutorial-category tab. Search, modal keyboard focus, direct links, playback cleanup and file/server fallbacks have DOM tests; visual browser playback is not established by those tests.
 
 ## Current finishing pass — September 22, 2026
+
+### Added September 23 — agent-to-agent questions
+
+**Let Your Agents Ask Each Other** is now a completed **39.7-second** lesson in **Productivity & Shortcuts**, with fresh Choro Demo footage, Alex D / ElevenLabs, HeyGen, the approved title and shared outro. Type `#`, select the existing Coffee page review agent, choose **Question**, and see its genuine answer return to the original conversation. The picker is **same-project only**; the earlier cross-project claim was corrected after inspecting the live Demo and implementation. This is read-only consultation—not Quick Ask, a new Bandmate, or automatic implementation.
+
+Full decoding, local narration recognition, audio-envelope timing and sampled final frames passed. Alex moves to the upper-right for the recipient shot so the response stays readable. A seeded-chat preflight failure and the first framing export are preserved separately; neither is passed off as the successful exchange. Native capture is 1280×820; 4K export does not add source detail. No product source changed. The library now lists **70 tutorials, 64 completed**, leaving the previous six unfinished lessons.
+
+### Native Studio — eight finished Alex videos
+
+The library now has **63 completed tutorials out of 69**. Eight newly finished videos use real native Studio footage, Alex D / ElevenLabs narration, HeyGen, approved playlist titles and the shared outro. Main project navigation is hidden or cropped so Studio's own canvas, sidebar and inspector have space.
+
+| Video | Actual final MP4 duration |
+| --- | --- |
+| Design, Build, and Preview with Studio | 57.033 seconds |
+| Meet Choro Studio | 70.233 seconds |
+| Create a Design from Scratch | 56.833 seconds |
+| Build and Use a Design System | 61.633 seconds |
+| Create a Design from a Doc or Task | 42.833 seconds |
+| Refine a Design with the Assistant | 35.500 seconds |
+| Implement a Design with an Agent | 50.133 seconds |
+| Use Visual References with an Agent | 47.767 seconds |
+
+Each is marked Completed with a preview, local video link, folder action and matching scene/narration table. The Getting Started overview has a new native-Studio title. Visual References deliberately uses a Studio PNG export and a read-only agent request naming the project image; it is not an Assets-page walkthrough. The user chose to retain that lesson.
+
+All eight passed full decoding, narration transcript comparison, audio-envelope alignment and sampled final-frame review. Design Systems also passed an Apple color-managed frame check. Native capture is 1532×980; the 4K export does not add source detail. Recordings, receipts and initial review cuts remain preserved under `design-studio-20260922` and `playlist-final-20260921/studio-*`.
+
+**Six tutorials remain:** Compare the Design with the Live Result, Follow Agents with Desktop Companion, and four Mobile lessons. Studio Compare opens a split view but its live pane stays blank even though the same HTTP-200 page renders in ordinary Preview; the library shows this specific blocker. No product source was changed, and no Compare avatar was purchased. Companion/Mobile were not retested in this Studio pass. Promotional shorts are a separate backlog, not included in these tutorial totals. Earlier checkpoints below are historical.
+
+### HeyGen recovery verified — five final exports
+
+After the user reported HeyGen's fix, fresh Workflow and Bandmate jobs completed successfully. Both reuse the existing paid Alex D narration and recordings. Three newly recorded Companion lessons now also have Alex D narration and HeyGen, reusing the approved local-review picture edits, greeting and shared outro.
+
+| Video | Actual final MP4 duration |
+| --- | --- |
+| Start a Chat with a Bandmate | 62.433 seconds |
+| Save a Git Workflow: Dev to Main | 65.133 seconds |
+| Meet Choro Companion | 38.300 seconds |
+| Set the Mood with Companion Music | 49.467 seconds |
+| Show or Hide Choro Companion | 24.433 seconds |
+
+All five are linked as completed with preview, video link, folder action and matching scene text. Final files are `playlist-final-20260921/<lesson>/final-alex-d-4k.mp4`. Full decode, transcript comparison, audio synchronization and sampled final frames passed. Final audio offset is 0 ms; avatar audio offset is 20 ms. A Companion title also passed native Apple color-managed decoding. 4K export does not add detail to the retained lower-resolution recordings. No product source changed. Prior review videos and failure receipts remain preserved.
+
+Current total: **55 completed Alex tutorials**. Eleven lessons still lack complete exports: one Companion agent-following lesson, four Mobile and six native Studio. Those are not marked finished by this avatar pass. The Design phase was paused when the user requested finishing the missing HeyGen versions first.
+
+### Earlier Companion local-voice checkpoint
+
+Three new **1080p local-voice review videos** use the user's real Companion recording: Meet Choro Companion (about 40 seconds), Set the Mood with Companion Music (about 50 seconds), and Show or Hide Choro Companion (about 25 seconds). They have the approved lavender title treatment and shared outro, no avatar, no subtitles, and no captured music. Preview links, folders, actual MP4 durations and updated narration tables are in the HTML. Source takes and scene-isolated narration remain available for later Alex replacement.
+
+The music lesson shows saved playlist settings, mood selection, animation and playback controls; it does not claim a new playlist was added. Visibility uses the real Settings Off/On route, not a right-click demonstration. The overview includes an actual Needs attention banner; the complete Working/attention/result-following lesson is still pending.
+
+Current total: **50 completed Alex tutorials + 5 playable local-voice reviews = 55 playable main tutorials**. Eleven lessons lack complete exports: one Companion agent-following lesson, four Mobile, and six native Studio. Mobile has fresh partial footage and a successful Full access check, not finished lessons. Earlier checkpoints below are historical.
+
+### Earlier local-voice checkpoint
 
 Local-voice update: the two review entries now point to **free local Kokoro narration, no avatar** exports in `local-voice-reviews-20260922`: Bandmate chat (65.426 seconds) and saved Git workflow (67.060 seconds). Both preserve the complete real screen demonstrations and intro/outro; no HeyGen or ElevenLabs requests were made. Full decoding passed, and representative identity/result/merge frames were inspected. The previous paid-narration cuts and failure receipts are retained. Scene-isolated scripts, WAVs, source maps and timing files allow later Alex replacement, which will still need alignment to the final speech. These are review drafts, not newly approved final tutorials.
 

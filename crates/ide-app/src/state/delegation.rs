@@ -7,7 +7,8 @@ use super::agent_chat::protocol::managed;
 use super::agent_chat::{AgentChatEvent, AgentChatStatus, AgentInteractionMode};
 use super::{AgentChatState, AgentRecords, TerminalManager};
 use anyhow::{ensure, Context as _, Result};
-use gpui::{App, AppContext, Context, Entity, Global};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
+use sha2::{Digest, Sha256};
 use ide_core::{delegation::*, local_store::LocalStore, AgentRecord, AgentRuntimeKind};
 use std::{
     collections::{HashMap, HashSet},
@@ -28,7 +29,24 @@ pub(crate) struct DelegationCoordinator {
     settled: HashMap<Uuid, u64>,
     cursor: usize,
     stopped_parents: HashSet<Uuid>,
+    wake: async_channel::Sender<()>,
+    reload_epoch: u64,
+    snapshot: Vec<RunStamp>,
 }
+
+#[derive(Clone, PartialEq, Eq)]
+struct RunStamp { id: Uuid, parent: Uuid, digest: [u8; 32] }
+
+fn run_stamps(runs: &[DelegationRun]) -> Result<Vec<RunStamp>> {
+    runs.iter().map(|run| Ok(RunStamp { id: run.id, parent: run.parent_agent_id,
+        digest: Sha256::digest(serde_json::to_vec(run)?).into() })).collect()
+}
+
+pub(crate) struct DelegationChanged {
+    pub parents: Vec<Uuid>,
+    pub error_changed: bool,
+}
+impl EventEmitter<DelegationChanged> for DelegationCoordinator {}
 
 #[derive(Clone)]
 enum Job {
@@ -105,11 +123,16 @@ impl DelegationCoordinator {
             .filter(|r| !r.status.terminal())
             .map(|r| r.id)
             .collect::<Vec<_>>();
+        let (wake, wake_receiver) = async_channel::bounded(1);
         let entity = cx.new(|cx| {
             cx.subscribe(&chats, |this: &mut Self, _, event, cx| {
                 if let AgentChatEvent::WorkFinished { agent_id } = event {
                     this.settled
                         .insert(*agent_id, this.chats.read(cx).backend_generation(*agent_id));
+                }
+                if matches!(event, AgentChatEvent::WorkFinished { .. })
+                    || matches!(event, AgentChatEvent::SessionChanged(change) if change.categories.navigation || change.categories.identity) {
+                    this.request_reload();
                 }
             })
             .detach();
@@ -122,6 +145,9 @@ impl DelegationCoordinator {
                 settled: HashMap::new(),
                 cursor: 0,
                 stopped_parents: HashSet::new(),
+                wake,
+                reload_epoch: 0,
+                snapshot: Vec::new(),
             }
         });
         cx.set_global(DelegationHandle(entity.clone()));
@@ -136,7 +162,11 @@ impl DelegationCoordinator {
             cx.spawn(async move |this, cx| {
                 let mut recovered = false;
                 loop {
-                    cx.background_executor().timer(Duration::from_millis(750)).await;
+                    // A bounded wake coalesces reload hints, never business events.
+                    // The existing poll remains a backstop for lost IPC messages.
+                    let timer = cx.background_executor().timer(Duration::from_millis(750));
+                    let _ = futures_util::future::select(Box::pin(wake_receiver.recv()), Box::pin(timer)).await;
+                    let Ok(epoch) = this.update(cx, |s, _| s.reload_epoch) else { break; };
                     let recovery = !recovered;
                     let interrupted_ids=recovery_ids.clone();
                     let loaded = cx.background_executor().spawn(async move {
@@ -147,13 +177,25 @@ impl DelegationCoordinator {
                                 store.update_delegation(run.id, None, |r| { r.pause("Application interrupted — Resume available", true); Ok(()) })?;
                             }
                         }
-                        store.load_delegations()
+                        let runs = store.load_delegations()?;
+                        // Include telemetry and reports, which can change without a run revision.
+                        let snapshot = run_stamps(&runs)?;
+                        Ok::<_, anyhow::Error>((runs, snapshot))
                     }).await;
-                    let runs = match loaded {
-                        Ok(runs) => { recovered = true; runs },
-                        Err(error) => { if this.update(cx, |s,cx| { s.error = Some(error.to_string()); cx.notify(); }).is_err() { break; } continue; },
+                    let (runs, snapshot) = match loaded {
+                        Ok(result) => { recovered = true; result },
+                        Err(error) => {
+                            if this.update(cx, |s,cx| {
+                                s.accept_error(epoch, error.to_string(), cx);
+                            }).is_err() { break; }
+                            continue;
+                        },
                     };
-                    let job = match this.update(cx, |s,cx| { s.runs = runs; s.error = None; cx.notify(); s.next_job(cx) }) { Ok(job) => job, Err(_) => break };
+                    let job = match this.update(cx, |s,cx| {
+                        if !s.accept_snapshot(epoch, runs, snapshot, cx) { return None; }
+                        // Scheduling proceeds even when presentation is unchanged.
+                        s.next_job(cx)
+                    }) { Ok(job) => job, Err(_) => break };
                     let Some(job) = job else { continue; };
                     let run_id = job.run().id;
                     let reserved = job.reserved_agent();
@@ -169,12 +211,49 @@ impl DelegationCoordinator {
                             },
                         }
                         if let Some(id) = reserved { s.chats.update(cx, |chats,cx| chats.release_delegation_reservation(id,cx)); }
-                        cx.notify();
+                        s.request_reload();
                     }).is_err() { break; }
                 }
             }).detach();
         });
         entity
+    }
+
+    fn accept_snapshot(&mut self, epoch: u64, runs: Vec<DelegationRun>, snapshot: Vec<RunStamp>, cx: &mut Context<Self>) -> bool {
+        if self.reload_epoch != epoch { let _ = self.wake.try_send(()); return false; }
+        let error_changed = self.error.is_some();
+        let changed = self.snapshot != snapshot || error_changed;
+        let parents = if changed {
+            let old_by_id = self.snapshot.iter().map(|stamp| (stamp.id, stamp)).collect::<HashMap<_, _>>();
+            let new_by_id = snapshot.iter().map(|stamp| (stamp.id, stamp)).collect::<HashMap<_, _>>();
+            self.snapshot.iter().filter(|old| new_by_id.get(&old.id).copied() != Some(*old))
+                .chain(snapshot.iter().filter(|new| old_by_id.get(&new.id).copied() != Some(*new)))
+                .map(|stamp| stamp.parent).collect::<HashSet<_>>().into_iter().collect()
+        } else { vec![] };
+        self.runs = runs;
+        self.snapshot = snapshot;
+        self.error = None;
+        if changed { cx.emit(DelegationChanged { parents, error_changed }); cx.notify(); }
+        true
+    }
+
+    fn accept_error(&mut self, epoch: u64, error: String, cx: &mut Context<Self>) {
+        if self.reload_epoch != epoch { return; }
+        let error = Some(error);
+        if self.error != error { self.error = error; cx.emit(DelegationChanged { parents: vec![], error_changed: true }); cx.notify(); }
+    }
+
+    fn notify_run_changed(&mut self, run_id: Uuid, cx: &mut Context<Self>) {
+        self.request_reload();
+        let parents = self.runs.iter().filter(|run| run.id == run_id).map(|run| run.parent_agent_id).collect();
+        cx.emit(DelegationChanged { parents, error_changed: false });
+        cx.notify();
+    }
+
+    /// A reload hint invalidates in-flight snapshots; storage remains authoritative.
+    pub(crate) fn request_reload(&mut self) {
+        self.reload_epoch = self.reload_epoch.wrapping_add(1);
+        let _ = self.wake.try_send(());
     }
 
     fn fail_run(&mut self, id: Uuid, error: String) {
@@ -241,7 +320,7 @@ impl DelegationCoordinator {
                             let item=super::agent_chat::AgentChatTimelineItem::DelegationGroup{run_id:run.id,created_at:ide_core::agents::unix_now()};
                             session.timeline.insert(position+1,item.clone());
                             super::agent_chat::persist_timeline_item(parent.id,item,cx);
-                            cx.emit(AgentChatEvent::Changed);cx.notify();
+                            chats.publish_change(parent.id, super::agent_chat::ChatChangeCategories::CONVERSATION, cx);
                         }
                     }
                 });
@@ -669,7 +748,7 @@ impl DelegationCoordinator {
                 }
                 store.cleanup_delegation_workspaces(run_id,&paths)?;store.load_delegations()
             }).await;
-            let _=this.update(cx,|s,cx|{match result{Ok(runs)=>s.runs=runs,Err(e)=>s.error=Some(e.to_string())}cx.notify();});
+            let _=this.update(cx,|s,cx|{match result{Ok(runs)=>s.runs=runs,Err(e)=>s.error=Some(e.to_string())}s.request_reload();cx.emit(DelegationChanged { parents: s.runs.iter().map(|r|r.parent_agent_id).collect(), error_changed: true });cx.notify();});
         }).detach();
         Ok(())
     }
@@ -700,7 +779,7 @@ impl DelegationCoordinator {
             chats.allow_managed_resume(run.parent_agent_id)
         });
         self.runs = store.load_delegations()?;
-        cx.notify();
+        self.notify_run_changed(run_id, cx);
         Ok(())
     }
     pub fn pause(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
@@ -718,7 +797,7 @@ impl DelegationCoordinator {
             }
         }
         self.runs = store.load_delegations()?;
-        cx.notify();
+        self.notify_run_changed(run_id, cx);
         Ok(())
     }
     pub fn pause_task(
@@ -740,7 +819,7 @@ impl DelegationCoordinator {
             self.stop_runtime(child, cx);
         }
         self.runs = store.load_delegations()?;
-        cx.notify();
+        self.notify_run_changed(run_id, cx);
         Ok(())
     }
     pub fn resume_task(
@@ -758,8 +837,12 @@ impl DelegationCoordinator {
             "This Bandmate is not paused."
         );
         let child = task.attempt().map(|a| a.child_agent_id);
+        let awaiting_first_snapshot = task.paused_status == Some(TaskStatus::Preparing)
+            && task
+                .attempt()
+                .is_some_and(|a| a.generation == 0 && a.snapshot.is_none());
         let mut received = Vec::new();
-        if let Some(child) = child {
+        if let Some(child) = child.filter(|_| !awaiting_first_snapshot) {
             let agent = self
                 .agents
                 .read(cx)
@@ -790,20 +873,60 @@ impl DelegationCoordinator {
                 }
             }
         }
-        store.update_delegation(run_id,Some(run.revision),|r|{
-            for d in &mut r.deliveries{if received.contains(&d.id){d.status=DeliveryStatus::Acknowledged;}}
-            let t=r.task_mut(task_id)?;let previous=t.paused_status.take().unwrap_or(TaskStatus::Running);t.reason=None;t.status=previous;
-            let continuation=matches!(previous,TaskStatus::Running|TaskStatus::CompletionRequested);
-            if continuation{t.revision+=1;t.status=TaskStatus::Running;if let Some(a)=t.attempt_mut(){a.result=None;a.result_revision=None;a.report_requested=false;}}
-            let revision=t.revision;if let Some(child)=child.filter(|_|continuation){r.queue(child,Some(task_id),format!("User resumed this Bandmate. Task revision is {revision}. Reconcile existing work, continue the remaining assignment, and report completion. Do not repeat external side effects."));}Ok(())
+        store.update_delegation(run_id, Some(run.revision), |r| {
+            for d in &mut r.deliveries {
+                if received.contains(&d.id) {
+                    d.status = DeliveryStatus::Acknowledged;
+                }
+            }
+            r.resume_user_task(task_id)
         })?;
         if let Some(child) = child {
             self.chats
                 .update(cx, |chats, _| chats.allow_managed_resume(child));
         }
         self.runs = store.load_delegations()?;
-        cx.notify();
+        self.notify_run_changed(run_id, cx);
         Ok(())
+    }
+
+    /// Sending a correction directly to a stopped teammate is a user action
+    /// to continue that teammate. A stopped whole run still requires Resume.
+    /// Once saved, return recovery errors as a notice so the UI doesn't invite
+    /// resubmitting the same durable message.
+    pub fn submit_user_correction(
+        &mut self,
+        run_id: Uuid,
+        task_id: Uuid,
+        text: String,
+        send_now: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<String>> {
+        let store = LocalStore::open_default()?;
+        let run = store.load_delegation(run_id)?;
+        ensure!(run.task(task_id)?.status != TaskStatus::Integrating
+            && run.task(task_id)?.paused_status != Some(TaskStatus::Integrating),
+            "Changes are being combined. Finish integration recovery before changing this assignment. Your draft is preserved.");
+        if send_now
+            && run.status.dispatchable()
+            && run.task(task_id)?.status != TaskStatus::Paused
+            && !run.task(task_id)?.status.terminal()
+        {
+            self.pause_task(run_id, task_id, cx)?;
+        }
+        store.update_delegation(run_id, None, |r| r.user_correction(task_id, text))?;
+        let run = store.load_delegation(run_id)?;
+        let notice = if run.status.dispatchable() && run.task(task_id)?.status == TaskStatus::Paused
+        {
+            self.resume_task(run_id, task_id, cx)
+                .err()
+                .map(|e| format!("Message saved and queued. Could not resume this bandmate: {e}"))
+        } else {
+            None
+        };
+        self.runs = store.load_delegations()?;
+        self.notify_run_changed(run_id, cx);
+        Ok(notice)
     }
     pub fn resume(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
         let store = LocalStore::open_default()?;
@@ -863,7 +986,8 @@ impl DelegationCoordinator {
         for task in &run.tasks {
             validate_working_scope(&store, &run, task)?;
             if let Some(a) = task.attempt() {
-                if task.status == TaskStatus::Preparing && a.snapshot.is_none() {
+                if (task.status == TaskStatus::Preparing || task.paused_status == Some(TaskStatus::Preparing))
+                    && a.generation == 0 && a.snapshot.is_none() {
                     continue;
                 }
                 ensure!(
@@ -963,7 +1087,7 @@ impl DelegationCoordinator {
         });
         self.stopped_parents.remove(&run_id);
         self.runs = store.load_delegations()?;
-        cx.notify();
+        self.notify_run_changed(run_id, cx);
         Ok(())
     }
 }
@@ -1092,6 +1216,49 @@ fn validate_working_scope(
     Ok(())
 }
 
+/// A user can correct or stop an assignment while its snapshot is captured.
+/// Keep that capture if it still belongs to the same attempt, and deliver the
+/// latest brief instead of treating an ordinary correction as a run failure.
+fn record_prepared_assignment(
+    run: &mut DelegationRun,
+    task_id: Uuid,
+    attempt_id: Uuid,
+    prepared_revision: u64,
+    snapshot: workspace::WorkspaceSnapshot,
+    context: &mut String,
+) -> Result<bool> {
+    let active = run.status.dispatchable();
+    let ended = run.status.terminal();
+    let task = run.task_mut(task_id)?;
+    if task.attempt().is_none_or(|a| a.id != attempt_id) {
+        return Ok(false);
+    }
+    let child = task.attempt().unwrap().child_agent_id;
+    task.attempt_mut().unwrap().snapshot = Some(snapshot);
+    if ended || matches!(task.status, TaskStatus::Cancelled | TaskStatus::Superseded) {
+        return Ok(false);
+    }
+    if task.revision != prepared_revision {
+        context.push_str(&format!(
+            "\n\nThe assignment was updated during preparation. This brief supersedes the earlier brief.\nCurrent task revision: {}\nGoal: {}\nBrief:\n{}\nExpected completion:\n{}",
+            task.revision, task.plan.goal, task.plan.brief, task.plan.expected_outcome
+        ));
+    }
+    if task.status == TaskStatus::Paused {
+        task.paused_status = Some(TaskStatus::Running);
+    } else {
+        task.status = TaskStatus::Running;
+    }
+    run.queue(child, Some(task_id), context.clone());
+    run.event(
+        run.parent_agent_id,
+        Some(task_id),
+        "prepared",
+        "Private working copy ready",
+    );
+    Ok(active)
+}
+
 fn execute(job: Job, owner: Uuid) -> Result<Effect> {
     let store = LocalStore::open_default()?;
     execute_in_store(&store, job, managed::preflight, Some(owner))
@@ -1208,33 +1375,11 @@ fn execute_in_store(
                 "{context}\n\nScoped background (not authority):\n{}",
                 serde_json::to_string(&background)?
             );
-            child.doc = context.clone();
+            let mut context = context;
             let adopt = store.update_delegation(id, None, |r| {
-                let active = r.status.dispatchable();
-                let ended = r.status.terminal();
-                let t = r.task_mut(task_id)?;
-                ensure!(
-                    t.revision == task.revision,
-                    "The assignment changed during preparation."
-                );
-                t.attempt_mut().unwrap().snapshot = Some(snapshot);
-                if ended || t.status == TaskStatus::Cancelled {
-                    return Ok(false);
-                }
-                if t.status == TaskStatus::Paused {
-                    t.paused_status = Some(TaskStatus::Running);
-                } else {
-                    t.status = TaskStatus::Running;
-                }
-                r.queue(child_id, Some(task_id), context);
-                r.event(
-                    parent.id,
-                    Some(task_id),
-                    "prepared",
-                    "Private working copy ready",
-                );
-                Ok(active)
+                record_prepared_assignment(r, task_id, attempt_id, task.revision, snapshot, &mut context)
             })?;
+            child.doc = context;
             Ok(if adopt {
                 Effect::Adopt(child)
             } else {
@@ -1257,13 +1402,16 @@ fn execute_in_store(
                 }
             }
             let history = super::chat_dispatch::load_history_from_store(store, &agent)?;
-            let text = run
+            let mut text = run
                 .deliveries
                 .iter()
                 .filter(|d| ids.contains(&d.id))
                 .map(|d| format!("[Choro delivery {}]\n{}", d.id, d.text))
                 .collect::<Vec<_>>()
                 .join("\n\n");
+            if let Some(task) = run.tasks.iter().find(|t| t.attempt().is_some_and(|a| a.child_agent_id == agent.id)) {
+                text.push_str(&format!("\n\nCurrent task revision: {}. Apply all queued corrections in order; later corrections supersede earlier ones. Use this revision for completion, not an older revision mentioned above.", task.revision));
+            }
             store.update_delegation(id, Some(run.revision), |r| {
                 if agent.id == r.parent_agent_id && r.wait_satisfied() {
                     r.wait = None;

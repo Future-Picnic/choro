@@ -460,11 +460,11 @@ impl CenterArea {
                     && owner.is_none_or(|id| agent.id == id))
                 .max_by_key(|agent| (agent.created_at, agent.id));
         }
-        self.penpot_design_assistant_agent(project, cx)
+        None
     }
 
     fn project_preview_host(&self) -> Entity<web_preview::WebPreviewHost> {
-        if self.penpot_compare_open && self.view_mode == CenterMode::Design {
+        if self.design_compare_open && self.view_mode == CenterMode::Design {
             self.compare_web_host.clone()
         } else {
             self.web_host.clone()
@@ -909,7 +909,7 @@ impl CenterArea {
         matches!(
             self.view_mode,
             CenterMode::Agents | CenterMode::Split | CenterMode::Files | CenterMode::Terminal
-        ) || (self.view_mode == CenterMode::Design && self.penpot_compare_open)
+        ) || (self.view_mode == CenterMode::Design && self.design_compare_open)
     }
 
     pub fn is_project_preview_open(&self, project: ProjectId) -> bool {
@@ -1176,7 +1176,7 @@ impl CenterArea {
             return;
         }
 
-        let selected_agent = if let Some(studio) = self.studio.as_ref().filter(|s| s.project == project && self.penpot_compare_open) {
+        let selected_agent = if let Some(studio) = self.studio.as_ref().filter(|s| s.project == project && self.design_compare_open) {
             self.agents.read(cx).records_for_project(project).into_iter()
                 .filter(|agent| studio.implementation_agents.contains(&agent.id) && !agent.hidden_doc_assistant)
                 .max_by_key(|agent| (agent.created_at, agent.id))
@@ -1412,7 +1412,7 @@ impl CenterArea {
                     if self.project_preview_inspecting == Some(project_id) {
                         self.project_preview_inspecting = None;
                     }
-                    let agent = if self.penpot_compare_open && self.view_mode == CenterMode::Design
+                    let agent = if self.design_compare_open && self.view_mode == CenterMode::Design
                     {
                         self.design_compare_review_agent(project_id, cx)
                     } else {
@@ -1499,16 +1499,8 @@ impl CenterArea {
                     area,
                     image_base64,
                 } => {
-                    let agent_context = self
-                        .penpot_design_assistant_agent(project_id, cx)
-                        .filter(|agent| agent.id == agent_id)
-                        .or_else(|| {
-                            self.agents
-                                .read(cx)
-                                .agent(agent_id)
-                                .filter(|agent| agent.project_id == project_id)
-                                .cloned()
-                        });
+                    let agent_context = self.agents.read(cx).agent(agent_id)
+                        .filter(|agent| agent.project_id == project_id).cloned();
                     let preview_id = self
                         .project_preview_records
                         .get(&project_id)
@@ -1835,7 +1827,7 @@ impl CenterArea {
             .map(|choice| preview_choice_display_label(&choice.label))
             .unwrap_or_else(|| "Choose preview".to_string());
         let active_solo = active.as_ref().and_then(PreviewChoice::solo_owner).cloned();
-        let selected_agent = if self.penpot_compare_open && self.view_mode == CenterMode::Design {
+        let selected_agent = if self.design_compare_open && self.view_mode == CenterMode::Design {
             self.design_compare_review_agent(project, cx)
         } else {
             self.agents.read(cx).selected_agent(project)
@@ -1959,7 +1951,7 @@ impl CenterArea {
                                 let choice_label = choice_label.clone();
                                 cx.on_next_frame(window, move |this: &mut Self, window, cx| {
                                     if let Some(owner) = choice.solo_owner() {
-                                        if !(this.penpot_compare_open
+                                        if !(this.design_compare_open
                                             && this.view_mode == CenterMode::Design)
                                         {
                                             this.open_agent(owner.agent_id, window, cx);
@@ -2413,10 +2405,10 @@ impl CenterArea {
                         )
                         .tooltip("Close Preview")
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.penpot_compare_open
+                            if this.design_compare_open
                                 && this.view_mode == CenterMode::Design
                             {
-                                this.close_penpot_compare(cx);
+                                this.close_design_compare(cx);
                                 return;
                             }
                             let ui = this.project_preview_ui.entry(project).or_default();

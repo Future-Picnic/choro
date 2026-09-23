@@ -74,6 +74,14 @@
     }
     const style=doc.createElement('style'); style.textContent=(tokenCss+'\n:root{'+Object.entries(source.overrides||{}).map(([k,v])=>'--'+k+':'+v+';').join('')+'}\n'+source.css).replace(/<\//g,'<\\/').replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g,(match,path)=>{const url=assetUrl(path);return url?'url("'+url+'")':match;}); doc.head.insertBefore(style,doc.getElementById('vvvebjs-styles'));
     if(preview) {
+      // A prototype scrolls its own page. Without containment WebKit chains the
+      // leftover wheel delta out to this frame, so reaching the end of the page
+      // — or any sideways trackpad drift — pans the stage at the same time.
+      // Only an explicit zoom gesture, forwarded by message below, moves the
+      // camera from inside the screen.
+      const isolate=doc.createElement('style');
+      isolate.textContent='html{overscroll-behavior:contain}';
+      doc.head.append(isolate);
       const script=doc.createElement('script');
       script.textContent=source.js+'\n;document.addEventListener("click",e=>{const a=e.target.closest("[data-studio-screen]");if(a){e.preventDefault();parent.postMessage({type:"studio-navigate",screen_id:a.dataset.studioScreen},"*")}});';
       doc.body.append(script);
@@ -115,6 +123,10 @@
   function restoreCamera(){
     cameraKey='choro.studio.camera.v1:'+boot.screen_id+':'+boot.width+'x'+boot.height;
     camera={mode:'fit',zoom:1,x:boot.width/2,y:boot.height/2};
+    // The player shows one screen at a time and navigates between them, so a
+    // per-screen remembered camera lands every click somewhere different. Each
+    // prototype screen opens fitted and centred, in the same place as the last.
+    if(boot.prototype)return;
     try{
       const raw=localStorage.getItem(cameraKey);
       const saved=raw&&raw.length<512?JSON.parse(raw):null;
@@ -123,7 +135,7 @@
   }
   function persistCamera(){
     clearTimeout(cameraTimer);
-    if(cameraEnabled)try{localStorage.setItem(cameraKey,JSON.stringify(camera));}catch{}
+    if(cameraEnabled&&!boot.prototype)try{localStorage.setItem(cameraKey,JSON.stringify(camera));}catch{}
   }
   function cameraChanged(){size();clearTimeout(cameraTimer);cameraTimer=setTimeout(persistCamera,150);}
   function syncZoom(){
@@ -229,7 +241,10 @@
   document.body.classList.toggle('inline-canvas',!!boot.inline);
   document.body.classList.toggle('prototype-player',!!boot.prototype);
   if(cameraEnabled||boot.inline){
-    installCameraInput(document,cameraInput,event=>!!event.target.closest?.('#canvas'));
+    // Backstop for the same chaining, for engines that do not honour overscroll
+    // containment across a frame boundary. A player's own wheel gestures arrive
+    // as messages, never as host events over the screen.
+    installCameraInput(document,cameraInput,event=>!!event.target.closest?.('#canvas')&&!(event.type==='wheel'&&mode==='preview'&&!boot.system_specimen&&event.target.closest?.('#frame-wrap')));
     window.addEventListener('pagehide',persistCamera);
   }
   function size() {

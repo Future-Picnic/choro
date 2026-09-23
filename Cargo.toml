@@ -55,7 +55,7 @@ libgit2-sys = { path = "vendor/libgit2-sys" }
 # while making the opaque marker inhabited.
 block = { path = "vendor/block" }
 # Wry 0.52.1 swallows unhandled macOS keyDown events in its WKWebView parent,
-# which makes keyboard-driven web apps such as Penpot effectively read-only.
+# which makes keyboard-driven Studio editing effectively read-only.
 # This local copy backports upstream PR #1711 without taking unrelated
 # unreleased Wry changes.
 wry = { path = "vendor/wry" }

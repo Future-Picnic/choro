@@ -52,29 +52,6 @@ MPL-covered package files remain under MPL-2.0 and are kept separate from
 Choro's first-party Rust and TypeScript source. Choro does not include the
 commercial `@blocknote/xl-*` packages.
 
-## Hosted Choro Design service
-
-Choro Design is a Choro-operated, self-hosted deployment based on Penpot
-2.16.2. Penpot is licensed under the Mozilla Public License 2.0; the upstream
-source for the deployed baseline is available at:
-
-<https://github.com/penpot/penpot/tree/2.16.2>
-
-The hosted Penpot application is not bundled inside the Choro desktop DMG.
-However, its frontend code is delivered to users' web views and browsers.
-Choro modifications to MPL-covered Penpot files, and new integration files
-marked MPL-2.0, remain under MPL-2.0. Their corresponding source must be made
-available to recipients while the executable form is offered. The public
-source-availability notice is published at
-<https://choro.dev/open-source.html>. The Choro change source and the script
-that assembles it with the exact upstream source are maintained in the public
-`choro-penpot` repository.
-
-Separate Choro-authored deployment, provisioning, styling, and integration
-files that contain no MPL-covered code remain under their stated licences.
-Penpot's file-level copyleft does not change the licence of those separate
-files or of Choro's desktop source.
-
 ## Claude Agent SDK
 
 `@anthropic-ai/claude-agent-sdk` is proprietary software from Anthropic PBC. It
@@ -83,16 +60,16 @@ grant. Use is subject to Anthropic's applicable legal agreements:
 
 <https://code.claude.com/docs/en/legal-and-compliance>
 
-Choro requires users to install and authenticate Claude Code for themselves and
-passes the path of that local executable to the SDK. Choro does not implement a
-Claude.ai login flow, copy OAuth credentials, or share a subscription between
-users. That technical design alone is not permission to route subscription
-credentials through a third-party product. Anthropic's current guidance says
-developers building products or services with the Agent SDK should use API-key
-authentication through Claude Console or a supported cloud provider, and that
-third-party developers may not route Free, Pro, or Max credentials on behalf of
-users. Keep this integration private until it uses an approved authentication
-method or Anthropic confirms the intended distribution model in writing.
+Choro invokes the SDK on the user's computer with the user's own installed
+Claude Code executable. Users authenticate through Claude Code itself. Choro
+does not offer a Claude.ai login, collect or store Claude credentials or session
+tokens, proxy Claude requests through a Choro server, or pay for users' Claude
+usage. Anthropic's guidance permits end users to sign in to an unmodified Claude
+Code binary with their own subscription, while recommending API-key
+authentication for developers building products with the Agent SDK. The SDK's
+Commercial Terms also apply to products offered to end users. Review those
+terms and the bundled SDK package for the release; this notice does not claim
+Anthropic's endorsement or approval of Choro.
 
 ## Fonts and icon libraries
 
@@ -109,7 +86,7 @@ are stored beside the assets and copied into packaged applications.
 ## Product and provider marks
 
 The Asana, Anthropic/Claude, Atlassian/Jira, ClickUp, Figma, Linear, OpenAI,
-Penpot, and other product names and logos are used only to identify compatible
+and other product names and logos are used only to identify compatible
 integrations or upstream software.
 They are excluded from Choro's Apache-2.0 license grant and remain subject to
 their owners' copyright, trademark, and brand-usage rules. No endorsement is

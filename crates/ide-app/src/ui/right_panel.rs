@@ -15,7 +15,6 @@ use crate::ui::designs_panel::DesignsPanel;
 use crate::ui::docs_panel::DocsPanel;
 use crate::ui::files::file_tree::FileTree;
 use crate::ui::git::git_panel::{GitPanel, GitTab};
-use crate::ui::penpot_panel::PenpotPanel;
 use crate::ui::services_panel::ServicesPanel;
 use crate::ui::style;
 use crate::ui::tasks_panel::TasksPanel;
@@ -76,7 +75,6 @@ pub struct RightPanel {
     designs_panel: Entity<DesignsPanel>,
     tasks_panel: Entity<TasksPanel>,
     services_panel: Entity<ServicesPanel>,
-    penpot_panel: Entity<PenpotPanel>,
     selected: RightToolTab,
     last_activity: ProjectActivity,
     last_agents_panel_reset_epoch: u64,
@@ -93,7 +91,6 @@ impl RightPanel {
         designs_panel: Entity<DesignsPanel>,
         tasks_panel: Entity<TasksPanel>,
         services_panel: Entity<ServicesPanel>,
-        penpot_panel: Entity<PenpotPanel>,
         center: Entity<CenterArea>,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -112,7 +109,6 @@ impl RightPanel {
                 designs_panel,
                 tasks_panel,
                 services_panel,
-                penpot_panel,
                 // Open on Agents + Git: the center starts on the Agents view, so
                 // seed `last_activity` to Agents too. That keeps the first render
                 // from auto-switching the panel to the Board tab, leaving Git
@@ -189,7 +185,7 @@ impl Render for RightPanel {
             ProjectActivity::Design => {
                 return div()
                     .size_full()
-                    .child(self.penpot_panel.clone())
+                    .child(self.designs_panel.clone())
                     .into_any_element();
             }
             ProjectActivity::Db => {

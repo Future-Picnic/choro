@@ -291,7 +291,8 @@
     "reddit": "3y8VS4PfmbC3ndfe",
     "x_tiktok": "FItyuzzbGt7OYcHa",
     "instagram": "ImVtF2W5Wa6ZCGTn",
-    "wholething": "QHx5xLrNg9T0LmMw"
+    "wholething": "QHx5xLrNg9T0LmMw",
+    "tiktok_draft_continuation": "wZ9Yoy7Yb0gtJaRT"
   },
   "aside_session_status": "setup_sessions_idle",
   "updated_at": "2026-09-22",
@@ -333,23 +334,14 @@
           "instagram_inbox_access_enabled": false
         },
         "tiktok": {
-          "status": "developer_app_draft_not_connected",
-          "developer_app_name": "Wholething Postiz",
-          "configured": [
-            "Login Kit",
-            "Content Posting API",
-            "Direct Post",
-            "Web platform",
-            "Choro avatar",
-            "Postiz callback",
-            "required scopes"
-          ],
-          "domain_verification": "TXT record saved in Hostinger for wholething.media and publicly resolvable; TikTok verification still rejected on latest check.",
+          "status": "review_submitted_by_owner_reported_not_connected",
+          "developer_app_name": "Choro",
+          "domain_verification": "TikTok confirmed wholething.media Verified. Exact TXT matched both Hostinger authoritative nameservers, Google DNS, Cloudflare DNS and Hostinger zone UI; no DNS correction needed.",
           "remaining": [
-            "public Terms of Service URL",
-            "public Privacy Policy URL",
-            "TikTok ownership verification acceptance",
-            "end-to-end demo video and app review"
+            "await TikTok review response; owner reports submission",
+            "address any review feedback including real integration demo, final policies and internal-use eligibility",
+            "resolve documented integration UX gaps as required",
+            "install production credentials and complete account authorization"
           ],
           "production_credentials_installed": false,
           "verification_dns": {
@@ -359,8 +351,38 @@
             "type": "TXT",
             "ttl": 3600,
             "publicly_resolvable": true,
-            "accepted_by_tiktok": false
-          }
+            "accepted_by_tiktok": true,
+            "value": "tiktok-developers-site-verification=ECBIJaF8qwNpWTTLf9OYYXYwHPDsYaNr"
+          },
+          "previously_entered_configuration": [
+            "Login Kit",
+            "Content Posting API",
+            "Direct Post",
+            "Web platform",
+            "Choro avatar",
+            "Postiz callback",
+            "required scopes"
+          ],
+          "configuration_persistence": "Verified after reload: Login Kit, Content Posting API with Direct Post, all six required connector scopes, callback and policy URLs persisted.",
+          "public_policy_checks": {
+            "https://wholething.media/privacy/": 200,
+            "https://wholething.media/terms/": 200
+          },
+          "policy_status": "Public owner-review drafts, explicitly not effective policies; not suitable for review submission yet.",
+          "draft_save_status": "Production Draft saved successfully after uploading choro-product-overview.mp4, then reloaded to verify persistence. Choro name, approved icon, Productivity category, description, explanation, products, six scopes, callback and policy URLs persisted.",
+          "requested_public_brand": "Choro",
+          "audience": "Internal team only; the owner confirmed the tool manages their own accounts.",
+          "branding_visibility": "Choro app name saved and verified. Existing application, callback and policy URLs still expose wholething.media.",
+          "review_video": {
+            "filename": "choro-product-overview.mp4",
+            "kind": "Existing 96-second Choro product overview; not an end-to-end TikTok integration demo",
+            "limitation_disclosed_in_review_explanation": true
+          },
+          "review_submission": {
+            "status": "owner_reported_submitted",
+            "independently_verified": false
+          },
+          "connection_attempt": "Authorization currently returns client_key undefined; production credentials remain uninstalled."
         },
         "reddit": {
           "status": "api_access_request_required_not_connected",

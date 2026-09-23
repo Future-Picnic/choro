@@ -35,10 +35,16 @@ struct RemoteShipSource {
 
 impl CenterArea {
     fn remote_ship_source(&self, agent: &AgentRecord, cx: &App) -> RemoteResult<RemoteShipSource> {
+        if agent.repository_path.is_none() && self.git_states.read(cx).repositories(agent.project_id).into_iter().filter(|g|g.read(cx).is_repo).count()>1 {
+            return Err(RemoteError::conflict("This agent spans multiple repositories. Ship each repository on your Mac."));
+        }
         let repo = agent.runtime_path().to_path_buf();
         let snapshot = ide_core::git::read_snapshot(&repo).map_err(|error| {
             RemoteError::conflict(format!("could not read git state: {error:#}"))
         })?;
+        if snapshot.entries.iter().any(|e| e.staged == Some(ide_core::git::ChangeKind::Conflicted) || e.unstaged == Some(ide_core::git::ChangeKind::Conflicted)) {
+            return Err(RemoteError::conflict("Resolve repository conflicts on your Mac before shipping."));
+        }
         let branch = snapshot.head.branch.clone();
         let needs_upstream = snapshot
             .branches
@@ -112,7 +118,11 @@ impl CenterArea {
                 .map(|path| path.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
         };
+        let mut base_branches=ide_core::git::read_snapshot(&source.repo).map_err(|e|RemoteError::conflict(e.to_string()))?.branches.into_iter().filter(|b|b.is_remote).map(|b|b.name.strip_prefix("origin/").unwrap_or(&b.name).to_string()).filter(|b|b!="HEAD").collect::<Vec<_>>();
+        base_branches.sort();base_branches.dedup();
         Ok(ShipPreviewDto {
+            repository: source.repo.to_string_lossy().into_owned(),
+            base_branches,
             branch: source.branch.clone(),
             solo: source.solo,
             needs_upstream: source.needs_upstream,
@@ -148,6 +158,14 @@ impl CenterArea {
             return Err(RemoteError::conflict("a ship is already in progress"));
         }
         let source = self.remote_ship_source(&agent, cx)?;
+        if request.protocol_version >= 11 {
+            if request.expected_branch.as_deref() != source.branch.as_deref() {return Err(RemoteError::conflict("The branch changed. Refresh Ship and confirm the target again."));}
+            if request.open_pr {
+                let base=request.pr_base_branch.as_deref().filter(|b|!b.trim().is_empty()).ok_or_else(||RemoteError::bad_request("Confirm a PR base branch before shipping"))?;
+                let branches=ide_core::git::read_snapshot(&source.repo).map_err(|e|RemoteError::conflict(e.to_string()))?.branches;
+                if !branches.iter().any(|b|b.name==base||b.name==format!("origin/{base}")) {return Err(RemoteError::conflict("The PR base is no longer available. Refresh Ship."));}
+            }
+        }
         let files = match request.scope {
             ShipScopeDto::Conversation => source.conversation_files.clone(),
             ShipScopeDto::All => source.all_files.clone(),

@@ -7,7 +7,40 @@
 
 use std::path::PathBuf;
 
-use gpui::{App, AsyncApp};
+use gpui::App;
+
+/// Wake message handling directly without refreshing every cached view in the app.
+#[derive(Clone)]
+pub(crate) struct WebPreviewWake {
+    sender: async_channel::Sender<()>,
+    general: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl WebPreviewWake {
+    pub(super) fn new(sender: async_channel::Sender<()>) -> Self {
+        Self { sender, general: Default::default() }
+    }
+    pub(super) fn take_general(&self) -> bool { self.general.swap(false, std::sync::atomic::Ordering::AcqRel) }
+    fn refresh(&self) -> Result<(), async_channel::TrySendError<()>> {
+        self.general.store(true, std::sync::atomic::Ordering::Release);
+        self.sender.try_send(())
+    }
+    fn studio_refresh(&self) -> Result<(), async_channel::TrySendError<()>> { self.sender.try_send(()) }
+}
+#[cfg(test)]
+mod wake_tests {
+    use super::WebPreviewWake;
+    #[test]
+    fn coalescing_a_studio_pulse_preserves_a_general_message_wake() {
+        let (sender, receiver) = async_channel::bounded(1);
+        let wake = WebPreviewWake::new(sender);
+        wake.studio_refresh().unwrap();
+        assert!(wake.refresh().is_err(), "the bounded pulse is already queued");
+        assert!(wake.take_general(), "the general message flag survives coalescing");
+        assert!(!wake.take_general());
+        receiver.try_recv().unwrap();
+        assert!(!wake.take_general(), "a consumed flag cannot cause idle redraws");
+    }
+}
 use gpui_component::ActiveTheme;
 use ide_core::project::ProjectId;
 use serde::{Deserialize, Serialize};
@@ -16,6 +49,38 @@ use uuid::Uuid;
 use crate::state::docs::ChoroDocument;
 
 const MAX_VISUALIZATION_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Cached transcripts reuse a native placement. Only a real transcript layout
+/// can prove that its inline visualization has left the visible list.
+#[derive(Default)]
+struct InlinePlacement {
+    laying_out: bool,
+    placed: bool,
+    hidden: bool,
+}
+impl InlinePlacement {
+    fn begin(&mut self) { self.laying_out = true; self.placed = false; }
+    fn place(&mut self) { self.placed = true; self.hidden = false; }
+    fn finish(&mut self) {
+        if std::mem::take(&mut self.laying_out) { self.hidden = !self.placed; }
+    }
+}
+
+#[cfg(test)]
+mod inline_placement_tests {
+    use super::InlinePlacement;
+    #[test]
+    fn cached_frames_preserve_visibility_and_scrolling_out_hides_the_surface() {
+        let mut placement = InlinePlacement::default();
+        placement.begin(); placement.place(); placement.finish();
+        for _ in 0..100 { placement.finish(); assert!(!placement.hidden); }
+        placement.begin(); placement.finish();
+        assert!(placement.hidden, "a layout without the row must hide its native surface");
+        placement.finish(); assert!(placement.hidden);
+        placement.begin(); placement.place(); placement.finish();
+        assert!(!placement.hidden, "scrolling back must restore the surface");
+    }
+}
 
 /// Popup lifetimes can overlap (including a menu opening a dialog).
 #[derive(Default)]
@@ -57,10 +122,6 @@ pub enum WebPreviewIntent {
     Studio {
         session: Uuid,
         document: String,
-    },
-    PenpotUrl {
-        url: String,
-        theme: PenpotTheme,
     },
     ProjectPreview {
         project_id: ProjectId,
@@ -299,67 +360,6 @@ impl DocEditorTheme {
     }
 }
 
-/// The Choro design-system colors applied to the embedded Design editor's UI.
-/// These tokens style editor chrome only; artwork on the canvas remains owned
-/// by the design file and is never recolored by an application theme change.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PenpotTheme {
-    name: String,
-    dark: bool,
-    sink: String,
-    nav: String,
-    base: String,
-    surface: String,
-    surface_2: String,
-    focus: String,
-    text_1: String,
-    text_2: String,
-    text_3: String,
-    text_4: String,
-    line: String,
-    line_2: String,
-    accent: String,
-    accent_2: String,
-    on_accent: String,
-    accent_soft: String,
-    accent_line: String,
-    info: String,
-    overlay: String,
-    shadow: String,
-}
-
-impl PenpotTheme {
-    pub fn from_app(cx: &App) -> Self {
-        use crate::ui::design;
-
-        Self {
-            name: cx.theme().theme_name().to_string(),
-            dark: cx.theme().mode.is_dark(),
-            sink: design::sink(cx).to_string(),
-            nav: design::nav(cx).to_string(),
-            base: design::base(cx).to_string(),
-            surface: design::surface(cx).to_string(),
-            surface_2: design::surface_2(cx).to_string(),
-            focus: design::focus(cx).to_string(),
-            text_1: design::t1(cx).to_string(),
-            text_2: design::t2(cx).to_string(),
-            text_3: design::t3(cx).to_string(),
-            text_4: design::t4(cx).to_string(),
-            line: design::line(cx).to_string(),
-            line_2: design::line_2(cx).to_string(),
-            accent: design::accent(cx).to_string(),
-            accent_2: design::accent_2(cx).to_string(),
-            on_accent: design::on_accent(cx).to_string(),
-            accent_soft: design::accent_soft(cx).to_string(),
-            accent_line: design::accent_line(cx).to_string(),
-            info: design::sky(cx).to_string(),
-            overlay: design::sink(cx).opacity(0.72).to_string(),
-            shadow: design::sink(cx).opacity(0.60).to_string(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum DocEditorMessage {
@@ -385,53 +385,6 @@ pub enum DocEditorMessage {
         path: PathBuf,
         target: String,
     },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum PenpotMessage {
-    OpenAssistant,
-    McpStatus {
-        connected: bool,
-        #[serde(rename = "fileId")]
-        file_id: Option<Uuid>,
-        #[serde(rename = "surfaceId")]
-        surface_id: Uuid,
-    },
-    ExportFinished {
-        success: bool,
-        #[serde(rename = "fileName")]
-        file_name: String,
-    },
-}
-
-fn penpot_message_matches_surface(
-    message: &PenpotMessage,
-    active_surface_id: Option<Uuid>,
-) -> bool {
-    match message {
-        PenpotMessage::McpStatus { surface_id, .. } => Some(*surface_id) == active_surface_id,
-        PenpotMessage::OpenAssistant | PenpotMessage::ExportFinished { .. } => {
-            active_surface_id.is_some()
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PenpotSidebarTab {
-    Layers,
-    Assets,
-    Tokens,
-}
-
-impl PenpotSidebarTab {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Layers => "layers",
-            Self::Assets => "assets",
-            Self::Tokens => "tokens",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -477,19 +430,9 @@ mod imp {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
 
     use base64::Engine as _;
     use block2::RcBlock;
-    use cef::rc::Rc as _;
-    use cef::{
-        browser_host_create_browser, BeforeDownloadCallback, Browser, BrowserSettings, CefString,
-        Client, DisplayHandler, DownloadHandler, DownloadItem, DownloadItemCallback, Frame,
-        ImplBeforeDownloadCallback, ImplBrowser, ImplBrowserHost, ImplClient, ImplDisplayHandler,
-        ImplDownloadHandler, ImplDownloadItem, ImplFrame, ImplLifeSpanHandler, ImplLoadHandler,
-        LifeSpanHandler, LoadHandler, LogSeverity, RuntimeStyle, State, WindowInfo, WrapClient,
-        WrapDisplayHandler, WrapDownloadHandler, WrapLifeSpanHandler, WrapLoadHandler,
-    };
     use gpui::{Bounds, Pixels, Window};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, MessageReceiver, NSObject, ProtocolObject};
@@ -497,7 +440,7 @@ mod imp {
         define_class, msg_send, sel, ClassType, DeclaredClass, MainThreadMarker, MainThreadOnly,
     };
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSBitmapImageFileType, NSBitmapImageRep,
+        NSBitmapImageFileType, NSBitmapImageRep,
         NSBitmapImageRepPropertyKey, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
         NSImage, NSPasteboard, NSPasteboardWriting, NSView,
     };
@@ -509,20 +452,17 @@ mod imp {
         WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
         WKUserContentController, WKUserScript, WKUserScriptInjectionTime,
     };
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewExtMacOS};
 
     use super::{
-        penpot_message_matches_surface, AsyncApp, DocEditorMessage, PenpotMessage,
-        PenpotSidebarTab, ProjectId, ProjectPreviewConsoleEntry, ProjectPreviewInspectorMessage,
+        WebPreviewWake, DocEditorMessage, ProjectId, ProjectPreviewConsoleEntry, ProjectPreviewInspectorMessage,
         ProjectPreviewMessage, Uuid, VisualizationTheme, WebPreviewIntent, MAX_VISUALIZATION_BYTES,
     };
 
     const MAX_DOC_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
     const MAX_DOC_EDITOR_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
-    const MAX_PENPOT_MESSAGE_BYTES: usize = 4 * 1024;
     const DOC_EDITOR_JS: &[u8] = include_bytes!("../../../web/doc-editor/dist/editor.js");
     const DOC_EDITOR_CSS: &[u8] = include_bytes!("../../../web/doc-editor/dist/editor.css");
     const PROJECT_PREVIEW_INSPECTOR_JS: &str =
@@ -536,13 +476,12 @@ mod imp {
     const PROJECT_PREVIEW_CONSOLE_MESSAGE_HANDLER: &str = "choroPreviewConsole";
     const MAX_PROJECT_PREVIEW_MESSAGE_BYTES: usize = 256 * 1024;
     const MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES: usize = 32 * 1024;
-    const CHROMIUM_IPC_PREFIX: &str = "__CHORO_DESIGN_IPC__";
     static WEBKIT_SURFACE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
     struct ProjectPreviewMessageHandlerIvars {
         project_id: ProjectId,
         messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
-        app: AsyncApp,
+        app: WebPreviewWake,
     }
 
     fn decode_project_preview_message(
@@ -655,7 +594,7 @@ mod imp {
 
     fn enqueue_project_preview_message(
         messages: &Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
-        app: &AsyncApp,
+        app: &WebPreviewWake,
         message: ProjectPreviewMessage,
     ) {
         let Ok(mut messages) = messages.try_borrow_mut() else {
@@ -737,7 +676,7 @@ mod imp {
     struct ProjectPreviewConsoleMessageHandlerIvars {
         project_id: ProjectId,
         messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
-        app: AsyncApp,
+        app: WebPreviewWake,
     }
 
     define_class!(
@@ -786,7 +725,7 @@ mod imp {
             world: &WKContentWorld,
             project_id: ProjectId,
             messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
-            app: AsyncApp,
+            app: WebPreviewWake,
             main_thread: MainThreadMarker,
         ) {
             let handler =
@@ -836,7 +775,7 @@ mod imp {
             page_world: &WKContentWorld,
             project_id: ProjectId,
             messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
-            app: AsyncApp,
+            app: WebPreviewWake,
             main_thread: MainThreadMarker,
         ) {
             let handler =
@@ -1053,30 +992,22 @@ mod imp {
 
     pub struct WebPreviewHost {
         active: Option<Active>,
-        parked_penpot: Option<Active>,
         pending: Option<WebPreviewIntent>,
-        placed_since_reconcile: bool,
+        inline_placement: super::InlinePlacement,
         suspended: bool,
         overlay_suspended: bool,
         overlays: super::NativeOverlays,
-        penpot_keepalive: bool,
-        penpot_assistant_open: bool,
-        penpot_compare_open: bool,
         messages: Rc<RefCell<VecDeque<DocEditorMessage>>>,
-        penpot_messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
         preview_messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
         project_preview_live_urls: Rc<RefCell<HashMap<ProjectId, String>>>,
-        app: AsyncApp,
+        app: WebPreviewWake,
     }
 
     struct Active {
         intent: WebPreviewIntent,
         webview: WebSurface,
-        surface_id: Option<Uuid>,
         bounds: Bounds<Pixels>,
         doc_editor_ready: bool,
-        penpot_assistant_open: bool,
-        penpot_compare_open: bool,
     }
 
     struct WebKitLease;
@@ -1292,7 +1223,6 @@ mod imp {
 
     enum WebSurface {
         WebKit(WebKitSurface),
-        Chromium(ChromiumSurface),
     }
 
     impl WebSurface {
@@ -1302,7 +1232,6 @@ mod imp {
                     .webview
                     .set_visible(visible)
                     .map_err(|error| error.to_string()),
-                Self::Chromium(surface) => surface.set_visible(visible),
             }
         }
 
@@ -1312,7 +1241,6 @@ mod imp {
                     .webview
                     .set_bounds(to_rect(bounds))
                     .map_err(|error| error.to_string()),
-                Self::Chromium(surface) => surface.set_bounds(bounds),
             }
         }
 
@@ -1322,7 +1250,6 @@ mod imp {
                     .webview
                     .load_url(url)
                     .map_err(|error| error.to_string()),
-                Self::Chromium(surface) => surface.load_url(url),
             }
         }
 
@@ -1332,7 +1259,6 @@ mod imp {
                     .webview
                     .evaluate_script(script)
                     .map_err(|error| error.to_string()),
-                Self::Chromium(surface) => surface.evaluate_script(script),
             }
         }
 
@@ -1348,7 +1274,6 @@ mod imp {
                     }
                     Ok(())
                 }
-                Self::Chromium(surface) => surface.reload_from_origin(),
             }
         }
 
@@ -1362,536 +1287,27 @@ mod imp {
                         .and_then(|url| url.absoluteString())
                         .map(|url| url.to_string())
                 },
-                Self::Chromium(surface) => surface.current_url(),
             }
         }
 
         fn webkit(&self) -> Option<&WebView> {
             match self {
                 Self::WebKit(surface) => Some(&surface.webview),
-                Self::Chromium(_) => None,
             }
         }
 
-        fn is_chromium(&self) -> bool {
-            matches!(self, Self::Chromium(_))
-        }
-    }
-
-    struct ChromiumSurfaceState {
-        browser: Option<Browser>,
-        // Keep the native parent alive until CEF confirms that its child view
-        // has finished closing. Detaching it earlier can leave AppKit tooltip
-        // tracking areas pointing at an already-destroyed Chromium view.
-        container: Option<Retained<NSView>>,
-        pending_url: Option<String>,
-        pending_scripts: VecDeque<String>,
-        initialization_script: String,
-        closing: bool,
-        downloads: HashMap<u32, PathBuf>,
-        messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
-        app: AsyncApp,
-    }
-
-    struct ChromiumSurface {
-        state: Arc<Mutex<ChromiumSurfaceState>>,
-        container: Retained<NSView>,
-    }
-
-    impl ChromiumSurface {
-        fn new(
-            url: &str,
-            initialization_script: String,
-            bounds: Bounds<Pixels>,
-            window: &Window,
-            messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
-            app: AsyncApp,
-        ) -> Result<Self, String> {
-            if !crate::chromium::is_ready() {
-                return Err("Chromium has not finished initializing".to_string());
-            }
-            let main_thread = MainThreadMarker::new()
-                .ok_or_else(|| "Design must create Chromium on the main thread".to_string())?;
-            let handle = HasWindowHandle::window_handle(window)
-                .map_err(|error| format!("could not read Choro's native window: {error}"))?;
-            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-                return Err("Choro did not provide an AppKit window".to_string());
-            };
-            let parent = unsafe { &*(appkit.ns_view.as_ptr() as *const NSView) };
-            let frame = appkit_frame(parent, bounds);
-            let container = NSView::initWithFrame(main_thread.alloc::<NSView>(), frame);
-            container.setAutoresizesSubviews(true);
-            parent.addSubview(&container);
-
-            let state = Arc::new(Mutex::new(ChromiumSurfaceState {
-                browser: None,
-                container: Some(container.clone()),
-                pending_url: None,
-                pending_scripts: VecDeque::new(),
-                initialization_script,
-                closing: false,
-                downloads: HashMap::new(),
-                messages,
-                app,
-            }));
-            let mut client = ChoroDesignClient::new(state.clone());
-            let cef_bounds = cef::Rect {
-                x: 0,
-                y: 0,
-                width: frame.size.width.max(1.0).round() as i32,
-                height: frame.size.height.max(1.0).round() as i32,
-            };
-            let window_info = WindowInfo {
-                runtime_style: RuntimeStyle::ALLOY,
-                ..Default::default()
-            }
-            .set_as_child(
-                Retained::as_ptr(&container) as *mut std::ffi::c_void,
-                &cef_bounds,
-            );
-            let browser_settings = BrowserSettings {
-                webgl: State::ENABLED,
-                javascript_access_clipboard: State::ENABLED,
-                ..Default::default()
-            };
-            crate::chromium::browser_creation_started();
-            if browser_host_create_browser(
-                Some(&window_info),
-                Some(&mut client),
-                Some(&CefString::from(url)),
-                Some(&browser_settings),
-                None,
-                None,
-            ) != 1
-            {
-                crate::chromium::browser_creation_failed();
-                container.removeFromSuperview();
-                return Err("CEF rejected the Design browser creation request".to_string());
-            }
-
-            Ok(Self { state, container })
-        }
-
-        fn browser(&self) -> Option<Browser> {
-            self.state.lock().ok()?.browser.clone()
-        }
-
-        fn set_visible(&self, visible: bool) -> Result<(), String> {
-            self.container.setHidden(!visible);
-            Ok(())
-        }
-
-        fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<(), String> {
-            let parent = unsafe { self.container.superview() }
-                .ok_or_else(|| "Chromium Design surface was detached".to_string())?;
-            self.container.setFrame(appkit_frame(&parent, bounds));
-            if let Some(browser) = self.browser() {
-                if let Some(host) = browser.host() {
-                    let view = host.window_handle() as *mut NSView;
-                    if !view.is_null() {
-                        unsafe {
-                            (&*view).setFrame(self.container.bounds());
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }
-
-        fn load_url(&self, url: &str) -> Result<(), String> {
-            if let Some(frame) = self.browser().and_then(|browser| browser.main_frame()) {
-                frame.load_url(Some(&CefString::from(url)));
-                return Ok(());
-            }
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "Chromium Design state was unavailable".to_string())?;
-            state.pending_url = Some(url.to_string());
-            Ok(())
-        }
-
-        fn evaluate_script(&self, script: &str) -> Result<(), String> {
-            if let Some(frame) = self.browser().and_then(|browser| browser.main_frame()) {
-                execute_chromium_script(&frame, script);
-                return Ok(());
-            }
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| "Chromium Design state was unavailable".to_string())?;
-            state.pending_scripts.push_back(script.to_string());
-            Ok(())
-        }
-
-        fn reload_from_origin(&self) -> Result<(), String> {
-            let browser = self
-                .browser()
-                .ok_or_else(|| "Chromium Design is still starting".to_string())?;
-            browser.reload_ignore_cache();
-            Ok(())
-        }
-
-        fn current_url(&self) -> Option<String> {
-            self.browser()
-                .and_then(|browser| browser.main_frame())
-                .map(|frame| {
-                    let url = frame.url();
-                    CefString::from(&url).to_string()
-                })
-                .filter(|url| !url.is_empty())
-        }
-    }
-
-    impl Drop for ChromiumSurface {
-        fn drop(&mut self) {
-            self.container.setHidden(true);
-            clear_native_tooltips(&self.container);
-            let browser = self.state.lock().ok().and_then(|mut state| {
-                state.closing = true;
-                state.browser.clone()
-            });
-            if let Some(host) = browser.and_then(|browser| browser.host()) {
-                host.close_browser(1);
-            }
-        }
-    }
-
-    fn clear_native_tooltips(view: &NSView) {
-        view.removeAllToolTips();
-        for subview in view.subviews().iter() {
-            clear_native_tooltips(&subview);
-        }
-    }
-
-    fn appkit_frame(parent: &NSView, bounds: Bounds<Pixels>) -> CGRect {
-        let x = f32::from(bounds.origin.x) as f64;
-        let y = f32::from(bounds.origin.y) as f64;
-        let width = (f32::from(bounds.size.width) as f64).max(1.0);
-        let height = (f32::from(bounds.size.height) as f64).max(1.0);
-        let origin_y = if parent.isFlipped() {
-            y
-        } else {
-            parent.frame().size.height - y - height
-        };
-        CGRect::new(CGPoint::new(x, origin_y), CGSize::new(width, height))
-    }
-
-    fn execute_chromium_script(frame: &Frame, script: &str) {
-        frame.execute_java_script(
-            Some(&CefString::from(script)),
-            Some(&CefString::from("choro://design")),
-            0,
-        );
-    }
-
-    fn report_chromium_export(
-        state: &Arc<Mutex<ChromiumSurfaceState>>,
-        success: bool,
-        file_name: String,
-    ) {
-        let (messages, app) = match state.lock() {
-            Ok(state) => (state.messages.clone(), state.app.clone()),
-            Err(_) => return,
-        };
-        if let Ok(mut messages) = messages.lock() {
-            messages.push_back(PenpotMessage::ExportFinished { success, file_name });
-        }
-        let _ = app.refresh();
-    }
-
-    cef::wrap_client! {
-        struct ChoroDesignClient {
-            state: Arc<Mutex<ChromiumSurfaceState>>,
-        }
-
-        impl Client {
-            fn display_handler(&self) -> Option<DisplayHandler> {
-                Some(ChoroDesignDisplayHandler::new(self.state.clone()))
-            }
-
-            fn download_handler(&self) -> Option<DownloadHandler> {
-                Some(ChoroDesignDownloadHandler::new(self.state.clone()))
-            }
-
-            fn life_span_handler(&self) -> Option<LifeSpanHandler> {
-                Some(ChoroDesignLifeSpanHandler::new(self.state.clone()))
-            }
-
-            fn load_handler(&self) -> Option<LoadHandler> {
-                Some(ChoroDesignLoadHandler::new(self.state.clone()))
-            }
-        }
-    }
-
-    cef::wrap_display_handler! {
-        struct ChoroDesignDisplayHandler {
-            state: Arc<Mutex<ChromiumSurfaceState>>,
-        }
-
-        impl DisplayHandler {
-            fn on_console_message(
-                &self,
-                _browser: Option<&mut Browser>,
-                _level: LogSeverity,
-                message: Option<&CefString>,
-                _source: Option<&CefString>,
-                _line: i32,
-            ) -> i32 {
-                let Some(body) = message
-                    .map(CefString::to_string)
-                    .and_then(|message| message.strip_prefix(CHROMIUM_IPC_PREFIX).map(str::to_owned))
-                else {
-                    return 0;
-                };
-                if body.len() > MAX_PENPOT_MESSAGE_BYTES {
-                    eprintln!("Design Chromium message exceeded the size limit");
-                    return 1;
-                }
-                let message = match serde_json::from_str::<PenpotMessage>(&body) {
-                    Ok(message) => message,
-                    Err(error) => {
-                        eprintln!("invalid Design Chromium message: {error}");
-                        return 1;
-                    }
-                };
-                let (messages, app) = match self.state.lock() {
-                    Ok(state) => (state.messages.clone(), state.app.clone()),
-                    Err(_) => return 1,
-                };
-                if let Ok(mut messages) = messages.lock() {
-                    messages.push_back(message);
-                }
-                let _ = app.refresh();
-                1
-            }
-        }
-    }
-
-    cef::wrap_life_span_handler! {
-        struct ChoroDesignLifeSpanHandler {
-            state: Arc<Mutex<ChromiumSurfaceState>>,
-        }
-
-        impl LifeSpanHandler {
-            fn do_close(&self, browser: Option<&mut Browser>) -> i32 {
-                // CEF's default return value sends performClose: to the top-level
-                // NSWindow. This is a child of Choro, so that would quit the app.
-                // Destroy only CefBrowserHostView; its dealloc notifies CEF's
-                // WindowDestroyed and ultimately invokes on_before_close below.
-                // Defer removal until DoClose returns to avoid reentrant teardown.
-                if let Some(host) = browser.and_then(|browser| browser.host()) {
-                    let view = host.window_handle() as *mut NSView;
-                    if !view.is_null() {
-                        unsafe {
-                            let view = &*view;
-                            view.setHidden(true);
-                            clear_native_tooltips(view);
-                            let _: () = msg_send![view,
-                                performSelector: sel!(removeFromSuperview),
-                                withObject: std::ptr::null::<AnyObject>(),
-                                afterDelay: 0.0_f64
-                            ];
-                        }
-                    }
-                }
-                // Always suppress CEF's parent-window close notification.
-                1
-            }
-
-            fn on_after_created(&self, browser: Option<&mut Browser>) {
-                let Some(browser) = browser else {
-                    return;
-                };
-                crate::chromium::register_browser(browser);
-                if let Some(host) = browser.host() {
-                    let view = host.window_handle() as *mut NSView;
-                    if !view.is_null() {
-                        unsafe {
-                            (&*view).setAutoresizingMask(
-                                NSAutoresizingMaskOptions::ViewWidthSizable
-                                    | NSAutoresizingMaskOptions::ViewHeightSizable,
-                            );
-                        }
-                    }
-                }
-
-                let (closing, pending_url, pending_scripts) = match self.state.lock() {
-                    Ok(mut state) => {
-                        state.browser = Some(browser.clone());
-                        (
-                            state.closing,
-                            state.pending_url.take(),
-                            state.pending_scripts.drain(..).collect::<Vec<_>>(),
-                        )
-                    }
-                    Err(_) => return,
-                };
-                if closing {
-                    if let Some(host) = browser.host() {
-                        host.close_browser(1);
-                    }
-                    return;
-                }
-                let Some(frame) = browser.main_frame() else {
-                    return;
-                };
-                if let Some(url) = pending_url {
-                    frame.load_url(Some(&CefString::from(url.as_str())));
-                }
-                for script in pending_scripts {
-                    execute_chromium_script(&frame, &script);
-                }
-            }
-
-            fn on_before_close(&self, browser: Option<&mut Browser>) {
-                let Some(browser) = browser else {
-                    return;
-                };
-                crate::chromium::unregister_browser(browser);
-                let container = if let Ok(mut state) = self.state.lock() {
-                    state.browser = None;
-                    state.container.take()
-                } else {
-                    None
-                };
-                if let Some(container) = container {
-                    clear_native_tooltips(&container);
-                    container.removeFromSuperview();
-                }
-            }
-        }
-    }
-
-    cef::wrap_load_handler! {
-        struct ChoroDesignLoadHandler {
-            state: Arc<Mutex<ChromiumSurfaceState>>,
-        }
-
-        impl LoadHandler {
-            fn on_load_end(
-                &self,
-                _browser: Option<&mut Browser>,
-                frame: Option<&mut Frame>,
-                _http_status_code: i32,
-            ) {
-                let Some(frame) = frame.filter(|frame| frame.is_main() != 0) else {
-                    return;
-                };
-                let script = match self.state.lock() {
-                    Ok(state) => state.initialization_script.clone(),
-                    Err(_) => return,
-                };
-                execute_chromium_script(frame, &script);
-            }
-        }
-    }
-
-    cef::wrap_download_handler! {
-        struct ChoroDesignDownloadHandler {
-            state: Arc<Mutex<ChromiumSurfaceState>>,
-        }
-
-        impl DownloadHandler {
-            fn can_download(
-                &self,
-                _browser: Option<&mut Browser>,
-                _url: Option<&CefString>,
-                _request_method: Option<&CefString>,
-            ) -> i32 {
-                1
-            }
-
-            fn on_before_download(
-                &self,
-                _browser: Option<&mut Browser>,
-                download_item: Option<&mut DownloadItem>,
-                suggested_name: Option<&CefString>,
-                callback: Option<&mut BeforeDownloadCallback>,
-            ) -> i32 {
-                let (Some(download_item), Some(callback)) = (download_item, callback) else {
-                    return 0;
-                };
-                let suggested_name = suggested_name
-                    .map(CefString::to_string)
-                    .filter(|name| !name.trim().is_empty())
-                    .unwrap_or_else(|| {
-                        let name = download_item.suggested_file_name();
-                        CefString::from(&name).to_string()
-                    });
-                let suggested_path = Path::new(&suggested_name);
-                let target = match design_download_destination(suggested_path) {
-                    Ok(target) => target,
-                    Err(error) => {
-                        eprintln!("could not prepare Chromium Design export: {error}");
-                        report_chromium_export(
-                            &self.state,
-                            false,
-                            design_export_file_name(suggested_path),
-                        );
-                        return 0;
-                    }
-                };
-                if let Ok(mut state) = self.state.lock() {
-                    state.downloads.insert(download_item.id(), target.clone());
-                }
-                callback.cont(
-                    Some(&CefString::from(target.to_string_lossy().as_ref())),
-                    0,
-                );
-                1
-            }
-
-            fn on_download_updated(
-                &self,
-                _browser: Option<&mut Browser>,
-                download_item: Option<&mut DownloadItem>,
-                _callback: Option<&mut DownloadItemCallback>,
-            ) {
-                let Some(download_item) = download_item else {
-                    return;
-                };
-                let success = download_item.is_complete() != 0;
-                let finished = success
-                    || download_item.is_canceled() != 0
-                    || download_item.is_interrupted() != 0;
-                if !finished {
-                    return;
-                }
-                let target = self
-                    .state
-                    .lock()
-                    .ok()
-                    .and_then(|mut state| state.downloads.remove(&download_item.id()));
-                let Some(target) = target else {
-                    return;
-                };
-                let file_name = design_export_file_name(&target);
-                if success {
-                    eprintln!("Design export saved to {}", target.display());
-                } else {
-                    eprintln!("Design export failed: {file_name}");
-                }
-                report_chromium_export(&self.state, success, file_name);
-            }
-        }
     }
 
     impl WebPreviewHost {
-        pub fn new(app: AsyncApp) -> Self {
+        pub fn new(app: WebPreviewWake) -> Self {
             Self {
                 active: None,
-                parked_penpot: None,
                 pending: None,
-                placed_since_reconcile: false,
+                inline_placement: Default::default(),
                 suspended: false,
                 overlay_suspended: false,
                 overlays: super::NativeOverlays::default(),
-                penpot_keepalive: false,
-                penpot_assistant_open: false,
-                penpot_compare_open: false,
                 messages: Rc::new(RefCell::new(VecDeque::new())),
-                penpot_messages: Arc::new(Mutex::new(VecDeque::new())),
                 preview_messages: Rc::new(RefCell::new(VecDeque::new())),
                 project_preview_live_urls: Rc::new(RefCell::new(HashMap::new())),
                 app,
@@ -1934,6 +1350,8 @@ mod imp {
 
         fn is_hidden(&self) -> bool {
             self.suspended || self.overlay_suspended || self.overlays.hidden()
+                || (self.inline_placement.hidden && self.active.as_ref().is_some_and(|active|
+                    matches!(active.intent, WebPreviewIntent::Visualization { .. })))
         }
 
         fn update_overlay_visibility(&self) {
@@ -1961,61 +1379,17 @@ mod imp {
             self.update_overlay_visibility();
         }
 
-        /// Select the single web surface for this frame. If an active chat row
-        /// was not placed during the previous frame, tear it down and leave the
-        /// intent pending until that row becomes visible again.
+        /// Select the single web surface. Cached regions can reuse their native
+        /// placement across frames; navigation and suspension own its lifetime.
         pub fn set_intent(&mut self, intent: Option<WebPreviewIntent>) -> bool {
             let had_active = self.active.is_some();
             self.cache_active_project_preview_live_url();
 
-            let incoming_penpot = intent
-                .as_ref()
-                .is_some_and(|intent| matches!(intent, WebPreviewIntent::PenpotUrl { .. }));
-            if !self.penpot_keepalive && !incoming_penpot {
-                self.parked_penpot = None;
-            }
-
-            let should_park_active_penpot = self.penpot_keepalive
-                && self.active.as_ref().is_some_and(|active| {
-                    matches!(active.intent, WebPreviewIntent::PenpotUrl { .. })
-                        && active.webview.is_chromium()
-                        && intent.as_ref().is_none_or(|intent| {
-                            !matches!(intent, WebPreviewIntent::PenpotUrl { .. })
-                        })
-                });
-            if should_park_active_penpot {
-                if let Some(active) = self.active.take() {
-                    let _ = active.webview.set_visible(false);
-                    self.parked_penpot = Some(active);
-                }
-            }
-
             let Some(intent) = intent else {
                 self.active = None;
                 self.pending = None;
-                self.placed_since_reconcile = false;
                 return had_active;
             };
-
-            if matches!(intent, WebPreviewIntent::PenpotUrl { .. })
-                && !self
-                    .active
-                    .as_ref()
-                    .is_some_and(|active| same_surface(&active.intent, &intent))
-            {
-                if let Some(mut parked) = self.parked_penpot.take() {
-                    if same_surface(&parked.intent, &intent) {
-                        self.active = None;
-                        sync_active_penpot_theme(&parked, &intent);
-                        parked.intent = intent;
-                        let _ = parked.webview.set_visible(false);
-                        self.active = Some(parked);
-                        self.pending = None;
-                        self.placed_since_reconcile = false;
-                        return had_active;
-                    }
-                }
-            }
 
             if self
                 .active
@@ -2025,28 +1399,21 @@ mod imp {
                 if self.active.as_ref().map(|active| &active.intent) != Some(&intent) {
                     if let Some(active) = self.active.as_mut() {
                         sync_active_doc_editor(active, &intent);
-                        sync_active_penpot_theme(active, &intent);
                         sync_active_project_preview(active, &intent);
                         active.intent = intent.clone();
                     }
                 }
-                if self.placed_since_reconcile || self.is_hidden() {
-                    self.placed_since_reconcile = false;
-                    return false;
-                }
-                self.active = None;
-                self.pending = Some(intent);
-                return true;
+                // Cached GPUI regions reuse placement without invoking a canvas
+                // callback on every frame. Intent and suspension own visibility.
+                return false;
             }
 
             if self.pending.as_ref() == Some(&intent) {
-                self.placed_since_reconcile = false;
                 return false;
             }
 
             self.active = None;
             self.pending = Some(intent);
-            self.placed_since_reconcile = false;
             had_active
         }
 
@@ -2138,83 +1505,12 @@ mod imp {
             messages
         }
 
-        pub fn take_penpot_messages(&mut self) -> Vec<PenpotMessage> {
-            let active_surface_id = self
-                .active
-                .as_ref()
-                .filter(|active| matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }))
-                .and_then(|active| active.surface_id)
-                .or_else(|| {
-                    self.parked_penpot
-                        .as_ref()
-                        .and_then(|active| active.surface_id)
-                });
-            self.penpot_messages
-                .lock()
-                .map(|mut messages| {
-                    messages
-                        .drain(..)
-                        .filter(|message| {
-                            penpot_message_matches_surface(message, active_surface_id)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        }
 
-        pub fn navigate_url(&self, url: &str) -> Result<(), String> {
-            let Some(active) = self.active.as_ref() else {
-                return Err("The Design canvas is still loading.".to_string());
-            };
-            if !matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }) {
-                return Err("The active web view cannot navigate to this design.".to_string());
-            }
-            active
-                .webview
-                .load_url(url)
-                .map_err(|error| format!("Could not open the design: {error}"))
-        }
 
-        pub fn set_penpot_assistant_open(&mut self, open: bool) {
-            self.penpot_assistant_open = open;
-        }
 
-        /// Put the embedded Penpot workspace into the reduced-chrome Compare
-        /// layout. The left workspace sidebar and the right inspector are
-        /// hidden while the live project preview shares the center area.
-        pub fn set_penpot_compare_open(&mut self, open: bool) {
-            self.penpot_compare_open = open;
-        }
 
-        /// Keep the live Penpot surface connected while a design-linked agent
-        /// is open. Penpot's MCP server delegates canvas inspection to the
-        /// browser plugin instance, so destroying the hidden WKWebView would
-        /// leave the agent with a valid token but no connected plugin.
-        pub fn set_penpot_keepalive(&mut self, keepalive: bool) {
-            self.penpot_keepalive = keepalive;
-        }
 
-        pub fn select_penpot_sidebar_tab(&self, tab: PenpotSidebarTab) {
-            let Some(active) = self.active.as_ref() else {
-                return;
-            };
-            if matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }) {
-                let _ = active
-                    .webview
-                    .evaluate_script(&penpot_sidebar_tab_script(tab));
-            }
-        }
 
-        pub fn collapse_penpot_left_sidebar(&self) {
-            let Some(active) = self.active.as_ref() else {
-                return;
-            };
-            if matches!(active.intent, WebPreviewIntent::PenpotUrl { .. }) {
-                let _ = active
-                    .webview
-                    .evaluate_script(penpot_left_sidebar_collapse_script());
-            }
-        }
 
         pub fn set_project_preview_inspecting(&self, inspecting: bool) -> Result<(), String> {
             let Some(active) = self.active.as_ref() else {
@@ -2842,10 +2138,28 @@ mod imp {
             ));
         }
 
+        pub fn begin_transcript_layout(&mut self) {
+            let intent = self.active.as_ref().map(|active| &active.intent).or(self.pending.as_ref());
+            if matches!(intent, Some(WebPreviewIntent::Visualization { .. })) {
+                self.inline_placement.begin();
+            }
+        }
+
+        pub fn finish_transcript_layout(&mut self) {
+            let was_hidden = self.inline_placement.hidden;
+            self.inline_placement.finish();
+            if was_hidden != self.inline_placement.hidden { self.update_overlay_visibility(); }
+        }
+
         /// Build or reposition the selected web surface inside a GPUI-reserved
         /// rectangle. Only a visible chat row calls this method.
         pub fn place(&mut self, bounds: Bounds<Pixels>, window: &Window) {
-            self.placed_since_reconcile = true;
+            let intent = self.active.as_ref().map(|active| &active.intent).or(self.pending.as_ref());
+            if matches!(intent, Some(WebPreviewIntent::Visualization { .. })) {
+                let visible = bounds.intersect(&window.content_mask().bounds);
+                if visible.size.width <= gpui::px(0.) || visible.size.height <= gpui::px(0.) { return; }
+                self.inline_placement.place();
+            }
             if self.is_hidden() {
                 if let Some(active) = self.active.as_ref() {
                     let _ = active.webview.set_visible(false);
@@ -2853,20 +2167,14 @@ mod imp {
                 return;
             }
             if let Some(intent) = self.pending.take() {
-                let surface_id =
-                    matches!(intent, WebPreviewIntent::PenpotUrl { .. }).then(Uuid::new_v4);
                 match build(
                     &intent,
                     bounds,
                     window,
                     self.messages.clone(),
-                    self.penpot_messages.clone(),
                     self.preview_messages.clone(),
                     self.project_preview_live_urls.clone(),
                     self.app.clone(),
-                    self.penpot_assistant_open,
-                    self.penpot_compare_open,
-                    surface_id,
                 ) {
                     Ok(webview) => {
                         if let WebPreviewIntent::ProjectPreview {
@@ -2882,11 +2190,8 @@ mod imp {
                         self.active = Some(Active {
                             intent,
                             webview,
-                            surface_id,
                             bounds,
                             doc_editor_ready,
-                            penpot_assistant_open: self.penpot_assistant_open,
-                            penpot_compare_open: self.penpot_compare_open,
                         });
                     }
                     Err(error) => eprintln!("web preview build failed: {error}"),
@@ -2895,37 +2200,9 @@ mod imp {
                 let _ = active
                     .webview
                     .set_visible(surface_visible(false, active.doc_editor_ready));
-                let penpot_assistant_changed =
-                    matches!(&active.intent, WebPreviewIntent::PenpotUrl { .. })
-                        && active.penpot_assistant_open != self.penpot_assistant_open;
-                let penpot_compare_changed =
-                    matches!(&active.intent, WebPreviewIntent::PenpotUrl { .. })
-                        && active.penpot_compare_open != self.penpot_compare_open;
                 if active.bounds != bounds {
                     active.bounds = bounds;
                     let _ = active.webview.set_bounds(bounds);
-                    if matches!(&active.intent, WebPreviewIntent::PenpotUrl { .. }) {
-                        // WKWebView updates its native frame here, but WebKit does
-                        // not reliably emit a DOM resize event for child-view
-                        // frame changes. Penpot caches its workspace measurements,
-                        // which can leave its canvas and sidebars laid out against
-                        // the previous frame after Choro swaps the Agent sidebar.
-                        let _ = active.webview.evaluate_script(
-                            "window.dispatchEvent(new Event('resize'));\
-                             window.requestAnimationFrame(() => \
-                               window.dispatchEvent(new Event('resize')));\
-                             window.setTimeout(() => \
-                               window.dispatchEvent(new Event('resize')), 120);",
-                        );
-                    }
-                }
-                if penpot_assistant_changed || penpot_compare_changed {
-                    active.penpot_assistant_open = self.penpot_assistant_open;
-                    active.penpot_compare_open = self.penpot_compare_open;
-                    let _ = active.webview.evaluate_script(&penpot_chrome_sync_script(
-                        self.penpot_assistant_open,
-                        self.penpot_compare_open,
-                    ));
                 }
             }
         }
@@ -3074,10 +2351,6 @@ mod imp {
                 WebPreviewIntent::Studio { session: right, .. },
             ) => left == right,
             (
-                WebPreviewIntent::PenpotUrl { url: left, .. },
-                WebPreviewIntent::PenpotUrl { url: right, .. },
-            ) => left == right,
-            (
                 WebPreviewIntent::DocEditor {
                     path: left,
                     assets: left_assets,
@@ -3105,523 +2378,13 @@ mod imp {
         }
     }
 
-    fn design_export_file_name(path: &Path) -> String {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .map(str::trim)
-            .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| "design-export".to_string())
-    }
 
-    fn design_download_destination(suggested_path: &Path) -> io::Result<PathBuf> {
-        let directory = dirs::download_dir()
-            .or_else(dirs::desktop_dir)
-            .unwrap_or_else(std::env::temp_dir);
-        fs::create_dir_all(&directory)?;
 
-        let file_name = design_export_file_name(suggested_path);
-        Ok(unique_design_download_path(&directory, &file_name))
-    }
 
-    fn unique_design_download_path(directory: &Path, file_name: &str) -> PathBuf {
-        let candidate = directory.join(file_name);
-        if !candidate.exists() {
-            return candidate;
-        }
 
-        let file = Path::new(file_name);
-        let stem = file
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .filter(|stem| !stem.is_empty())
-            .unwrap_or("design-export");
-        let extension = file.extension().and_then(|extension| extension.to_str());
 
-        for index in 1_u64.. {
-            let next_name = match extension {
-                Some(extension) if !extension.is_empty() => {
-                    format!("{stem} ({index}).{extension}")
-                }
-                _ => format!("{stem} ({index})"),
-            };
-            let candidate = directory.join(next_name);
-            if !candidate.exists() {
-                return candidate;
-            }
-        }
 
-        unreachable!("the design export suffix space is unbounded")
-    }
 
-    fn penpot_chrome_sync_script(assistant_open: bool, compare_open: bool) -> String {
-        format!(
-            r##"(() => {{
-                const assistantOpen = {assistant_open};
-                const compareOpen = {compare_open};
-                window.__choroAssistantOpen = assistantOpen;
-                window.__choroCompareOpen = compareOpen;
-                try {{
-                    window.sessionStorage.setItem("choro.assistant.open", String(assistantOpen));
-                }} catch (_) {{}}
-                const styleId = "choro-embedded-penpot-compare";
-                let style = document.getElementById(styleId);
-                if (!style) {{
-                    style = document.createElement("style");
-                    style.id = styleId;
-                    (document.head || document.documentElement).appendChild(style);
-                }}
-                const hiddenChrome = [];
-                if (assistantOpen || compareOpen) {{
-                    hiddenChrome.push(
-                        "#left-sidebar-aside, [data-testid='left-sidebar'] {{ display: none !important; }}"
-                    );
-                }}
-                if (compareOpen) {{
-                    hiddenChrome.push(
-                        "#right-sidebar-aside, [data-testid='right-sidebar'] {{ display: none !important; }}"
-                    );
-                }}
-                style.textContent = hiddenChrome.join("\n");
-                let attempts = 0;
-                const sync = () => {{
-                    const api = window.choroPenpot;
-                    if (api && typeof api.setCompareMode === "function") {{
-                        api.setCompareMode(Boolean(window.__choroCompareOpen));
-                    }}
-                    if (api && typeof api.setAssistantOpen === "function") {{
-                        api.setAssistantOpen(Boolean(
-                            window.__choroAssistantOpen || window.__choroCompareOpen
-                        ));
-                    }}
-                    if (api && (
-                        typeof api.setCompareMode === "function" ||
-                        typeof api.setAssistantOpen === "function"
-                    )) {{
-                        window.dispatchEvent(new Event("resize"));
-                        window.requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
-                        return;
-                    }}
-                    if (attempts++ < 240) window.setTimeout(sync, 250);
-                }};
-                sync();
-            }})();"##
-        )
-    }
-
-    fn penpot_theme_sync_script(theme: &super::PenpotTheme) -> String {
-        let theme = serde_json::to_string(theme).expect("Design theme serializes to JSON");
-        format!(
-            r#"(() => {{
-                const theme = {theme};
-                window.__choroTheme = theme;
-                let attempts = 0;
-                const sync = () => {{
-                    const api = window.choroPenpot;
-                    if (api && typeof api.setTheme === "function") {{
-                        api.setTheme(theme);
-                        return;
-                    }}
-                    if (attempts++ < 240) window.setTimeout(sync, 250);
-                }};
-                sync();
-            }})();"#
-        )
-    }
-
-    /// Hosted below GPUI's AppKit view hierarchy, the embedded browser's
-    /// text-input interpretation loses the native editing commands for
-    /// non-printing keys and surfaces them as literal characters instead:
-    /// macOS function-key code points (U+F700–U+F8FF, arrows/Home/End/Delete)
-    /// or WebKit's legacy separators (U+001C–U+001F). Penpot's text editor
-    /// applies those to its model as visible blank glyphs, while the caret
-    /// does not move. Each orphaned character event fires exactly once per
-    /// key press the native stack dropped, so the guard both blocks the
-    /// insertion and performs the intended edit itself.
-    fn penpot_embedded_key_guard_script() -> &'static str {
-        r#"
-                const installEmbeddedKeyGuard = () => {
-                    if (window.__choroEmbeddedKeyGuard) return;
-                    window.__choroEmbeddedKeyGuard = true;
-                    const guardedCode = (event) => {
-                        let code = event.charCode || 0;
-                        if (!code && typeof event.key === "string" && event.key.length === 1) {
-                            code = event.key.codePointAt(0);
-                        }
-                        if (code >= 0x001c && code <= 0x001f) {
-                            code = [0xf702, 0xf703, 0xf700, 0xf701][code - 0x001c];
-                        }
-                        return code >= 0xf700 && code <= 0xf8ff ? code : null;
-                    };
-                    const badText = (text) => {
-                        if (typeof text !== "string" || !text.length) return false;
-                        for (const character of text) {
-                            const code = character.codePointAt(0);
-                            if ((code >= 0xf700 && code <= 0xf8ff) ||
-                                (code >= 0x001c && code <= 0x001f)) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    };
-                    const wordStep = (value, position, forward) => {
-                        let index = position;
-                        if (forward) {
-                            while (index < value.length && /\s/.test(value[index])) index += 1;
-                            while (index < value.length && !/\s/.test(value[index])) index += 1;
-                        } else {
-                            while (index > 0 && /\s/.test(value[index - 1])) index -= 1;
-                            while (index > 0 && !/\s/.test(value[index - 1])) index -= 1;
-                        }
-                        return index;
-                    };
-                    const lineStep = (value, caret, forward) => {
-                        const lineStart = value.lastIndexOf("\n", caret - 1) + 1;
-                        const column = caret - lineStart;
-                        if (!forward) {
-                            if (lineStart === 0) return 0;
-                            const previousStart = value.lastIndexOf("\n", lineStart - 2) + 1;
-                            return Math.min(previousStart + column, lineStart - 1);
-                        }
-                        const lineEnd = value.indexOf("\n", caret);
-                        if (lineEnd === -1) return value.length;
-                        const nextStart = lineEnd + 1;
-                        let nextEnd = value.indexOf("\n", nextStart);
-                        if (nextEnd === -1) nextEnd = value.length;
-                        return Math.min(nextStart + column, nextEnd);
-                    };
-                    const moveInTextControl = (control, event, code) => {
-                        if (![0xf700, 0xf701, 0xf702, 0xf703, 0xf729, 0xf72b].includes(code)) {
-                            return;
-                        }
-                        const value = control.value || "";
-                        const start = control.selectionStart;
-                        const end = control.selectionEnd;
-                        if (start === null || end === null) return;
-                        const backwardSelection = control.selectionDirection === "backward";
-                        const caret = backwardSelection ? start : end;
-                        const anchor = backwardSelection ? end : start;
-                        const forward =
-                            code === 0xf703 || code === 0xf701 || code === 0xf72b;
-                        const isTextarea = control.tagName === "TEXTAREA";
-                        let target;
-                        if (isTextarea && event.metaKey &&
-                            (code === 0xf702 || code === 0xf703)) {
-                            const lineStart = value.lastIndexOf("\n", caret - 1) + 1;
-                            let lineEnd = value.indexOf("\n", caret);
-                            if (lineEnd === -1) lineEnd = value.length;
-                            target = forward ? lineEnd : lineStart;
-                        } else if (code === 0xf729 || code === 0xf72b || event.metaKey) {
-                            target = forward ? value.length : 0;
-                        } else if (code === 0xf700 || code === 0xf701) {
-                            target = isTextarea
-                                ? lineStep(value, caret, forward)
-                                : forward ? value.length : 0;
-                        } else if (event.altKey) {
-                            target = wordStep(value, caret, forward);
-                        } else if (!event.shiftKey && start !== end) {
-                            target = forward ? end : start;
-                        } else {
-                            target = forward
-                                ? Math.min(value.length, caret + 1)
-                                : Math.max(0, caret - 1);
-                        }
-                        if (event.shiftKey) {
-                            control.setSelectionRange(
-                                Math.min(anchor, target),
-                                Math.max(anchor, target),
-                                target < anchor ? "backward" : "forward"
-                            );
-                        } else {
-                            control.setSelectionRange(target, target);
-                        }
-                    };
-                    const moveInEditable = (event, code) => {
-                        const selection = window.getSelection();
-                        if (!selection || typeof selection.modify !== "function") return;
-                        const alter = event.shiftKey ? "extend" : "move";
-                        let direction;
-                        let granularity;
-                        if (code === 0xf702 || code === 0xf703) {
-                            direction = code === 0xf702 ? "left" : "right";
-                            granularity = event.metaKey
-                                ? "lineboundary"
-                                : event.altKey ? "word" : "character";
-                        } else if (code === 0xf700 || code === 0xf701) {
-                            direction = code === 0xf700 ? "backward" : "forward";
-                            granularity = event.metaKey
-                                ? "documentboundary"
-                                : event.altKey ? "paragraphboundary" : "line";
-                        } else if (code === 0xf729 || code === 0xf72b) {
-                            direction = code === 0xf729 ? "left" : "right";
-                            granularity = "lineboundary";
-                        } else {
-                            return;
-                        }
-                        selection.modify(alter, direction, granularity);
-                    };
-                    const editingFallback = (event, code) => {
-                        try {
-                            const active = document.activeElement;
-                            if (!active) return;
-                            const isTextControl =
-                                active.tagName === "INPUT" ||
-                                active.tagName === "TEXTAREA";
-                            if (!isTextControl && !active.isContentEditable) return;
-                            if (code === 0xf728) {
-                                document.execCommand("forwardDelete");
-                                return;
-                            }
-                            if (isTextControl) {
-                                moveInTextControl(active, event, code);
-                            } else {
-                                moveInEditable(event, code);
-                            }
-                        } catch (_) {
-                            // Selection APIs reject some control types; the
-                            // guard must never break typing.
-                        }
-                    };
-                    window.addEventListener("keypress", (event) => {
-                        const code = guardedCode(event);
-                        if (code === null) return;
-                        event.preventDefault();
-                        event.stopImmediatePropagation();
-                        editingFallback(event, code);
-                    }, true);
-                    const blockTextEvent = (event) => {
-                        if (badText(event.data)) {
-                            event.preventDefault();
-                            event.stopImmediatePropagation();
-                        }
-                    };
-                    window.addEventListener("beforeinput", blockTextEvent, true);
-                    window.addEventListener("textInput", blockTextEvent, true);
-                };
-                installEmbeddedKeyGuard();
-        "#
-    }
-
-    fn penpot_initialization_script(
-        assistant_open: bool,
-        compare_open: bool,
-        surface_id: Uuid,
-        theme: &super::PenpotTheme,
-        webkit_workarounds: bool,
-    ) -> String {
-        let surface_id =
-            serde_json::to_string(&surface_id).unwrap_or_else(|_| "\"invalid\"".to_string());
-        let theme = serde_json::to_string(theme).expect("Design theme serializes to JSON");
-        let embedded_workarounds = if webkit_workarounds {
-            format!(
-                r##"{key_guard}
-                const installEmbeddedTextEditorFix = () => {{
-                    if (document.getElementById("choro-embedded-penpot-fixes")) return;
-                    const style = document.createElement("style");
-                    style.id = "choro-embedded-penpot-fixes";
-                    style.textContent = `
-                        /*
-                         * Penpot positions the Safari 18/26 contenteditable
-                         * wrapper as fixed to compensate for foreignObject
-                         * scaling in a top-level browser window. WKWebView
-                         * child surfaces give fixed descendants a viewport
-                         * origin outside the foreignObject, leaving the caret
-                         * and selection overlay at the top of Choro's canvas.
-                         * Restore the normal in-foreignObject positioning only
-                         * for this embedded Penpot surface.
-                         */
-                        g.text-editor > foreignObject > div {{
-                            position: static !important;
-                            transform: none !important;
-                        }}
-                    `;
-                    (document.head || document.documentElement).appendChild(style);
-                }};
-                installEmbeddedTextEditorFix();"##,
-                key_guard = penpot_embedded_key_guard_script()
-            )
-        } else {
-            String::new()
-        };
-        format!(
-            r##"(() => {{
-                const assistantOpen = {assistant_open};
-                const compareOpen = {compare_open};
-                const surfaceId = {surface_id};
-                const theme = {theme};
-                window.__choroTheme = theme;
-                {embedded_workarounds}
-                try {{
-                    window.sessionStorage.setItem("choro.assistant.open", String(assistantOpen));
-                }} catch (_) {{}}
-                window.__choroAssistantOpen = assistantOpen;
-                window.__choroCompareOpen = compareOpen;
-                const installCompareStyle = () => {{
-                    const styleId = "choro-embedded-penpot-compare";
-                    let style = document.getElementById(styleId);
-                    if (!style) {{
-                        style = document.createElement("style");
-                        style.id = styleId;
-                        (document.head || document.documentElement).appendChild(style);
-                    }}
-                    const hiddenChrome = [];
-                    if (window.__choroAssistantOpen || window.__choroCompareOpen) {{
-                        hiddenChrome.push(
-                            "#left-sidebar-aside, [data-testid='left-sidebar'] {{ display: none !important; }}"
-                        );
-                    }}
-                    if (window.__choroCompareOpen) {{
-                        hiddenChrome.push(
-                            "#right-sidebar-aside, [data-testid='right-sidebar'] {{ display: none !important; }}"
-                        );
-                    }}
-                    style.textContent = hiddenChrome.join("\n");
-                }};
-                installCompareStyle();
-                let attempts = 0;
-                const sync = () => {{
-                    const api = window.choroPenpot;
-                    if (api && typeof api.setCompareMode === "function") {{
-                        api.setCompareMode(Boolean(window.__choroCompareOpen));
-                    }}
-                    if (api && typeof api.setAssistantOpen === "function") {{
-                        api.setAssistantOpen(Boolean(
-                            window.__choroAssistantOpen || window.__choroCompareOpen
-                        ));
-                    }}
-                    if (api && typeof api.setTheme === "function") {{
-                        api.setTheme(theme);
-                    }}
-                    if (api && (
-                        typeof api.setCompareMode === "function" ||
-                        typeof api.setAssistantOpen === "function"
-                    ) && typeof api.setTheme === "function") {{
-                        return;
-                    }}
-                    if (attempts++ < 240) window.setTimeout(sync, 250);
-                }};
-                sync();
-                let lastMcpReport = "";
-                let lastMcpConnectAttempt = 0;
-                const activeFileId = (api) => {{
-                    if (api && typeof api.getActiveFileId === "function") {{
-                        const value = api.getActiveFileId();
-                        if (value) return String(value);
-                    }}
-                    const fragment = window.location.hash || "";
-                    const query = fragment.includes("?") ? fragment.split("?", 2)[1] : "";
-                    return new URLSearchParams(query).get("file-id");
-                }};
-                const syncMcp = () => {{
-                    const api = window.choroPenpot;
-                    const now = Date.now();
-                    if (
-                        api &&
-                        typeof api.ensureMcpConnected === "function" &&
-                        now - lastMcpConnectAttempt > 3000
-                    ) {{
-                        lastMcpConnectAttempt = now;
-                        try {{ api.ensureMcpConnected(); }} catch (_) {{}}
-                    }}
-                    let connected = false;
-                    if (api && typeof api.isMcpConnected === "function") {{
-                        try {{ connected = Boolean(api.isMcpConnected()); }} catch (_) {{}}
-                    }}
-                    const fileId = activeFileId(api);
-                    const report = JSON.stringify({{
-                        type: "mcpStatus",
-                        connected,
-                        fileId,
-                        surfaceId,
-                    }});
-                    if (report !== lastMcpReport) {{
-                        lastMcpReport = report;
-                        try {{ window.ipc?.postMessage(report); }} catch (_) {{}}
-                    }}
-                    window.setTimeout(syncMcp, 500);
-                }};
-                syncMcp();
-            }})();"##,
-            embedded_workarounds = embedded_workarounds
-        )
-    }
-
-    fn penpot_assistant_initialization_script(
-        assistant_open: bool,
-        compare_open: bool,
-        surface_id: Uuid,
-        theme: &super::PenpotTheme,
-    ) -> String {
-        penpot_initialization_script(assistant_open, compare_open, surface_id, theme, true)
-    }
-
-    fn penpot_chromium_initialization_script(
-        assistant_open: bool,
-        compare_open: bool,
-        surface_id: Uuid,
-        theme: &super::PenpotTheme,
-    ) -> String {
-        let bridge = format!(
-            r##"(() => {{
-                if (!window.ipc || window.ipc.__choroEngine !== "chromium") {{
-                    const bridge = Object.freeze({{
-                        __choroEngine: "chromium",
-                        postMessage(value) {{
-                            console.debug({prefix} + String(value));
-                        }},
-                    }});
-                    try {{
-                        Object.defineProperty(window, "ipc", {{
-                            configurable: true,
-                            value: bridge,
-                        }});
-                    }} catch (_) {{
-                        window.ipc = bridge;
-                    }}
-                }}
-            }})();"##,
-            prefix = serde_json::to_string(CHROMIUM_IPC_PREFIX)
-                .expect("static Chromium IPC prefix is valid JSON")
-        );
-        format!(
-            "{bridge}\n{}",
-            penpot_initialization_script(assistant_open, compare_open, surface_id, theme, false,)
-        )
-    }
-
-    fn penpot_sidebar_tab_script(tab: PenpotSidebarTab) -> String {
-        let tab = serde_json::to_string(tab.as_str()).expect("static tab name is valid JSON");
-        format!(
-            r#"(() => {{
-                const tab = {tab};
-                let attempts = 0;
-                const select = () => {{
-                    const api = window.choroPenpot;
-                    if (api && typeof api.setSidebarTab === "function") {{
-                        api.setSidebarTab(tab);
-                        return;
-                    }}
-                    if (attempts++ < 240) window.setTimeout(select, 250);
-                }};
-                select();
-            }})();"#
-        )
-    }
-
-    fn penpot_left_sidebar_collapse_script() -> &'static str {
-        r#"(() => {
-            let attempts = 0;
-            const collapse = () => {
-                const api = window.choroPenpot;
-                if (api && typeof api.collapseLeftSidebar === "function") {
-                    api.collapseLeftSidebar();
-                    return;
-                }
-                if (attempts++ < 240) window.setTimeout(collapse, 250);
-            };
-            collapse();
-        })();"#
-    }
 
     fn reference_protocol_assets(
         assets: &[super::DocEditorMention],
@@ -3680,23 +2443,6 @@ mod imp {
         }
     }
 
-    fn sync_active_penpot_theme(active: &Active, next: &WebPreviewIntent) {
-        let (
-            WebPreviewIntent::PenpotUrl {
-                theme: current_theme,
-                ..
-            },
-            WebPreviewIntent::PenpotUrl { theme, .. },
-        ) = (&active.intent, next)
-        else {
-            return;
-        };
-        if current_theme != theme {
-            let _ = active
-                .webview
-                .evaluate_script(&penpot_theme_sync_script(theme));
-        }
-    }
 
     #[derive(Debug, PartialEq, Eq)]
     enum ProjectPreviewSyncAction<'a> {
@@ -3749,140 +2495,15 @@ mod imp {
         bounds: Bounds<Pixels>,
         window: &Window,
         messages: Rc<RefCell<VecDeque<DocEditorMessage>>>,
-        penpot_messages: Arc<Mutex<VecDeque<PenpotMessage>>>,
         preview_messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
         project_preview_live_urls: Rc<RefCell<HashMap<ProjectId, String>>>,
-        app: AsyncApp,
-        penpot_assistant_open: bool,
-        penpot_compare_open: bool,
-        penpot_surface_id: Option<Uuid>,
+        app: WebPreviewWake,
     ) -> Result<WebSurface, String> {
         let rect = to_rect(bounds);
         match intent {
             WebPreviewIntent::Url(url) => {
                 let lease = WebKitLease::acquire()?;
                 WebViewBuilder::new()
-                    .with_url(url)
-                    .with_bounds(rect)
-                    .with_transparent(false)
-                    .with_accept_first_mouse(true)
-                    .build_as_child(window)
-                    .map(|webview| WebSurface::WebKit(WebKitSurface::new(webview, lease)))
-                    .map_err(|error| error.to_string())
-            }
-            WebPreviewIntent::PenpotUrl { url, theme } => {
-                let surface_id = penpot_surface_id
-                    .ok_or_else(|| "Design surface identity is missing".to_string())?;
-                let chromium_requested = !std::env::var("CHORO_DESIGN_ENGINE")
-                    .is_ok_and(|engine| engine.eq_ignore_ascii_case("webkit"));
-                if chromium_requested && crate::chromium::is_ready() {
-                    let chromium_script = penpot_chromium_initialization_script(
-                        penpot_assistant_open,
-                        penpot_compare_open,
-                        surface_id,
-                        theme,
-                    );
-                    match ChromiumSurface::new(
-                        url,
-                        chromium_script,
-                        bounds,
-                        window,
-                        penpot_messages.clone(),
-                        app.clone(),
-                    ) {
-                        Ok(surface) => return Ok(WebSurface::Chromium(surface)),
-                        Err(error) => {
-                            eprintln!("Chromium Design surface unavailable; using WebKit: {error}");
-                        }
-                    }
-                }
-                let script = penpot_assistant_initialization_script(
-                    penpot_assistant_open,
-                    penpot_compare_open,
-                    surface_id,
-                    theme,
-                );
-                let ipc_messages = penpot_messages.clone();
-                let ipc_app = app.clone();
-                let download_paths =
-                    Arc::new(Mutex::new(HashMap::<String, VecDeque<PathBuf>>::new()));
-                let started_download_paths = download_paths.clone();
-                let started_messages = penpot_messages.clone();
-                let started_app = app.clone();
-                let completed_download_paths = download_paths;
-                let completed_messages = penpot_messages.clone();
-                let completed_app = app.clone();
-                let lease = WebKitLease::acquire()?;
-                WebViewBuilder::new()
-                    .with_initialization_script(script)
-                    .with_ipc_handler(move |request| {
-                        if request.body().len() > MAX_PENPOT_MESSAGE_BYTES {
-                            eprintln!("Design WebKit message exceeded the size limit");
-                            return;
-                        }
-                        match serde_json::from_str::<PenpotMessage>(request.body()) {
-                            Ok(message) => {
-                                if let Ok(mut messages) = ipc_messages.lock() {
-                                    messages.push_back(message);
-                                }
-                                let _ = ipc_app.refresh();
-                            }
-                            Err(error) => {
-                                eprintln!("invalid Design WebKit message: {error}");
-                            }
-                        }
-                    })
-                    .with_download_started_handler(move |uri, suggested_path| {
-                        let target = match design_download_destination(suggested_path) {
-                            Ok(target) => target,
-                            Err(error) => {
-                                eprintln!("could not prepare Design export download: {error}");
-                                if let Ok(mut messages) = started_messages.lock() {
-                                    messages.push_back(PenpotMessage::ExportFinished {
-                                        success: false,
-                                        file_name: design_export_file_name(suggested_path),
-                                    });
-                                }
-                                let _ = started_app.refresh();
-                                return false;
-                            }
-                        };
-
-                        if let Ok(mut paths) = started_download_paths.lock() {
-                            paths.entry(uri).or_default().push_back(target.clone());
-                        }
-                        *suggested_path = target;
-                        true
-                    })
-                    .with_download_completed_handler(move |uri, _, success| {
-                        let target = completed_download_paths.lock().ok().and_then(|mut paths| {
-                            let queue = paths.get_mut(&uri)?;
-                            let target = queue.pop_front();
-                            if queue.is_empty() {
-                                paths.remove(&uri);
-                            }
-                            target
-                        });
-                        let file_name = target
-                            .as_deref()
-                            .map(design_export_file_name)
-                            .unwrap_or_else(|| "design export".to_string());
-
-                        if success {
-                            if let Some(target) = target.as_deref() {
-                                eprintln!("Design export saved to {}", target.display());
-                            } else {
-                                eprintln!("Design export finished: {file_name}");
-                            }
-                        } else {
-                            eprintln!("Design export failed: {file_name}");
-                        }
-                        if let Ok(mut messages) = completed_messages.lock() {
-                            messages
-                                .push_back(PenpotMessage::ExportFinished { success, file_name });
-                        }
-                        let _ = completed_app.refresh();
-                    })
                     .with_url(url)
                     .with_bounds(rect)
                     .with_transparent(false)
@@ -4058,7 +2679,7 @@ mod imp {
                         match bytes{Some(bytes)=>Response::builder().header("Content-Type","image/png").header("Cache-Control","no-store").body(Cow::Owned((*bytes).clone())).unwrap(),None=>Response::builder().status(404).body(Cow::Owned(Vec::new())).unwrap()}
                     })
                     .with_ipc_handler(move|request|{
-                        if request.uri().to_string()=="choro-canvas://localhost/index.html" && (super::super::studio_canvas::enqueue(request.body(),session) || super::super::studio_editor::enqueue_inline(session,request.body())) {let _=ipc_app.refresh();}
+                        if request.uri().to_string()=="choro-canvas://localhost/index.html" && (super::super::studio_canvas::enqueue(request.body(),session) || super::super::studio_editor::enqueue_inline(session,request.body())) {let _=ipc_app.studio_refresh();}
                     })
                     .with_url("choro-canvas://localhost/index.html")
                     .with_bounds(rect).with_transparent(false).with_accept_first_mouse(true)
@@ -4082,12 +2703,12 @@ mod imp {
                         if request.uri().to_string() != "choro-studio://localhost/index.html" { return; }
                         if request.body().len() > 12 * 1024 * 1024 {
                             super::super::studio_editor::enqueue(serde_json::json!({"session":session,"type":"render-error","error":"This edit is too large to save. Your editing buffer is still open; reduce its size and retry."}));
-                            let _=ipc_app.refresh();return;
+                            let _=ipc_app.studio_refresh();return;
                         }
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(request.body()) {
                             if value.get("session").and_then(|v|v.as_str()).and_then(|s|s.parse::<Uuid>().ok()) == Some(session) {
                                 super::super::studio_editor::enqueue(value);
-                                let _ = ipc_app.refresh();
+                                let _ = ipc_app.studio_refresh();
                             }
                         }
                     })
@@ -4491,13 +3112,9 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
 
         use super::{
             bind_project_preview_message, decode_project_preview_console_entry,
-            decode_project_preview_message, design_export_file_name, inject_visualization_chrome,
-            penpot_assistant_initialization_script, penpot_chrome_sync_script,
-            penpot_chromium_initialization_script, penpot_left_sidebar_collapse_script,
-            penpot_message_matches_surface, penpot_sidebar_tab_script, penpot_theme_sync_script,
+            decode_project_preview_message, inject_visualization_chrome,
             preview_key_event_data, project_preview_message_live_url, project_preview_sync_action,
-            same_surface, surface_visible, unique_design_download_path, PenpotMessage,
-            PenpotSidebarTab, ProjectPreviewSyncAction, WebKitLease,
+            same_surface, surface_visible, ProjectPreviewSyncAction, WebKitLease,
             MAX_PROJECT_PREVIEW_CONSOLE_MESSAGE_BYTES, MAX_PROJECT_PREVIEW_MESSAGE_BYTES,
         };
 
@@ -4516,35 +3133,9 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             );
         }
         use crate::ui::center::web_preview::{
-            PenpotTheme, ProjectPreviewConsoleLevel, ProjectPreviewMessage, WebPreviewIntent,
+            ProjectPreviewConsoleLevel, ProjectPreviewMessage, WebPreviewIntent,
         };
 
-        fn test_penpot_theme() -> PenpotTheme {
-            PenpotTheme {
-                name: "Test".into(),
-                dark: true,
-                sink: "#111111".into(),
-                nav: "#121212".into(),
-                base: "#131313".into(),
-                surface: "#202020".into(),
-                surface_2: "#242424".into(),
-                focus: "#282828".into(),
-                text_1: "#f5f5f5".into(),
-                text_2: "#d0d0d0".into(),
-                text_3: "#999999".into(),
-                text_4: "#707070".into(),
-                line: "#303030".into(),
-                line_2: "#383838".into(),
-                accent: "#cac9ee".into(),
-                accent_2: "#d9d8f6".into(),
-                on_accent: "#202027".into(),
-                accent_soft: "#303049".into(),
-                accent_line: "#555577".into(),
-                info: "#85b8df".into(),
-                overlay: "rgb(0 0 0 / 72%)".into(),
-                shadow: "rgb(0 0 0 / 60%)".into(),
-            }
-        }
 
         #[test]
         fn web_surface_stays_hidden_until_content_is_ready() {
@@ -4553,31 +3144,7 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             assert!(!surface_visible(true, true));
         }
 
-        #[test]
-        fn design_export_uses_only_the_suggested_file_name() {
-            assert_eq!(
-                design_export_file_name(std::path::Path::new("../../Coffee home.svg")),
-                "Coffee home.svg"
-            );
-            assert_eq!(
-                design_export_file_name(std::path::Path::new("")),
-                "design-export"
-            );
-        }
 
-        #[test]
-        fn design_export_does_not_overwrite_an_existing_download() {
-            let directory = tempfile::tempdir().expect("temporary export directory");
-            std::fs::write(directory.path().join("Coffee home.png"), b"existing")
-                .expect("existing export");
-            std::fs::write(directory.path().join("Coffee home (1).png"), b"existing")
-                .expect("second existing export");
-
-            assert_eq!(
-                unique_design_download_path(directory.path(), "Coffee home.png"),
-                directory.path().join("Coffee home (2).png")
-            );
-        }
 
         #[test]
         fn wraps_fragment_in_document() {
@@ -4845,163 +3412,15 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
             drop(replacement);
         }
 
-        #[test]
-        fn penpot_theme_changes_reuse_the_open_design_surface() {
-            let first = WebPreviewIntent::PenpotUrl {
-                url: "https://design.example/workspace#file=1".into(),
-                theme: test_penpot_theme(),
-            };
-            let mut next_theme = test_penpot_theme();
-            next_theme.name = "Light".into();
-            next_theme.dark = false;
-            next_theme.base = "#ffffff".into();
-            let second = WebPreviewIntent::PenpotUrl {
-                url: "https://design.example/workspace#file=1".into(),
-                theme: next_theme,
-            };
 
-            assert!(same_surface(&first, &second));
-        }
 
-        #[test]
-        fn penpot_theme_sync_uses_the_stable_integration_api() {
-            let script = penpot_theme_sync_script(&test_penpot_theme());
 
-            assert!(script.contains("window.__choroTheme = theme"));
-            assert!(script.contains("api.setTheme(theme)"));
-            assert!(script.contains("\"accent\":\"#cac9ee\""));
-        }
 
-        #[test]
-        fn penpot_chrome_sync_uses_the_stable_integration_api() {
-            let open = penpot_chrome_sync_script(true, false);
-            let closed = penpot_chrome_sync_script(false, false);
 
-            assert!(open.contains("const assistantOpen = true"));
-            assert!(closed.contains("const assistantOpen = false"));
-            assert!(open.contains("api.setAssistantOpen"));
-            assert!(open.contains("if (assistantOpen || compareOpen)"));
-            assert!(open.contains("#left-sidebar-aside"));
-            assert!(!open.contains("querySelector"));
-            assert!(!open.contains("style.width"));
-        }
 
-        #[test]
-        fn penpot_assistant_state_follows_choro_after_webview_navigation() {
-            let script = penpot_assistant_initialization_script(
-                false,
-                false,
-                Uuid::from_u128(1),
-                &test_penpot_theme(),
-            );
 
-            assert!(script.contains("const assistantOpen = false"));
-            assert!(script.contains("const compareOpen = false"));
-            assert!(script.contains("sessionStorage.setItem"));
-            assert!(!script.contains("sessionStorage.getItem"));
-            assert!(script.contains("api.setAssistantOpen"));
-            assert!(
-                script.contains("if (window.__choroAssistantOpen || window.__choroCompareOpen)")
-            );
-            assert!(script.contains("#left-sidebar-aside"));
-            assert!(!script.contains("querySelector"));
-            assert!(script.contains("choro-embedded-penpot-fixes"));
-            assert!(script.contains("g.text-editor > foreignObject > div"));
-            assert!(script.contains("position: static !important"));
-            assert!(script.contains("transform: none !important"));
-            assert!(script.contains("api.ensureMcpConnected"));
-            assert!(script.contains("api.isMcpConnected"));
-            assert!(script.contains(r#"type: "mcpStatus""#));
-            assert!(script.contains("api.setTheme(theme)"));
-            assert!(script.contains(r#"window.__choroTheme = theme"#));
-        }
 
-        #[test]
-        fn chromium_design_uses_its_console_bridge_without_webkit_workarounds() {
-            let script = penpot_chromium_initialization_script(
-                false,
-                false,
-                Uuid::from_u128(1),
-                &test_penpot_theme(),
-            );
 
-            assert!(script.contains("__CHORO_DESIGN_IPC__"));
-            assert!(script.contains("window.ipc"));
-            assert!(!script.contains("choro-embedded-penpot-fixes"));
-            assert!(script.contains("api.ensureMcpConnected"));
-        }
-
-        #[test]
-        fn penpot_agent_tab_can_only_request_the_existing_assistant() {
-            let message = serde_json::from_str::<PenpotMessage>(r#"{"type":"openAssistant"}"#)
-                .expect("valid Design integration message");
-
-            assert_eq!(message, PenpotMessage::OpenAssistant);
-            assert!(serde_json::from_str::<PenpotMessage>(r#"{"type":"runCommand"}"#).is_err());
-        }
-
-        #[test]
-        fn penpot_reports_exact_remote_file_readiness() {
-            let file_id = Uuid::new_v4();
-            let surface_id = Uuid::new_v4();
-            let message = serde_json::from_value::<PenpotMessage>(serde_json::json!({
-                "type": "mcpStatus",
-                "connected": true,
-                "fileId": file_id,
-                "surfaceId": surface_id,
-            }))
-            .expect("valid Design MCP readiness message");
-
-            assert_eq!(
-                message,
-                PenpotMessage::McpStatus {
-                    connected: true,
-                    file_id: Some(file_id),
-                    surface_id,
-                }
-            );
-        }
-
-        #[test]
-        fn stale_penpot_surface_status_is_rejected_after_navigation() {
-            let active_surface_id = Uuid::new_v4();
-            let stale = PenpotMessage::McpStatus {
-                connected: true,
-                file_id: Some(Uuid::new_v4()),
-                surface_id: Uuid::new_v4(),
-            };
-            let current = PenpotMessage::McpStatus {
-                connected: true,
-                file_id: Some(Uuid::new_v4()),
-                surface_id: active_surface_id,
-            };
-
-            assert!(!penpot_message_matches_surface(
-                &stale,
-                Some(active_surface_id)
-            ));
-            assert!(penpot_message_matches_surface(
-                &current,
-                Some(active_surface_id)
-            ));
-        }
-
-        #[test]
-        fn native_assistant_tabs_use_the_stable_penpot_api() {
-            let script = penpot_sidebar_tab_script(PenpotSidebarTab::Assets);
-
-            assert!(script.contains(r#"const tab = "assets""#));
-            assert!(script.contains("api.setSidebarTab"));
-            assert!(!script.contains("querySelector"));
-        }
-
-        #[test]
-        fn native_assistant_collapse_uses_the_stable_penpot_api() {
-            let script = penpot_left_sidebar_collapse_script();
-
-            assert!(script.contains("api.collapseLeftSidebar"));
-            assert!(!script.contains("querySelector"));
-        }
     }
 }
 
@@ -5009,16 +3428,17 @@ a {{ color: var(--foreground); }} svg, canvas {{ max-width: 100%; }}
 mod imp {
     use std::path::Path;
 
-    use gpui::{AsyncApp, Bounds, Pixels, Window};
+    use gpui::{Bounds, Pixels, Window};
+    use super::WebPreviewWake;
 
     use super::{
-        DocEditorMessage, PenpotMessage, PenpotSidebarTab, ProjectPreviewMessage, WebPreviewIntent,
+        DocEditorMessage, ProjectPreviewMessage, WebPreviewIntent,
     };
 
     pub struct WebPreviewHost;
 
     impl WebPreviewHost {
-        pub fn new(_app: AsyncApp) -> Self {
+        pub fn new(_app: WebPreviewWake) -> Self {
             Self
         }
         pub fn set_intent(&mut self, _intent: Option<WebPreviewIntent>) -> bool {
@@ -5032,6 +3452,8 @@ mod imp {
         pub fn is_route_suspended(&self) -> bool {
             false
         }
+        pub fn begin_transcript_layout(&mut self) {}
+        pub fn finish_transcript_layout(&mut self) {}
         pub fn place(&mut self, _bounds: Bounds<Pixels>, _window: &Window) {}
         pub fn take_doc_editor_messages(&mut self) -> Vec<DocEditorMessage> {
             Vec::new()
@@ -5039,17 +3461,6 @@ mod imp {
         pub fn take_project_preview_messages(&mut self) -> Vec<ProjectPreviewMessage> {
             Vec::new()
         }
-        pub fn take_penpot_messages(&mut self) -> Vec<PenpotMessage> {
-            Vec::new()
-        }
-        pub fn navigate_url(&self, _url: &str) -> Result<(), String> {
-            Err("Embedded Design is only available on macOS.".to_string())
-        }
-        pub fn set_penpot_assistant_open(&mut self, _open: bool) {}
-        pub fn set_penpot_compare_open(&mut self, _open: bool) {}
-        pub fn set_penpot_keepalive(&mut self, _keepalive: bool) {}
-        pub fn select_penpot_sidebar_tab(&self, _tab: PenpotSidebarTab) {}
-        pub fn collapse_penpot_left_sidebar(&self) {}
         pub fn set_project_preview_inspecting(&self, _inspecting: bool) -> Result<(), String> {
             Err("Project Preview is only available on macOS.".to_string())
         }

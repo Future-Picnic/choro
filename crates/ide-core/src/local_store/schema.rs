@@ -33,6 +33,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         ensure_penpot_schema(conn).await?;
         ensure_penpot_source_columns(conn).await?;
         ensure_penpot_conversation_model_columns(conn).await?;
+        super::remote::ensure_schema(conn).await?;
         ensure_voice_schema(conn).await?;
         ensure_agent_repository_column(conn).await?;
         ensure_git_workflow_schema(conn).await?;
@@ -579,6 +580,13 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             })
         })
         .await?;
+    }
+    if current < 36 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            super::remote::ensure_schema(conn).await?;
+            record_schema_version(conn, 36).await?;
+            Ok(())
+        })).await?;
     }
     Ok(())
 }

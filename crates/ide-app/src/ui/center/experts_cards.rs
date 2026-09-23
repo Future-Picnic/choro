@@ -245,7 +245,13 @@ impl CenterArea {
                     .py(crate::ui::design::chat_card_row_pad_y())
                     .text_size(crate::ui::design::text_ui())
                     .text_color(crate::ui::design::t3(cx))
-                    .child("The lead is choosing Bandmates and writing their assignments."),
+                    .child(if run.status.terminal() {
+                        "No bandmates were started. Conversations and files are retained."
+                    } else if run.status.stopped() {
+                        "Paused before assignments started. You can correct the request, then resume."
+                    } else {
+                        "The lead is choosing Bandmates and writing their assignments."
+                    }),
             );
         }
         for (index, task) in run.tasks.iter().enumerate() {
@@ -289,6 +295,57 @@ impl CenterArea {
             .into_any_element()
     }
 
+    /// Same task control on the timeline and both Band side-panel surfaces.
+    /// A stopped run must be resumed first; never bypass its durable gate.
+    pub(super) fn render_delegation_task_control(
+        &self,
+        run: &DelegationRun,
+        task: &DelegationTask,
+        surface: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if run.status.terminal() || run.status.stopped() || task.status.terminal() {
+            return None;
+        }
+        let run_id = run.id;
+        let parent = run.parent_agent_id;
+        let task_id = task.id;
+        let stopped = task.status == TaskStatus::Paused;
+        Some(
+            crate::ui::style::delegation_card_action_button(
+                SharedString::from(format!("{surface}-bandmate-control-{task_id}")),
+                if stopped { "Resume" } else { "Stop" },
+                cx,
+            )
+            .tooltip(if stopped {
+                "Resume this bandmate"
+            } else {
+                "Stop this bandmate"
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(h) = cx.try_global::<DelegationHandle>().cloned() {
+                    let result = h.0.update(cx, |s, cx| {
+                        if stopped {
+                            s.resume_task(run_id, task_id, cx)
+                        } else {
+                            s.pause_task(run_id, task_id, cx)
+                        }
+                    });
+                    match result {
+                        Ok(()) => {
+                            this.agent_start_errors.remove(&parent);
+                        }
+                        Err(e) => {
+                            this.agent_start_errors.insert(parent, e.to_string());
+                        }
+                    }
+                }
+                cx.notify();
+            }))
+            .into_any_element(),
+        )
+    }
+
     fn render_delegation_task_row(
         &self,
         run: &DelegationRun,
@@ -299,10 +356,6 @@ impl CenterArea {
         let run_id = run.id;
         let parent = run.parent_agent_id;
         let task_id = task.id;
-        let run_paused = matches!(
-            run.status,
-            RunStatus::Paused | RunStatus::Interrupted | RunStatus::Blocked
-        );
         let child = task.attempt().map(|a| a.child_agent_id);
         let needs_user = child.is_some_and(|id| self.delegated_child_needs_user(id, cx));
         let activity = display::task_activity(run.status, task, needs_user);
@@ -334,7 +387,7 @@ impl CenterArea {
             None
         };
         let status = display::completion_stage(run.status, task.status)
-            .filter(|_| !run_paused)
+            .filter(|_| !run.status.stopped())
             .unwrap_or_else(|| task_status_label(run.status, task, needs_user));
 
         let mut actions = h_flex().flex_none().gap_1().items_center();
@@ -362,30 +415,7 @@ impl CenterArea {
                 })),
             );
         }
-        if !run.status.terminal() && !run_paused && !task.status.terminal() {
-            let stopped = task.status == TaskStatus::Paused;
-            actions = actions.child(
-                crate::ui::style::delegation_card_action_button(
-                    ("expert-stop-resume", task_id.as_u128() as u64),
-                    if stopped { "Resume" } else { "Stop" },
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(h) = cx.try_global::<DelegationHandle>().cloned() {
-                        if let Err(e) = h.0.update(cx, |s, cx| {
-                            if stopped {
-                                s.resume_task(run_id, task_id, cx)
-                            } else {
-                                s.pause_task(run_id, task_id, cx)
-                            }
-                        }) {
-                            this.agent_start_errors.insert(parent, e.to_string());
-                        }
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        actions = actions.children(self.render_delegation_task_control(run, task, "timeline", cx));
 
         let mut body = v_flex()
             .flex_1()
@@ -443,14 +473,7 @@ impl CenterArea {
                     .child(task.plan.goal.clone()),
             );
         if let Some(detail) = detail {
-            body = body.child(
-                div()
-                    .min_w(px(0.))
-                    .truncate()
-                    .text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t3(cx))
-                    .child(detail),
-            );
+            body = body.child(crate::ui::style::delegation_activity_preview(&detail, cx));
         }
         if let Some(reason) = task.reason.clone() {
             body = body.child(

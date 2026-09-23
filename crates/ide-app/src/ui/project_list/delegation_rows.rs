@@ -4,84 +4,33 @@
 //! their lead, behind a chevron the user opens. Disclosure changes nothing but
 //! this view's own fold state, and a click on a row is the one way to open it.
 use super::*;
-use crate::state::delegation::display::{self, DelegatedTaskRow, ParentDelegationState};
-use crate::state::delegation::DelegationHandle;
+use crate::state::delegation::display::DelegatedTaskRow;
 
 impl ProjectList {
     pub(super) fn delegation_activity_for(&self, agent_id: Uuid, cx: &App) -> DelegationActivity {
-        let Some(handle) = cx.try_global::<DelegationHandle>() else {
-            return DelegationActivity::Idle;
-        };
-        let chats = self.agent_chats.read(cx);
-        display::parent_delegation_activity(&handle.0.read(cx).runs, agent_id, &|child| {
-            chats.session(child).is_some_and(|session| {
-                session.pending_approval.is_some()
-                    || session.pending_user_input.is_some()
-                    || session.status == AgentChatStatus::PlanReady
-            })
-        })
-    }
-
-    /// The lead's delegated work, from the application-owned coordinator.
-    pub(super) fn delegation_state_for(&self, agent_id: Uuid, cx: &App) -> ParentDelegationState {
-        let Some(handle) = cx.try_global::<DelegationHandle>() else {
-            return ParentDelegationState::default();
-        };
-        let chats = self.agent_chats.read(cx);
-        let needs_user = |child: Uuid| {
-            chats.session(child).is_some_and(|session| {
-                session.pending_approval.is_some()
-                    || session.pending_user_input.is_some()
-                    || session.status == AgentChatStatus::PlanReady
-            })
-        };
-        let runs = &handle.0.read(cx).runs;
-        let mut state = display::parent_delegation_state(runs, agent_id, &needs_user);
-        // Keep finished conversations discoverable beneath their lead, without
-        // reviving the activity, working count, or live-run state.
-        if !state.has_live_run() {
-            state.tasks = display::assignment_overview(runs, agent_id, &needs_user)
-                .into_iter()
-                .map(|entry| DelegatedTaskRow {
-                    run_id: entry.run_id,
-                    task_id: entry.task_id,
-                    bandmate_index: entry.bandmate_index,
-                    child_agent_id: entry.child_agent_id,
-                    expert: entry.expert,
-                    label: entry.label,
-                    goal: entry.goal,
-                    status: entry.status,
-                    activity: entry.activity,
-                })
-                .collect();
-        }
-        state
+        self.model
+            .read(cx)
+            .agents
+            .get(&agent_id)
+            .map(|agent| agent.delegation)
+            .unwrap_or_default()
     }
 
     pub(super) fn render_delegation_toggle(
         &self,
         agent_id: Uuid,
-        state: &ParentDelegationState,
+        activity: DelegationActivity,
         working: bool,
         hovered: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let expanded = self.expanded_delegations.contains(&agent_id);
         let glyph = if working && !hovered {
-            if state.activity == DelegationActivity::Working {
-                delegation_spinner(
-                    16.,
-                    "sidebar-lead-experts-spinner",
-                    agent_id.as_u128() as usize,
-                    crate::ui::design::amber(cx),
-                )
+            if activity == DelegationActivity::Working {
+                self.activity_anchors
+                    .placeholder(16., Some(crate::ui::design::amber(cx)))
             } else {
-                logo_spinner(
-                    16.,
-                    "sidebar-lead-spinner",
-                    agent_id.as_u128() as usize,
-                    crate::ui::design::t3(cx),
-                )
+                self.activity_anchors.placeholder(16., None)
             }
         } else {
             crate::ui::design::indicator::lucide_icon(
@@ -110,35 +59,15 @@ impl ProjectList {
             if !this.expanded_delegations.remove(&agent_id) {
                 this.expanded_delegations.insert(agent_id);
             }
+            let expanded = this.expanded_delegations.clone();
+            this.model
+                .update(cx, |model, cx| model.set_expanded(expanded, cx));
             cx.notify();
         }))
         .into_any_element()
     }
 
-    pub(super) fn render_delegated_task_rows(
-        &self,
-        project: ProjectId,
-        parent: Uuid,
-        indent: gpui::Pixels,
-        state: &ParentDelegationState,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        v_flex()
-            .w_full()
-            .min_w(px(0.))
-            .pl(indent)
-            .pr_1()
-            .py_1()
-            .children(
-                state
-                    .tasks
-                    .iter()
-                    .map(|task| self.render_delegated_task_row(project, parent, task, cx)),
-            )
-            .into_any_element()
-    }
-
-    fn render_delegated_task_row(
+    pub(super) fn render_delegated_task_row(
         &self,
         project: ProjectId,
         parent: Uuid,
@@ -230,7 +159,7 @@ impl ProjectList {
         let Some(child) = child else {
             return;
         };
-        if let Some(center) = self.center.upgrade() {
+        if let Some(center) = self.center.as_ref().and_then(WeakEntity::upgrade) {
             center.update(cx, |center, cx| {
                 center.open_delegated_task(child, window, cx);
             });

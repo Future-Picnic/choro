@@ -1,5 +1,6 @@
 export type Point = { x: number; y: number };
 export type Camera = Point & { zoom: number };
+export type Activity = "working" | "editing" | "queued";
 export type Screen = {
   id: string;
   name: string;
@@ -7,6 +8,8 @@ export type Screen = {
   height: number;
   content_key: string;
   archived: boolean;
+  /** Set while a live agent turn still owes this screen its design. */
+  activity?: Activity | null;
 };
 export type Layout = {
   schema_version: number;

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -18,6 +19,28 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = parseArgs(process.argv.slice(2));
 const outputRoot = resolve(repoRoot, options.output ?? "target/license-audit");
 const thirdPartyRoot = join(outputRoot, "third-party");
+const rustUpstreamRoot = join(
+  repoRoot,
+  "crates/ide-app/assets/licenses/rust-upstream",
+);
+const rustUpstreamManifest = JSON.parse(
+  readFileSync(join(rustUpstreamRoot, "manifest.json"), "utf8"),
+);
+const rustUpstreamLicenses = new Map(
+  rustUpstreamManifest.licenses.map((entry) => [
+    githubRepositorySlug(entry.repository),
+    entry,
+  ]),
+);
+const licenseDeclarationOnlyPackages = new Map([
+  ["genawaiter@0.99.1", { declared: "MIT", selected: "MIT" }],
+  ["genawaiter-macro@0.99.1", { declared: "MIT/Apache-2.0", selected: "Apache-2.0" }],
+  ["htmlescape@0.3.1", { declared: "Apache-2.0 / MIT / MPL-2.0", selected: "Apache-2.0" }],
+  ["leak@0.1.2", { declared: "Apache-2.0 OR MIT", selected: "Apache-2.0" }],
+  ["leaky-cow@0.1.1", { declared: "MIT / Apache-2.0", selected: "Apache-2.0" }],
+  ["mac@0.1.1", { declared: "MIT/Apache-2.0", selected: "Apache-2.0" }],
+  ["pack1@1.1.0", { declared: "Zlib OR Apache-2.0 OR MIT", selected: "Apache-2.0" }],
+]);
 
 if (outputRoot === repoRoot || outputRoot === dirname(repoRoot)) {
   throw new Error(`Refusing unsafe output directory: ${outputRoot}`);
@@ -29,6 +52,10 @@ mkdirSync(thirdPartyRoot, { recursive: true });
 copyRequired("LICENSE", "CHORO-LICENSE.txt");
 copyRequired("NOTICE", "CHORO-NOTICE.txt");
 copyRequired("THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md");
+copyRequired(
+  "crates/ide-app/assets/licenses/rust-upstream/manifest.json",
+  "source-materials/rust-upstream-manifest.json",
+);
 copyRequired(
   "crates/ide-app/assets/ASSET_PROVENANCE.md",
   "ASSET_PROVENANCE.md",
@@ -51,7 +78,6 @@ const bundledFiles = [
   "vendor/smart-turn-rs/LICENSE",
   "crates/ide-app/assets/licenses/MOONSHINE-ENGLISH-MODELS-MIT.txt",
   "crates/ide-app/assets/licenses/SMART-TURN-BSD-2-CLAUSE.txt",
-  "crates/ide-app/assets/licenses/CEF-BSD-3-CLAUSE.txt",
   "crates/ide-app/assets/fonts/inter/LICENSE.txt",
   "crates/ide-app/assets/fonts/schibsted/OFL.txt",
   "crates/ide-app/assets/fonts/devicon/LICENSE",
@@ -191,6 +217,96 @@ function collectRustPackages() {
       safeSegment(`${pkg.name}-${pkg.version}`),
     );
     const copied = copyLicenseCandidates(packageRoot, destination, pkg.license_file);
+    const upstream = rustUpstreamLicenses.get(
+      githubRepositorySlug(pkg.repository ?? pkg.homepage),
+    );
+    if (
+      copied.length === 0 &&
+      upstream &&
+      declaredLicenseAllows(pkg.license, upstream.spdx)
+    ) {
+      const files = [upstream, ...(upstream.extraFiles ?? [])];
+      mkdirSync(destination, { recursive: true });
+      for (const [index, file] of files.entries()) {
+        const source = verifiedUpstreamFile(file);
+        const name = index === 0 ? "UPSTREAM-LICENSE.txt" : file.file;
+        copyFileSync(source, join(destination, name));
+        copied.push(name);
+      }
+    }
+    if (copied.length === 0 && pkg.name === "adot-tree-sitter-toml" && pkg.version === "0.1.0") {
+      mkdirSync(destination, { recursive: true });
+      copyFileSync(
+        join(rustUpstreamRoot, "tree-sitter-grammars-tree-sitter-toml.txt"),
+        join(destination, "LICENSE-ORIGINAL-MIT.txt"),
+      );
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/ADOT-TOML-PROVENANCE.txt"),
+        join(destination, "PROVENANCE.txt"),
+      );
+      copied.push("LICENSE-ORIGINAL-MIT.txt", "PROVENANCE.txt");
+    }
+    if (copied.length === 0 && pkg.name === "seahash" && pkg.version === "4.1.0") {
+      mkdirSync(destination, { recursive: true });
+      copyFileSync(
+        join(rustUpstreamRoot, "seahash-MIT.txt"),
+        join(destination, "LICENSE-MIT.txt"),
+      );
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/SEAHASH-PROVENANCE.txt"),
+        join(destination, "PROVENANCE.txt"),
+      );
+      copied.push("LICENSE-MIT.txt", "PROVENANCE.txt");
+    }
+    if (
+      copied.length === 0 &&
+      ((pkg.name === "hexf-parse" && pkg.version === "0.2.1") ||
+        (pkg.name === "workspace-hack" && pkg.version === "0.1.0")) &&
+      pkg.license === "CC0-1.0"
+    ) {
+      mkdirSync(destination, { recursive: true });
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/CC0-1.0-LEGALCODE.txt"),
+        join(destination, "CC0-1.0-LEGALCODE.txt"),
+      );
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/CC0-PACKAGE-PROVENANCE.txt"),
+        join(destination, "PROVENANCE.txt"),
+      );
+      copied.push("CC0-1.0-LEGALCODE.txt", "PROVENANCE.txt");
+    }
+    const declarationOnly = licenseDeclarationOnlyPackages.get(`${pkg.name}@${pkg.version}`);
+    if (copied.length === 0 && declarationOnly) {
+      if (pkg.license !== declarationOnly.declared) {
+        throw new Error(`Published license declaration changed for ${pkg.name}@${pkg.version}`);
+      }
+      mkdirSync(destination, { recursive: true });
+      const standardLicense = declarationOnly.selected === "MIT"
+        ? "crates/ide-app/assets/licenses/MIT-STANDARD-TEXT.txt"
+        : "LICENSE";
+      const licenseName = `STANDARD-${declarationOnly.selected}.txt`;
+      copyFileSync(join(repoRoot, standardLicense), join(destination, licenseName));
+      writeFileSync(
+        join(destination, "PUBLISHED-METADATA.txt"),
+        [
+          `Package: ${pkg.name} ${pkg.version}`,
+          `Published license declaration: ${pkg.license}`,
+          `Selected license text: ${declarationOnly.selected}`,
+          `Published authors: ${pkg.authors?.join("; ") || "not supplied"}`,
+          `Published repository: ${pkg.repository ?? "not supplied"}`,
+          "",
+          "The published crate archive has no license file. This standard license text",
+          "is provided alongside the publisher's Cargo metadata, not represented as",
+          "an original upstream copyright notice. In the standard MIT text, the",
+          "<year> and <copyright holders> placeholders are not verified attribution.",
+          "",
+          "Cargo manifest license-field documentation:",
+          "https://doc.rust-lang.org/cargo/reference/manifest.html#the-license-and-license-file-fields",
+          "",
+        ].join("\n"),
+      );
+      copied.push(licenseName, "PUBLISHED-METADATA.txt");
+    }
     return {
       name: pkg.name,
       version: pkg.version,
@@ -199,6 +315,44 @@ function collectRustPackages() {
       copied,
     };
   });
+}
+
+function githubRepositorySlug(repository) {
+  const match = String(repository ?? "").match(
+    /^(?:git\+)?https?:\/\/github\.com\/([^/]+\/[^/#?]+)/i,
+  );
+  return match?.[1].replace(/\.git$/i, "").toLowerCase() ?? null;
+}
+
+function declaredLicenseAllows(expression, spdx) {
+  if (!expression) return false;
+  if (expression === spdx) return true;
+  if (/\bAND\b/.test(expression)) return false;
+  return expression
+    .split(/\s+OR\s+|\/|\s+/)
+    .map((part) => part.replace(/[()]/g, ""))
+    .includes(spdx);
+}
+
+function verifiedUpstreamFile(entry) {
+  if (entry.file !== entry.file?.split(/[\\/]/).at(-1)) {
+    throw new Error(`Unsafe upstream license filename: ${entry.file}`);
+  }
+  const source = join(rustUpstreamRoot, entry.file);
+  const bytes = readFileSync(source);
+  const hash = (data) =>
+    createHash("sha1")
+      .update(`blob ${data.length}\0`)
+      .update(data)
+      .digest("hex");
+  // apply_patch normalizes files without a final newline. Accept only that
+  // harmless normalization while retaining the exact upstream blob digest.
+  const matches = hash(bytes) === entry.gitBlobSha ||
+    (bytes.at(-1) === 10 && hash(bytes.subarray(0, -1)) === entry.gitBlobSha);
+  if (!matches) {
+    throw new Error(`Upstream license changed without review: ${entry.file}`);
+  }
+  return source;
 }
 
 function collectNodePackages(nodeModulesRoot) {
@@ -242,6 +396,39 @@ function collectNodePackages(nodeModulesRoot) {
       safeSegment(`${name}-${version}`),
     );
     const copied = copyLicenseCandidates(packageRoot, destination);
+    // serve-sim's published npm package omits its Apache-2.0 LICENSE, although
+    // the upstream repository provides it. The standard Apache text is already
+    // the Choro root LICENSE; include a per-package copy in the app bundle.
+    if (name === "serve-sim" && version === "0.1.45" && copied.length === 0) {
+      mkdirSync(destination, { recursive: true });
+      copyFileSync(join(repoRoot, "LICENSE"), join(destination, "LICENSE-APACHE-2.0"));
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/SERVE-SIM-ATTRIBUTION.txt"),
+        join(destination, "ATTRIBUTION.txt"),
+      );
+      copied.push("LICENSE-APACHE-2.0", "ATTRIBUTION.txt");
+    }
+    // The standardwebhooks npm tarball omits the libraries/LICENSE file from
+    // its exact v1.0.0 source tag. The repository root LICENSE covers the spec
+    // under Apache-2.0; the JavaScript library is MIT-licensed separately.
+    if (name === "standardwebhooks" && version === "1.0.0" && copied.length === 0) {
+      mkdirSync(destination, { recursive: true });
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/STANDARDWEBHOOKS-MIT.txt"),
+        join(destination, "LICENSE-MIT.txt"),
+      );
+      copied.push("LICENSE-MIT.txt");
+    }
+    // The published 2.3.8 package also omits its MIT text. Upstream now
+    // provides the matching MIT notice and copyright attribution.
+    if (name === "react-remove-scroll-bar" && version === "2.3.8" && copied.length === 0) {
+      mkdirSync(destination, { recursive: true });
+      copyFileSync(
+        join(repoRoot, "crates/ide-app/assets/licenses/REACT-REMOVE-SCROLL-BAR-MIT.txt"),
+        join(destination, "LICENSE-MIT.txt"),
+      );
+      copied.push("LICENSE-MIT.txt");
+    }
     records.push({
       name,
       version,

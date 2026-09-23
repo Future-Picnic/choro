@@ -61,8 +61,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         true
     }
 
@@ -100,8 +99,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         true
     }
 
@@ -136,8 +134,7 @@ impl AgentChatState {
             AgentChatTimelineItem::ReviewChecklist(checklist.clone()),
             cx,
         );
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn toggle_review_checklist_item(
@@ -168,8 +165,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn toggle_review_checklist_expanded(
@@ -196,8 +192,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn select_pending_user_input_option(
@@ -228,8 +223,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn previous_pending_user_input_question(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -248,8 +242,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn next_pending_user_input_question(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -268,8 +261,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn set_pending_user_input_custom_answer(
@@ -293,8 +285,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn toggle_proposed_plan_expanded(
@@ -351,8 +342,7 @@ impl AgentChatState {
             persist_timeline_item(agent_id, AgentChatTimelineItem::ProposedPlan(plan), cx);
         }
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn toggle_code_review_expanded(
@@ -382,8 +372,7 @@ impl AgentChatState {
             persist_timeline_item(agent_id, AgentChatTimelineItem::CodeReview(review), cx);
         }
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn toggle_verification_expanded(
@@ -417,8 +406,7 @@ impl AgentChatState {
             );
         }
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn toggle_agent_summary_expanded(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -438,8 +426,7 @@ impl AgentChatState {
             cx,
         );
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     /// The requirement titles a verification fix turn should target: the
@@ -491,8 +478,7 @@ impl AgentChatState {
             return;
         }
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     /// The `path:line — title` lines for the findings a fix turn should target:
@@ -549,8 +535,7 @@ impl AgentChatState {
             return;
         }
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     /// Mark the findings a fix turn targets (the ticked ones, or all pending)
@@ -584,8 +569,7 @@ impl AgentChatState {
             return;
         }
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn resolve_proposed_plan_submission(
@@ -612,8 +596,7 @@ impl AgentChatState {
         }
         session.last_activity_at = unix_now();
         let mode = session.interaction_mode;
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         Some((submission.text, mode))
     }
 
@@ -626,8 +609,7 @@ impl AgentChatState {
         session.interaction_mode = AgentInteractionMode::Default;
         session.started_running_at = None;
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn replace_pending_user_input(
@@ -655,8 +637,7 @@ impl AgentChatState {
             if session.status != AgentChatStatus::Running {
                 session.started_running_at = None;
             }
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         }
     }
 
@@ -677,8 +658,7 @@ impl AgentChatState {
             session.set_status(AgentChatStatus::PlanReady);
             session.started_running_at = None;
             session.last_activity_at = unix_now();
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         }
     }
 
@@ -688,8 +668,7 @@ impl AgentChatState {
             upsert_timeline_work_log(&mut session.timeline, entry.clone());
             persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
             session.last_activity_at = unix_now();
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         }
     }
 }

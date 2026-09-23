@@ -2,6 +2,7 @@ use super::*;
 
 impl Render for CenterArea {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.rendered_chat_agents.clear();
         self.apply_pending_voice_composer_actions(window, cx);
         // Ask History is a global destination: it remains useful before a
         // project is open and never leaves a native preview layered above it.
@@ -48,87 +49,12 @@ impl Render for CenterArea {
         };
         self.terminals
             .update(cx, |terminals, cx| terminals.sync_theme(cx));
-        let doc_messages = self
-            .web_host
-            .update(cx, |host, _| host.take_doc_editor_messages());
-        for message in doc_messages {
-            match message {
-                web_preview::DocEditorMessage::Change { path, document } => {
-                    if let Err(error) = self
-                        .docs
-                        .update(cx, |docs, cx| docs.apply_web_document(path, document, cx))
-                    {
-                        eprintln!("failed to apply document editor change: {error:#}");
-                    }
-                }
-                web_preview::DocEditorMessage::OpenReference { path, target } => {
-                    self.pending_reference_open = Some((path, target));
-                }
-                _ => {}
-            }
-        }
-        let penpot_messages = self
-            .web_host
-            .update(cx, |host, _| host.take_penpot_messages());
-        for message in penpot_messages {
-            match message {
-                web_preview::PenpotMessage::OpenAssistant => {
-                    self.penpot_assistant_open = true;
-                }
-                web_preview::PenpotMessage::McpStatus {
-                    connected, file_id, ..
-                } => {
-                    self.handle_design_mcp_status(connected, file_id, cx);
-                }
-                web_preview::PenpotMessage::ExportFinished { success, file_name } => {
-                    let message = if success {
-                        format!("Exported {file_name} to Downloads")
-                    } else {
-                        format!("Could not export {file_name}")
-                    };
-                    let notification = if success {
-                        Notification::success(message)
-                    } else {
-                        Notification::error(message)
-                    };
-                    window.push_notification(notification, cx);
-                }
-            }
-        }
-        self.handle_project_preview_messages(window, cx);
-        self.apply_pending_reference_open(window, cx);
 
-        if !self.penpot.read(cx).enabled() && self.penpot_open_design.is_some() {
-            self.penpot_open_design = None;
-            self.penpot_external_mcp_design = None;
-            self.penpot_assistant_open = false;
-            self.close_penpot_compare(cx);
-        }
         let has_terminals = self.has_terminal_content(project, cx);
         let effective_mode = self.effective_code_mode(project, has_terminals);
-        if matches!(effective_mode, CenterMode::Design | CenterMode::Tasks | CenterMode::MyTasks | CenterMode::Docs | CenterMode::Agents)
-            && self.studio_catalog_refreshed.get(&project).is_none_or(|last| last.elapsed() > Duration::from_secs(2)) {
-            self.refresh_studio_catalog(project, cx);
-        }
 
 
-        // Reconcile the single in-app web preview: a URL is intended only when the
-        // Assets context is visible and a web-URL reference is selected. Any other
-        // state (different kind, Docs, another tab) tears the page down. `place`
-        // (from the reserved region's canvas) builds/positions it.
-        //
-        // The WKWebView is a native view layered ABOVE all GPUI content, so while
-        // a dialog or sheet is open it would cover that overlay and steal keyboard
-        // first-responder (breaking typing until app restart). Suppress it then so
-        // dialogs stay interactive.
-        let overlay_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
-        let penpot_compare_active = !overlay_open
-            && effective_mode == CenterMode::Design
-            && self.penpot_compare_open
-            && (self
-                .penpot_open_design
-                .is_some_and(|(open_project, _)| open_project == project)
-                || self.studio.as_ref().is_some_and(|s| s.project == project && !s.design.manifest.system_workspace));
+
         let selected_parent = (effective_mode == CenterMode::Agents)
             .then(|| self.agents.read(cx).selected_agent_id(project))
             .flatten();
@@ -144,6 +70,23 @@ impl Render for CenterArea {
                             .is_some_and(|b| Some(b.parent_agent_id) == selected_parent)
                 })
         });
+        let overlay_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+        if self.native_surface_dirty || self.native_overlay_open != overlay_open {
+            self.native_surface_dirty = false;
+            self.native_overlay_open = overlay_open;
+        // Reconcile the single in-app web preview: a URL is intended only when the
+        // Assets context is visible and a web-URL reference is selected. Any other
+        // state (different kind, Docs, another tab) tears the page down. `place`
+        // (from the reserved region's canvas) builds/positions it.
+        //
+        // The WKWebView is a native view layered ABOVE all GPUI content, so while
+        // a dialog or sheet is open it would cover that overlay and steal keyboard
+        // first-responder (breaking typing until app restart). Suppress it then so
+        // dialogs stay interactive.
+        let design_compare_active = !overlay_open
+            && effective_mode == CenterMode::Design
+            && self.design_compare_open
+            && self.studio.as_ref().is_some_and(|s| s.project == project && !s.design.manifest.system_workspace);
         let project_preview_intent = if !overlay_open && overview.is_some() {
             None
         } else if !overlay_open && delegated.is_some() {
@@ -153,17 +96,13 @@ impl Render for CenterArea {
         } else {
             None
         };
-        let compare_preview_intent = if penpot_compare_active {
+        let compare_preview_intent = if design_compare_active {
             project_preview_intent.clone()
         } else {
             None
         };
-        self.process_studio_messages(window, cx);
         let studio_active = effective_mode == CenterMode::Design
             && self.studio.as_ref().is_some_and(|s| s.project == project);
-        if !studio_active && self.studio.as_ref().is_some_and(|s|s.screen.is_none()&&s.canvas.html.is_some()) {self.flush_studio_canvas();}
-        self.process_studio_canvas(studio_active && !overlay_open, cx);
-        self.refresh_studio_canvas(cx);
         // Native overlays hide Studio without discarding its editing buffer.
         // Actual navigation still selects another intent (or None), dropping it.
         let web_preview_intent = if studio_active {
@@ -179,7 +118,7 @@ impl Render for CenterArea {
                         document: document.clone(),
                     })
             })
-        } else if !penpot_compare_active && project_preview_intent.is_some() {
+        } else if !design_compare_active && project_preview_intent.is_some() {
             project_preview_intent
         } else if !overlay_open
             && effective_mode == CenterMode::Docs
@@ -274,21 +213,6 @@ impl Render for CenterArea {
                 .and_then(|reference| designs::design_web_preview_url(&reference))
                 .map(web_preview::WebPreviewIntent::Url)
         } else if !overlay_open
-            && effective_mode == CenterMode::Design
-            && self
-                .penpot_open_design
-                .is_some_and(|(open_project, _)| open_project == project)
-            && self.penpot.read(cx).is_configured()
-            && !self.penpot_editing_settings
-        {
-            self.penpot
-                .read(cx)
-                .selected_design_web_url(project)
-                .map(|url| web_preview::WebPreviewIntent::PenpotUrl {
-                    url,
-                    theme: web_preview::PenpotTheme::from_app(cx),
-                })
-        } else if !overlay_open
             && effective_mode == CenterMode::Agents
             && overview.is_none()
             && delegated.is_none()
@@ -300,37 +224,6 @@ impl Render for CenterArea {
         } else {
             None
         };
-        let penpot_assistant_open = effective_mode == CenterMode::Design
-            && self.penpot_open_design.is_some()
-            && self.penpot_assistant_open;
-        let composer_has_linked_design = self.new_agent_composer.as_ref().is_some_and(|composer| {
-            composer
-                .selected_mentions
-                .iter()
-                .any(|mention| mention.kind == ComposerMentionKind::PenpotDesign)
-        });
-        let selected_agent_has_linked_design = self
-            .agents
-            .read(cx)
-            .selected_agent(project)
-            .is_some_and(|agent| !self.penpot.read(cx).designs_for_agent(&agent).is_empty());
-        let external_browser_owns_mcp = self
-            .penpot_external_mcp_design
-            .is_some_and(|(open_project, _)| open_project == project)
-            && (composer_has_linked_design || selected_agent_has_linked_design);
-        let dedicated_design_session_active =
-            self.design_mcp_readiness
-                .iter()
-                .any(|(design_id, readiness)| {
-                    !matches!(readiness, DesignMcpReadiness::Blocked(_))
-                        && self
-                            .penpot_open_design
-                            .is_some_and(|(_, open_design_id)| open_design_id == *design_id)
-                });
-        let keep_penpot_connected = self.penpot.read(cx).enabled() && (dedicated_design_session_active
-            || (effective_mode == CenterMode::Agents
-                && (composer_has_linked_design || selected_agent_has_linked_design)
-                && !external_browser_owns_mcp));
         let web_preview_torn_down = self.web_host.update(cx, |host, _| {
             host.set_modal_suspended(
                 overlay_open
@@ -341,9 +234,6 @@ impl Render for CenterArea {
                             .is_some_and(|s| s.tab == studio::StudioTab::Agent)
                         && self.composer_model_expanded),
             );
-            host.set_penpot_assistant_open(penpot_assistant_open);
-            host.set_penpot_compare_open(penpot_compare_active);
-            host.set_penpot_keepalive(keep_penpot_connected);
             host.set_intent(web_preview_intent)
         });
         let compare_preview_torn_down = self
@@ -355,6 +245,7 @@ impl Render for CenterArea {
             web_preview::restore_focus(window);
         }
 
+        }
         let body: gpui::AnyElement = match effective_mode {
             CenterMode::Files => {
                 let editors = self.render_editor_section(project, cx);
@@ -399,7 +290,7 @@ impl Render for CenterArea {
                 } else if self.studio.as_ref().is_some_and(|s| s.project == project) {
                     self.render_studio(project, window, cx)
                 } else {
-                    self.render_penpot_section(project, window, cx)
+                    self.render_design_section(project, window, cx)
                 }
             }
             CenterMode::Split => {
@@ -455,6 +346,7 @@ impl Render for CenterArea {
             }
         });
 
+        let inline_host = self.web_host.clone();
         v_flex()
             .size_full()
             .on_action(cx.listener(|this, _: &SaveFile, window, cx| {
@@ -523,6 +415,10 @@ impl Render for CenterArea {
                         )
                     }),
             )
+            .child(canvas(
+                |_, _, _| (),
+                move |_, _, _, cx| inline_host.update(cx, |host, _| host.finish_transcript_layout()),
+            ).absolute().size_0())
             .into_any_element()
     }
 }

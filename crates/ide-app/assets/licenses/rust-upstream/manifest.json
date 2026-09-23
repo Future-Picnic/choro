@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "licenses": [
+    {
+      "repository": "https://github.com/agentclientprotocol/rust-sdk",
+      "spdx": "Apache-2.0",
+      "file": "agentclientprotocol-rust-sdk.txt",
+      "source": "https://github.com/agentclientprotocol/rust-sdk/blob/main/LICENSE",
+      "gitBlobSha": "c24b053560354d8261d5132edaa3d30b2d1cb1f3"
+    },
+    {
+      "repository": "https://github.com/agentclientprotocol/agent-client-protocol",
+      "spdx": "Apache-2.0",
+      "file": "agentclientprotocol-agent-client-protocol.txt",
+      "source": "https://github.com/agentclientprotocol/agent-client-protocol/blob/main/LICENSE",
+      "gitBlobSha": "1de02305f81f6dc087b6229a1d86a31774d2fa31"
+    },
+    {
+      "repository": "https://github.com/kvark/blade",
+      "spdx": "MIT",
+      "file": "kvark-blade.txt",
+      "source": "https://github.com/kvark/blade/blob/main/LICENSE",
+      "gitBlobSha": "8d8caa9025867a4d58247b7c92c206ddb079ec24"
+    },
+    {
+      "repository": "https://github.com/rutrum/convert-case",
+      "spdx": "MIT",
+      "file": "rutrum-convert-case.txt",
+      "source": "https://github.com/rutrum/convert-case/blob/master/LICENSE",
+      "gitBlobSha": "c0ce8f0a3b7351d84a1420d11a8c045d333870a3"
+    },
+    {
+      "repository": "https://github.com/zowens/crc32c",
+      "spdx": "Apache-2.0",
+      "file": "zowens-crc32c.txt",
+      "source": "https://github.com/zowens/crc32c/blob/master/LICENSE-APACHE",
+      "gitBlobSha": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+    },
+    {
+      "repository": "https://github.com/apache/datasketches-rust",
+      "spdx": "Apache-2.0",
+      "file": "apache-datasketches-rust.txt",
+      "source": "https://github.com/apache/datasketches-rust/blob/main/LICENSE",
+      "gitBlobSha": "1db2a3b4ad8cc5ab018acc21d933d5c277ab65ec",
+      "extraFiles": [{
+        "file": "apache-datasketches-rust-NOTICE.txt",
+        "source": "https://github.com/apache/datasketches-rust/blob/main/NOTICE",
+        "gitBlobSha": "ecfbe6cad13cf6fd8fd0e32054a28b3b989c966b"
+      }]
+    },
+    {
+      "repository": "https://github.com/mmastrac/rust-ctor",
+      "spdx": "Apache-2.0",
+      "file": "mmastrac-rust-ctor.txt",
+      "source": "https://github.com/mmastrac/linktime/blob/master/LICENSE-APACHE",
+      "gitBlobSha": "5c304d1a4a7b439f767990bf1360d3283e45d0ee"
+    },
+    {
+      "repository": "https://github.com/SSheldon/malloc_buf",
+      "spdx": "MIT",
+      "file": "ssheldon-malloc-buf.txt",
+      "source": "https://github.com/SSheldon/malloc_buf/blob/master/LICENSE",
+      "gitBlobSha": "c852b1d181129b0ea5ca454ce3c370cbe8586692"
+    },
+    {
+      "repository": "https://github.com/mongodb/mongo-rust-driver",
+      "spdx": "Apache-2.0",
+      "file": "mongodb-mongo-rust-driver.txt",
+      "source": "https://github.com/mongodb/mongo-rust-driver/blob/main/LICENSE",
+      "gitBlobSha": "e2b362134201335dcd5b336fc486069c4cd1cbc5"
+    },
+    {
+      "repository": "https://github.com/gfx-rs/wgpu",
+      "spdx": "Apache-2.0",
+      "file": "gfx-rs-wgpu.txt",
+      "source": "https://github.com/gfx-rs/wgpu/blob/trunk/LICENSE.APACHE",
+      "gitBlobSha": "d9a10c0d8e868ebf8da0b3dc95bb0be634c34bfe"
+    },
+    {
+      "repository": "https://github.com/quickwit-oss/tantivy",
+      "spdx": "MIT",
+      "file": "quickwit-oss-tantivy.txt",
+      "source": "https://github.com/quickwit-oss/tantivy/blob/main/LICENSE",
+      "gitBlobSha": "7b1fc849b042df2e7607138009e81bd078d9db4a",
+      "extraFiles": [{
+        "file": "quickwit-oss-tantivy-AUTHORS.txt",
+        "source": "https://github.com/quickwit-oss/tantivy/blob/main/AUTHORS",
+        "gitBlobSha": "59562653b4c2e88837c3293e1dd0e16e840d1ff8"
+      }]
+    },
+    {
+      "repository": "https://github.com/servo/pathfinder",
+      "spdx": "Apache-2.0",
+      "file": "servo-pathfinder.txt",
+      "source": "https://github.com/servo/pathfinder/blob/main/LICENSE-APACHE",
+      "gitBlobSha": "16fe87b06e802f094b3fbb0894b137bca2b16ef1"
+    },
+    {
+      "repository": "https://github.com/aclysma/profiling",
+      "spdx": "Apache-2.0",
+      "file": "aclysma-profiling.txt",
+      "source": "https://github.com/aclysma/profiling/blob/master/LICENSE-APACHE",
+      "gitBlobSha": "139dce95d473c201a8561ef17536314d8b8cda65"
+    },
+    {
+      "repository": "https://github.com/longbridge/rust-i18n",
+      "spdx": "MIT",
+      "file": "longbridge-rust-i18n.txt",
+      "source": "https://github.com/longbridge/rust-i18n/blob/main/LICENSE",
+      "gitBlobSha": "b276fc5af9586ff23f664513917341f41960a33e"
+    },
+    {
+      "repository": "https://github.com/lu-zero/simd_helpers",
+      "spdx": "MIT",
+      "file": "lu-zero-simd-helpers.txt",
+      "source": "https://github.com/lu-zero/simd_helpers/blob/master/LICENSE",
+      "gitBlobSha": "1b7c6aaa5106ef1459ed8c539c06d640e0e0a784"
+    },
+    {
+      "repository": "https://github.com/ashvardanian/SimSIMD",
+      "spdx": "Apache-2.0",
+      "file": "ashvardanian-simsimd.txt",
+      "source": "https://github.com/ashvardanian/NumKong/blob/main/LICENSE",
+      "gitBlobSha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    {
+      "repository": "https://github.com/fast/stacksafe",
+      "spdx": "Apache-2.0",
+      "file": "fast-stacksafe.txt",
+      "source": "https://github.com/fast/stacksafe/blob/main/LICENSE",
+      "gitBlobSha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    {
+      "repository": "https://github.com/nical/rust_debug",
+      "spdx": "MIT",
+      "file": "nical-rust-debug.txt",
+      "source": "https://github.com/nical/rust_debug/blob/master/LICENSE",
+      "gitBlobSha": "9ad7b40bcf7bb89a9866e5e2e8fdb370fb528e36"
+    },
+    {
+      "repository": "https://github.com/DioxusLabs/taffy",
+      "spdx": "MIT",
+      "file": "dioxuslabs-taffy.txt",
+      "source": "https://github.com/DioxusLabs/taffy/blob/main/LICENSE",
+      "gitBlobSha": "f6b3d8f95569d0dfca076b6b24901b2a4a89aca8"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-bash",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-bash.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-bash/blob/master/LICENSE",
+      "gitBlobSha": "aa9f858db5722d9576104726471b11cc0e31f131"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-cpp",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-cpp.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-cpp/blob/master/LICENSE",
+      "gitBlobSha": "4b52d191cead337b11e274b79459a86f1b5a7779"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-css",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-css.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-css/blob/master/LICENSE",
+      "gitBlobSha": "971b81f9a86c0c91827e225aeac9159a13bfd3c1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-embedded-template",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-embedded-template.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-embedded-template/blob/master/LICENSE",
+      "gitBlobSha": "971b81f9a86c0c91827e225aeac9159a13bfd3c1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-go",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-go.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-go/blob/master/LICENSE",
+      "gitBlobSha": "4b52d191cead337b11e274b79459a86f1b5a7779"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter/blob/master/LICENSE",
+      "gitBlobSha": "971b81f9a86c0c91827e225aeac9159a13bfd3c1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-html",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-html.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-html/blob/master/LICENSE",
+      "gitBlobSha": "4b52d191cead337b11e274b79459a86f1b5a7779"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-java",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-java.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-java/blob/master/LICENSE",
+      "gitBlobSha": "4e0446f76ca7d380d615e31b5500711df66a9ea2"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-javascript",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-javascript.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-javascript/blob/master/LICENSE",
+      "gitBlobSha": "4b52d191cead337b11e274b79459a86f1b5a7779"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-jsdoc",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-jsdoc.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-jsdoc/blob/master/LICENSE",
+      "gitBlobSha": "f0fb3e7da462c9f0f708c570384643d3ccea523b"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-json",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-json.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-json/blob/master/LICENSE",
+      "gitBlobSha": "4b52d191cead337b11e274b79459a86f1b5a7779"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-make",
+      "spdx": "MIT",
+      "file": "tree-sitter-grammars-tree-sitter-make.txt",
+      "source": "https://github.com/tree-sitter-grammars/tree-sitter-make/blob/main/LICENSE",
+      "gitBlobSha": "5c279ffb8001a7c2d293764beda5fa8b38d4243e"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-markdown",
+      "spdx": "MIT",
+      "file": "tree-sitter-grammars-tree-sitter-markdown.txt",
+      "source": "https://github.com/tree-sitter-grammars/tree-sitter-markdown/blob/split_parser/LICENSE",
+      "gitBlobSha": "c125939af9e397f845811e9d8f31e07dc69170db"
+    },
+    {
+      "repository": "https://github.com/coder3101/tree-sitter-proto",
+      "spdx": "MIT",
+      "file": "coder3101-tree-sitter-proto.txt",
+      "source": "https://github.com/coder3101/tree-sitter-proto/blob/main/LICENSE",
+      "gitBlobSha": "c0e3f2c92f80b9aa415ff45cbaa97dae21e9e348"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-python",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-python.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-python/blob/master/LICENSE",
+      "gitBlobSha": "ff8ed93cb0dd57d68feeefe4829dbc9083584b5e"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-ruby",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-ruby.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-ruby/blob/master/LICENSE",
+      "gitBlobSha": "2a79f435f473717691c5e2b356fbf3e758ba930d"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-scala",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-scala.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-scala/blob/master/LICENSE",
+      "gitBlobSha": "bd0a4d6c7d625591c54e1f023b93af2a4650271a"
+    },
+    {
+      "repository": "https://github.com/derekstride/tree-sitter-sql",
+      "spdx": "MIT",
+      "file": "derekstride-tree-sitter-sql.txt",
+      "source": "https://github.com/DerekStride/tree-sitter-sql/blob/main/LICENSE",
+      "gitBlobSha": "b976c9b4c70b2aad4bb31de3d6504193dc0be83c"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-toml",
+      "spdx": "MIT",
+      "file": "tree-sitter-grammars-tree-sitter-toml.txt",
+      "source": "https://github.com/tree-sitter-grammars/tree-sitter-toml/blob/master/LICENSE",
+      "gitBlobSha": "7bf071b1d83ca0644118769f568c978bb7ccf3ae"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-typescript",
+      "spdx": "MIT",
+      "file": "tree-sitter-tree-sitter-typescript.txt",
+      "source": "https://github.com/tree-sitter/tree-sitter-typescript/blob/master/LICENSE",
+      "gitBlobSha": "aa9f858db5722d9576104726471b11cc0e31f131"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-zig",
+      "spdx": "MIT",
+      "file": "tree-sitter-grammars-tree-sitter-zig.txt",
+      "source": "https://github.com/tree-sitter-grammars/tree-sitter-zig/blob/master/LICENSE",
+      "gitBlobSha": "4e8c9b38350135b69d7137e508d29e8980794569"
+    },
+    {
+      "repository": "https://github.com/tursodatabase/turso",
+      "spdx": "MIT",
+      "file": "tursodatabase-turso.txt",
+      "source": "https://github.com/tursodatabase/turso/blob/main/LICENSE.md",
+      "gitBlobSha": "9573cadaf0b69893bf64bb595f06c4be150366e3"
+    },
+    {
+      "repository": "https://github.com/madsmtm/objc2",
+      "spdx": "MIT",
+      "file": "madsmtm-objc2.txt",
+      "source": "https://github.com/madsmtm/objc2/blob/main/LICENSE-MIT.txt",
+      "gitBlobSha": "ce8c4c17fd88f6cf5f3720c08fa685434e3cbcbb",
+      "extraFiles": [
+        {
+          "file": "madsmtm-objc2-LICENSE.md.txt",
+          "source": "https://github.com/madsmtm/objc2/blob/main/LICENSE.md",
+          "gitBlobSha": "1a9e73faf433d038b70c24bf4594d3c87fe4cb23"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/rustaudio/sample",
+      "spdx": "Apache-2.0",
+      "file": "rustaudio-sample.txt",
+      "source": "https://github.com/RustAudio/dasp/blob/master/LICENSE-APACHE",
+      "gitBlobSha": "74c4f492b303bec6da5ec6af182865f664a4c4c0"
+    },
+    {
+      "repository": "https://github.com/longbridge/gpui-component",
+      "spdx": "Apache-2.0",
+      "file": "longbridge-gpui-component.txt",
+      "source": "https://github.com/longbridge/gpui-kit/blob/main/LICENSE-APACHE",
+      "gitBlobSha": "1e9e81e7dc6d9c0a7490c9c5debd67697284ee25"
+    },
+    {
+      "repository": "https://github.com/nical/lyon",
+      "spdx": "Apache-2.0",
+      "file": "nical-lyon.txt",
+      "source": "https://github.com/nical/lyon/blob/main/LICENSE-APACHE",
+      "gitBlobSha": "47f4fd0e8982271e9b7662380fae36a1ac007cf1"
+    },
+    {
+      "repository": "https://github.com/erweixin/RaTeX",
+      "spdx": "MIT",
+      "file": "erweixin-ratex.txt",
+      "source": "https://github.com/erweixin/RaTeX/blob/main/LICENSE",
+      "gitBlobSha": "92b4ec405e868c81051b3b659ce676fa366380ff"
+    },
+    {
+      "repository": "https://github.com/etemesi254/zune-image",
+      "spdx": "Apache-2.0",
+      "file": "etemesi254-zune-image.txt",
+      "source": "https://github.com/etemesi254/zune-image/blob/dev/LICENSE-APACHE",
+      "gitBlobSha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    {
+      "repository": "https://github.com/WhySoBad/lucide-icons-rs",
+      "spdx": "MIT AND ISC",
+      "file": "whysobad-lucide-icons-rs.txt",
+      "source": "https://github.com/WhySoBad/lucide-icons-rs/blob/master/LICENSE",
+      "gitBlobSha": "4df69de1dfe296e844615fd2c1fb2b385957d08e",
+      "extraFiles": [
+        {
+          "file": "lucide-icons-lucide-1.24.0.txt",
+          "source": "https://github.com/lucide-icons/lucide/blob/1.24.0/LICENSE",
+          "gitBlobSha": "718bb3f0e44153809972abed31839375804bf652"
+        }
+      ]
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-diff",
+      "spdx": "MIT",
+      "file": "tree-sitter-grammars-tree-sitter-diff.txt",
+      "source": "https://github.com/tree-sitter-grammars/tree-sitter-diff/blob/main/LICENSE",
+      "gitBlobSha": "d1e0083ce13f8f2c06fffa4b00dbb46172e2f491"
+    }
+  ]
+}

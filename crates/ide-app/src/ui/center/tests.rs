@@ -75,10 +75,10 @@ fn external_links_in_chat_lists_remain_clickable_markdown() {
 }
 
 #[test]
-fn local_file_links_in_chat_lists_still_become_file_labels() {
+fn local_file_links_in_chat_lists_remain_clickable_markdown() {
     assert_eq!(
         chat_message_display_markdown("- [main.rs](/work/src/main.rs)"),
-        "- **main.rs**"
+        "- [main.rs](<file:///work/src/main.rs>)"
     );
 }
 
@@ -753,6 +753,7 @@ fn selected_mentions_prepend_native_tokens_on_submit() {
             path_label: "src/main.rs".to_string(),
             context: None,
             project_id: None,
+            studio_attachment: None,
         },
         ComposerMentionToken {
             kind: ComposerMentionKind::Doc,
@@ -760,6 +761,7 @@ fn selected_mentions_prepend_native_tokens_on_submit() {
             path_label: "docs/spec.md".to_string(),
             context: None,
             project_id: None,
+            studio_attachment: None,
         },
     ];
 
@@ -781,43 +783,6 @@ fn selected_mentions_prepend_native_tokens_on_submit() {
     );
 }
 
-#[test]
-fn penpot_design_mention_keeps_durable_identity_and_url() {
-    let design_id = Uuid::new_v4();
-    let file_id = Uuid::new_v4();
-    let team_id = Uuid::new_v4();
-    let penpot_project_id = Uuid::new_v4();
-    let reference = ProjectReference {
-        id: design_id,
-        project_id: ProjectId(Uuid::new_v4()),
-        kind: ide_core::ProjectReferenceKind::Url,
-        title: "Checkout flow".to_string(),
-        source: "https://design.penpot.app/#/workspace?file-id=example".to_string(),
-        preview_relative_path: None,
-        notes: String::new(),
-        metadata_json: serde_json::json!({
-            "provider": "penpot",
-            "design_id": design_id,
-            "file_id": file_id,
-            "team_id": team_id,
-            "penpot_project_id": penpot_project_id,
-        })
-        .to_string(),
-        sort_order: 0,
-        created_at: 1,
-        updated_at: 1,
-    };
-
-    let token = ComposerMentionToken::penpot_design(&reference).unwrap();
-    let submission = composer_mentions_submission_text("review accessibility", &[token], &[]);
-    assert!(submission.contains(&format!("local-id=\"{design_id}\"")));
-    assert!(submission.contains(&format!("file-id=\"{file_id}\"")));
-    assert!(submission.contains("https://design.penpot.app"));
-    assert!(submission.contains("Use the connected Design MCP tools to inspect this exact design"));
-    assert!(submission.contains("instead of silently substituting another visual source"));
-    assert!(!submission.contains("Penpot"));
-    assert!(submission.ends_with("review accessibility"));
-}
 
 #[test]
 fn project_mentions_resolve_the_live_path_from_the_stable_project_id() {

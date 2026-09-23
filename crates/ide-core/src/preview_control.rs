@@ -142,6 +142,61 @@ pub fn call_preview_control(
     Ok(response)
 }
 
+/// Internal state hint over the existing authenticated socket. No navigation or
+/// Preview command is involved. A bounded worker keeps commits off socket I/O.
+pub const DELEGATION_CHANGED_ACTION: &str = "internal.delegation_changed";
+
+pub fn notify_delegation_changed(root: &Path, run_id: Uuid) {
+    #[cfg(unix)]
+    {
+        use std::sync::{mpsc, OnceLock};
+        static SENDER: OnceLock<Option<mpsc::SyncSender<(PathBuf, Uuid)>>> = OnceLock::new();
+        let sender = SENDER.get_or_init(|| {
+            let (sender, receiver) = mpsc::sync_channel::<(PathBuf, Uuid)>(64);
+            std::thread::Builder::new()
+                .name("delegation-change-hints".into())
+                .spawn(move || {
+                    for (root, run_id) in receiver {
+                        // Hints may be dropped: desktop recovery polling still reads storage.
+                        let _ = send_delegation_hint(&root, run_id);
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        });
+        if let Some(sender) = sender {
+            let _ = sender.try_send((root.to_owned(), run_id));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (root, run_id);
+}
+
+#[cfg(unix)]
+fn send_delegation_hint(root: &Path, run_id: Uuid) -> Result<()> {
+    use std::os::unix::net::UnixStream;
+    let endpoint = read_preview_control_endpoint(root)?;
+    let request = PreviewControlRequest {
+        version: PREVIEW_CONTROL_PROTOCOL_VERSION,
+        id: Uuid::new_v4(),
+        token: endpoint.token,
+        project_id: ProjectId(Uuid::nil()),
+        agent_id: Uuid::nil(),
+        action: DELEGATION_CHANGED_ACTION.into(),
+        payload_json: serde_json::to_string(&run_id)?,
+    };
+    let mut stream = UnixStream::connect(&endpoint.socket_path)?;
+    stream.set_write_timeout(Some(Duration::from_millis(250)))?;
+    stream.set_read_timeout(Some(Duration::from_millis(250)))?;
+    write_frame(
+        &mut stream,
+        &serde_json::to_vec(&request)?,
+        PREVIEW_CONTROL_MAX_REQUEST_BYTES,
+    )?;
+    let _ = read_frame(&mut stream, PREVIEW_CONTROL_MAX_RESPONSE_BYTES)?;
+    Ok(())
+}
+
 #[cfg(not(unix))]
 pub fn call_preview_control(
     _root: &Path,
@@ -180,6 +235,53 @@ pub fn read_frame(reader: &mut impl Read, maximum: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn delegation_hint_uses_authenticated_transport_without_preview_navigation() {
+        use std::os::unix::net::UnixListener;
+        let directory = tempfile::Builder::new()
+            .prefix("choro-ipc-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = directory.path().join("hint.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let endpoint = PreviewControlEndpoint {
+            version: PREVIEW_CONTROL_PROTOCOL_VERSION,
+            pid: std::process::id(),
+            socket_path: socket,
+            token: "fixture-capability".into(),
+        };
+        fs::write(
+            preview_control_descriptor_path(directory.path()),
+            serde_json::to_vec(&endpoint).unwrap(),
+        )
+        .unwrap();
+        let run_id = Uuid::new_v4();
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let bytes = read_frame(&mut stream, PREVIEW_CONTROL_MAX_REQUEST_BYTES).unwrap();
+            let request: PreviewControlRequest = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(request.token, endpoint.token);
+            assert_eq!(request.action, DELEGATION_CHANGED_ACTION);
+            assert_eq!(
+                serde_json::from_str::<Uuid>(&request.payload_json).unwrap(),
+                run_id
+            );
+            let response = PreviewControlResponse::success(request.id, "{}".into(), None);
+            write_frame(
+                &mut stream,
+                &serde_json::to_vec(&response).unwrap(),
+                PREVIEW_CONTROL_MAX_RESPONSE_BYTES,
+            )
+            .unwrap();
+        });
+        send_delegation_hint(directory.path(), run_id).unwrap();
+        peer.join().unwrap();
+    }
 
     #[test]
     fn framed_messages_round_trip_and_enforce_limits() {

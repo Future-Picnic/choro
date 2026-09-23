@@ -204,7 +204,7 @@ impl CenterArea {
                         AgentChatTimelineItem::MemoryProposal(card),
                         cx,
                     );
-                    cx.notify();
+                    chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
                 });
                 cx.notify();
             })
@@ -378,7 +378,7 @@ impl CenterArea {
                     }
                 }
             }
-            cx.notify();
+            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
         });
     }
 

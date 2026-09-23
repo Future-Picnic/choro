@@ -130,13 +130,6 @@ impl CenterArea {
             self.doc_implementors(project, &doc.relative_path, cx)
         };
         let active_implementor = implementors.first().cloned();
-        let linked_designs = if is_template {
-            Vec::new()
-        } else {
-            self.penpot
-                .read(cx)
-                .designs_for_doc(project, &doc.relative_path)
-        };
         let title_edit_input = self
             .doc_title_edit
             .as_ref()
@@ -393,17 +386,7 @@ impl CenterArea {
                 .on_click(move |_, _, _| crate::ui::git::git_panel::open_url(&url))
                 .into_any_element()
             });
-        let mut design_indicators = linked_designs
-            .iter()
-            .cloned()
-            .map(|design| {
-                self.render_linked_design_indicator(
-                    ("doc-linked-design", design.id.as_u128() as u64),
-                    design,
-                    cx,
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut design_indicators = Vec::new();
         if !is_template {
             for design in self.studio_designs_for_doc(project, &doc.relative_path) {
                 design_indicators.push(self.render_linked_studio_indicator("doc-linked-studio", project, design, cx));
@@ -566,17 +549,6 @@ impl CenterArea {
                                                                     },
                                                                 );
                                                                 this.move_studio_doc_links(project, previous_relative.clone(), next_relative.clone(), cx);
-                                                                this.penpot.update(
-                                                                    cx,
-                                                                    |penpot, cx| {
-                                                                        penpot.move_doc_reference(
-                                                                            project,
-                                                                            &previous_relative,
-                                                                            next_relative,
-                                                                            cx,
-                                                                        );
-                                                                    },
-                                                                );
                                                             }
                                                         }
                                                         Err(error) => {

@@ -72,9 +72,9 @@ pub(super) fn exact_agent_ship_paths(
         .collect()
 }
 
-/// Put the branch Ship was opened from first in the PR base picker. The
-/// remote default remains the fallback for detached HEADs and older Solo
-/// records that do not remember their fork branch.
+/// Select the branch Ship was opened from and prefer it after pinned branches
+/// in the PR base picker. The remote default remains the fallback for detached
+/// HEADs and older Solo records that do not remember their fork branch.
 fn prefer_ship_base_branch(
     preferred: Option<&str>,
     fallback: &str,
@@ -118,7 +118,7 @@ impl CenterArea {
             if let Some(receipt) = receipt {
                 crate::state::agent_chat::persist_timeline_item(agent_id, receipt, cx);
             }
-            cx.notify();
+            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             snapshot_id
         });
 
@@ -196,7 +196,7 @@ impl CenterArea {
                     AgentChatTimelineItem::ShipResult(ship_result),
                     cx,
                 );
-                cx.notify();
+                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             }
         });
 
