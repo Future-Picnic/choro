@@ -416,6 +416,7 @@ impl OpenCodeRuntime {
         let Some(session_id) = self.session_id.clone() else {
             return Err(anyhow!("OpenCode session is not ready"));
         };
+        self.set_config_option("model", self.model_id.clone())?;
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.active_turn_id = next_request_id();
@@ -561,7 +562,8 @@ impl OpenCodeRuntime {
                 read_only,
             } => self.send_turn(text, mode, read_only)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => self.access_mode = access_mode,
-            ChatBackendCommand::UpdateModelEffort { effort, .. } => {
+            ChatBackendCommand::UpdateModelEffort { effort, external_model, .. } => {
+                if let Some((id,variants))=external_model {self.model_id=id;self.agent.external_model_variants=variants;}
                 self.effort = effort.cli_value().to_string();
                 if self
                     .agent
@@ -608,8 +610,9 @@ impl OpenCodeRuntime {
                 }) => {
                     self.deferred_turns.push_back((text, mode, read_only));
                 }
-                Ok(ChatBackendCommand::UpdateModelEffort { effort, .. }) => {
-                    self.effort = effort.cli_value().to_string();
+                Ok(ChatBackendCommand::UpdateModelEffort { effort, external_model, .. }) => {
+                    if let Some((id,variants))=external_model {self.model_id=id;self.agent.external_model_variants=variants;}
+                self.effort = effort.cli_value().to_string();
                 }
                 Ok(ChatBackendCommand::SubmitUserInput {
                     request_id,

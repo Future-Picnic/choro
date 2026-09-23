@@ -744,12 +744,7 @@ impl CenterArea {
             let needle = query.to_lowercase();
             branches.retain(|branch| branch.name.to_lowercase().contains(&needle));
         }
-        branches.sort_by(|a, b| {
-            (!a.is_head, a.is_remote)
-                .cmp(&(!b.is_head, b.is_remote))
-                .then_with(|| b.tip_time.cmp(&a.tip_time))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        branches.sort_by(crate::ui::branch_order::compare_branches);
         branches.truncate(if query.is_empty() {
             COMPOSER_BRANCH_PICKER_LIMIT
         } else {
@@ -1346,21 +1341,6 @@ impl CenterArea {
             })
             .take(COMPOSER_PICKER_VISIBLE_LIMIT / 2)
             .collect();
-        {
-            let penpot = self.penpot.read(cx);
-            designs.extend(
-                penpot
-                    .designs_for_project(composer.project)
-                    .into_iter()
-                    .filter_map(|design| {
-                        let source = penpot.design_url(&design)?;
-                        (query.is_empty()
-                            || design.name.to_ascii_lowercase().contains(&query)
-                            || source.to_ascii_lowercase().contains(&query))
-                        .then(|| penpot_design_reference(&design, source))
-                    }),
-            );
-        }
         designs.splice(0..0, self.studio_design_references(composer.project, &query));
         designs.truncate(COMPOSER_PICKER_VISIBLE_LIMIT / 2);
         matches.truncate(COMPOSER_PICKER_VISIBLE_LIMIT.saturating_sub(designs.len()));

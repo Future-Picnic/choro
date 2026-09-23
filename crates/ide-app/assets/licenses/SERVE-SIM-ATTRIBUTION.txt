@@ -1,0 +1,6 @@
+serve-sim 0.1.45
+Copyright 2026 Evan Bacon
+Licensed under the Apache License, Version 2.0.
+
+The upstream LICENSE includes this copyright notice:
+https://github.com/EvanBacon/serve-sim/blob/main/LICENSE

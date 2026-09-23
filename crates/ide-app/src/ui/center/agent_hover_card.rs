@@ -167,23 +167,6 @@ impl CenterArea {
             );
         }
 
-        for design in self.penpot.read(cx).designs_for_agent(agent) {
-            let design_id = design.id;
-            links.push(
-                style::hover_card_link_button(
-                    ("hover-agent-design", design_id.as_u128() as u64),
-                    Icon::new(design::design_icon()).text_color(design::accent(cx)),
-                    design.name,
-                    "Design · Open in Choro",
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.open_penpot_design(project, design_id, cx);
-                }))
-                .into_any_element(),
-            );
-        }
         links
     }
 }

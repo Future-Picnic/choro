@@ -57,8 +57,11 @@ pub use persistence::{
 };
 use timeline::*;
 
+mod changes;
+pub use changes::{ChatChange, ChatChangeCategories};
+
 pub enum AgentChatEvent {
-    Changed,
+    SessionChanged(ChatChange),
     /// A provider-backed work turn settled normally. Unlike `TurnFinished`,
     /// this does not require a user message or changed-files receipt, so
     /// remotely launched agents can reliably react to completion too.
@@ -85,6 +88,8 @@ fn apply_usage_snapshot(session: &mut AgentChatSession, usage: ConversationUsage
 
 #[derive(Default)]
 pub struct AgentChatState {
+    change_tracker: changes::ChatChangeTracker,
+    current_event_received_at: Option<std::time::Instant>,
     pub(crate) sessions: HashMap<Uuid, AgentChatSession>,
     controllers: HashMap<Uuid, ChatBackendController>,
     backend_generations: HashMap<Uuid, u64>,
@@ -669,8 +674,7 @@ impl AgentChatState {
             if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
                 persist_changed_files_turn(id, receipt, ledger, cx);
             }
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(id, ChatChangeCategories::CONTENT, cx);
         }
     }
 
@@ -728,7 +732,8 @@ impl AgentChatState {
         cx: &mut Context<Self>,
     ) -> &mut AgentChatSession {
         let now = unix_now();
-        let session = self
+        let inserted = !self.sessions.contains_key(&agent_id);
+        self
             .sessions
             .entry(agent_id)
             .or_insert_with(|| AgentChatSession {
@@ -753,8 +758,8 @@ impl AgentChatState {
                 started_running_at: None,
                 last_activity_at: now,
             });
-        cx.notify();
-        session
+        if inserted { self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx); }
+        self.sessions.get_mut(&agent_id).unwrap()
     }
 
     pub fn set_interaction_mode(
@@ -765,8 +770,7 @@ impl AgentChatState {
     ) {
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             session.interaction_mode = mode;
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         }
     }
 
@@ -858,8 +862,7 @@ impl AgentChatState {
             session.started_running_at = Some(unix_now());
             session.last_activity_at = unix_now();
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn send_read_only_turn(
@@ -883,8 +886,7 @@ impl AgentChatState {
             session.started_running_at = Some(unix_now());
             session.last_activity_at = unix_now();
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn update_access_mode(
@@ -909,8 +911,7 @@ impl AgentChatState {
             persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
             session.last_activity_at = unix_now();
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn update_model_effort(
@@ -921,7 +922,7 @@ impl AgentChatState {
         cx: &mut Context<Self>,
     ) {
         if let Some(controller) = self.controllers.get(&agent_id) {
-            let _ = controller.send(ChatBackendCommand::UpdateModelEffort { model, effort });
+            let _ = controller.send(ChatBackendCommand::UpdateModelEffort { model, effort, external_model: None });
         }
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             let entry = WorkLogEntry::new(
@@ -936,8 +937,12 @@ impl AgentChatState {
             persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
             session.last_activity_at = unix_now();
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
+    }
+
+    pub fn update_external_model(&mut self, agent_id: Uuid, id: String, variants: Vec<String>, effort: AgentEffort, cx: &mut Context<Self>) {
+        if let Some(controller)=self.controllers.get(&agent_id) {let _=controller.send(ChatBackendCommand::UpdateModelEffort {model:AgentModel::OpenCode, effort, external_model:Some((id,variants))});}
+        self.publish_change(agent_id, ChatChangeCategories::CONTROLS, cx);
     }
 
     pub fn update_title(&mut self, agent_id: Uuid, title: String, cx: &mut Context<Self>) {
@@ -948,8 +953,7 @@ impl AgentChatState {
             return;
         }
         session.title = title;
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn queue_turn(
@@ -976,8 +980,7 @@ impl AgentChatState {
                 self.schedule_next_queued_turn(agent_id, cx);
             }
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         id
     }
 
@@ -985,15 +988,13 @@ impl AgentChatState {
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             session.queued_turns.retain(|turn| turn.id != turn_id);
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn resume_queue(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         if self.paused_queues.remove(&agent_id) {
             self.schedule_next_queued_turn(agent_id, cx);
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         }
     }
 
@@ -1162,8 +1163,7 @@ impl AgentChatState {
             persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
             session.last_activity_at = unix_now();
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     /// Quietly shut down the backend processes of a chat that has been idle
@@ -1196,8 +1196,7 @@ impl AgentChatState {
         // Dropping the controller sends Shutdown; the backend thread exits its
         // run loop and its Drop impl terminates the whole process group.
         self.controllers.remove(&agent_id);
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         true
     }
 
@@ -1206,8 +1205,7 @@ impl AgentChatState {
         self.sessions.remove(&agent_id);
         self.cancellation_requested.remove(&agent_id);
         self.paused_queues.remove(&agent_id);
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn force_stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -1237,8 +1235,9 @@ impl AgentChatState {
             session.pending_user_input = None;
             session.pending_approval = None;
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        for id in self.sessions.keys().copied().collect::<Vec<_>>() {
+            self.publish_change(id, ChatChangeCategories::CONTENT, cx);
+        }
     }
 
     fn hard_stop_backend(
@@ -1275,8 +1274,7 @@ impl AgentChatState {
                 persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
             }
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         stop_signal
     }
 
@@ -1302,8 +1300,7 @@ impl AgentChatState {
             .retain(|item| !matches!(item, AgentChatTimelineItem::PendingUserInput(_)));
         session.set_status(AgentChatStatus::Running);
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn dismiss_pending_user_input(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -1323,8 +1320,7 @@ impl AgentChatState {
         session.set_status(AgentChatStatus::Idle);
         session.started_running_at = None;
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub fn resolve_pending_approval(
@@ -1355,8 +1351,7 @@ impl AgentChatState {
         session.set_status(AgentChatStatus::Running);
         session.started_running_at = Some(unix_now());
         session.last_activity_at = unix_now();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         true
     }
 
@@ -1370,8 +1365,7 @@ impl AgentChatState {
             let merged_message = append_or_extend_message(&mut session.messages, message.clone());
             append_or_extend_timeline_message(&mut session.timeline, message);
             persist_chat_message(agent_id, merged_message, cx);
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         }
     }
 
@@ -1382,11 +1376,22 @@ impl AgentChatState {
         event: ChatBackendEvent,
         cx: &mut Context<Self>,
     ) {
+        self.current_event_received_at = Some(std::time::Instant::now());
+        self.process_backend_event(agent_id, generation, event, cx);
+        self.current_event_received_at = None;
+    }
+
+    fn process_backend_event(&mut self, agent_id: Uuid, generation: u64, event: ChatBackendEvent, cx: &mut Context<Self>) {
+        let change_categories = match &event {
+            ChatBackendEvent::AssistantChunk { .. } | ChatBackendEvent::ThoughtChunk { .. }
+            | ChatBackendEvent::WorkLog(_) | ChatBackendEvent::FileChangeActivity(_)
+            | ChatBackendEvent::Usage(_) | ChatBackendEvent::Compaction(_) => ChatChangeCategories::CONVERSATION,
+            _ => ChatChangeCategories::CONTENT,
+        };
         let now = unix_now();
         if self.backend_generations.get(&agent_id).copied() != Some(generation) {
             if self.apply_stale_backend_event(agent_id, &event, now) {
-                cx.emit(AgentChatEvent::Changed);
-                cx.notify();
+                self.publish_change(agent_id, change_categories, cx);
             }
             return;
         }
@@ -1456,8 +1461,7 @@ impl AgentChatState {
                     return;
                 }
             };
-            cx.emit(AgentChatEvent::Changed);
-            cx.notify();
+            self.publish_change(agent_id, change_categories, cx);
             if should_drain_queue {
                 self.schedule_next_queued_turn(agent_id, cx);
             }
@@ -1703,8 +1707,7 @@ impl AgentChatState {
         if work_finished {
             cx.emit(AgentChatEvent::WorkFinished { agent_id });
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, change_categories, cx);
         if should_drain_queue {
             self.schedule_next_queued_turn(agent_id, cx);
         }

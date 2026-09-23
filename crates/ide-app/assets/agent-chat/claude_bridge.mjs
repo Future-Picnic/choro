@@ -30,7 +30,6 @@ let turnFileFlush = null;
 let pendingMutationTasks = new Set();
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
-let currentDesignAssistant = false;
 let currentStudioAssistant = false;
 let currentManagedDelegation = false;
 let currentManagedChild = false;
@@ -45,7 +44,6 @@ export function managedDelegationOptions(managed, child = false, consultation = 
     ...(consultation ? ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"] : []),
   ] };
 }
-let currentDesignPreviewReview = false;
 let currentReadOnly = false;
 let usageSessionId = null;
 let usageRevision = 0;
@@ -265,7 +263,6 @@ function createPromptController() {
 
 async function ensureRuntime(command) {
   currentAccessMode = command.accessMode || "bypassPermissions";
-  currentDesignAssistant = Boolean(command.designAssistant);
   const requestedStudioAssistant = Boolean(command.studioAssistant);
   if (runtime && currentStudioAssistant !== requestedStudioAssistant) throw new Error("Studio role changed. Reconnect before continuing.");
   currentStudioAssistant = requestedStudioAssistant;
@@ -280,7 +277,6 @@ async function ensureRuntime(command) {
   currentManagedDelegation = requestedManagedDelegation;
   currentManagedChild = requestedManagedChild;
   currentManagedConsultation = requestedManagedConsultation;
-  currentDesignPreviewReview = Boolean(command.designPreviewReview);
   currentReadOnly = Boolean(command.readOnly);
   currentVisualizationDir = command.visualizationDir || currentVisualizationDir;
   const requestedResumeSessionId = command.sessionId || command.session_id || null;
@@ -319,20 +315,8 @@ async function ensureRuntime(command) {
       canUseTool,
       hooks: fileAttributionHooks(),
       mcpServers: command.mcpServers || undefined,
-      strictMcpConfig: currentDesignAssistant || currentStudioAssistant,
-      settingSources: currentDesignAssistant || currentStudioAssistant ? [] : undefined,
-      sandbox: currentDesignAssistant
-        ? {
-            enabled: true,
-            failIfUnavailable: true,
-            autoAllowBashIfSandboxed: false,
-            allowUnsandboxedCommands: false,
-            filesystem: {
-              allowRead: [currentCwd, currentVisualizationDir].filter(Boolean),
-              allowWrite: [currentCwd, currentVisualizationDir].filter(Boolean),
-            },
-          }
-        : undefined,
+      strictMcpConfig: currentStudioAssistant,
+      settingSources: currentStudioAssistant ? [] : undefined,
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
@@ -363,7 +347,8 @@ export async function preflightStudioRuntime(candidate, expectedServers) {
         for (const required of ["studio_context", "studio_apply", "studio_snapshot", "studio_review"]) {
           if (!names.includes(required)) throw new Error(`${repair} Missing ${required}.`);
         }
-        if (names.some(name => toolPolicyDenial(`mcp__${server.name}__${name}`, {studio:true}))) throw new Error(`${repair} Unexpected MCP tool.`);
+        const unexpected = names.filter(name => toolPolicyDenial(`mcp__${server.name}__${name}`, {studio:true}));
+        if (unexpected.length) throw new Error(`${repair} Unexpected MCP tool: ${server.name}: ${unexpected.join(", ")}.`);
       }
     })(), new Promise((_, reject) => { timer=setTimeout(() => reject(new Error(`${repair} Initialization timed out.`)), 30000); }) ]);
   } finally { clearTimeout(timer); }
@@ -389,26 +374,11 @@ export function isChoroCoordinationTool(toolName) {
 async function canUseTool(toolName, input, options) {
   if (currentStudioAssistant) {
     if (toolName === "AskUserQuestion") return handleAskUserQuestion(input, options);
-    if (["Read", "Glob", "Grep"].includes(toolName) || /^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) return {behavior:"allow",updatedInput:input};
-    return {behavior:"deny",message:"Studio can inspect context and edit only through its scoped Studio tools."};
+    const denial = toolPolicyDenial(toolName, { studio: true });
+    return denial ? {behavior:"deny",message:denial} : {behavior:"allow",updatedInput:input};
   }
   const denial = toolPolicyDenial(toolName, currentToolPolicy());
   if (denial) return { behavior: "deny", message: denial };
-  if (
-    currentDesignAssistant &&
-    typeof toolName === "string" &&
-    toolName.startsWith("mcp__") &&
-    !toolName.startsWith("mcp__choro__") &&
-    !toolName.startsWith("mcp__ide__") &&
-    !toolName.startsWith("mcp__penpot__")
-  ) {
-    return {
-      behavior: "deny",
-      message:
-        "This Design Assistant is isolated to its Choro and Design tools. Other MCP servers are unavailable in this session.",
-    };
-  }
-
   if (toolName === "AskUserQuestion") {
     return handleAskUserQuestion(input, options);
   }
@@ -422,37 +392,6 @@ async function canUseTool(toolName, input, options) {
       behavior: "deny",
       message:
         "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
-    };
-  }
-
-  if (currentDesignAssistant) {
-    if (["Read", "Glob", "Grep"].includes(toolName)) {
-      return { behavior: "allow", updatedInput: input };
-    }
-    if (
-      typeof toolName === "string" &&
-      /^(mcp__(?:choro|ide)__(?:task_read|task_list|task_image))$/.test(
-        toolName,
-      )
-    ) {
-      return { behavior: "allow", updatedInput: input };
-    }
-    if (
-      typeof toolName === "string" &&
-      toolName.startsWith("mcp__penpot__")
-    ) {
-      return { behavior: "allow", updatedInput: input };
-    }
-    if (currentDesignPreviewReview) {
-      // A Compare Review deliberately keeps the user in the design
-      // conversation while making the implementation the write target. Honor
-      // the user's normal project access mode for repository tools only.
-      return handleToolPermission(toolName, input, options);
-    }
-    return {
-      behavior: "deny",
-      message:
-        "This Design Assistant can inspect project context but can only make changes through its exact Design connection.",
     };
   }
 
@@ -772,7 +711,8 @@ function currentToolPolicy() {
 }
 
 export function toolPolicyDenial(toolName, policy) {
-  if (policy.studio && !["Read", "Glob", "Grep", "AskUserQuestion"].includes(toolName) && !/^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) {
+  // Keep in sync with ide-mcp's studio::allowed; the server validates the bound role and scope.
+  if (policy.studio && !["Read", "Glob", "Grep", "AskUserQuestion"].includes(toolName) && !/^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read|import_propose)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) {
     return "Studio permits only context reads and host-scoped design operations.";
   }
   if (policy.managed && MANAGED_SPAWN_TOOLS.has(toolName)) {

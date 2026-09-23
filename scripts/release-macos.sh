@@ -344,7 +344,6 @@ CURRENT_STAGE="local validation"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")" == "$BUILD_VERSION" ]]
 file "$APP_PATH/Contents/MacOS/choro" | grep -q 'arm64'
 file "$APP_PATH/Contents/MacOS/choro-mcp" | grep -q 'arm64'
-file "$APP_PATH/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" | grep -q 'arm64'
 file "$APP_PATH/Contents/Frameworks/Sparkle.framework/Sparkle" | grep -q 'arm64'
 for HELPER_PLIST in "$APP_PATH"/Contents/Frameworks/choro\ Helper*.app/Contents/Info.plist; do
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HELPER_PLIST")" == "$CANDIDATE_VERSION" ]]
@@ -634,7 +633,6 @@ fi
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXTRACTED_APP/Contents/Info.plist")" == "$BUILD_VERSION" ]]
 file "$EXTRACTED_APP/Contents/MacOS/choro" | grep -q 'arm64'
 file "$EXTRACTED_APP/Contents/MacOS/choro-mcp" | grep -q 'arm64'
-file "$EXTRACTED_APP/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" | grep -q 'arm64'
 file "$EXTRACTED_APP/Contents/Frameworks/Sparkle.framework/Sparkle" | grep -q 'arm64'
 codesign --verify --deep --strict --verbose=2 "$EXTRACTED_APP"
 xcrun stapler validate "$EXTRACTED_APP"

@@ -366,10 +366,28 @@ impl CenterArea {
                                 .child("No active assignments"),
                         )
                     })
-                    .children(
-                        live.into_iter()
-                            .map(|e| overview_row(e, false, center.clone(), cx)),
-                    )
+                    .children(live.into_iter().map(|e| {
+                        let control = runs.iter().find(|r| r.id == e.run_id).and_then(|run| {
+                            run.tasks
+                                .iter()
+                                .find(|t| t.id == e.task_id)
+                                .and_then(|task| {
+                                    self.render_delegation_task_control(
+                                        run,
+                                        task,
+                                        "band-overview",
+                                        cx,
+                                    )
+                                })
+                        });
+                        v_flex()
+                            .w_full()
+                            .min_w(px(0.))
+                            .child(overview_row(e, false, center.clone(), cx))
+                            .when_some(control, |row, control| {
+                                row.child(h_flex().pl(px(32.)).pb_1().child(control))
+                            })
+                    }))
                     .child(
                         div()
                             .px_2()
@@ -384,6 +402,17 @@ impl CenterArea {
                             .into_iter()
                             .map(|e| overview_row(e, true, center.clone(), cx)),
                     ),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .px_4()
+                    .pb_2()
+                    .children(runs.iter().filter(|run| run.status.stopped()).map(|run| {
+                        self.render_delegation_recovery(run.id, parent, "band-overview", cx)
+                    }))
+                    .children(self.render_delegation_panel_error(parent, cx)),
             )
             .into_any_element()
     }
@@ -549,13 +578,10 @@ fn overview_row(
                         .child(entry.goal.clone()),
                 )
                 .when(!entry.detail.is_empty(), |col| {
-                    col.child(
-                        div()
-                            .w_full()
-                            .truncate()
-                            .text_color(crate::ui::design::t3(cx))
-                            .child(entry.detail.clone()),
-                    )
+                    col.child(crate::ui::style::delegation_activity_preview(
+                        &entry.detail,
+                        cx,
+                    ))
                 })
                 .child(
                     h_flex()

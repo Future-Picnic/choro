@@ -93,17 +93,7 @@ impl CenterArea {
         let agent_id = agent.id;
         let linked_docs = agent.linked_docs.clone();
         let linked_tasks = agent.linked_tasks.clone();
-        let linked_designs = self.penpot.read(cx).designs_for_agent(&agent);
-        let mut linked_design_indicators = linked_designs
-            .into_iter()
-            .map(|design| {
-                self.render_linked_design_indicator(
-                    ("agent-linked-design", design.id.as_u128() as u64),
-                    design,
-                    cx,
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut linked_design_indicators = Vec::new();
         for design in self.studio_designs_for_agent(&agent) {
             linked_design_indicators.push(self.render_linked_studio_indicator("agent-linked-studio", agent.project_id, design, cx));
         }

@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::keymap;
 use crate::remote::{DevicePermission, RelayControl, RelayIdentity, RelayState, RemoteAuth};
 use crate::state::{
-    AgentCapability, AgentCapabilityCacheFile, ChoroRiff, ChoroRiffStore, DesignProvider,
-    OrbitEvent, OrbitState, PenpotConnectionStatus, PenpotState, QuickAskState, Workspace,
+    AgentCapability, AgentCapabilityCacheFile, ChoroRiff, ChoroRiffStore,
+    OrbitEvent, OrbitState, QuickAskState, Workspace,
     CHORO_RIFFS_SCHEMA_VERSION,
 };
 use ide_core::{
@@ -59,8 +59,6 @@ mod skills_page;
 mod theme_preview;
 mod voice;
 
-const PENPOT_CLOUD_URL: &str = "https://design.penpot.app";
-const PENPOT_CLOUD_MCP_URL: &str = "https://design.penpot.app/mcp/stream";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsSection {
@@ -106,9 +104,7 @@ impl SettingsSection {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Design => {
-                "Studio is your default design workspace. Configure optional Penpot connections when enabled."
-            }
+            Self::Design => "Studio is your local design workspace.",
             Self::Generation => {
                 "Choose defaults for agents, Quick Ask, and generated content, plus review behavior."
             }
@@ -124,7 +120,7 @@ impl SettingsSection {
                 "Create Choro Riffs for every project and review skills discovered from your coding agents."
             }
             Self::Experts => "Your bandmates are AI specialists. Start a chat with one or ask your lead to bring them into a task.",
-            Self::BetaFeatures => "Try optional features, including delegation and Penpot.",
+            Self::BetaFeatures => "Try optional features, including delegation.",
             Self::Orbit => {
                 "Create reusable project modules with structured views and an agent job."
             }
@@ -210,14 +206,7 @@ pub struct SettingsView {
     workspace: Entity<Workspace>,
     quick_ask: Entity<QuickAskState>,
     voice: Entity<crate::voice::VoiceState>,
-    penpot: Entity<PenpotState>,
     orbit: Entity<OrbitState>,
-    design_provider: DesignProvider,
-    design_instance_input: Entity<InputState>,
-    design_mcp_input: Entity<InputState>,
-    design_access_token_input: Entity<InputState>,
-    design_mcp_key_input: Entity<InputState>,
-    design_error: Option<String>,
     remote_auth: RemoteAuth,
     remote_relay_control: RelayControl,
     remote_room_id: String,
@@ -358,7 +347,6 @@ impl SettingsView {
     pub fn new(
         workspace: Entity<Workspace>,
         quick_ask: Entity<QuickAskState>,
-        penpot: Entity<PenpotState>,
         voice: Entity<crate::voice::VoiceState>,
         orbit: Entity<OrbitState>,
         remote_auth: RemoteAuth,
@@ -370,7 +358,6 @@ impl SettingsView {
         Self::new_in_section(
             workspace,
             quick_ask,
-            penpot,
             voice,
             orbit,
             remote_auth,
@@ -385,7 +372,6 @@ impl SettingsView {
     pub(crate) fn new_in_section(
         workspace: Entity<Workspace>,
         quick_ask: Entity<QuickAskState>,
-        penpot: Entity<PenpotState>,
         voice: Entity<crate::voice::VoiceState>,
         orbit: Entity<OrbitState>,
         remote_auth: RemoteAuth,
@@ -449,38 +435,6 @@ impl SettingsView {
         let skills_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search skills"));
         let experts_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search bandmates"));
-        let design_provider = penpot.read(cx).provider();
-        let design_config = penpot.read(cx).config().clone();
-        let design_instance_value = if design_provider == DesignProvider::PenpotCloud {
-            design_config.instance_url
-        } else {
-            PENPOT_CLOUD_URL.to_string()
-        };
-        let design_mcp_value = if design_provider == DesignProvider::PenpotCloud {
-            design_config.mcp_url
-        } else {
-            PENPOT_CLOUD_MCP_URL.to_string()
-        };
-        let design_instance_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(design_instance_value)
-                .placeholder(PENPOT_CLOUD_URL)
-        });
-        let design_mcp_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(design_mcp_value)
-                .placeholder(PENPOT_CLOUD_MCP_URL)
-        });
-        let design_access_token_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Paste your Penpot access token")
-                .masked(true)
-        });
-        let design_mcp_key_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Paste your Penpot MCP key")
-                .masked(true)
-        });
         let cached_skills = AgentCapabilityCacheFile::load();
         let riffs = ChoroRiffStore::load().riffs;
         let view = cx.new(|cx| {
@@ -530,8 +484,7 @@ impl SettingsView {
             .detach();
             cx.observe(&workspace, |_: &mut Self, _, cx| cx.notify())
                 .detach();
-            cx.observe(&penpot, |_: &mut Self, _, cx| cx.notify())
-                .detach();
+
             cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
                 .detach();
             cx.observe(&quick_ask, |_: &mut Self, _, cx| cx.notify())
@@ -564,14 +517,7 @@ impl SettingsView {
                 workspace: workspace.clone(),
                 quick_ask: quick_ask.clone(),
                 voice: voice.clone(),
-                penpot: penpot.clone(),
                 orbit: orbit.clone(),
-                design_provider,
-                design_instance_input,
-                design_mcp_input,
-                design_access_token_input,
-                design_mcp_key_input,
-                design_error: None,
                 remote_auth,
                 remote_relay_control: relay_control,
                 remote_room_id: relay_identity.room_id().to_string(),
@@ -1331,14 +1277,6 @@ impl SettingsView {
     }
 }
 
-fn penpot_field_label(label: &'static str, cx: &App) -> gpui::AnyElement {
-    div()
-        .text_size(crate::ui::design::text_ui())
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(crate::ui::design::t2(cx))
-        .child(label)
-        .into_any_element()
-}
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()

@@ -722,7 +722,7 @@ impl CenterArea {
             }
             ComposerMentionKind::File => (IconName::File, crate::ui::design::sage(cx)),
             ComposerMentionKind::Folder => (IconName::FolderOpen, crate::ui::design::sage(cx)),
-            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => (
+            ComposerMentionKind::StudioDesign => (
                 crate::ui::design::design_icon(),
                 crate::ui::design::accent(cx),
             ),

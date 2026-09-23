@@ -59,8 +59,10 @@ def make_server(library_root, port=8769):
             self.send_header('Referrer-Policy', 'no-referrer')
             self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
             self.send_header('Cache-Control', 'no-store')
-            ancestors = "'self'" if urlsplit(self.path).path == '/social-media-plan.html' else "'none'"
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src 'self'; frame-src 'self'; frame-ancestors " + ancestors + "; base-uri 'none'")
+            page_path = urlsplit(self.path).path
+            ancestors = "'self'" if page_path == '/social-media-plan.html' else "'none'"
+            images = "'self' data:" if page_path in ('/', '/how-to-video-library.html') else "'self'"
+            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self'; img-src " + images + "; frame-src 'self'; frame-ancestors " + ancestors + "; base-uri 'none'")
             super().end_headers()
 
         def do_HEAD(self):

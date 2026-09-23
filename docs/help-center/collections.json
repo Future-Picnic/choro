@@ -129,7 +129,7 @@
     "Create a visual direction and hand it to an implementation agent.",
     "Screen overview, inspector, agent sidebar, design-system review, Implement selection.",
     [
-      "Choose a design workflow: Studio, Penpot, or Figma",
+      "Choose a design workflow: Studio or Figma",
       "Create your first Studio design",
       "Create a design from a task or doc",
       "Add and organize screens",

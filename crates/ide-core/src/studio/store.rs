@@ -1,5 +1,7 @@
 #[path = "systems.rs"]
 mod systems;
+#[path = "code_import.rs"]
+mod code_import;
 use super::*;
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
@@ -10,6 +12,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 pub use systems::*;
+pub use code_import::*;
 
 const MAX_FILE: usize = 4 * 1024 * 1024;
 const MAX_BUNDLE: usize = 64 * 1024 * 1024;
@@ -30,6 +33,15 @@ pub struct StudioConversations {
     pub design_id: Uuid,
     pub selected: Uuid,
     pub entries: Vec<StudioConversation>,
+}
+/// The screen one agent turn is actively working on, scoped to that turn so a
+/// marker left by an earlier turn can never be mistaken for live work.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StudioFocus {
+    pub scope_id: Uuid,
+    pub design_id: Uuid,
+    pub screen_id: Uuid,
+    pub at: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
 enum HistoryAction {
@@ -402,6 +414,67 @@ impl StudioStore {
             &self.cache.join("scopes").join(format!("{agent}.json")),
             &serde_json::to_vec(scope)?,
         )
+    }
+    /// Live agent turns on this design, as (agent, scope). Scopes are revoked on
+    /// stop, completion, failure and teardown, so an entry here means a turn is
+    /// genuinely in flight rather than merely once requested.
+    pub fn active_scopes(&self, design_id: Uuid) -> Vec<(Uuid, StudioTurnScope)> {
+        let mut live = Vec::new();
+        let Ok(entries) = fs::read_dir(self.cache.join("scopes")) else {
+            return live;
+        };
+        for entry in entries.flatten() {
+            let Some(agent) = entry
+                .path()
+                .file_stem()
+                .and_then(|stem| stem.to_str()?.parse::<Uuid>().ok())
+            else {
+                continue;
+            };
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(scope) = serde_json::from_slice::<StudioTurnScope>(&bytes) else {
+                continue;
+            };
+            if scope.active && scope.expires_at > now() && scope.design_id == design_id {
+                live.push((agent, scope));
+            }
+        }
+        live
+    }
+
+    /// The screen an agent is working on right now. Written as the agent reads
+    /// or saves a screen and cleared once its review passes, so the canvas can
+    /// point at work in flight instead of guessing from document contents.
+    pub fn record_focus(
+        &self,
+        agent: Uuid,
+        scope_id: Uuid,
+        design_id: Uuid,
+        screen_id: Uuid,
+    ) -> Result<()> {
+        atomic(
+            &self.cache.join("focus").join(format!("{agent}.json")),
+            &serde_json::to_vec(&StudioFocus {
+                scope_id,
+                design_id,
+                screen_id,
+                at: now(),
+            })?,
+        )
+    }
+
+    /// Drop the marker once the agent stops owing this screen any more work.
+    pub fn clear_focus(&self, agent: Uuid, screen_id: Uuid) {
+        if self.focus(agent).is_some_and(|f| f.screen_id == screen_id) {
+            let _ = fs::remove_file(self.cache.join("focus").join(format!("{agent}.json")));
+        }
+    }
+
+    pub fn focus(&self, agent: Uuid) -> Option<StudioFocus> {
+        let bytes = fs::read(self.cache.join("focus").join(format!("{agent}.json"))).ok()?;
+        serde_json::from_slice(&bytes).ok()
     }
     pub fn scope(&self, agent: Uuid) -> Result<StudioTurnScope> {
         let scope: StudioTurnScope = serde_json::from_slice(&fs::read(

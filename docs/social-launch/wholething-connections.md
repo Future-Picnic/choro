@@ -10,7 +10,7 @@ Workspace: **Choro**, https://app.wholething.media/launches.
 | X @Chorodev | Connected | None for connection; publishing was not tested |
 | Facebook Choro | Connected | Page ID `61594239040077`; publishing was not tested |
 | Instagram @choro.dev | Connected via Facebook Business | Publishing was not tested |
-| TikTok | Developer app draft prepared; not connected | Public policy URLs, accepted domain verification, review demo and platform approval |
+| TikTok | Choro production draft saved; owner reports submitted for review; not connected | Await review response, address requirements, install credentials and authorize account |
 | Reddit | Not connected | Reddit Data API / Responsible Builder approval required before app credentials can be issued |
 | LinkedIn | On hold | Owner previously chose to wait until launch |
 
@@ -28,14 +28,37 @@ The official [Postiz provider guide](https://docs.postiz.com/self-host/providers
 
 ## TikTok remaining setup
 
-Created developer access and a **Wholething Postiz** production app draft with the approved Choro icon, Web platform, Login Kit, Content Posting API, Direct Post, the Postiz callback and required scopes. **TikTok credentials have not been installed in production.**
+Created developer access and a **Wholething Postiz** production app draft. A fresh inspection showed **no configured products** and **“No scopes yet”**: the earlier product/scope selections did not persist. Reapply the intended Login Kit, Content Posting API, Direct Post, callback and required scopes once the required policy URLs are available, and verify persistence. **TikTok credentials have not been installed in production.**
 
-Added TikTok's verification TXT record at apex `@` of `wholething.media` in Hostinger, TTL 3600. Hostinger confirmed the save and public DNS returned the record. TikTok still reported that the signature could not be found on the final check; the cause of its rejection is not confirmed. The record remains in place for the next verification attempt.
+**Domain verification is now complete.** TikTok confirmed `wholething.media` as Verified. The exact public TXT record is:
 
-To finish, provide Wholething's public Terms of Service and Privacy Policy URLs, obtain TikTok's ownership-verification acceptance, and prepare the required end-to-end demo for app review. The app remains a draft and has not been submitted. See the [Postiz TikTok guide](https://docs.postiz.com/self-host/providers/tiktok).
+- Hostinger domain: `wholething.media`; host: `@`; TTL: `3600`
+- Value: `tiktok-developers-site-verification=ECBIJaF8qwNpWTTLf9OYYXYwHPDsYaNr`
+
+The value matched individually on both Hostinger authoritative nameservers (`solar.dns-parking.com`, `lunar.dns-parking.com`), Google DNS, Cloudflare DNS and Hostinger's zone UI. No DNS change was necessary; the production verification retry succeeded.
+
+The user reports policy drafts, footer links and product information prepared in the Wholething project, but the public `/privacy` and `/terms` URLs still return 404. Final policies need the actual business/contact details, contractual terms, retention/deletion procedures and vendor disclosures. TikTok currently reports the missing Terms and Privacy URLs as two form errors. Demo and submission remain pending. The user explicitly wants a production integration, not a Sandbox workaround. See the [Postiz TikTok guide](https://docs.postiz.com/self-host/providers/tiktok).
 
 ## Reddit remaining setup
 
 Reddit's live legacy-app registration flow required Data API / Responsible Builder approval. No app credentials were issued and no request or support ticket was submitted. Any access request must accurately describe the intended use; a moderation use case must not be invented to obtain access. The intended community is **r/chorodev**, not the earlier private r/usechoro.
 
 No posts, schedules, messages, follows, upgrades or LinkedIn changes were made during this integration task. Existing content and connections were preserved.
+
+## Latest policy-page handoff and draft-save attempt
+
+The slash-terminated URLs `https://wholething.media/privacy/` and `https://wholething.media/terms/` now return HTTP 200 without login. Both explicitly remain owner-review drafts, not effective policies; they must not be submitted as final. This supersedes the earlier 404 observation above.
+
+Aside session `wZ9Yoy7Yb0gtJaRT` entered the policy URLs, Login Kit, Content Posting API/Direct Post, exact callback and six connector scopes. TikTok rejected Save because app icon, category, description, review explanation and a real end-to-end demo video were missing. These entries remain **unsaved in the open tab**, not persisted configuration. No review submission or production credentials installation occurred.
+
+The Wholething project readiness record additionally identifies unresolved audience eligibility and creator-info/privacy/interaction/upload implementation gaps. Those findings require resolution before review; final policies alone are insufficient. The owner confirmed the app is for the internal team only, managing its own accounts; review eligibility for that use remains unresolved. Existing four social connections are unchanged.
+
+## Choro branding update
+
+The owner requested Choro branding with no public Wholething or Postiz naming. Aside filled the existing TikTok form with **Choro**, the approved 1024px icon, **Productivity**, and truthful description/review text explaining internal use. Save was attempted again: **one validation error remains, the required real end-to-end demo video**. All changes remain unsaved in the open tab; the header still displays the previously saved app name. The existing application, callback and policy URLs still expose `wholething.media`. No review was submitted, no credentials installed and no existing connections changed.
+
+## Video upload, saved draft and owner submission
+
+Uploaded the existing 96-second Choro product overview as `choro-product-overview.mp4`, with an explicit review note that it does not demonstrate TikTok Login Kit or publishing. TikTok accepted **Save**. Reload verified Choro branding, icon, category, description, review explanation, Login Kit, Content Posting API/Direct Post, six scopes, callback, policy URLs and video persisted. This supersedes earlier unsaved-form observations.
+
+The owner subsequently reported submitting the app for review and chose to wait for TikTok feedback; submission has not been independently verified. No submission was made by the agent. The real integration demo and final policy content remain outstanding. A live connection attempt returned `client_key` undefined; production credentials remain uninstalled. Existing social connections are unchanged.

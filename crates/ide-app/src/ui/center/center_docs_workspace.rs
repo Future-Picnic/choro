@@ -33,7 +33,7 @@ impl CenterArea {
             .records()
             .iter()
             .filter(|record| completed_agent_ids.contains(&record.chat_agent_id))
-            .filter(|record| !ide_core::penpot_assistant::is_record_path(&record.relative_doc_path))
+            .filter(|record| !ide_core::doc_assistant::is_retired_design_record(&record.relative_doc_path))
             .cloned()
             .collect::<Vec<_>>();
 
@@ -190,8 +190,8 @@ impl CenterArea {
 
     /// Resolve a `ref:` target clicked inside a doc editor and navigate to it:
     /// `ref:file:<rel>` opens the file editor, `ref:doc:<rel>` opens the doc,
-    /// `ref:design:<uuid>` opens the design source and `ref:penpot:<uuid>`
-    /// selects the Penpot file in Choro. Drained from render so a
+    /// `ref:design:<uuid>` opens the design source; retired links show a notice.
+    /// Drained from render so a
     /// `Window` is available for the file editor's focus call.
     pub(super) fn apply_pending_reference_open(
         &mut self,
@@ -215,8 +215,9 @@ impl CenterArea {
         } else if let Some(id) = target.strip_prefix("ref:studio:") {
             if let Ok(uuid) = Uuid::parse_str(id) { self.open_studio(project, uuid, cx); }
         } else if let Some(id) = target.strip_prefix("ref:penpot:") {
-            if let Ok(uuid) = Uuid::parse_str(id) {
-                self.open_penpot_design(project, uuid, cx);
+            if Uuid::parse_str(id).is_ok() {
+                self.design_hub_error = Some("This link belongs to the retired Penpot integration. Open a Studio design instead.".into());
+                self.show_design_hub(cx);
             }
         } else if let Some(id) = target.strip_prefix("ref:design:") {
             if let Ok(uuid) = Uuid::parse_str(id) {
@@ -330,7 +331,11 @@ impl CenterArea {
         agent.cli_session_id = record.cli_session_id.clone();
         if let Some(context) = ide_core::studio::context_from_path(&record.relative_doc_path) {
             agent.doc = ide_core::studio::system_prompt(&context);
-            agent.title = if context.target == ide_core::studio::StudioAgentTarget::DesignSystem { "Design system agent" } else { "Studio Agent" }.into();
+            agent.title = match context.target {
+                ide_core::studio::StudioAgentTarget::DesignSystem => "Design system agent",
+                ide_core::studio::StudioAgentTarget::DesignSystemImport => "Design systems from code",
+                ide_core::studio::StudioAgentTarget::Design => "Studio Agent",
+            }.into();
             agent.linked_docs.clear();
             agent.source_doc = None;
             agent.studio_context = Some(context);
@@ -344,13 +349,8 @@ impl CenterArea {
         project_path: &Path,
         cx: &mut Context<Self>,
     ) {
-        // Rendering a document or Design assistant calls this method for every
-        // composer change. `ensure_session` notifies AgentChatState even when
-        // the session already exists, which used to invalidate the chat render
-        // cache and schedule another full center render for every keystroke.
-        // `hidden_from_notifications` is set below as part of the one-time
-        // specialized-assistant hydration, so it also serves as the stable
-        // initialized marker here.
+        // Initialize cheap session metadata once. Transcript I/O runs on the
+        // background executor; submissions wait in the existing hydration queue.
         if self
             .agent_chats
             .read(cx)
@@ -369,7 +369,10 @@ impl CenterArea {
                 .then(|| record.cli_session_id.clone())
                 .flatten()
         });
-        self.agent_chats.update(cx, |chats, cx| {
+        let needs_history = self.agent_chats.update(cx, |chats, cx| {
+            let agent_id = record.chat_agent_id;
+            let owner = cx.entity().downgrade();
+            cx.defer(move |cx| { let _ = owner.update(cx, |chats, cx| chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx)); });
             let session = chats.ensure_session(record.chat_agent_id, record.title(), cx);
             session.hidden_from_notifications = true;
             session.interaction_mode = AgentInteractionMode::Default;
@@ -386,41 +389,48 @@ impl CenterArea {
             if session.cli_session_id.is_none() {
                 session.cli_session_id = record.cli_session_id.clone();
             }
-            if !session.messages.is_empty() {
-                return;
-            }
-            let Some(session_id) = session_id.as_deref() else {
-                return;
-            };
-            let messages =
-                doc_assistant::read_chat_messages(record.provider, project_path, session_id);
-            if messages.is_empty() {
-                return;
-            }
-            let created_at = unix_now_secs();
-            let hydrated = messages
-                .into_iter()
-                .filter_map(|message| match message.role {
-                    DocAssistantRole::User => Some(AgentChatMessage::User {
-                        text: message.text,
-                        display_text: None,
-                        tags: Vec::new(),
-                        created_at,
-                    }),
-                    DocAssistantRole::Assistant => Some(AgentChatMessage::Assistant {
-                        message_id: None,
-                        text: message.text,
-                        created_at,
-                    }),
-                })
-                .collect::<Vec<_>>();
-            session.timeline = hydrated
-                .iter()
-                .cloned()
-                .map(AgentChatTimelineItem::Message)
-                .collect();
-            session.messages = hydrated;
+            session.messages.is_empty() && session_id.is_some()
         });
+        if !needs_history { return; }
+        let agent_id = record.chat_agent_id;
+        let generation = self.agent_chat_hydration_generations.entry(agent_id)
+            .and_modify(|generation| *generation = generation.wrapping_add(1)).or_insert(1);
+        let generation = *generation;
+        self.agent_chat_hydrating.insert(agent_id);
+        let provider = record.provider;
+        let project_path = project_path.to_path_buf();
+        let agent = Self::doc_assistant_agent_record(record, project_path.clone());
+        let session_id = session_id.unwrap();
+        cx.spawn(async move |this, cx| {
+            let messages = cx.background_executor().spawn(async move {
+                doc_assistant::read_chat_messages(provider, &project_path, &session_id)
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.agent_chat_hydration_generations.get(&agent_id).copied() != Some(generation) { return; }
+                this.agent_chat_hydrating.remove(&agent_id);
+                this.agent_chats.update(cx, |chats, cx| {
+                    let Some(session) = chats.sessions.get_mut(&agent_id) else { return; };
+                    if session.messages.is_empty() {
+                        let created_at = unix_now_secs();
+                        session.messages = messages.into_iter().map(|message| match message.role {
+                            DocAssistantRole::User => AgentChatMessage::User {
+                                text: message.text, display_text: None, tags: vec![], created_at,
+                            },
+                            DocAssistantRole::Assistant => AgentChatMessage::Assistant {
+                                message_id: None, text: message.text, created_at,
+                            },
+                        }).collect();
+                        session.timeline = session.messages.iter().cloned().map(AgentChatTimelineItem::Message).collect();
+                    }
+                    chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
+                });
+                for submission in this.agent_chat_post_hydration_submissions.remove(&agent_id).unwrap_or_default() {
+                    this.dispatch_agent_chat_submission_inner(agent_id, submission.text, submission.display_text,
+                        submission.tags, submission.mode, Some(agent.clone()), submission.read_only, cx);
+                }
+                if this.rendered_chat_agents.contains(&agent_id) { cx.notify(); }
+            });
+        }).detach();
     }
 
     pub(super) fn ensure_doc_assistant_chat_backend(
@@ -479,29 +489,7 @@ impl CenterArea {
                 assistants.set_chat_session_ids(&key, chat_session_id, cli_session_id, cx);
             }
         });
-        for record in self
-            .doc_assistants
-            .read(cx)
-            .records()
-            .iter()
-            .filter(|record| ide_core::penpot_assistant::is_record_path(&record.relative_doc_path))
-        {
-            let _ = ide_core::local_store::LocalStore::open_default().and_then(|store| {
-                store.update_penpot_conversation_runtime(
-                    record.chat_agent_id,
-                    record.provider,
-                    record.model,
-                    record.external_model_id.as_deref(),
-                    record.external_model_label.as_deref(),
-                    &record.external_model_variants,
-                    record.effort,
-                    record.access_mode,
-                    record.chat_session_id.as_deref(),
-                    record.cli_session_id.as_deref(),
-                    record.last_transcript_path.as_deref(),
-                )
-            });
-        }
+
     }
 
     pub fn open_created_doc(&mut self, project: ProjectId, path: PathBuf, cx: &mut Context<Self>) {

@@ -4,6 +4,88 @@ use ide_core::studio::{
     StudioTransaction, StudioTurnScope,
 };
 
+/// Lightweight presentation data from the same frozen snapshot sent to the agent.
+/// Rendering a composer must not reopen the design or load its full asset bundle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StudioAttachment {
+    pub revision: u64,
+    pub screen_names: Vec<String>,
+    pub system_name: Option<String>,
+    pub preview: Option<std::sync::Arc<gpui::Image>>,
+}
+
+impl StudioAttachment {
+    fn from_handoff(handoff: &StudioHandoff) -> Self {
+        Self {
+            revision: handoff.design.manifest.revision,
+            screen_names: handoff
+                .design
+                .manifest
+                .screens
+                .iter()
+                .map(|screen| screen.name.clone())
+                .collect(),
+            system_name: handoff
+                .design_system_context
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            // Reuse one selected screen's frozen thumbnail; never render live
+            // HTML or load a whole design just to decorate its context tag.
+            preview: handoff
+                .design
+                .manifest
+                .screens
+                .iter()
+                .filter_map(|screen| handoff.thumbnails.get(&screen.id))
+                .find_map(|bytes| {
+                    if bytes.len() > 1024 * 1024 {
+                        return None;
+                    }
+                    let (width, height) = image::ImageReader::with_format(
+                        std::io::Cursor::new(bytes),
+                        image::ImageFormat::Png,
+                    )
+                    .into_dimensions()
+                    .ok()?;
+                    if u64::from(width) * u64::from(height) > 1024 * 1024 {
+                        return None;
+                    }
+                    Some(std::sync::Arc::new(gpui::Image::from_bytes(
+                        gpui::ImageFormat::Png,
+                        bytes.clone(),
+                    )))
+                }),
+        }
+    }
+
+    pub(super) fn screen_label(&self) -> String {
+        match self.screen_names.len() {
+            1 => "1 screen".into(),
+            count => format!("{count} screens"),
+        }
+    }
+
+    pub(super) fn system_label(&self) -> String {
+        self.system_name
+            .as_ref()
+            .map(|name| format!("Design system: {name}"))
+            .unwrap_or_else(|| "No design system selected".into())
+    }
+}
+
+pub(super) fn studio_implementation_request(handoff: &StudioHandoff) -> String {
+    if let Some(name) = handoff
+        .design_system_context
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+    {
+        format!("Implement this design using the {name} design system.")
+    } else {
+        "Implement this design using its screen styles.".into()
+    }
+}
+
 fn source_design_name(title: &str) -> String {
     let mut name = String::new();
     for character in title.trim().chars().filter(|c| !c.is_control()) {
@@ -56,19 +138,126 @@ mod tests {
         assert!(name.ends_with(" Design"));
         assert!(!source_design_name("Billing\nflow").contains('\n'));
     }
+
+    #[test]
+    fn implementation_keeps_system_instructions_behind_readable_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StudioStore::new(temp.path(), temp.path().join("cache")).unwrap();
+        let system = store.create_system("Choro", "Desktop", None).unwrap();
+        let draft = store.load(system.id).unwrap();
+        let scope = ide_core::studio::scope_for_request(&draft, Some(system.id), None);
+        let draft = store
+            .apply(
+                &scope,
+                &StudioTransaction {
+                    id: Uuid::new_v4(),
+                    scope_id: scope.id,
+                    design_id: system.id,
+                    expected_revision: draft.manifest.revision,
+                    expected_fingerprint: draft.fingerprint,
+                    operations: vec![StudioOperation::SetSystem {
+                        system: ide_core::studio::StudioDesignSystem::default(),
+                        expected_system_revision: draft.system.revision,
+                    }],
+                },
+            )
+            .unwrap();
+        store
+            .publish_system(system.id, draft.manifest.revision, &draft.fingerprint, &[])
+            .unwrap();
+        store.set_default_system(Some(system.id)).unwrap();
+        let design = store.create("Calorie counter").unwrap();
+        let snapshot = store.handoff(design.manifest.id, None).unwrap();
+        let token = ComposerMentionToken::studio_design(&snapshot);
+        let request = studio_implementation_request(&snapshot);
+        assert_eq!(
+            request,
+            "Implement this design using the Choro design system."
+        );
+        let attachment = token.studio_attachment.as_ref().unwrap();
+        assert_eq!(attachment.system_name.as_deref(), Some("Choro"));
+        assert_eq!(attachment.screen_names.len(), snapshot.screen_ids.len());
+        // The user can rewrite their request without dropping the design-system contract.
+        let edited = "Build this and connect the calorie totals to our API.";
+        assert_eq!(
+            composer_message_display_text(edited, None, &[token.clone()]),
+            edited
+        );
+        let submitted = composer_mentions_submission_text(edited, &[token.clone()], &[]);
+        assert!(submitted.contains(&format!("handoff_id \"{}\"", snapshot.id)));
+        assert!(submitted.contains("section=\"tokens\""));
+        assert!(submitted.contains("Use the applied design system \"Choro\""));
+        assert!(submitted.contains("per-design overrides"));
+        assert!(submitted.ends_with(edited));
+        assert!(composer_message_tags(None, &[token], false)[0]
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("Design system: Choro"));
+        assert!(!request.contains(&snapshot.id.to_string()));
+        assert!(!request.contains("studio_handoff_read"));
+        assert_eq!(composer_mentions_submission_text(edited, &[], &[]), edited);
+    }
+
+    #[test]
+    fn implementation_without_a_system_uses_local_styles_and_a_bounded_snapshot_preview() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StudioStore::new(temp.path(), temp.path().join("cache")).unwrap();
+        let design = store.create("Local styles").unwrap();
+        let mut snapshot = store.handoff(design.manifest.id, None).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(8, 8)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let screen = snapshot.screen_ids[0];
+        snapshot.thumbnails.insert(screen, png.into_inner());
+        let token = ComposerMentionToken::studio_design(&snapshot);
+        let attachment = token.studio_attachment.as_ref().unwrap();
+        assert_eq!(attachment.system_name, None);
+        assert_eq!(attachment.system_label(), "No design system selected");
+        assert_eq!(
+            attachment.preview.as_ref().unwrap().bytes,
+            snapshot.thumbnails[&screen]
+        );
+        assert!(token
+            .context
+            .as_ref()
+            .unwrap()
+            .contains("effective local tokens and screen styles"));
+        assert_eq!(
+            studio_implementation_request(&snapshot),
+            "Implement this design using its screen styles."
+        );
+        // Never show a thumbnail belonging to an unselected screen.
+        snapshot.thumbnails = [(Uuid::new_v4(), snapshot.thumbnails[&screen].clone())].into();
+        assert!(StudioAttachment::from_handoff(&snapshot).preview.is_none());
+        let mut oversized = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(1025, 1024)
+            .write_to(&mut oversized, image::ImageFormat::Png)
+            .unwrap();
+        snapshot.thumbnails.insert(screen, oversized.into_inner());
+        assert!(StudioAttachment::from_handoff(&snapshot).preview.is_none());
+    }
 }
 
 impl ComposerMentionToken {
     pub(super) fn studio_design(handoff: &StudioHandoff) -> Self {
+        let attachment = StudioAttachment::from_handoff(handoff);
+        let system_instruction = if let Some(name) = attachment.system_name.as_ref() {
+            format!("Use the applied design system {name:?} captured in this snapshot: its effective tokens, component recipes, typography/font assets, and per-design overrides are the visual source of truth. Reuse compatible repository components and map the captured system into the project's framework. Do not substitute a generic theme, fetch a newer system revision, or modify the Studio design system.")
+        } else {
+            "No design system is selected for this snapshot. Use its effective local tokens and screen styles with the repository's existing components; do not attach an unrelated project system automatically.".into()
+        };
         Self {
             kind: ComposerMentionKind::StudioDesign,
             title: handoff.design.manifest.name.clone(),
-            path_label: format!("Studio · revision {}", handoff.design.manifest.revision),
+            path_label: format!("Studio · {} · {} · version {}", attachment.screen_label(), attachment.system_label(), attachment.revision),
             context: Some(format!(
-                "@@studio-handoff:{}\nRead studio_handoff_read with handoff_id \"{}\" before implementing this design. This immutable Studio snapshot includes the selected screens, tokens, assets, and source requirements. {}\n",
-                handoff.id, handoff.id, handoff.instruction
+                "@@studio-handoff:{}\nRead studio_handoff_read with handoff_id \"{}\" before implementing this design. Read the manifest, section=\"tokens\" (design system, effective tokens, recipes, and fonts), section=\"assets\", and each selected screen. This immutable Studio snapshot includes the selected screens and source requirements. {} {}\n",
+                handoff.id, handoff.id, system_instruction, handoff.instruction
             )),
             project_id: None,
+            studio_attachment: Some(attachment),
         }
     }
 
@@ -87,11 +276,28 @@ impl ComposerMentionToken {
 }
 
 impl NewAgentComposer {
+    pub(super) fn remove_context_mention(&mut self, index: usize) {
+        if index >= self.selected_mentions.len() {
+            return;
+        }
+        let removed = self.selected_mentions.remove(index);
+        if removed.kind == ComposerMentionKind::Doc {
+            self.linked_docs
+                .retain(|path| path.to_string_lossy() != removed.path_label);
+        }
+        if removed
+            .studio_handoff_id()
+            .is_some_and(|id| self.implementation_target == Some(ImplementationTarget::Studio(id)))
+        {
+            self.implementation_target = None;
+        }
+        self.error = None;
+    }
+
     /// An explicit source implementation replaces an older restored draft's
     /// design target. In particular, Studio must never inherit a Penpot launch.
     pub(super) fn reset_source_implementation(&mut self) {
         self.implementation_target = None;
-        self.design_browser_open_confirmed = false;
         self.studio_attachment_error = None;
         self.source_doc = None;
         self.source_task = None;
@@ -100,13 +306,149 @@ impl NewAgentComposer {
         self.selected_mentions.retain(|mention| {
             !matches!(
                 mention.kind,
-                ComposerMentionKind::StudioDesign | ComposerMentionKind::PenpotDesign
+                ComposerMentionKind::StudioDesign
             )
         });
     }
 }
 
 impl CenterArea {
+    pub(super) fn render_studio_composer_attachment(
+        &self,
+        index: usize,
+        mention: &ComposerMentionToken,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(attachment) = mention.studio_attachment.as_ref() else {
+            return div().into_any_element();
+        };
+        let preview = if let Some(image) = attachment.preview.as_ref() {
+            img(image.clone())
+                .size_full()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element()
+        } else {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    gpui_component::Icon::new(crate::ui::design::design_icon())
+                        .size(crate::ui::design::icon_lg())
+                        .text_color(crate::ui::design::accent(cx)),
+                )
+                .into_any_element()
+        };
+        let title = SharedString::from(mention.title.clone());
+        let details = SharedString::from(format!(
+            "Saved version {}\n{}\n{}",
+            attachment.revision,
+            attachment.screen_names.join(", "),
+            attachment.system_label()
+        ));
+        let system_label = SharedString::from(attachment.system_label());
+        let system_tooltip = system_label.clone();
+        h_flex()
+            .id(("studio-implementation-context", index))
+            .w_full()
+            .min_w(px(0.))
+            .items_center()
+            .gap_3()
+            .pb_3()
+            .border_b_1()
+            .border_color(crate::ui::design::line(cx))
+            .child(
+                div()
+                    .w(px(56.))
+                    .h(px(44.))
+                    .flex_none()
+                    .overflow_hidden()
+                    .rounded(crate::ui::design::r_sm())
+                    .bg(crate::ui::design::base(cx))
+                    .child(preview),
+            )
+            .child(
+                v_flex()
+                    .id(("studio-implementation-details", index))
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap_1()
+                    .child(
+                        div()
+                            .id(("studio-implementation-title", index))
+                            .w_full()
+                            .truncate()
+                            .text_size(crate::ui::design::text_body())
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(crate::ui::design::t1(cx))
+                            .child(title.clone())
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(title.clone()).build(window, cx)
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .min_w(px(0.))
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(crate::ui::design::text_label())
+                                    .text_color(crate::ui::design::t3(cx))
+                                    .child(attachment.screen_label()),
+                            )
+                            .child(
+                                h_flex()
+                                    .id(("studio-implementation-system", index))
+                                    .min_w(px(0.))
+                                    .gap_1()
+                                    .items_center()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(crate::ui::design::r_xs())
+                                    .bg(crate::ui::design::surface(cx))
+                                    .child(
+                                        gpui_component::Icon::new(IconName::Palette)
+                                            .flex_none()
+                                            .size(crate::ui::design::icon_sm())
+                                            .text_color(crate::ui::design::t2(cx)),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(crate::ui::design::text_label())
+                                            .text_color(crate::ui::design::t2(cx))
+                                            .child(system_label),
+                                    )
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(system_tooltip.clone()).build(window, cx)
+                                    }),
+                            ),
+                    )
+                    .tooltip(move |window, cx| Tooltip::new(details.clone()).build(window, cx)),
+            )
+            .child(
+                style::attachment_remove_button(
+                    ("remove-studio-implementation-context", index),
+                    cx,
+                )
+                .flex_none()
+                .tooltip("Remove design context")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(composer) = this.new_agent_composer.as_mut() {
+                        composer.remove_context_mention(index);
+                    }
+                    cx.notify();
+                })),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn studio_design_references(
         &self,
         project: ProjectId,
@@ -255,7 +597,7 @@ impl CenterArea {
         crate::ui::design::indicator::subline_link(
             (key, id.as_u128() as u64),
             crate::ui::design::design_icon(),
-            SharedString::from(super::penpot::short_design_chip_label(&design.name)),
+            SharedString::from(super::design_workspace::short_design_chip_label(&design.name)),
             crate::ui::design::accent(cx),
             cx,
         )
@@ -290,7 +632,7 @@ impl CenterArea {
         let reference = path.to_string_lossy().to_string();
         let prompt = format!(
             "Design the product experience described in @@{reference}. Read the document first, then use the Studio tools to create the important screens, states, hierarchy, and interactions in this design. Keep the design grounded in the document and ask about ambiguity before inventing major product behavior.\n\n{}",
-            ide_core::penpot_assistant::codebase_context_instruction()
+            ide_core::studio::codebase_context_instruction()
         );
         self.create_studio_from_source(
             project,
@@ -377,7 +719,7 @@ impl CenterArea {
                 this.studio_creating.remove(&project);
                 match result {
                     Ok(design) => {
-                        this.pending_design_assistant_drafts
+                        this.pending_studio_drafts
                             .insert(design.manifest.id, prompt);
                         this.refresh_studio_catalog(project, cx);
                         this.open_studio(project, design.manifest.id, cx);
@@ -385,7 +727,7 @@ impl CenterArea {
                     Err(error) => {
                         this.design_hub_error =
                             Some(format!("Could not create Studio design: {error:#}"));
-                        this.show_penpot_hub(cx);
+                        this.show_design_hub(cx);
                         this.set_view_mode(CenterMode::Design, cx);
                     }
                 }

@@ -41,7 +41,7 @@ fn words(text: &str) -> Vec<(usize, usize, &str)> {
 
 /// Bounded optimal-string-alignment distance, including adjacent transpositions.
 /// Short identifiers must be exact; arbitrary words are never fuzzy aliases.
-fn typo_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
+pub(super) fn typo_distance(a: &str, b: &str, limit: usize) -> Option<usize> {
     if a == b {
         return Some(0);
     }

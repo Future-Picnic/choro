@@ -20,7 +20,7 @@ crossbeam-channel = "0.5"
 turso = { version = "=0.7.0-pre.14", default-features = false, features = ["fts"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
-git2 = "0.21"
+git2 = { version = "0.21", features = ["vendored-libgit2"] }
 notify = "7"
 smol = "2"
 mongodb = { version = "3", features = ["sync"] }
@@ -47,12 +47,15 @@ parking_lot = "0.12"
 ide-core = { path = "crates/ide-core" }
 
 [patch.crates-io]
+# Working-tree files can be truncated by agents/editors while a diff is alive.
+# Use owned read buffers instead of mmap in libgit2's workdir diff loader.
+libgit2-sys = { path = "vendor/libgit2-sys" }
 # block 0.1.6 models an external Objective-C class as an uninhabited type,
 # which future Rust versions reject. Keep its API and runtime behavior intact
 # while making the opaque marker inhabited.
 block = { path = "vendor/block" }
 # Wry 0.52.1 swallows unhandled macOS keyDown events in its WKWebView parent,
-# which makes keyboard-driven web apps such as Penpot effectively read-only.
+# which makes keyboard-driven Studio editing effectively read-only.
 # This local copy backports upstream PR #1711 without taking unrelated
 # unreleased Wry changes.
 wry = { path = "vendor/wry" }

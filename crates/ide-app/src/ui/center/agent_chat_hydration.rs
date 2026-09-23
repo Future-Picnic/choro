@@ -123,11 +123,16 @@ impl CenterArea {
     }
 
     pub(super) fn sync_chat_session_ids(&mut self, cx: &mut Context<Self>) {
+        self.sync_chat_session_ids_for(None, cx);
+    }
+
+    pub(super) fn sync_chat_session_ids_for(&mut self, only: Option<Uuid>, cx: &mut Context<Self>) {
         let (session_updates, changed_file_updates) = {
             let sessions = self.agent_chats.read(cx);
             let session_updates = sessions
                 .sessions
                 .iter()
+                .filter(|(id, _)| only.is_none_or(|only| only == **id))
                 .filter_map(|(agent_id, session)| {
                     if session.chat_session_id.is_none() && session.cli_session_id.is_none() {
                         None
@@ -143,6 +148,7 @@ impl CenterArea {
             let changed_file_updates = sessions
                 .sessions
                 .iter()
+                .filter(|(id, _)| only.is_none_or(|only| only == **id))
                 .map(|(agent_id, session)| {
                     let files = session
                         .changed_files
@@ -828,6 +834,7 @@ impl CenterArea {
                 });
             }
             session.set_status(AgentChatStatus::Idle);
+            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
             needs_hydration
         });
         self.agent_chat_selected_commands.remove(&agent_id);
@@ -937,9 +944,11 @@ impl CenterArea {
                                     hydration.timeline,
                                 );
                                 session.proposed_plan = hydration.proposed_plan;
+                                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
                                 return Some(history_state);
                             }
                         }
+                        chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
                         None
                     });
                     if let Some(history_state) = history_state {
@@ -1095,7 +1104,7 @@ impl CenterArea {
                         &artifact_filter,
                     )
                     .len();
-                    cx.notify();
+                    chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONVERSATION, cx);
                     Some(new_row_count.saturating_sub(old_row_count))
                 });
                 let Some(row_delta) = row_delta else {

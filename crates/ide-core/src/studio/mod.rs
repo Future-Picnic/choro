@@ -1,6 +1,8 @@
 //! Local, revisioned HTML design documents. Every writer (UI or MCP) uses this service.
+mod activity;
 mod agent;
 mod canvas;
+pub use activity::*;
 pub use canvas::*;
 mod store;
 pub use agent::*;
@@ -250,6 +252,7 @@ pub enum StudioAgentTarget {
     #[default]
     Design,
     DesignSystem,
+    DesignSystemImport,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioTurnScope {
@@ -384,3 +387,5 @@ pub fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+pub use agent::{codebase_context_instruction, preview_review_prompt};

@@ -24,7 +24,7 @@ struct RemoteCompletedTurnContext {
 impl CenterArea {
     // Check the live agent mode on the UI thread, immediately before applying
     // input. Checking a snapshot in the HTTP handler would race desktop changes.
-    fn authorize_remote_agent_control(
+    pub(super) fn authorize_remote_agent_control(
         &self,
         agent_id: Uuid,
         permission: DevicePermission,
@@ -39,8 +39,136 @@ impl CenterArea {
 
     pub(crate) fn handle_remote_command(&mut self, command: RemoteCommand, cx: &mut Context<Self>) {
         match command {
-            RemoteCommand::GetConfiguration { response } => {
-                let _ = response.send(Ok(self.remote_configuration_catalog(cx)));
+            RemoteCommand::ExtendedRead {
+                resource,
+                query,
+                permission,
+                device_id,
+                response,
+            } => {
+                if resource == "search" {
+                    let records = self.agents.read(cx).all_records();
+                    cx.spawn(async move |_, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move { Self::remote_search_records(records, query) })
+                            .await;
+                        let _ = response.send(result);
+                    })
+                    .detach();
+                } else if matches!(
+                    resource.as_str(),
+                    "agent" | "summary" | "diff" | "attachment"
+                ) {
+                    let agent = query
+                        .agent_id
+                        .as_deref()
+                        .and_then(|v| Uuid::parse_str(v).ok())
+                        .and_then(|id| {
+                            self.agents
+                                .read(cx)
+                                .agent(id)
+                                .filter(|a| !a.hidden_doc_assistant)
+                                .cloned()
+                        });
+                    let live = agent
+                        .as_ref()
+                        .and_then(|a| self.agent_chats.read(cx).session(a.id))
+                        .map(|s| s.timeline.clone())
+                        .unwrap_or_default();
+                    let base = if resource == "agent" {
+                        self.remote_extended_read(
+                            &resource,
+                            query.clone(),
+                            permission,
+                            &device_id,
+                            cx,
+                        )
+                    } else {
+                        Ok(serde_json::json!({}))
+                    };
+                    cx.spawn(async move |_, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move {
+                                Self::finish_remote_read(
+                                    resource, query, device_id, agent, live, base?,
+                                )
+                            })
+                            .await;
+                        let _ = response.send(result);
+                    })
+                    .detach();
+                } else {
+                    let result =
+                        self.remote_extended_read(&resource, query, permission, &device_id, cx);
+                    let _ = response.send(result);
+                }
+            }
+            RemoteCommand::ExtendedAction {
+                request,
+                permission,
+                response,
+            } => {
+                let agent_id = Uuid::parse_str(&request.agent_id).ok();
+                let artifact_id = match &request.action {
+                    crate::remote::protocol::Action::Checklist { checklist_id, .. } => {
+                        Some(checklist_id.clone())
+                    }
+                    crate::remote::protocol::Action::ReviewFix { review_id, .. } => {
+                        Some(review_id.clone())
+                    }
+                    _ => None,
+                };
+                let result = self.remote_extended_action(request, permission, cx);
+                if result.is_err() {
+                    let _ = response.send(result);
+                    return;
+                }
+                let (revision, records) = self.agents.update(cx, |a, _| a.durable_snapshot());
+                let timeline = agent_id.and_then(|id| {
+                    self.agent_chats.read(cx).session(id).map(|s| {
+                        (
+                            id,
+                            s.timeline
+                                .iter()
+                                .filter(|i| match i {
+                                    AgentChatTimelineItem::ReviewChecklist(c) => {
+                                        artifact_id.as_deref() == Some(c.id.as_str())
+                                    }
+                                    AgentChatTimelineItem::CodeReview(r) => {
+                                        artifact_id.as_deref() == Some(r.id.as_str())
+                                    }
+                                    _ => false,
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                });
+                let workspace_saved = self.workspace.update(cx, |w, _| w.try_save_now());
+                cx.spawn(async move |_,cx| {
+                    let saved=cx.background_executor().spawn(async move {
+                        workspace_saved?;
+                        crate::state::agents::persist_agent_store_snapshot(revision,records)?;
+                        if let Some((id,timeline))=timeline {persist_timeline_snapshot(id,&timeline)?;}
+                        Ok::<(),anyhow::Error>(())
+                    }).await;
+                    let _=response.send(saved.map_err(|e|RemoteError::internal(format!("Action applied but could not be saved: {e}. Refresh before retrying."))).and(result));
+                }).detach();
+            }
+            RemoteCommand::GetConfiguration {
+                permission,
+                response,
+            } => {
+                let mut catalog = self.remote_configuration_catalog(cx);
+                if permission != DevicePermission::FullAccess {
+                    for p in &mut catalog.providers {
+                        p.access_modes.retain(|a| a.id != "full_access");
+                    }
+                    catalog.defaults.access_mode = "ask_for_approval".into();
+                }
+                let _ = response.send(Ok(catalog));
             }
             RemoteCommand::ListProjects { response } => {
                 let _ = response.send(Ok(self.remote_projects(cx)));
@@ -174,8 +302,48 @@ impl CenterArea {
                 let _ = response.send(result);
             }
             RemoteCommand::CreateAgent { request, response } => {
-                let result = self.remote_create_agent(request, cx);
-                let _ = response.send(result);
+                let known_agents = self
+                    .agents
+                    .read(cx)
+                    .all_records()
+                    .into_iter()
+                    .map(|a| a.id)
+                    .collect::<std::collections::HashSet<_>>();
+                let literal = request.prompt.clone();
+                let recipients = request.delegation_recipient_ids.clone();
+                let mode = interaction_mode(request.interaction_mode);
+                match self.remote_create_agent(request, cx) {
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                    }
+                    Ok(snapshot) => {
+                        let agent_id = parse_agent_id(&snapshot.agent.id).unwrap();
+                        if known_agents.contains(&agent_id)
+                            || self.agent_chats.read(cx).has_backend(agent_id)
+                        {
+                            let _ = response.send(Ok(snapshot));
+                            return;
+                        }
+                        let (revision, records) =
+                            self.agents.update(cx, |a, _| a.durable_snapshot());
+                        cx.spawn(async move |this, cx| {
+                            let saved = cx.background_executor().spawn(async move {
+                                crate::state::agents::persist_agent_store_snapshot(revision, records)?;
+                                experts::authorize(agent_id, &literal, &recipients, mode == AgentInteractionMode::Plan)?;
+                                Ok::<_, anyhow::Error>(())
+                            }).await;
+                            let result = this.update(cx, |this, cx| {
+                                saved.map_err(|e| RemoteError::internal(format!("Could not save agent before starting: {e}")))?;
+                                let agent = this.agents.read(cx).agent(agent_id).cloned().ok_or_else(||RemoteError::not_found("Agent not found"))?;
+                                let started = if agent.is_active_solo() { this.ensure_solo_lane_then_start(agent_id, CenterMode::Agents, cx) }
+                                    else { this.start_chat_agent_in_mode(agent, CenterMode::Agents, cx) };
+                                if !started { return Err(RemoteError::internal("Agent was saved but could not start. Open it to retry.")); }
+                                this.remote_agent_snapshot(agent_id, cx)
+                            }).unwrap_or_else(|e|Err(RemoteError::internal(e.to_string())));
+                            let _ = response.send(result);
+                        }).detach();
+                    }
+                }
             }
             RemoteCommand::OpenAgent { agent_id, response } => {
                 let result = parse_agent_id(&agent_id).and_then(|agent_id| {
@@ -259,13 +427,23 @@ impl CenterArea {
                             .map(|agent| agent.title.clone())
                             .unwrap_or_else(|| "Agent".into());
                         chats.ensure_session(agent_id, title, cx).interaction_mode = mode;
+                        chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTROLS, cx);
                     });
-                    if self.dispatch_agent_chat_submission(agent_id, text.to_string(), mode, cx) {
+                    let agent = self.agents.read(cx).agent(agent_id).cloned().ok_or_else(|| RemoteError::not_found("agent not found"))?;
+                    let paths = crate::remote::attachments::resolve(&request.attachment_ids, &request.device_id)?;
+                    let stopped = self.prepare_remote_submission(&agent, text, &request.delegation_recipient_ids, mode, cx)?;
+                    let mut submission = text.to_string();
+                    if stopped { submission.push_str("\n\nChoro status: Bandmate delegation remains stopped. Continue only the lead conversation. Do not restart, schedule or integrate Bandmates. The user must explicitly resume or end delegation."); }
+                    else if !request.delegation_recipient_ids.is_empty() { submission.push_str(&format!("\n\nThe user explicitly selected delegation recipients {:?}. Use Choro experts_list and delegation_plan with these authorized recipients. Do not use native subagents.", request.delegation_recipient_ids)); }
+                    let submission=prompt_with_attached_files(&submission,&paths);
+                    if self.dispatch_agent_chat_submission_with_agent(&agent, submission, Some(text.to_string()), Vec::new(), mode, cx) {
                         self.agent_chats
                             .update(cx, |chats, cx| chats.resume_queue(agent_id, cx));
                         self.agents.update(cx, |agents, cx| {
                             agents.update_status(agent_id, AgentStatus::InProgress, cx)
                         });
+                    } else {
+                        return Err(RemoteError::conflict("The message could not be submitted. Refresh the agent before retrying."));
                     }
                     Ok(CommandAcceptedResponse { accepted: true })
                 });
@@ -285,16 +463,55 @@ impl CenterArea {
                         .agent(agent_id)
                         .cloned()
                         .ok_or_else(|| RemoteError::not_found("agent not found"))?;
-                    let model = parse_wire_value::<AgentModel>(&request.model, "model")?;
+                    let mut selected_external = None;
+                    let model = if agent.provider == AgentKind::OpenCode {
+                        let external = self
+                            .open_code_catalog
+                            .models
+                            .iter()
+                            .find(|m| m.id == request.model)
+                            .cloned()
+                            .ok_or_else(|| {
+                                RemoteError::bad_request("OpenCode model is not available")
+                            })?;
+                        selected_external = Some(external.clone());
+                        AgentModel::OpenCode
+                    } else {
+                        parse_wire_value::<AgentModel>(&request.model, "model")?
+                    };
                     if !model.belongs_to(agent.provider) {
                         return Err(RemoteError::bad_request(
                             "model does not belong to this agent's provider",
                         ));
                     }
                     let effort = parse_wire_value::<AgentEffort>(&request.effort, "effort")?;
-                    let effort = agent.normalize_effort_for_model(model, effort);
+                    let mut normalized_agent = agent.clone();
+                    if let Some(external) = &selected_external {
+                        normalized_agent.external_model_variants = external.variants.clone();
+                    }
+                    let effort = normalized_agent.normalize_effort_for_model(model, effort);
                     let access_mode =
                         parse_wire_value::<AgentAccessMode>(&request.access_mode, "access mode")?;
+                    if let Some(external) = selected_external {
+                        self.agents.update(cx, |a, cx| {
+                            a.update_external_model(
+                                agent_id,
+                                external.id.clone(),
+                                external.name,
+                                external.variants.clone(),
+                                cx,
+                            )
+                        });
+                        self.agent_chats.update(cx, |chats, cx| {
+                            chats.update_external_model(
+                                agent_id,
+                                external.id,
+                                external.variants,
+                                effort,
+                                cx,
+                            )
+                        });
+                    }
                     if agent.model != model || agent.effort != effort {
                         self.update_agent_chat_model_effort(agent_id, model, effort, cx);
                     }
@@ -315,8 +532,7 @@ impl CenterArea {
                     if self.agents.read(cx).agent(agent_id).is_none() {
                         return Err(RemoteError::not_found("agent not found"));
                     }
-                    self.agent_chats
-                        .update(cx, |chats, cx| chats.stop_backend(agent_id, cx));
+                    self.request_agent_chat_stop(agent_id, cx);
                     Ok(CommandAcceptedResponse { accepted: true })
                 });
                 let _ = response.send(result);
@@ -426,6 +642,9 @@ impl CenterArea {
                         ));
                     };
                     let feedback = request.feedback.trim().to_string();
+                    let agent=self.agents.read(cx).agent(agent_id).cloned().ok_or_else(||RemoteError::not_found("Agent not found"))?;
+                    let requested_mode=if feedback.is_empty(){AgentInteractionMode::Default}else{AgentInteractionMode::Plan};
+                    let stopped=self.prepare_remote_submission(&agent,&feedback,&[],requested_mode,cx)?;
                     let (submission_text, mode) = self
                         .agent_chats
                         .update(cx, |chats, cx| {
@@ -434,7 +653,8 @@ impl CenterArea {
                         .ok_or_else(|| {
                             RemoteError::conflict("agent has no plan awaiting a decision")
                         })?;
-                    if self.dispatch_agent_chat_submission(agent_id, submission_text, mode, cx) {
+                    let submission_text=if stopped {format!("{submission_text}\n\nBandmate delegation remains stopped. Continue only this lead conversation; do not resume or integrate the team.")}else{submission_text};
+                    if self.dispatch_agent_chat_submission_with_agent(&agent, submission_text, None, Vec::new(), mode, cx) {
                         self.agent_chats
                             .update(cx, |chats, cx| chats.resume_queue(agent_id, cx));
                         self.agents.update(cx, |agents, cx| {
@@ -1109,7 +1329,7 @@ impl CenterArea {
         Ok(CommandAcceptedResponse { accepted: true })
     }
 
-    fn remote_projects(&self, cx: &App) -> Vec<ProjectDto> {
+    pub(super) fn remote_projects(&self, cx: &App) -> Vec<ProjectDto> {
         let agents = self.agents.read(cx).all_records();
         self.workspace
             .read(cx)
@@ -1175,7 +1395,11 @@ impl CenterArea {
             .collect())
     }
 
-    fn remote_agent_snapshot(&self, agent_id: Uuid, cx: &App) -> RemoteResult<AgentSnapshotDto> {
+    pub(super) fn remote_agent_snapshot(
+        &self,
+        agent_id: Uuid,
+        cx: &App,
+    ) -> RemoteResult<AgentSnapshotDto> {
         let agent = self
             .agents
             .read(cx)
@@ -1234,7 +1458,7 @@ impl CenterArea {
         })
     }
 
-    fn remote_agent_list_item(&self, agent: &AgentRecord, cx: &App) -> AgentListItemDto {
+    pub(super) fn remote_agent_list_item(&self, agent: &AgentRecord, cx: &App) -> AgentListItemDto {
         let session = self.agent_chats.read(cx).session(agent.id).cloned();
         let (status, started_running_at, last_activity_at, needs_attention) = session
             .map(|session| {
@@ -1265,7 +1489,11 @@ impl CenterArea {
             title: agent.title.clone(),
             backend: agent.provider_label().to_ascii_lowercase(),
             model: agent.model_label().to_string(),
-            model_id: wire_value(agent.model),
+            model_id: agent
+                .external_model_id
+                .clone()
+                .filter(|_| agent.provider == AgentKind::OpenCode)
+                .unwrap_or_else(|| wire_value(agent.model)),
             effort: wire_value(agent.effort),
             access_mode: wire_value(agent.access_mode),
             status,
@@ -1334,8 +1562,7 @@ impl CenterArea {
         agent_id: Uuid,
         cx: &App,
     ) -> RemoteResult<RemoteCompletedTurnContext> {
-        self
-            .agents
+        self.agents
             .read(cx)
             .agent(agent_id)
             .filter(|agent| !agent.hidden_doc_assistant)
@@ -1406,9 +1633,28 @@ impl CenterArea {
 
     fn remote_create_agent(
         &mut self,
-        request: crate::remote::dto::CreateAgentRequest,
+        mut request: crate::remote::dto::CreateAgentRequest,
         cx: &mut Context<Self>,
     ) -> RemoteResult<AgentSnapshotDto> {
+        let expert_snapshot = request
+            .bandmate_id
+            .map(experts::snapshot)
+            .transpose()
+            .map_err(|e| RemoteError::conflict(e.to_string()))?;
+        if let Some(snapshot) = &expert_snapshot {
+            request.provider = Some(wire_value(snapshot.profile.provider));
+            request.model = Some(wire_value(snapshot.profile.model));
+            request.effort = Some(wire_value(snapshot.profile.effort));
+        }
+        if !request.delegation_recipient_ids.is_empty()
+            && !self.workspace.read(cx).beta_features.delegation
+        {
+            return Err(RemoteError::conflict(
+                "Enable Band in Desktop Settings first",
+            ));
+        }
+        let attachments =
+            crate::remote::attachments::resolve(&request.attachment_ids, &request.device_id)?;
         let project_id = parse_project_id(&request.project_id)?;
         if let Some(origin) = request.origin.as_ref() {
             if let Some(existing) = self
@@ -1517,7 +1763,25 @@ impl CenterArea {
                     model.default_effort()
                 }
             });
-        let access_mode = resolve_remote_access_mode(request.access_mode.as_deref())?;
+        let access_mode = request
+            .access_mode
+            .as_deref()
+            .map(|v| parse_wire_value::<AgentAccessMode>(v, "access mode"))
+            .transpose()?
+            .unwrap_or_else(|| {
+                if request.device_permission == Some(DevicePermission::FullAccess) {
+                    AgentAccessMode::FullAccess
+                } else {
+                    AgentAccessMode::AskForApproval
+                }
+            });
+        if access_mode == AgentAccessMode::FullAccess
+            && request.device_permission != Some(DevicePermission::FullAccess)
+        {
+            return Err(RemoteError::bad_request(
+                "Full access requires Full access device permission",
+            ));
+        }
         let repository_paths = self
             .git_states
             .read(cx)
@@ -1541,7 +1805,7 @@ impl CenterArea {
                 project.path.clone(),
                 repository_path,
                 title.clone(),
-                prompt,
+                prompt_with_attached_files(&prompt, &attachments),
                 provider,
                 AgentRuntimeKind::Chat,
                 model,
@@ -1552,7 +1816,7 @@ impl CenterArea {
                 Vec::new(),
                 None,
                 AgentStatus::InProgress,
-                None,
+                expert_snapshot,
                 cx,
             );
             if let Some(model) = external_model.clone() {
@@ -1578,42 +1842,17 @@ impl CenterArea {
                 .map(|agent| agent.title.clone())
                 .unwrap_or_else(|| "Agent".into());
             chats.ensure_session(agent_id, title, cx).interaction_mode = mode;
+                        chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTROLS, cx);
         });
-        let agent = self
-            .agents
-            .read(cx)
-            .agent(agent_id)
-            .cloned()
-            .ok_or_else(|| RemoteError::internal("created agent disappeared"))?;
-        // A Solo's start waits for its lane; the lane callback starts the
-        // backend once the worktree is ready — same path as the desktop.
-        let started = if agent.is_active_solo() {
-            self.ensure_solo_lane_then_start(agent_id, CenterMode::Agents, cx)
-        } else {
-            self.start_chat_agent_in_mode(agent, CenterMode::Agents, cx)
-        };
-        if !started {
-            return Err(RemoteError::internal("failed to start agent backend"));
-        }
         self.remote_agent_snapshot(agent_id, cx)
     }
 
-    fn accept_remote_command_id(&mut self, command_id: &str) -> bool {
-        let command_id = command_id.trim();
-        if command_id.is_empty() {
-            return true;
-        }
-        if self.remote_command_ids.contains(command_id) {
-            return false;
-        }
-        if self.remote_command_ids.len() >= 512 {
-            self.remote_command_ids.clear();
-        }
-        self.remote_command_ids.insert(command_id.to_string());
+    fn accept_remote_command_id(&mut self, _command_id: &str) -> bool {
+        // Authentication middleware reserves IDs durably, scoped to the device.
         true
     }
 
-    fn remote_configuration_catalog(&self, cx: &App) -> ConfigurationCatalogDto {
+    pub(super) fn remote_configuration_catalog(&self, cx: &App) -> ConfigurationCatalogDto {
         let defaults = self.workspace.read(cx).new_agent_defaults();
         let mut providers = [AgentKind::Codex, AgentKind::Claude]
             .into_iter()
@@ -1931,7 +2170,7 @@ fn is_internal_maintenance_turn(text: &str) -> bool {
         || text.starts_with(super::agent_chat_runtime::AGENT_REVERIFY_DISMISS_MARKER)
 }
 
-fn hydrate_remote_agent_snapshot(
+pub(super) fn hydrate_remote_agent_snapshot(
     mut snapshot: AgentSnapshotDto,
     agent: &AgentRecord,
     hydration: Option<AgentChatHydration>,
@@ -2033,7 +2272,7 @@ fn valid_pocketcomet_identity(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-fn parse_agent_id(value: &str) -> RemoteResult<Uuid> {
+pub(super) fn parse_agent_id(value: &str) -> RemoteResult<Uuid> {
     Uuid::parse_str(value).map_err(|_| RemoteError::bad_request("invalid agent id"))
 }
 
@@ -2065,7 +2304,7 @@ fn chat_status_label(status: AgentChatStatus) -> &'static str {
 /// The id of the one verification "Ask to fix" currently applies to: the
 /// latest verification, only while the lifecycle is waiting on fixes and it
 /// still has unmet items with no fix requested.
-fn fixable_verification_id(timeline: &[AgentChatTimelineItem]) -> Option<String> {
+pub(super) fn fixable_verification_id(timeline: &[AgentChatTimelineItem]) -> Option<String> {
     if agent_chat_runtime::verification_lifecycle(timeline)
         != agent_chat_runtime::VerificationLifecycle::NeedsFix
     {
@@ -2104,7 +2343,7 @@ fn verification_status_wire(status: VerificationStatus) -> &'static str {
     }
 }
 
-fn timeline_item_dto(
+pub(super) fn timeline_item_dto(
     item: &AgentChatTimelineItem,
     fixable_verification_id: Option<&str>,
     rejoin_cleanup_pending: bool,
@@ -2353,7 +2592,7 @@ fn conversation_diff_snapshot(
 }
 
 /// Prefer the conversation's saved diff over later changes in the shared tree.
-fn compute_remote_file_diff(
+pub(super) fn compute_remote_file_diff(
     repo: &std::path::Path,
     snapshot_id: Option<Uuid>,
     query: &str,
@@ -2383,7 +2622,7 @@ fn compute_remote_file_diff(
     Err(RemoteError::not_found("no diff available for this file"))
 }
 
-fn file_diff_dto(
+pub(super) fn file_diff_dto(
     path: &std::path::Path,
     diff: &ide_core::git::FileDiff,
     source: &str,
@@ -2432,7 +2671,7 @@ fn file_diff_dto(
 
 /// Repo-relative, separator-normalized form used to match a phone-supplied
 /// path against diff paths regardless of absolute/relative origin.
-fn normalize_remote_diff_path(
+pub(super) fn normalize_remote_diff_path(
     repo: &std::path::Path,
     path: &std::path::Path,
 ) -> std::path::PathBuf {

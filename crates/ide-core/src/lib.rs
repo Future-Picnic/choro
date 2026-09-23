@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod agent_navigation;
 pub mod blocking_guard;
 pub mod branding;
 pub mod config;
@@ -13,7 +14,6 @@ pub mod lanes;
 pub mod local_store;
 pub mod memory;
 pub mod model_favorites;
-pub mod penpot_assistant;
 pub mod preview_control;
 pub mod process;
 pub mod project;

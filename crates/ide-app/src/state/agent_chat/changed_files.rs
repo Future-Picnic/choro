@@ -83,6 +83,9 @@ pub struct FileChangeStat {
     /// ledger table persists them for exact net stats across app restarts.
     pub baseline_content: Option<String>,
     pub result_content: Option<String>,
+    /// Provider-owned hunks for the immutable turn snapshot. Timeline and ledger
+    /// serialization omit this payload; the snapshot stores it separately.
+    pub attributed_diff: Option<ide_core::git::FileDiff>,
 }
 
 /// One file mutation surfaced while a provider turn is still running. This is
@@ -291,6 +294,11 @@ impl ChangedFilesSummary {
 
         self.files = exact.into_values().collect();
         self.observed_files = observed.into_values().collect();
+        // Immutable receipts keep the hunks until snapshot persistence. The
+        // cumulative ledger tracks counts/content without retaining patch history.
+        for file in &mut self.files {
+            file.attributed_diff = None;
+        }
         self.attribution_version = self.attribution_version.max(turn.attribution_version);
         self.snapshot_id = turn.snapshot_id.or(self.snapshot_id);
         if turn.commit_sha.is_some() {
@@ -346,6 +354,15 @@ fn merge_file_stat(files: &mut BTreeMap<PathBuf, FileChangeStat>, next: &FileCha
             existing.result_hash.clone_from(&next.result_hash);
             existing.counts_are_projection = next.counts_are_projection;
             existing.clears_projection = false;
+            match (&mut existing.attributed_diff, &next.attributed_diff) {
+                (Some(existing), Some(next)) => {
+                    existing.hunks.extend(next.hunks.iter().cloned());
+                    existing.is_binary |= next.is_binary;
+                }
+                // Partial evidence must not silently masquerade as a complete
+                // turn snapshot when an adapter mixes supported event shapes.
+                _ => existing.attributed_diff = None,
+            }
         }
         None => {
             let mut file = next.clone();
@@ -458,6 +475,7 @@ impl FileChangeStat {
             result_hash: None,
             baseline_content: None,
             result_content: None,
+            attributed_diff: None,
         }
     }
 

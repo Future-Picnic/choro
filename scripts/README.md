@@ -35,6 +35,4 @@ The other files are not additional app modes:
 - `collect-third-party-licenses.mjs` assembles release license material.
 - `list-agent-runtime-skills.mjs` is the one runtime helper included in apps.
 
-Penpot deployment and source packaging live in the sibling public
-`choro-penpot` project. The feedback receiver lives in the private
-`choro-relay` project.
+The feedback receiver lives in the private `choro-relay` project.

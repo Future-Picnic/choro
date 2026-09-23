@@ -25,8 +25,6 @@ BUNDLE="${CHORO_BUNDLE_PATH:-target/release/bundle/$APP_NAME.app}"
 INSTALL_BUNDLE="${CHORO_INSTALL_BUNDLE_PATH:-/Applications/$APP_NAME.app}"
 ENTITLEMENTS="scripts/choro.entitlements"
 LOCAL_ENTITLEMENTS="scripts/choro-local.entitlements"
-CEF_JIT_ENTITLEMENTS="scripts/choro-cef-jit.entitlements"
-CEF_PLUGIN_ENTITLEMENTS="scripts/choro-cef-plugin.entitlements"
 INSTALL_TO_APPLICATIONS="${CHORO_INSTALL_TO_APPLICATIONS:-${MY_IDE_INSTALL_TO_APPLICATIONS:-1}}"
 SKIP_DOC_EDITOR_BUILD="${CHORO_SKIP_DOC_EDITOR_BUILD:-0}"
 REPLACE_EXISTING_BUNDLE="${CHORO_REPLACE_BUNDLE:-0}"
@@ -78,26 +76,8 @@ else
   )
 fi
 
-cargo build --release -p ide-app --bin choro --bin choro-cef-helper
+cargo build --release -p ide-app --bin choro
 cargo build --release -p ide-mcp
-
-case "$(uname -m)" in
-  arm64) CEF_ARCH="aarch64" ;;
-  x86_64) CEF_ARCH="x86_64" ;;
-  *) echo "Unsupported macOS architecture for Chromium: $(uname -m)" >&2; exit 1 ;;
-esac
-CEF_ROOTS=(target/release/build/cef-dll-sys-*/out/cef_macos_${CEF_ARCH}(N))
-if (( ${#CEF_ROOTS[@]} == 0 )); then
-  echo "Cargo built CEF but its runtime directory was not found." >&2
-  exit 1
-fi
-CEF_ROOT="$CEF_ROOTS[1]"
-CEF_FRAMEWORK="$CEF_ROOT/Chromium Embedded Framework.framework"
-if [[ ! -f "$CEF_FRAMEWORK/Chromium Embedded Framework" ]] \
-  || [[ ! -f "$CEF_ROOT/CREDITS.html" ]]; then
-  echo "The resolved CEF runtime is incomplete: $CEF_ROOT" >&2
-  exit 1
-fi
 
 if [[ -e "$BUNDLE" ]]; then
   if [[ "$REPLACE_EXISTING_BUNDLE" != "1" ]]; then
@@ -114,41 +94,7 @@ cp target/release/choro-mcp "$BUNDLE/Contents/MacOS/choro-mcp"
 xcrun swiftc -target "$(uname -m)-apple-macosx13.0" -O -framework AppKit -framework WebKit crates/ide-app/assets/studio/thumbnail.swift -o "$BUNDLE/Contents/MacOS/choro-studio-thumbnail"
 cp crates/ide-app/assets/app-icon/AppIcon.icns "$BUNDLE/Contents/Resources/AppIcon.icns"
 
-# CEF requires its version-matched framework plus macOS helper app bundles.
-# `ditto` preserves the framework's versioned directory symlinks.
-ditto "$CEF_FRAMEWORK" \
-  "$BUNDLE/Contents/Frameworks/Chromium Embedded Framework.framework"
 ditto "$SPARKLE_FRAMEWORK" "$BUNDLE/Contents/Frameworks/Sparkle.framework"
-for HELPER_SUFFIX in "Helper (GPU)" "Helper (Renderer)" "Helper (Plugin)" "Helper (Alerts)" "Helper"; do
-  HELPER_NAME="choro $HELPER_SUFFIX"
-  HELPER_BUNDLE="$BUNDLE/Contents/Frameworks/$HELPER_NAME.app"
-  mkdir -p "$HELPER_BUNDLE/Contents/MacOS"
-  cp target/release/choro-cef-helper "$HELPER_BUNDLE/Contents/MacOS/$HELPER_NAME"
-  HELPER_ID_SUFFIX="${HELPER_SUFFIX:l}"
-  HELPER_ID_SUFFIX="${HELPER_ID_SUFFIX// /-}"
-  HELPER_ID_SUFFIX="${HELPER_ID_SUFFIX//\(/}"
-  HELPER_ID_SUFFIX="${HELPER_ID_SUFFIX//\)/}"
-  cat > "$HELPER_BUNDLE/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key><string>$HELPER_NAME</string>
-    <key>CFBundleIdentifier</key><string>com.ritmus.myide.$HELPER_ID_SUFFIX</string>
-    <key>CFBundleName</key><string>$HELPER_NAME</string>
-    <key>CFBundleDisplayName</key><string>$HELPER_NAME</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
-    <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
-    <key>LSUIElement</key><true/>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-    <key>LSEnvironment</key>
-    <dict><key>MallocNanoZone</key><string>0</string></dict>
-</dict>
-</plist>
-PLIST
-done
 
 mkdir -p "$BUNDLE/Contents/Resources/scripts"
 # The running app only needs this runtime capability helper. Development,
@@ -166,6 +112,17 @@ if [[ -f "$BUNDLE/Contents/Resources/agent-chat/package.json" ]] \
   )
 fi
 
+# The Agent SDK's optional macOS packages contain their own Claude Code
+# executable. Choro always resolves the user's installed `claude` binary and
+# passes its path to the SDK, so these copies are unused. Do not distribute or
+# re-sign an extra Anthropic executable inside Choro.app.
+for PLATFORM in darwin-arm64 darwin-x64; do
+  SDK_CLI_PACKAGE="$BUNDLE/Contents/Resources/agent-chat/node_modules/@anthropic-ai/claude-agent-sdk-$PLATFORM"
+  if [[ -d "$SDK_CLI_PACKAGE" ]]; then
+    rm -rf -- "$SDK_CLI_PACKAGE"
+  fi
+done
+
 # Collect the root Apache grant, notices, vendored/font license material, and
 # version-specific license files for every resolved Rust and agent-bridge Node
 # package. Keep this after npm install so the Node inventory matches the bundle.
@@ -174,9 +131,6 @@ node scripts/collect-third-party-licenses.mjs \
   --agent-node-modules "$BUNDLE/Contents/Resources/agent-chat/node_modules" \
   --editor-node-modules "crates/ide-app/web/doc-editor/node_modules" \
   --canvas-node-modules "crates/ide-app/web/studio-canvas/node_modules"
-mkdir -p "$BUNDLE/Contents/Resources/licenses/chromium"
-cp "$CEF_ROOT/CREDITS.html" \
-  "$BUNDLE/Contents/Resources/licenses/chromium/CREDITS.html"
 mkdir -p "$BUNDLE/Contents/Resources/licenses/sparkle"
 cp "$SPARKLE_ROOT/LICENSE" "$BUNDLE/Contents/Resources/licenses/sparkle/LICENSE"
 # Keep the exact adapted sources and notices readable in the distributed app,
@@ -262,30 +216,6 @@ codesign "${SIGN_ARGS[@]}" --preserve-metadata=entitlements \
 codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE/Versions/B/Autoupdate"
 codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE/Versions/B/Updater.app"
 codesign "${SIGN_ARGS[@]}" "$SPARKLE_BUNDLE"
-
-# Seal nested CEF bundles after their binaries, then seal Choro itself. The
-# renderer/GPU helpers need JIT under hardened runtime; the optional plugin
-# process needs to load browser-provided libraries.
-codesign "${SIGN_ARGS[@]}" \
-  "$BUNDLE/Contents/Frameworks/Chromium Embedded Framework.framework"
-for HELPER_SUFFIX in "Helper (GPU)" "Helper (Renderer)" "Helper (Plugin)" "Helper (Alerts)" "Helper"; do
-  HELPER_BUNDLE="$BUNDLE/Contents/Frameworks/choro $HELPER_SUFFIX.app"
-  if [[ "$SIGN_IDENTITY" == "-" ]]; then
-    codesign "${SIGN_ARGS[@]}" --entitlements scripts/choro-cef-local.entitlements "$HELPER_BUNDLE"
-    continue
-  fi
-  case "$HELPER_SUFFIX" in
-    "Helper (GPU)"|"Helper (Renderer)")
-      codesign "${SIGN_ARGS[@]}" --entitlements "$CEF_JIT_ENTITLEMENTS" "$HELPER_BUNDLE"
-      ;;
-    "Helper (Plugin)")
-      codesign "${SIGN_ARGS[@]}" --entitlements "$CEF_PLUGIN_ENTITLEMENTS" "$HELPER_BUNDLE"
-      ;;
-    *)
-      codesign "${SIGN_ARGS[@]}" "$HELPER_BUNDLE"
-      ;;
-  esac
-done
 
 codesign "${SIGN_ARGS[@]}" \
   --entitlements "$HOST_ENTITLEMENTS" "$BUNDLE"

@@ -112,10 +112,13 @@ The panel is scoped to the selected parent and never opens from background activ
 
 The task brief is a compact card above the Bandmate's chat. Full instructions and
 the original request are available behind **Show full brief**. Rows lead with the
-task, then show the Bandmate/model and one meaningful activity line. Repeated
-assignments to the same Bandmate remain distinct and open their own conversations.
-The sidebar has expandable children under both normal and pinned parents; a
-parent with delegated work stays in progress even when its provider is idle.
+task, then show the Bandmate/model and a fixed two-line activity preview. Multiline
+commands are flattened and truncated in previews; full text stays in the chat.
+Repeated assignments to the same Bandmate remain distinct and open their own conversations.
+The sidebar has expandable children under both normal and pinned parents for
+bandmates still working or needing attention. Idle, paused and finished rows
+stay in the Band panel; the sidebar dropdown disappears when no active rows
+remain. A parent with delegated work stays in progress even when its provider is idle.
 Working indicators use warm amber and respect macOS Reduce Motion.
 
 Each delegated bandmate has a musical identity icon, assigned in the run's
@@ -301,7 +304,8 @@ then explains how to enable Settings → Beta features → Delegation.
 In an existing chat, `/delegate` defaults to **On-demand teammate**; a saved
 Bandmate can be selected instead. In a new chat it inserts an editable
 “Delegate:” request. Temporary teammates inherit the lead's provider, model,
-and effort at authorization. They receive the existing scoped handoff and
+and effort by default; a fresh assignment can select a user-requested model as
+described below. They receive the existing scoped handoff and
 assignment brief, without creating saved profiles or automatically adding skills.
 `experts_list` exposes their authorized IDs in `on_demand_expert_ids`. The lead
 can reuse one ID for multiple distinct task keys, goals, and briefs; each task
@@ -315,3 +319,93 @@ require clarification or `/delegate`. It does not decompose tasks. Runtime
 instructions route requests to Choro and prohibit replacing requested delegation
 with native helpers, including when the beta is disabled or a profile needs repair.
 Temporary configurations remain in task history and are not added to Settings.
+
+### Resume from the Band side panel
+
+The right-hand Band overview and individual bandmate conversation expose the same
+Stop/Resume task controls as the lead's timeline. When the whole run is stopped,
+both surfaces show **Resume bandmates** and **End delegation · Keep files** instead
+of individual task controls. Resuming a run does not bypass a separately paused
+bandmate. Recovery errors appear in the open panel; existing session, workspace
+and delivery checks still apply. No work resumes just by opening the panel.
+
+### Different models for on-demand teammates
+
+A lead may assign the same brief to several temporary teammates with different
+models. In `delegation_plan`, each on-demand task may include `model_request`,
+copying the model name exactly as the user typed it in the submission that
+authorized that temporary teammate. For example: “Delegate four teammates using
+GPT-6 Astra, GPT-6 Sol, Fable 5.1 and Sonnet 5; keep the outputs separate and compare
+them.” The same temporary ID can be reused for all four assignments. Existing
+concurrency limits still apply.
+
+Choro resolves names against the same Codex/Claude catalog as the model picker.
+It accepts labels, CLI names, picker shorthand and unambiguous spelling errors.
+Version numbers are exact; an ambiguous family name or unsupported model returns
+a clarification error instead of substituting another model. `experts_list`
+includes `model_choices` to help the lead explain those options. Catalog support
+does not guarantee provider account access; normal launch checks still apply.
+
+Omitting the field preserves the inherited configuration. Overrides only affect
+fresh on-demand assignments: saved profiles and the lead are unchanged. An already
+started task keeps its model and session across revisions; changing it requires
+a new assignment. Follow-up model authorization stays bound to its own temporary
+teammate, and the configuration and original request persist across restart/export.
+
+### Natural-language requests and follow-ups
+
+An explicit request such as “Please delegate four on-demand teammates” prepares
+Band delegation directly from the literal submitted message. The request may
+appear later in a long message, use a supported common misspelling, or ask politely
+with a question mark. Quotes elsewhere (such as a video title) and unrelated
+constraints such as “without saved profiles” do not block it. Quoted examples,
+code blocks, explanatory questions and negated delegation instructions do not
+create temporary teammates.
+
+Desktop and remote launches use the same durable submission path. A recognized
+request prepares a run with its authorized saved or temporary configurations;
+it does not create assignments or launch models. The lead still decides the
+briefs, dependencies and execution order through the delegation tools. Once
+prepared, the run keeps that authority through clarifications, even when the
+next user message names no teammates. An unrelated message after the run ends
+does not inherit it. Stop and the delegation beta preference remain gates.
+
+The lead should act on a clear authorized request instead of asking the user to
+type `/delegate` or create a saved profile. Actual ambiguities (for example four
+teammates but three model choices) may still need a focused question. A missing
+authorization for an already clear request is a configuration/recognition failure,
+not a requirement to use a special phrase. Existing sessions receive a per-message
+routing hint for recognized natural-language requests.
+
+### Stopping, correcting and extending a Band
+
+Stop preserves the run, chats and working files. An ordinary correction to the
+lead keeps the Band stopped and retains its team authorization. A new explicit
+user request to delegate, add teammates, or resume the Band goes through the same
+session and integration-journal reconciliation as the Resume button. Provider
+output cannot clear that gate, and restart alone never resumes work.
+
+A correction sent directly to an individually stopped bandmate is saved first,
+then resumes that bandmate when the whole Band is active. The composer explains
+this before sending. If reconciliation fails, the message stays queued and the
+UI reports the recovery error without inviting duplicate submission. Messages
+to a stopped whole Band stay queued. Send-now interrupts only the addressed
+bandmate; normal corrections wait for its safe turn boundary. Other assignments
+keep their states and working copies.
+
+Corrections can update not-yet-started briefs. Correcting an integrated result
+within an active run schedules a new baseline in the same child conversation;
+it does not apply the old contribution twice. Corrections wake a waiting lead,
+and batched delivery explicitly includes the current task revision. A stopped
+integration must be recovered before a correction can replace its journal.
+Corrections arriving during working-copy preparation update the starting brief
+without failing the run. An interrupted initial capture can be prepared again;
+the task keeps its child identity and retains previous working files.
+
+Adding teammates extends the active run without replacing existing assignments.
+After End delegation, an explicit request such as “please delegate it again”
+creates a fresh run; the ended run remains historical. On-demand model selection
+can use literal user messages from the referenced task, including corrections.
+Unrelated new requests and completed tasks do not inherit this model context.
+Common misspellings such as “deleage” work in this path too. Empty ended cards no
+longer claim the lead is still preparing assignments.

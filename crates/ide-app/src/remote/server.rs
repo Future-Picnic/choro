@@ -274,6 +274,11 @@ fn router(state: ServerState) -> Router {
             get(current_device).delete(revoke_current_device),
         )
         .route("/v1/configuration", get(configuration))
+        .route("/v1/capabilities", get(capabilities))
+        .route("/v1/workspace/agents", get(workspace_agents))
+        .route("/v1/remote/{resource}", get(extended_read))
+        .route("/v1/remote/actions", post(extended_action))
+        .route("/v1/remote/uploads", post(super::attachments::upload))
         .route("/v1/projects", get(list_projects))
         .route(
             "/v1/projects/{project_id}/documents/{document_id}",
@@ -339,6 +344,7 @@ fn router(state: ServerState) -> Router {
             get(generated_image_preview),
         )
         .route("/v1/events", get(events))
+        .route_layer(middleware::from_fn(super::receipts::durable_command))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_authentication,
@@ -357,9 +363,27 @@ async fn health() -> Json<HealthResponse> {
         status: "ok".into(),
         app_version: env!("CARGO_PKG_VERSION").into(),
         host_name: std::env::var("HOSTNAME").unwrap_or_else(|_| "Choro Mac".into()),
-        protocol_version: 10,
+        protocol_version: super::protocol::VERSION,
         authentication_required: true,
     })
+}
+
+async fn capabilities(State(state): State<ServerState>,Extension(device): Extension<PairedDevice>) -> Response {
+    command(&state,|response|RemoteCommand::ExtendedRead{resource:"capabilities".into(),query:Default::default(),permission:device.permission,device_id:device.id,response}).await
+}
+
+async fn workspace_agents(State(state): State<ServerState>, Extension(device): Extension<PairedDevice>) -> Response {
+    command(&state, |response| RemoteCommand::ExtendedRead {
+        resource: "workspace".into(), query: Default::default(), permission: device.permission, device_id: device.id, response,
+    }).await
+}
+
+async fn extended_read(State(state): State<ServerState>, Extension(device): Extension<PairedDevice>, Path(resource): Path<String>, Query(query): Query<super::protocol::RemoteQuery>) -> Response {
+    command(&state, |response| RemoteCommand::ExtendedRead { resource, query, permission: device.permission, device_id: device.id, response }).await
+}
+
+async fn extended_action(State(state): State<ServerState>, Extension(device): Extension<PairedDevice>, Json(request): Json<super::protocol::AgentAction>) -> Response {
+    command(&state, |response| RemoteCommand::ExtendedAction { request, permission: device.permission, response }).await
 }
 
 async fn pairing_status(State(state): State<ServerState>) -> impl IntoResponse {
@@ -622,8 +646,9 @@ async fn acknowledge_pocketcomet_task_actions(
     .await
 }
 
-async fn configuration(State(state): State<ServerState>) -> Response {
+async fn configuration(State(state): State<ServerState>, Extension(device): Extension<PairedDevice>) -> Response {
     command(&state, |response| RemoteCommand::GetConfiguration {
+        permission: device.permission,
         response,
     })
     .await
@@ -684,11 +709,13 @@ async fn sync_agents(
 async fn create_agent(
     State(state): State<ServerState>,
     Extension(device): Extension<PairedDevice>,
-    Json(request): Json<CreateAgentRequest>,
+    Json(mut request): Json<CreateAgentRequest>,
 ) -> Response {
     if !may_set_access_mode(device.permission, request.access_mode.as_deref()) {
         return full_access_required();
     }
+    request.device_id = device.id;
+    request.device_permission = Some(device.permission);
     command(&state, |response| RemoteCommand::CreateAgent {
         request,
         response,
@@ -740,8 +767,9 @@ async fn send_message(
     State(state): State<ServerState>,
     Path(agent_id): Path<String>,
     Extension(device): Extension<PairedDevice>,
-    Json(request): Json<SendMessageRequest>,
+    Json(mut request): Json<SendMessageRequest>,
 ) -> Response {
+    request.device_id = device.id;
     command(&state, |response| RemoteCommand::SendMessage {
         agent_id,
         permission: device.permission,

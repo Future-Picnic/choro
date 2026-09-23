@@ -50,8 +50,7 @@ impl AgentChatState {
         if session.status == AgentChatStatus::Idle {
             self.schedule_next_queued_turn(agent_id, cx);
         }
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 
     pub(super) fn send_queued_handoff(
@@ -118,13 +117,11 @@ impl AgentChatState {
                         eprintln!("could not send queued teammate request: {error:#}");
                     }
                 }
-                cx.emit(AgentChatEvent::Changed);
-                cx.notify();
+                state.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
             })
             .ok();
         })
         .detach();
-        cx.emit(AgentChatEvent::Changed);
-        cx.notify();
+        self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
 }

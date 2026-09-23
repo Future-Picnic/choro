@@ -12,6 +12,12 @@ dist/
 !crates/ide-app/web/studio-canvas/dist/**
 # Local Choro working documents may contain private product context.
 /choro_docs/
+# Studio designs are local workspace data, not public app source.
+/choro_designs/
+# Internal planning, drafts, and documentation are not part of the public source snapshot.
+/docs/
+# Local video redesigns, renders, source projects, and comparison assets.
+/docs/video-redesign-comparison/
 __pycache__/
 *.py[cod]
 *.tmp

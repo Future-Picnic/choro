@@ -124,7 +124,6 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) {
         let reference = summary.reference.clone();
-        let linked_designs = self.penpot.read(cx).designs_for_task(project, &reference);
         let prompt = task_implementation_prompt(&summary, detail.as_ref());
 
         self.open_new_agent_composer_for_project(project, window, cx);
@@ -154,7 +153,6 @@ impl CenterArea {
         composer.doc_mention_dismissed_query = None;
         composer.file_mention_selected = 0;
         composer.file_mention_dismissed_query = None;
-        self.add_design_mentions_to_new_agent(linked_designs, cx);
         self.attach_studio_source_designs(project, None, Some(&summary.reference), cx);
         crate::ui::onboarding::emit_for_project(
             project,

@@ -673,11 +673,14 @@ mod tests {
 
         let loaded = DocAssistantStoreFile::load_from(&path);
 
-        assert_eq!(loaded.assistants[0].model, AgentModel::CodexGpt56Sol);
+        // Resolves to the current default, so this must not pin a generation.
+        let expected = AgentModel::default_for(AgentKind::Codex);
+        assert_ne!(expected, AgentModel::CodexDefault);
+        assert_eq!(loaded.assistants[0].model, expected);
         let saved =
             serde_json::from_str::<DocAssistantStoreFile>(&fs::read_to_string(path).unwrap())
                 .unwrap();
-        assert_eq!(saved.assistants[0].model, AgentModel::CodexGpt56Sol);
+        assert_eq!(saved.assistants[0].model, expected);
     }
 
     #[test]
@@ -699,7 +702,7 @@ mod tests {
         codex.cli_session_id = Some("def".into());
         assert_eq!(
             codex.start_command("hello"),
-            "codex -s danger-full-access -a never -m 'gpt-5.6-sol' -c 'model_reasoning_effort=\"medium\"' 'hello'"
+            "codex -s danger-full-access -a never -m 'gpt-6-sol' -c 'model_reasoning_effort=\"medium\"' 'hello'"
         );
         assert_eq!(
             codex.resume_command(),
@@ -859,4 +862,9 @@ mod tests {
         assert_eq!(message_from_json(&read_tool), None);
         assert_eq!(message_from_json(&read_result), None);
     }
+}
+
+/// Keep historical retired design conversations out of ordinary document lists.
+pub fn is_retired_design_record(path: &std::path::Path) -> bool {
+    path.starts_with(std::path::Path::new(".choro/assistants/penpot"))
 }

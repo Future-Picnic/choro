@@ -2,6 +2,9 @@ mod auth;
 pub mod dto;
 mod relay;
 mod server;
+pub mod protocol;
+mod receipts;
+pub mod attachments;
 
 use tokio::sync::oneshot;
 
@@ -59,7 +62,10 @@ impl RemoteError {
 }
 
 pub enum RemoteCommand {
+    ExtendedRead { resource: String, query: protocol::RemoteQuery, permission: DevicePermission, device_id: String, response: oneshot::Sender<RemoteResult<serde_json::Value>> },
+    ExtendedAction { request: protocol::AgentAction, permission: DevicePermission, response: oneshot::Sender<RemoteResult<serde_json::Value>> },
     GetConfiguration {
+        permission: DevicePermission,
         response: oneshot::Sender<RemoteResult<ConfigurationCatalogDto>>,
     },
     ListProjects {

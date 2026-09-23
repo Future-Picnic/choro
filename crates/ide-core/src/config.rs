@@ -173,8 +173,6 @@ pub enum SeparatorStyle {
 pub struct BetaFeatures {
     #[serde(default)]
     pub delegation: bool,
-    #[serde(default)]
-    pub penpot: bool,
 }
 
 /// When a completed agent turn should create an operating-system notification.

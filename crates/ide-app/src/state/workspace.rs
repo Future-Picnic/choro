@@ -93,6 +93,10 @@ impl Workspace {
                 legacy_config
             }
         };
+        Self::from_config(config, beta_features, true)
+    }
+
+    fn from_config(config: AppConfig, beta_features: ide_core::config::BetaFeatures, persist_migrations: bool) -> Self {
         let mut theme_name = config.theme_name.clone();
         let migrated_legacy_theme =
             theme_name.as_deref() == Some(crate::theme::LEGACY_SIGNATURE_THEME);
@@ -179,10 +183,15 @@ impl Workspace {
             project_activity_overrides,
             save_scheduled: false,
         };
-        if migrated_legacy_icons || migrated_legacy_theme {
+        if persist_migrations && (migrated_legacy_icons || migrated_legacy_theme) {
             workspace.save_now();
         }
         workspace
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_memory(config: AppConfig) -> Self {
+        Self::from_config(config, Default::default(), false)
     }
 
     pub fn set_keymap(

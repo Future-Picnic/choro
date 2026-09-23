@@ -97,9 +97,13 @@ impl AgentsPanel {
                 cx.notify();
             })
             .detach();
-            cx.observe(&agent_chats, |this: &mut Self, _, cx| {
-                this.sync_notifications(cx);
-                cx.notify();
+            cx.subscribe(&agent_chats, |this: &mut Self, _, event, cx| {
+                if let crate::state::agent_chat::AgentChatEvent::SessionChanged(change) = event {
+                    if change.categories.navigation || change.categories.identity {
+                        this.sync_notifications(cx);
+                        cx.notify();
+                    }
+                }
             })
             .detach();
             cx.observe(&agents, |this: &mut Self, _, cx| {

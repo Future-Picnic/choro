@@ -325,6 +325,17 @@ pub struct PendingOptionDto {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct CreateAgentRequest {
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+    #[serde(default)]
+    pub delegation_recipient_ids: Vec<uuid::Uuid>,
+    #[serde(skip)]
+    pub device_id: String,
+    #[serde(default)]
+    pub bandmate_id: Option<uuid::Uuid>,
+    #[serde(skip)]
+    pub device_permission: Option<super::DevicePermission>,
+
     pub project_id: String,
     pub title: Option<String>,
     pub prompt: String,
@@ -407,6 +418,13 @@ pub struct UpdateAgentConfigurationRequest {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct SendMessageRequest {
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+    #[serde(default)]
+    pub delegation_recipient_ids: Vec<uuid::Uuid>,
+    #[serde(skip)]
+    pub device_id: String,
+
     pub text: String,
     pub client_command_id: String,
     #[serde(default)]
@@ -458,6 +476,10 @@ fn default_true() -> bool {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct ShipRequest {
     #[serde(default)]
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub expected_branch: Option<String>,
+    #[serde(default)]
     pub scope: ShipScopeDto,
     #[serde(default = "default_true")]
     pub push: bool,
@@ -472,6 +494,8 @@ pub struct ShipRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShipPreviewDto {
+    pub repository: String,
+    pub base_branches: Vec<String>,
     pub branch: Option<String>,
     pub solo: bool,
     pub needs_upstream: bool,

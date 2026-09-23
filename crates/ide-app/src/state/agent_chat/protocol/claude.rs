@@ -56,7 +56,7 @@ impl ClaudeBridgeRuntime {
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
-            ChatBackendCommand::UpdateModelEffort { model, effort } => {
+            ChatBackendCommand::UpdateModelEffort { model, effort, .. } => {
                 self.model = model.cli_value().map(str::to_string);
                 self.effort = effort.cli_value().to_string();
             }
@@ -113,7 +113,6 @@ impl ClaudeBridgeRuntime {
         self.events
             .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
-        let design_preview_review = ide_core::penpot_assistant::is_preview_review_prompt(&text);
         self.write_json(&json!({
             "type": "send_turn",
             "text": text,
@@ -133,9 +132,7 @@ impl ClaudeBridgeRuntime {
             "visualizationDir": self.visualization_dir,
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
-            "designAssistant": is_design_assistant(&self.agent),
             "studioAssistant": self.agent.studio_context.is_some(),
-            "designPreviewReview": design_preview_review,
             "readOnly": read_only,
         }))
     }

@@ -170,9 +170,12 @@ pub fn logo_spinner(
     spinner_with_ramp(diameter, namespace, seed, SpinnerRamp::brand())
 }
 
-/// The same arc in the delegation colour: pass `design::amber(cx)`. Used only
-/// where Experts are working on a lead's behalf, so the amber reads as "someone
-/// else is busy for you" rather than as the app itself loading.
+pub(crate) fn paint_sidebar_spinner(bounds: Bounds<Pixels>, rotation: f32, color: Option<Hsla>, window: &mut Window) {
+    let ramp = color.map(SpinnerRamp::from_semantic).unwrap_or_else(SpinnerRamp::brand);
+    paint_spinner_with(bounds, rotation, ramp, window);
+}
+
+/// Amber spinner for delegated work outside the sidebar's isolated layer.
 pub fn delegation_spinner(
     diameter: f32,
     namespace: &'static str,

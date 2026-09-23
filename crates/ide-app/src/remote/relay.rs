@@ -715,7 +715,7 @@ async fn forward_request(
 fn valid_request(request: &TunnelRequest) -> bool {
     matches!(request.method.as_str(), "GET" | "POST")
         && allowlisted_route(&request.method, &request.path)
-        && !request.path.contains("..")
+        && !request.path.split('?').next().unwrap_or_default().contains("..")
         && request.path.len() <= MAX_PATH_BYTES
         && request.body.as_ref().map_or(0, String::len) <= MAX_BODY_BYTES
         && request.request_id.len() <= 128
@@ -729,14 +729,25 @@ fn allowlisted_route(method: &str, path: &str) -> bool {
             segments.as_slice(),
             ["v1", "health"]
                 | ["v1", "configuration"]
+                | ["v1", "device"]
+                | ["v1", "capabilities"]
+                | ["v1", "workspace", "agents"]
+                | ["v1", "remote", "agent" | "search" | "summary" | "delegation" | "diff" | "bandmates" | "attachment"]
                 | ["v1", "projects"]
                 | ["v1", "projects", _, "agents"]
                 | ["v1", "agents", _]
                 | ["v1", "agents", _, "visualizations", "snapshot"]
+                | ["v1", "agents", _, "images", "preview"]
+                | ["v1", "agents", _, "diff"]
+                | ["v1", "agents", _, "ship", "preview"]
         ),
         "POST" => matches!(
             segments.as_slice(),
             ["v1", "agents"]
+                | ["v1", "remote", "actions"]
+                | ["v1", "remote", "uploads"]
+                | ["v1", "agents", _, "verification", "fix"]
+                | ["v1", "agents", _, "ship"]
                 | ["v1", "agents", _, "messages"]
                 | ["v1", "agents", _, "configuration"]
                 | ["v1", "agents", _, "stop"]
@@ -764,7 +775,7 @@ fn authorization_error(
     if permission == DevicePermission::FullAccess {
         return None;
     }
-    if request.path.contains("/approvals/") {
+    if request.path.contains("/approvals/") || request.path.split('?').next().is_some_and(|p|p.ends_with("/ship")) {
         return Some(
             "This action requires Full access for this iPhone. Change its permission in Desktop Settings → Remote access.",
         );
@@ -1175,6 +1186,21 @@ mod tests {
         assert!(!allowlisted_route("GET", "/v1/events"));
         assert!(!allowlisted_route("POST", "/v1/pairing/complete"));
         assert!(!allowlisted_route("GET", "/v1/future-admin-endpoint"));
+    }
+
+    #[test]
+    fn protocol_11_routes_and_permissions_match_the_mobile_contract() {
+        let contract: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/mobile-protocol-11.json")).unwrap();
+        for route in contract["routes"].as_array().unwrap() {
+            let method=route["method"].as_str().unwrap();let path=route["path"].as_str().unwrap();
+            assert!(allowlisted_route(method,path), "Blocked mobile route: {method} {path}");
+            for permission in [DevicePermission::ViewOnly,DevicePermission::Control,DevicePermission::FullAccess] {
+                let request=TunnelRequest {request_id:"fixture".into(),method:method.into(),path:path.into(),body:Some("{}".into())};
+                let expected=match route["permission"].as_str().unwrap(){"view_only"=>true,"control"=>permission!=DevicePermission::ViewOnly,_=>permission==DevicePermission::FullAccess};
+                assert_eq!(authorization_error(permission,&request).is_none(),expected,"Permission mismatch: {method} {path} {permission:?}");
+            }
+        }
+        assert!(!allowlisted_route("GET","/v1/remote/future-admin"));
     }
 
     #[test]

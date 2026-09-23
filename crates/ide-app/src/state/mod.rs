@@ -1,4 +1,5 @@
 pub mod agent_activity;
+pub mod agent_navigation;
 pub mod agent_capabilities;
 pub mod agent_chat;
 pub mod agents;
@@ -10,9 +11,9 @@ pub mod docs;
 pub mod git_state;
 pub mod open_code;
 pub mod orbit;
-pub mod penpot;
 pub mod quick_ask;
 pub mod services;
+pub(crate) mod sidebar;
 pub mod tasks;
 pub mod terminals;
 pub mod workspace;
@@ -30,10 +31,6 @@ pub use docs::{DocSaveStatus, DocsState};
 pub use git_state::{GitState, GitStates};
 pub use open_code::{OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel};
 pub use orbit::{OrbitEvent, OrbitState};
-pub use penpot::{
-    DesignProvider, PenpotConnectionStatus, PenpotDesign, PenpotEvent,
-    PenpotState,
-};
 pub use quick_ask::{QuickAskEvent, QuickAskPhase, QuickAskScope, QuickAskState};
 pub use services::{ServicesScanKind, ServicesState};
 pub use tasks::TasksState;

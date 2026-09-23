@@ -52,13 +52,14 @@ mod ios_simulator_preview;
 mod markdown;
 mod new_agent;
 mod new_agent_recents;
-mod penpot;
+mod design_workspace;
 mod pocketcomet;
 pub mod preset_bar;
 mod preview_control_ipc;
 mod preview_panel;
 mod quick_ask_history;
 mod remote_bridge;
+mod remote_agents;
 mod services;
 mod shutdown;
 mod studio;
@@ -66,6 +67,7 @@ mod studio_links;
 mod studio_canvas;
 mod studio_editor;
 mod studio_systems;
+mod studio_code_import;
 mod tasks;
 mod time;
 mod voice;
@@ -123,8 +125,8 @@ use ide_core::local_store::{
     StoredAgentSummary, StoredProjectPreview, StoredQuickAskExchange,
 };
 use ide_core::{
-    doc_assistant, penpot_assistant, AgentAccessMode, AgentConnectedContextExtras,
-    AgentConnectedDesign, AgentConnectedPullRequest, AgentEffort, AgentKind, AgentModel,
+    doc_assistant, AgentAccessMode, AgentConnectedContextExtras,
+     AgentConnectedPullRequest, AgentEffort, AgentKind, AgentModel,
     AgentOrigin, AgentRecord, AgentRuntimeKind, AgentStatus, AppConfig, DocAssistantMessage,
     DocAssistantRecord, DocAssistantRole, DocAssistantTranscriptMessage, LaneProfile, Project,
     ProjectActivityId, ProjectId, ProjectReference, TaskDetail, TaskRef, TaskSummary,
@@ -147,7 +149,7 @@ use crate::state::{
     AgentActivityCache, AgentCapability, AgentCapabilityCacheFile, AgentCapabilitySource,
     AgentChatState, AgentRecords, DesignsState, DocAssistantState, DocSaveStatus, DocsState,
     GitState, GitStates, OpenCodeCatalog, OpenCodeCatalogState, OpenCodeModel, OrbitEvent,
-    OrbitState, PenpotConnectionStatus, PenpotEvent, PenpotState,
+    OrbitState,
     QuickAskPhase, QuickAskScope, QuickAskState, ServicesScanKind, ServicesState, SessionId,
     TasksState, TerminalManager, Workspace,
 };
@@ -354,13 +356,11 @@ struct NewAgentComposer {
     source_doc: Option<PathBuf>,
     linked_tasks: Vec<TaskRef>,
     source_task: Option<TaskRef>,
-    /// Studio snapshot or optional Penpot design used for implementation.
-    /// Only Penpot requires an external browser at agent startup.
+    /// Immutable Studio snapshot used for implementation.
     implementation_target: Option<ImplementationTarget>,
     studio_attachment_error: Option<String>,
     /// Guards the confirmation recursion when Start is resumed from the
     /// external-browser explanation dialog.
-    design_browser_open_confirmed: bool,
     starting: bool,
     error: Option<String>,
     slash_selection: usize,
@@ -414,24 +414,6 @@ struct PostHydrationAgentChatSubmission {
     read_only: bool,
 }
 
-#[derive(Clone, Debug)]
-struct PendingDesignAssistantSubmission {
-    id: Uuid,
-    queued_at: Instant,
-    agent: AgentRecord,
-    text: String,
-    display_text: Option<String>,
-    tags: Vec<AgentChatMessageTag>,
-    mode: AgentInteractionMode,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DesignMcpReadiness {
-    Connecting,
-    Ready { file_id: Uuid },
-    Blocked(String),
-}
-
 fn should_defer_agent_chat_submission_for_resume(
     has_resume_id: bool,
     has_backend: bool,
@@ -443,7 +425,6 @@ fn should_defer_agent_chat_submission_for_resume(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ImplementationTarget {
-    Penpot(Uuid),
     Studio(Uuid),
 }
 
@@ -456,12 +437,6 @@ enum AgentChatSurface {
     },
     Document {
         project: ProjectId,
-        relative_doc_path: PathBuf,
-    },
-    Design {
-        project: ProjectId,
-        design_id: Uuid,
-        conversation_id: Uuid,
         relative_doc_path: PathBuf,
     },
 }
@@ -499,11 +474,7 @@ struct ProjectTalkResponseNotification;
 
 impl AgentChatSurface {
     fn is_document(&self) -> bool {
-        matches!(self, Self::Document { .. } | Self::Design { .. })
-    }
-
-    fn is_design(&self) -> bool {
-        matches!(self, Self::Design { .. })
+        matches!(self, Self::Document { .. })
     }
 
     fn allows_plan_mode(&self, agent: &AgentRecord) -> bool {
@@ -529,9 +500,6 @@ impl AgentChatSurface {
                 "Ask your agent — / commands, @ files & folders, @@ docs, # agents, ## projects"
             }
             Self::Document { .. } => "Ask about this doc — @ files & folders, @@ docs & designs",
-            Self::Design { .. } => {
-                "Ask the Design Assistant — @ files & folders, @@ docs & designs"
-            }
         }
     }
 }
@@ -633,7 +601,6 @@ enum ComposerMentionKind {
     Doc,
     File,
     Folder,
-    PenpotDesign,
     StudioDesign,
     Project,
 }
@@ -645,6 +612,7 @@ struct ComposerMentionToken {
     path_label: String,
     context: Option<String>,
     project_id: Option<ProjectId>,
+    studio_attachment: Option<studio_links::StudioAttachment>,
 }
 
 impl ComposerMentionToken {
@@ -656,6 +624,7 @@ impl ComposerMentionToken {
             path_label,
             context: None,
             project_id: None,
+            studio_attachment: None,
         }
     }
 
@@ -670,31 +639,10 @@ impl ComposerMentionToken {
             path_label: file.relative_label.clone(),
             context: None,
             project_id: None,
+            studio_attachment: None,
         }
     }
 
-    fn penpot_design(reference: &ProjectReference) -> Option<Self> {
-        let metadata: serde_json::Value = serde_json::from_str(&reference.metadata_json).ok()?;
-        if metadata.get("provider")?.as_str()? != "penpot" {
-            return None;
-        }
-        let local_id = metadata.get("design_id")?.as_str()?;
-        let file_id = metadata.get("file_id")?.as_str()?;
-        let team_id = metadata.get("team_id")?.as_str()?;
-        let project_id = metadata.get("penpot_project_id")?.as_str()?;
-        let context = format!(
-            "@@penpot-design:{local_id}\n<choro-penpot-design name={name:?} local-id={local_id:?} file-id={file_id:?} team-id={team_id:?} project-id={project_id:?} url={url:?} />\nThis is linked Design context. Use the connected Design MCP tools to inspect this exact design before implementing or reviewing visual work. If the Design connection is unavailable, report the blocker instead of silently substituting another visual source. ",
-            name = reference.title,
-            url = reference.source,
-        );
-        Some(Self {
-            kind: ComposerMentionKind::PenpotDesign,
-            title: reference.title.clone(),
-            path_label: format!("Design · {}", reference.source),
-            context: Some(context),
-            project_id: None,
-        })
-    }
 
     fn project_entry(project: &ComposerProjectEntry) -> Self {
         Self {
@@ -703,6 +651,7 @@ impl ComposerMentionToken {
             path_label: project.path.to_string_lossy().to_string(),
             context: None,
             project_id: Some(project.id),
+            studio_attachment: None,
         }
     }
 
@@ -712,7 +661,7 @@ impl ComposerMentionToken {
             ComposerMentionKind::File | ComposerMentionKind::Folder => {
                 format!("@{} ", self.path_label)
             }
-            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => self.context.clone().unwrap_or_default(),
+            ComposerMentionKind::StudioDesign => self.context.clone().unwrap_or_default(),
             ComposerMentionKind::Project => self.project_context_invocation(None),
         }
     }
@@ -765,33 +714,6 @@ impl ComposerMentionToken {
     }
 }
 
-fn penpot_design_reference(
-    design: &crate::state::PenpotDesign,
-    source: String,
-) -> ProjectReference {
-    ProjectReference {
-        id: design.id,
-        project_id: design.project_id,
-        kind: ide_core::ProjectReferenceKind::Url,
-        title: design.name.clone(),
-        source,
-        preview_relative_path: None,
-        notes: String::new(),
-        metadata_json: serde_json::json!({
-            "provider": "penpot",
-            "design_id": design.id,
-            "connection_id": design.connection_id,
-            "file_id": design.penpot_file_id,
-            "team_id": design.penpot_team_id,
-            "penpot_project_id": design.penpot_project_id,
-            "page_id": design.page_id,
-        })
-        .to_string(),
-        sort_order: 0,
-        created_at: design.created_at,
-        updated_at: design.updated_at,
-    }
-}
 
 fn project_reference_is_native_design(reference: &ProjectReference) -> bool {
     serde_json::from_str::<serde_json::Value>(&reference.metadata_json)
@@ -802,7 +724,7 @@ fn project_reference_is_native_design(reference: &ProjectReference) -> bool {
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         })
-        .is_some_and(|provider| provider == "penpot" || provider == "studio")
+        .is_some_and(|provider| provider == "studio")
 }
 
 fn composer_message_tags(
@@ -845,7 +767,7 @@ fn composer_message_tags(
             ComposerMentionKind::Doc => AgentChatMessageTagKind::Doc,
             ComposerMentionKind::File => AgentChatMessageTagKind::File,
             ComposerMentionKind::Folder => AgentChatMessageTagKind::Folder,
-            ComposerMentionKind::PenpotDesign | ComposerMentionKind::StudioDesign => AgentChatMessageTagKind::Design,
+            ComposerMentionKind::StudioDesign => AgentChatMessageTagKind::Design,
             ComposerMentionKind::Project => AgentChatMessageTagKind::Project,
         },
         label: if mention.kind == ComposerMentionKind::Project {
@@ -1754,7 +1676,7 @@ pub enum CenterMode {
     Db,
     /// Project context editor/reference viewer, full height.
     Docs,
-    /// Penpot cloud workspace with its MCP-backed design assistant.
+    /// Studio workspace and saved design references.
     Design,
     /// Detected third-party services inventory, full height.
     Services,
@@ -1984,36 +1906,17 @@ pub struct CenterArea {
     /// capability prevents a per-turn grant from leaking into capability state.
     orbit_pending_invocations: HashMap<Uuid, Uuid>,
     doc_assistants: Entity<DocAssistantState>,
-    penpot: Entity<PenpotState>,
     voice: Entity<VoiceState>,
-    penpot_instance_input: Entity<InputState>,
-    penpot_mcp_input: Entity<InputState>,
-    penpot_key_input: Entity<InputState>,
-    penpot_access_token_input: Entity<InputState>,
-    penpot_setup_error: Option<String>,
     design_hub_error: Option<String>,
-    penpot_editing_settings: bool,
-    penpot_assistant_open: bool,
-    /// Exact remote-file readiness for each dedicated Design Assistant.
-    /// A backend is never launched until its live canvas proves this identity.
-    design_mcp_readiness: HashMap<Uuid, DesignMcpReadiness>,
-    /// Generated first-turn prompts waiting to be placed in a newly created
-    /// design's composer. Creation only stages the draft; the user chooses the
-    /// assistant model and explicitly starts the turn from the design sidebar.
-    pending_design_assistant_drafts: HashMap<Uuid, String>,
-    pending_design_assistant_submissions: HashMap<Uuid, VecDeque<PendingDesignAssistantSubmission>>,
-    /// Debounce tokens for transient live-canvas disconnects. A reconnect
-    /// invalidates the token before an active assistant is stopped.
-    design_mcp_disconnect_tokens: HashMap<Uuid, Uuid>,
-    /// Live Design Compare owns a second WKWebView for Project Preview while
-    /// the primary host remains attached to the current Penpot design.
-    penpot_compare_open: bool,
-    /// The Penpot canvas currently open in the Design activity. `None` means
-    /// the project-level Designs hub is visible; selection remains persisted
-    /// independently so linked docs/tasks keep their existing relationships.
-    penpot_open_design: Option<(ProjectId, Uuid)>,
+    /// Compare retains a separate implementation-preview surface.
+    design_compare_open: bool,
+    /// First-turn drafts staged for new Studio conversations.
+    pending_studio_drafts: HashMap<Uuid, String>,
     studio: Option<studio::StudioWorkspace>,
+    studio_stage_view: Option<Entity<studio::StudioRegion>>,
+    studio_sidebar_view: Option<Entity<studio::StudioRegion>>,
     studio_system_library: Option<ProjectId>,
+    studio_code_imports: HashMap<ProjectId, studio_code_import::StudioCodeImportUi>,
     studio_system_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioSystemRecord>>,
     studio_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioDesignManifest>>,
     studio_catalog_refreshing: HashSet<ProjectId>,
@@ -2024,11 +1927,7 @@ pub struct CenterArea {
     /// A lightweight Figma link opened from the project Design hub. Unlike a
     /// Choro design, this owns only an embedded viewer and no assistant state.
     figma_open_design: Option<(ProjectId, Uuid)>,
-    /// The design whose live MCP plugin was handed to the user's external
-    /// browser for an implementation agent. While this matches the linked
-    /// agent/composer, Choro must not retain a duplicate embedded WebView.
-    penpot_external_mcp_design: Option<(ProjectId, Uuid)>,
-    /// Owns the primary live WKWebView used by Docs, Penpot, previews, and
+    /// Owns the primary live WKWebView used by Docs, Studio, previews, and
     /// visualizations outside Design Compare.
     web_host: Entity<web_preview::WebPreviewHost>,
     /// Exists only as an active native surface while Design Compare is open.
@@ -2137,6 +2036,9 @@ pub struct CenterArea {
     /// invalidate this cache; scroll-only repaints can then share the snapshot
     /// instead of cloning every message and timeline entry again.
     agent_chat_render_sessions: HashMap<Uuid, Rc<AgentChatSession>>,
+    rendered_chat_agents: HashSet<Uuid>,
+    native_surface_dirty: bool,
+    native_overlay_open: bool,
     agent_chat_transcript_views: HashMap<Uuid, Entity<agent_chat_timeline::AgentChatTranscript>>,
     /// Last chat status seen per agent, so the observer can detect a turn
     /// finishing (Running → Idle) and offer or fire verification.

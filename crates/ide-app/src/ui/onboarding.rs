@@ -620,8 +620,10 @@ impl OnboardingTour {
             .collect();
         let observed_workspace = workspace.clone();
         let tour = cx.new(|cx| {
-            cx.observe(&agent_chats, |this: &mut Self, _, cx| {
-                this.sync_agent_state(cx)
+            cx.subscribe(&agent_chats, |this: &mut Self, _, event, cx| {
+                if matches!(event, crate::state::agent_chat::AgentChatEvent::SessionChanged(change) if change.categories.navigation) {
+                    this.sync_agent_state(cx);
+                }
             })
             .detach();
             cx.observe(&observed_workspace, |this: &mut Self, _, cx| {
@@ -807,7 +809,7 @@ impl OnboardingTour {
         }
         if self.stack.contains(&StackTool::Design) {
             // Onboarding's broad "Design" choice covers both the connected
-            // Penpot workspace and the project's saved visual references.
+            // Studio workspace and the project's saved visual references.
             activities.push(ProjectActivityId::Design);
             activities.push(ProjectActivityId::Assets);
         }

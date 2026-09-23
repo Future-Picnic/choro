@@ -219,7 +219,6 @@ impl CenterArea {
             source_task: None,
             implementation_target: None,
             studio_attachment_error: None,
-            design_browser_open_confirmed: false,
             starting: false,
             error: None,
             slash_selection: 0,
@@ -284,10 +283,6 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let linked_designs = self
-            .penpot
-            .read(cx)
-            .designs_for_doc(project, &relative_doc_path);
         let doc_path = relative_doc_path.to_string_lossy().to_string();
         let prompt = format!(
             "Implement the work described in @@{doc_path}.\n\nRead that doc first and use it as the source of truth. Make the needed code changes, update or add focused tests where they matter, and keep the implementation aligned with the doc. If the doc is ambiguous or conflicts with the codebase, stop and ask before making broad changes."
@@ -325,7 +320,6 @@ impl CenterArea {
         composer.doc_mention_dismissed_query = None;
         composer.file_mention_selected = 0;
         composer.file_mention_dismissed_query = None;
-        self.add_design_mentions_to_new_agent(linked_designs, cx);
         self.attach_studio_source_designs(project, Some(&relative_doc_path), None, cx);
         crate::ui::onboarding::emit_for_project(
             project,
@@ -487,7 +481,6 @@ impl CenterArea {
         let linked_tasks = composer.linked_tasks.clone();
         let attached_files = composer.attached_files.clone();
         let implementation_target = composer.implementation_target;
-        let design_browser_open_confirmed = composer.design_browser_open_confirmed;
         let doc = prompt_with_attached_files(&raw_doc, &attached_files);
         let doc = if solo {
             format!(
@@ -504,26 +497,6 @@ impl CenterArea {
             .source_task
             .clone()
             .filter(|source_task| linked_tasks.iter().any(|task| task.same_issue(source_task)));
-        if let Some(ImplementationTarget::Penpot(design_id)) = implementation_target {
-            if !self.penpot.read(cx).enabled() {
-                if let Some(composer) = self.new_agent_composer.as_mut() { composer.error = Some("Enable Penpot in Settings → Beta features to implement this Penpot design.".into()); }
-                cx.notify();return;
-            }
-            let prompt_dismissed = self.workspace.read(cx).design_browser_open_prompt_dismissed;
-            if !design_browser_open_confirmed && !prompt_dismissed {
-                if let Some(design) = self.penpot.read(cx).design(project, design_id) {
-                    self.confirm_design_browser_open(
-                        project,
-                        design_id,
-                        design.name.into(),
-                        window,
-                        cx,
-                    );
-                    return;
-                }
-            }
-            self.open_design_browser_for_agent(project, design_id, cx);
-        }
         let onboarding_source = if source_doc.is_some() {
             crate::ui::onboarding::AgentSource::Doc
         } else if source_task.is_some() {
@@ -1036,13 +1009,13 @@ impl CenterArea {
         if mention.range.start > mention.range.end || mention.range.end > current.len() {
             return;
         }
-        let penpot_token = match self.studio_reference_token(&reference, cx) {
-            Ok(studio) => studio.or_else(|| ComposerMentionToken::penpot_design(&reference)),
+        let studio_token = match self.studio_reference_token(&reference, cx) {
+            Ok(studio) => studio,
             Err(error) => { if let Some(composer) = self.new_agent_composer.as_mut() { composer.error = Some(format!("Could not attach Studio design: {error:#}")); } cx.notify();return; }
         };
         let preview = crate::state::designs::reference_absolute_preview_path(&reference)
             .filter(|path| path.is_file());
-        let replacement = if let Some(token) = penpot_token.as_ref() {
+        let replacement = if let Some(token) = studio_token.as_ref() {
             token.invocation()
         } else if preview.is_some() {
             String::new()
@@ -1062,7 +1035,7 @@ impl CenterArea {
             input.focus(window, cx);
         });
         if let Some(composer) = self.new_agent_composer.as_mut() {
-            if let Some(token) = penpot_token {
+            if let Some(token) = studio_token {
                 if !composer.selected_mentions.contains(&token) {
                     composer.selected_mentions.push(token);
                 }

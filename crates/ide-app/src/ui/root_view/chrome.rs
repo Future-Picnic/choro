@@ -4,6 +4,7 @@ use gpui_component::scroll::ScrollableElement;
 use ide_core::ProjectActivityId;
 
 const FEATURE_REQUESTS_URL: &str = "https://choro.usergist.com/choro/requests";
+const SUPPORT_URL: &str = "https://choro.usergist.com/choro/support";
 const ROADMAP_URL: &str = "https://choro.usergist.com/choro/roadmap";
 
 enum RailIcon {
@@ -69,12 +70,7 @@ impl RootView {
             let needle = query.to_lowercase();
             branches.retain(|branch| branch.name.to_lowercase().contains(&needle));
         }
-        branches.sort_by(|a, b| {
-            (!a.is_head, a.is_remote)
-                .cmp(&(!b.is_head, b.is_remote))
-                .then_with(|| b.tip_time.cmp(&a.tip_time))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        branches.sort_by(crate::ui::branch_order::compare_branches);
         branches.truncate(if query.is_empty() {
             TITLE_BRANCH_PICKER_LIMIT
         } else {
@@ -289,8 +285,15 @@ impl RootView {
             .tooltip("Help")
             .dropdown_menu_with_anchor(gpui::Corner::TopRight, |menu, _, _| {
                 menu.item(
-                    PopupMenuItem::new("Send feedback")
+                    PopupMenuItem::new("Send feedback / support")
                         .icon(IconName::Inbox)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(SUPPORT_URL);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Request a feature")
+                        .icon(IconName::Star)
                         .on_click(|_, _, _| {
                             crate::ui::git::git_panel::open_url(FEATURE_REQUESTS_URL);
                         }),
@@ -330,8 +333,15 @@ impl RootView {
         let help = style::sidebar_footer_button("right-sidebar-help", IconName::Info, "Help")
             .dropdown_menu_with_anchor(gpui::Corner::TopRight, |menu, _, _| {
                 menu.item(
-                    PopupMenuItem::new("Send feedback")
+                    PopupMenuItem::new("Send feedback / support")
                         .icon(IconName::Inbox)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(SUPPORT_URL);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Request a feature")
+                        .icon(IconName::Star)
                         .on_click(|_, _, _| {
                             crate::ui::git::git_panel::open_url(FEATURE_REQUESTS_URL);
                         }),
@@ -730,8 +740,6 @@ impl RootView {
                 visible_activities.push(active_id);
             }
         }
-        let design_connection_pending = self.penpot.read(cx).connection_pending();
-        let design_connection_needs_attention = self.penpot.read(cx).connection_needs_attention();
         // The design's `.rail` sits on `sink` — the darkest plane, one step below
         // the `nav` sidebar — so the rail reads as its own deepest column.
         let panel_bg = crate::ui::design::sink(cx);
@@ -744,17 +752,6 @@ impl RootView {
             let selected = !quick_ask_history_open && activity == target;
             let is_docs = target == ProjectActivity::Docs;
             let is_tasks = target == ProjectActivity::Tasks;
-            let design_connection_color = (target == ProjectActivity::Design)
-                .then(|| {
-                    if design_connection_needs_attention {
-                        Some(crate::ui::design::rose(cx))
-                    } else if design_connection_pending {
-                        Some(crate::ui::design::amber(cx))
-                    } else {
-                        None
-                    }
-                })
-                .flatten();
             // Both rails give the active cell a filled accent chip around its
             // icon so the selection is unmistakable (on the right it lives in the
             // divider column; on the left, inside a rounded pill).
@@ -816,14 +813,7 @@ impl RootView {
                             RailIcon::Tumble => {
                                 crate::ui::design::indicator::tumble_rail_icon().into_any_element()
                             }
-                        })
-                        .children(design_connection_color.map(|color| {
-                            div()
-                                .absolute()
-                                .top(px(1.))
-                                .right(px(1.))
-                                .child(crate::ui::design::indicator::dot(color))
-                        })),
+                        }),
                 )
                 .child(
                     // `.railitem` label: 11px, `t3` by default, `t1` when active.

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use gpui::{App, AppContext, Entity};
+use gpui::{App, AppContext, Entity, EventEmitter};
 use ide_core::{agents, AgentKind, AgentRuntimeKind};
 use uuid::Uuid;
 
@@ -18,7 +18,15 @@ pub struct AgentActivityCache {
     updated_at: HashMap<Uuid, SystemTime>,
 }
 
+pub struct AgentActivityChanged(pub Vec<Uuid>);
+impl EventEmitter<AgentActivityChanged> for AgentActivityCache {}
+
 impl AgentActivityCache {
+    #[cfg(test)]
+    pub(crate) fn in_memory(agents: Entity<AgentRecords>, agent_chats: Entity<AgentChatState>, terminals: Entity<TerminalManager>) -> Self {
+        Self { agents, agent_chats, terminals, updated_at: HashMap::new() }
+    }
+
     pub fn view(
         agents: Entity<AgentRecords>,
         agent_chats: Entity<AgentChatState>,
@@ -40,7 +48,10 @@ impl AgentActivityCache {
                 if cache
                     .update(cx, |cache: &mut Self, cx| {
                         if cache.updated_at != activity {
+                            let ids = cache.updated_at.keys().chain(activity.keys()).copied().collect::<std::collections::HashSet<_>>()
+                                .into_iter().filter(|id| cache.updated_at.get(id) != activity.get(id)).collect();
                             cache.updated_at = activity;
+                            cx.emit(AgentActivityChanged(ids));
                             cx.notify();
                         }
                     })
@@ -61,17 +72,25 @@ impl AgentActivityCache {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_fixture_activity(&mut self, id: Uuid, at: SystemTime, cx: &mut gpui::Context<Self>) {
+        self.updated_at.insert(id, at);
+        cx.emit(AgentActivityChanged(vec![id]));
+        cx.notify();
+    }
+
     pub fn updated_at(&self, agent_id: Uuid) -> Option<SystemTime> {
         self.updated_at.get(&agent_id).copied()
     }
 
     fn poll_queries(&self, cx: &App) -> Vec<ActivityQuery> {
-        let records = self.agents.read(cx).all_records();
+        let records = self.agents.read(cx);
         let chats = self.agent_chats.read(cx);
         let terminals = self.terminals.read(cx);
         records
-            .into_iter()
+            .iter_records()
             .filter_map(|agent| {
+                if agent.runtime == AgentRuntimeKind::Chat && chats.has_authoritative_status(agent.id) { return None; }
                 let live_chat_session = (agent.runtime == AgentRuntimeKind::Chat)
                     .then(|| {
                         chats.session(agent.id).and_then(|session| {

@@ -8,6 +8,8 @@ use std::rc::Rc;
 pub(super) struct SidebarAgentHover {
     row: Option<HoveredAgentRow>,
     row_bounds: Option<Bounds<Pixels>>,
+    visible_row_bounds: Option<Bounds<Pixels>>,
+    card_bounds: Option<Bounds<Pixels>>,
     sidebar_bounds: Option<Bounds<Pixels>>,
     view: Option<AnyView>,
     timer: Option<Task<()>>,
@@ -28,6 +30,8 @@ impl SidebarAgentHover {
     fn clear(&mut self) {
         self.row = None;
         self.row_bounds = None;
+        self.visible_row_bounds = None;
+        self.card_bounds = None;
         self.view = None;
         self.timer = None;
     }
@@ -90,6 +94,8 @@ impl ProjectList {
         }
         self.agent_hover.row = Some(row);
         self.agent_hover.row_bounds = None;
+        self.agent_hover.visible_row_bounds = None;
+        self.agent_hover.card_bounds = None;
         self.agent_hover.view = None;
         let owner = cx.entity().downgrade();
         let build = self.agent_hover_card_builder(agent_id, cx);
@@ -163,25 +169,9 @@ impl ProjectList {
                             if list.agent_hover.row != Some(row) {
                                 return false;
                             }
-                            let mouse = window.mouse_position();
-                            if visible_row.contains(&mouse) || card.contains(&mouse) {
-                                list.agent_hover.timer = None;
-                            } else if list.agent_hover.timer.is_none() {
-                                let owner = cx.entity().downgrade();
-                                list.agent_hover.timer = Some(window.spawn(cx, async move |cx| {
-                                    cx.background_executor()
-                                        .timer(Duration::from_millis(500))
-                                        .await;
-                                    let _ = owner.update(cx, |list, cx| {
-                                        if list.agent_hover.row == Some(row) {
-                                            list.agent_hover.view = None;
-                                            list.agent_hover.row = None;
-                                            list.agent_hover.timer = None;
-                                            cx.notify();
-                                        }
-                                    });
-                                }));
-                            }
+                            list.agent_hover.visible_row_bounds = Some(visible_row);
+                            list.agent_hover.card_bounds = Some(card);
+                            list.update_agent_card_visibility(row, window, cx);
                             list.agent_hover.view.is_some()
                         })
                         .unwrap_or(false)
@@ -195,10 +185,14 @@ impl ProjectList {
                 if owner.read(cx).agent_hover.view.is_some()
                     && owner.read(cx).agent_hover.row == Some(row)
                 {
-                    // Plain card padding has no hover style to trigger a redraw.
-                    window.on_mouse_event(|_: &MouseMoveEvent, phase, window, _| {
+                    // Track the exit delay directly. A full-window refresh for
+                    // every pointer move also rebuilds unrelated Studio/chat UI.
+                    let owner = paint_owner.clone();
+                    window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                         if phase.bubble() {
-                            window.refresh();
+                            let _ = owner.update(cx, |list, cx| {
+                                list.update_agent_card_visibility(row, window, cx);
+                            });
                         }
                     });
                 }
@@ -208,6 +202,41 @@ impl ProjectList {
         .top_0()
         .left_0()
         .size_full()
+    }
+
+    fn update_agent_card_visibility(
+        &mut self,
+        row: HoveredAgentRow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.agent_hover.row != Some(row) || self.agent_hover.view.is_none() {
+            return;
+        }
+        let mouse = window.mouse_position();
+        let inside = [
+            self.agent_hover.visible_row_bounds,
+            self.agent_hover.card_bounds,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|bounds| bounds.contains(&mouse));
+        if inside {
+            self.agent_hover.timer = None;
+        } else if self.agent_hover.timer.is_none() {
+            let owner = cx.entity().downgrade();
+            self.agent_hover.timer = Some(window.spawn(cx, async move |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let _ = owner.update(cx, |list, cx| {
+                    if list.agent_hover.row == Some(row) {
+                        list.agent_hover.clear();
+                        cx.notify();
+                    }
+                });
+            }));
+        }
     }
 
     pub(super) fn agent_hover_card_builder(

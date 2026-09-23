@@ -17,6 +17,7 @@ import {
   IMAGE_BUDGET,
   previewPlan,
   type Camera,
+  type Activity,
   type Layout,
   type Screen,
   type Request,
@@ -39,6 +40,8 @@ type Data = {
   error?: string;
   pending: boolean;
   editing: boolean;
+  /** False once the artboard is too small to read, as for its preview image. */
+  legible: boolean;
   begin: () => void;
   end: (width: number, height: number, x: number, y: number) => void;
 };
@@ -71,6 +74,42 @@ const send = (type: string, data: Record<string, unknown> = {}) =>
       ...data,
     }),
   );
+const CAPTIONS = {
+  working: "Designing this screen…",
+  editing: "Editing this screen…",
+  queued: "Next in this turn",
+} as const;
+/** Marks work in flight. A blank screen gets a placeholder skeleton; an
+ *  authored one keeps its real design visible under a lighter treatment. */
+const DesigningOverlay = memo(function DesigningOverlay({
+  activity,
+}: {
+  activity: Activity;
+}) {
+  return (
+    <div className={`artboard-work ${activity}`} aria-hidden="true">
+      {activity !== "queued" && <div className="artboard-sweep" />}
+      {activity !== "editing" && (
+        <div className="artboard-skeleton">
+          <div className="bone head" />
+          <div className="bone line" />
+          <div className="bone line short" />
+          <div className="bone card" />
+          <div className="bone row" />
+          <div className="bone cta" />
+        </div>
+      )}
+      <div className="artboard-caption">
+        <span className="bars">
+          <i />
+          <i />
+          <i />
+        </span>
+        {CAPTIONS[activity]}
+      </div>
+    </div>
+  );
+});
 const Artboard = memo(function Artboard({
   data,
   selected,
@@ -85,11 +124,33 @@ const Artboard = memo(function Artboard({
   return (
     <div
       className={`artboard ${selected ? "selected" : ""}`}
-      aria-label={data.screen.name}
+      aria-label={
+        data.screen.activity === "working"
+          ? `${data.screen.name} — being designed`
+          : data.screen.activity === "editing"
+            ? `${data.screen.name} — being edited`
+            : data.screen.activity === "queued"
+              ? `${data.screen.name} — queued for design`
+              : data.screen.name
+      }
     >
-      <div className="artboard-title">{data.screen.name}</div>
+      <div className="artboard-title">
+        <span className="artboard-name">{data.screen.name}</span>
+        {data.screen.activity && (
+          <span className={`artboard-chip ${data.screen.activity}`}>
+            <span className="dot" />
+            {data.screen.activity === "working"
+              ? "Designing"
+              : data.screen.activity === "editing"
+                ? "Editing"
+                : "Queued"}
+          </span>
+        )}
+      </div>
       <NodeResizer
-        isVisible={!!selected && !data.pending && !data.editing}
+        isVisible={
+          !!selected && !data.pending && !data.editing && !data.screen.activity
+        }
         minWidth={240}
         maxWidth={3840}
         minHeight={240}
@@ -121,6 +182,9 @@ const Artboard = memo(function Artboard({
               ? "Saving…"
               : "Preview"}
         </div>
+      )}
+      {data.screen.activity && data.legible && (
+        <DesigningOverlay activity={data.screen.activity} />
       )}
       {selected && (
         <div className="artboard-size">
@@ -210,6 +274,9 @@ function Canvas() {
           )
             return previous;
           const saving = pending.current.get(screen.id);
+          const legible =
+            Math.max(screen.width, screen.height) * layout.current.viewport.zoom >= 48 ||
+            inline.current?.screen === screen.id;
           const n: ArtboardNode = {
             id: screen.id,
             type: "artboard",
@@ -231,8 +298,8 @@ function Canvas() {
             draggable: layout.current.overview_mode !== "focus" && !pending.current.has(screen.id),
             data: {
               screen,
-              preview: Math.max(screen.width, screen.height) * layout.current.viewport.zoom >= 48 || inline.current?.screen === screen.id
-                ? previews.current.get(screen.id) : undefined,
+              legible,
+              preview: legible ? previews.current.get(screen.id) : undefined,
               error: failures.current.get(screen.id),
               pending: pending.current.has(screen.id),
               editing: inline.current?.screen===screen.id,
@@ -372,6 +439,10 @@ function Canvas() {
   }, [planPreviews]);
   const flushCamera = useCallback(() => {
     clearTimeout(timers.current.camera);
+    // Focus shows one screen, opened fitted and centred every time, so its
+    // camera is transient: remembering it would carry a zoom across screens
+    // and overwrite the saved Canvas arrangement view with it.
+    if (layout.current.overview_mode === "focus") return;
     send("camera", { viewport: layout.current.viewport });
   }, []);
   const decodeNext = useCallback(

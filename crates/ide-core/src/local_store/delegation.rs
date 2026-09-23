@@ -37,6 +37,35 @@ pub struct ExpertAuthorization {
     pub plan_mode: bool,
     #[serde(default)]
     pub temporary_experts: Vec<crate::experts::ExpertSnapshot>,
+    /// Literal user submissions from a task the user explicitly asked to retry.
+    /// Never populated from provider output, repository text or another chat.
+    #[serde(default)]
+    pub continuation_model_context: Option<String>,
+}
+
+fn extend_authorized_team(run: &mut DelegationRun, authorization: &ExpertAuthorization) {
+    for id in &authorization.expert_ids {
+        if !run.authorized_experts.contains(id) {
+            run.authorized_experts.push(*id);
+        }
+    }
+    for expert in &authorization.temporary_experts {
+        if !run
+            .temporary_experts
+            .iter()
+            .any(|e| e.profile.id == expert.profile.id)
+        {
+            run.temporary_model_authorizations.insert(
+                expert.profile.id,
+                authorization
+                    .continuation_model_context
+                    .as_ref()
+                    .unwrap_or(&authorization.original_assignment)
+                    .clone(),
+            );
+            run.temporary_experts.push(expert.clone());
+        }
+    }
 }
 
 async fn end_transaction<T>(conn: &Connection, result: Result<T>) -> Result<T> {
@@ -209,6 +238,50 @@ impl LocalStore {
             .await
         })
     }
+    /// Shared desktop/remote submission path. A natural request prepares the
+    /// same run as a picker selection, so its authority survives follow-ups.
+    /// This does not create tasks or start runtimes; the lead still plans them.
+    pub fn prepare_delegation_submission(
+        &self,
+        parent: Uuid,
+        source: Uuid,
+        user_text: &str,
+        explicit: &[Uuid],
+        plan_mode: bool,
+    ) -> Result<Option<Uuid>> {
+        let runs = self.load_delegations()?;
+        let authorization =
+            self.authorize_experts(parent, source, user_text, explicit, plan_mode)?;
+        if let Some(run) = runs
+            .iter()
+            .find(|r| r.parent_agent_id == parent && r.status.stopped())
+        {
+            // Editing the team is allowed while stopped. Scheduling still
+            // requires the coordinator's explicit, reconciled Resume path.
+            if let Some(authorization) = &authorization {
+                self.update_delegation(run.id, Some(run.revision), |r| {
+                    extend_authorized_team(r, authorization);
+                    Ok(())
+                })?;
+            }
+            return Ok(Some(run.id));
+        }
+        let has_run = runs
+            .iter()
+            .any(|r| r.parent_agent_id == parent && !r.status.terminal());
+        if !has_run && !self.beta_features()?.delegation {
+            ensure!(explicit.is_empty(), "{}", crate::delegation::BETA_DISABLED);
+            return Ok(None);
+        }
+        if !explicit.is_empty() || has_run || crate::experts::requests_delegation(user_text) {
+            authorization
+                .map(|a| self.begin_delegation(parent, a.id).map(|r| r.id))
+                .transpose()
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Trusted application submission path only. MCP does not expose this API.
     pub fn authorize_experts(
         &self,
@@ -251,9 +324,14 @@ impl LocalStore {
             }
         }
         let mut temporary_experts = Vec::new();
-        if temporary_requested
-            && (ids.is_empty() || explicit_temporary || user_text.contains("on-demand"))
-        {
+        let on_demand = user_text
+            .to_lowercase()
+            .replace('-', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("on demand");
+        if temporary_requested && (ids.is_empty() || explicit_temporary || on_demand) {
             let agents = self.load_agents()?;
             let agent = agents
                 .iter()
@@ -287,6 +365,43 @@ impl LocalStore {
                 skills: vec![],
             });
         }
+        let continuation_model_context = if !temporary_experts.is_empty()
+            && explicit.is_empty()
+            && !explicit_temporary
+            && crate::experts::requests_delegation_continuation(user_text)
+        {
+            let previous = self
+                .load_delegations()?
+                .into_iter()
+                .rev()
+                .find(|r| r.parent_agent_id == parent);
+            if let Some(previous) =
+                previous.filter(|r| r.status != crate::delegation::RunStatus::Completed)
+            {
+                let mut context = self.rt.block_on(async {
+                    let conn = self.connect().await?;
+                    let mut rows = conn.query("SELECT payload_json FROM delegation_authorizations WHERE parent_agent_id = ?1 AND rowid >= (SELECT rowid FROM delegation_authorizations WHERE id = ?2 AND parent_agent_id = ?1) ORDER BY rowid DESC LIMIT 32", (parent.to_string(), previous.source_message_id.to_string())).await?;
+                    let mut messages = Vec::new();
+                    while let Some(row) = rows.next().await? {
+                        let a: ExpertAuthorization = serde_json::from_str(&row.get::<String>(0)?)?;
+                        messages.push(a.original_assignment);
+                    }
+                    messages.reverse();
+                    Ok::<_, anyhow::Error>(messages.join("\n\n"))
+                })?;
+                // Keep the initial brief even when a long conversation exceeds
+                // the bounded follow-up window. This context grants models only.
+                context = format!(
+                    "{}\n\n{context}\n\n{user_text}",
+                    previous.original_assignment
+                );
+                Some(context)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let authorization = ExpertAuthorization {
             id: source,
             parent_agent_id: parent,
@@ -294,6 +409,7 @@ impl LocalStore {
             expert_ids: ids,
             plan_mode,
             temporary_experts,
+            continuation_model_context,
         };
         self.rt.block_on(async {
             let conn = self.connect().await?;
@@ -304,14 +420,13 @@ impl LocalStore {
     }
     pub fn begin_delegation(&self, parent: Uuid, authorization_id: Uuid) -> Result<DelegationRun> {
         let limits = self.delegation_limits()?;
-        self.rt.block_on(async {
+        let result = self.rt.block_on(async {
             let conn = self.connect().await?;
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let result = async {
                 let mut rows = conn.query("SELECT payload_json FROM delegation_authorizations WHERE id = ?1 AND parent_agent_id = ?2", (authorization_id.to_string(), parent.to_string())).await?;
                 let row = rows.next().await?.context("This assignment was not authorized by a user submission. Ask the user to name the Bandmates.")?;
                 let authorization: ExpertAuthorization = serde_json::from_str(&row.get::<String>(0)?)?;
-                ensure!(!authorization.expert_ids.is_empty(), "Choro could not resolve any Bandmate names in this user message. Ask the user to confirm the exact names or choose them with /delegate. Retrying this authorization cannot add Bandmates.");
                 drop(rows);
                 if let Some(previous) = load_delegations_async(&conn).await?.into_iter().find(|r| r.parent_agent_id == parent && r.source_message_id == authorization_id) {
                     return Ok(previous);
@@ -327,25 +442,26 @@ impl LocalStore {
                     let mut run: DelegationRun = serde_json::from_str(&row.get::<String>(0)?)?;
                     drop(existing);
                     ensure!(!run.status.stopped(), "Resume the existing task in Choro first.");
-                    for id in authorization.expert_ids { if !run.authorized_experts.contains(&id) { run.authorized_experts.push(id); } }
-                    for expert in authorization.temporary_experts {
-                        if !run.temporary_experts.iter().any(|e| e.profile.id == expert.profile.id) {
-                            run.temporary_experts.push(expert);
-                        }
+                    if authorization.expert_ids.is_empty() {
+                        return Ok(run); // A clarification retains the active task's existing team.
                     }
+                    extend_authorized_team(&mut run, &authorization);
                     run.revision += 1;
                     write_run(&conn, &run).await?;
                     return Ok(run);
                 }
                 drop(existing);
+                ensure!(!authorization.expert_ids.is_empty(), "No delegation authority was recorded for this user submission. A clear on-demand request does not require saved profiles or /delegate. Report an authorization problem if the request was already clear; retrying this authorization cannot add Bandmates.");
                 ensure!(beta_features_async(&conn).await?.delegation, "{}", crate::delegation::BETA_DISABLED);
-                let mut run = DelegationRun::new(parent, agent.project_id, authorization.id, authorization.original_assignment, authorization.expert_ids, authorization.plan_mode, limits);
-                run.temporary_experts = authorization.temporary_experts;
+                let mut run = DelegationRun::new(parent, agent.project_id, authorization.id, authorization.original_assignment.clone(), authorization.expert_ids.clone(), authorization.plan_mode, limits);
+                extend_authorized_team(&mut run, &authorization);
                 write_run(&conn, &run).await?;
                 Ok(run)
             }.await;
             end_transaction(&conn, result).await
-        })
+        })?;
+        crate::preview_control::notify_delegation_changed(&self.root, result.id);
+        Ok(result)
     }
     pub fn load_delegations(&self) -> Result<Vec<DelegationRun>> {
         self.rt
@@ -361,7 +477,7 @@ impl LocalStore {
         expected_revision: Option<u64>,
         edit: impl FnOnce(&mut DelegationRun) -> Result<T>,
     ) -> Result<T> {
-        self.rt.block_on(async {
+        let result = self.rt.block_on(async {
             let conn = self.connect().await?;
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let result = async {
@@ -377,7 +493,9 @@ impl LocalStore {
             }
             .await;
             end_transaction(&conn, result).await
-        })
+        })?;
+        crate::preview_control::notify_delegation_changed(&self.root, id);
+        Ok(result)
     }
     /// Provider telemetry does not revise task authority or invalidate a lead's
     /// pending operation. The transaction still preserves concurrent commands.
@@ -389,7 +507,7 @@ impl LocalStore {
         session: Option<String>,
         usage: Option<serde_json::Value>,
     ) -> Result<()> {
-        self.rt.block_on(async {
+        let result = self.rt.block_on(async {
             let conn = self.connect().await?;
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let result = async {
@@ -407,7 +525,9 @@ impl LocalStore {
             }
             .await;
             end_transaction(&conn, result).await
-        })
+        })?;
+        crate::preview_control::notify_delegation_changed(&self.root, id);
+        Ok(result)
     }
     pub fn delegation_operation(
         &self,
@@ -423,7 +543,7 @@ impl LocalStore {
             "Provide a stable operation_key of at most 160 bytes."
         );
         let input_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(input)?));
-        self.rt.block_on(async {
+        let result = self.rt.block_on(async {
             let conn = self.connect().await?;
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let result = async {
@@ -461,7 +581,9 @@ impl LocalStore {
             }
             .await;
             end_transaction(&conn, result).await
-        })
+        })?;
+        crate::preview_control::notify_delegation_changed(&self.root, id);
+        Ok(result)
     }
 
     pub fn replay_delegation_operation(
@@ -587,24 +709,16 @@ mod tests {
         assert!(!store.beta_features().unwrap().delegation);
         let old: crate::config::BetaFeatures = serde_json::from_str("{}").unwrap();
         assert!(!old.delegation);
-        assert!(!old.penpot);
-        let legacy: crate::config::BetaFeatures = serde_json::from_str(r#"{"delegation":true}"#).unwrap();
-        assert!(!legacy.penpot);
+        let legacy: crate::config::BetaFeatures = serde_json::from_str(r#"{"delegation":true,"penpot":true}"#).unwrap();
+        // A pre-release Penpot opt-in must not survive into the launch build.
+        assert!(legacy.delegation);
+        assert!(serde_json::to_string(&legacy).unwrap().contains("delegation"));
+        assert!(!serde_json::to_string(&legacy).unwrap().contains("penpot"));
         store
             .save_beta_features(crate::config::BetaFeatures { delegation: true, ..Default::default() })
             .unwrap();
         store.save_workspace_config(&AppConfig::default()).unwrap();
         assert!(observer.beta_features().unwrap().delegation);
-        assert!(!observer.beta_features().unwrap().penpot);
-        let mut features = observer.beta_features().unwrap();
-        features.penpot = true;
-        store.save_beta_features(features).unwrap();
-        store.save_workspace_config(&AppConfig::default()).unwrap();
-        assert!(observer.beta_features().unwrap().penpot);
-        assert!(observer.beta_features().unwrap().delegation);
-        features.penpot = false;
-        store.save_beta_features(features).unwrap();
-        assert!(!observer.beta_features().unwrap().penpot);
         assert!(observer.beta_features().unwrap().delegation);
         store
             .save_beta_features(crate::config::BetaFeatures::default())
@@ -702,6 +816,147 @@ mod tests {
         let profile = store.save_expert(profile, None).unwrap();
         (dir, store, agent, profile)
     }
+    #[test]
+    fn natural_submission_prepares_one_run_and_preserves_authority_through_followups() {
+        let (_dir, store, agent, profile) = fixture();
+        let source = Uuid::new_v4();
+        let text = "I want to \"redesign\" the existing video with the current assets and compare several different approaches. Please delagte four on demand teammates without saved profiles.";
+        let id = store
+            .prepare_delegation_submission(agent.id, source, text, &[], false)
+            .unwrap()
+            .unwrap();
+        let run = store.load_delegation(id).unwrap();
+        assert_eq!(run.status, RunStatus::Preparing);
+        assert!(run.tasks.is_empty()); // No model calls or semantic task splitting here.
+        assert_eq!(run.original_assignment, text);
+        assert_eq!(run.authorized_experts, vec![source]);
+        assert_eq!(run.temporary_experts[0].profile.model, agent.model);
+        assert_eq!(store.load_experts().unwrap(), vec![profile]);
+        assert!(store
+            .prepare_delegation_submission(
+                agent.id,
+                Uuid::new_v4(),
+                "They can be created on demand without saved profiles",
+                &[],
+                false
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.load_delegation(id).unwrap().authorized_experts,
+            vec![source]
+        );
+        assert_eq!(store.load_delegations().unwrap().len(), 1);
+        store
+            .update_delegation(id, None, |run| {
+                run.status = RunStatus::Completed;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store
+            .prepare_delegation_submission(
+                agent.id,
+                Uuid::new_v4(),
+                "Build an unrelated page",
+                &[],
+                false
+            )
+            .unwrap()
+            .is_none());
+        assert!(store
+            .latest_expert_authorization(agent.id)
+            .unwrap()
+            .unwrap()
+            .expert_ids
+            .is_empty());
+        assert_eq!(store.load_delegations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn natural_submission_respects_beta_and_durable_stop() {
+        let (_dir, store, agent, _) = fixture();
+        store
+            .save_beta_features(crate::config::BetaFeatures::default())
+            .unwrap();
+        assert!(store
+            .prepare_delegation_submission(
+                agent.id,
+                Uuid::new_v4(),
+                "Please delegate the review",
+                &[],
+                false
+            )
+            .unwrap()
+            .is_none());
+        assert!(store.load_delegations().unwrap().is_empty());
+        store
+            .save_beta_features(crate::config::BetaFeatures {
+                delegation: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let run = store
+            .prepare_delegation_submission(
+                agent.id,
+                Uuid::new_v4(),
+                "Please delegate the review",
+                &[],
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(store.load_delegation(run).unwrap().plan_mode);
+        for status in [RunStatus::Paused, RunStatus::Interrupted] {
+            store
+                .update_delegation(run, None, |run| {
+                    run.status = status;
+                    Ok(())
+                })
+                .unwrap();
+            let before = store.load_delegation(run).unwrap();
+            let source = Uuid::new_v4();
+            assert_eq!(
+                store
+                    .prepare_delegation_submission(
+                        agent.id,
+                        source,
+                        "Add four new teammates",
+                        &[],
+                        false
+                    )
+                    .unwrap(),
+                Some(run)
+            );
+            let after = store.load_delegation(run).unwrap();
+            assert_eq!(after.status, before.status);
+            assert_eq!(after.tasks.len(), before.tasks.len());
+            assert!(after.authorized_experts.contains(&source));
+            assert!(after.ready_tasks(0).is_empty());
+        }
+    }
+
+    #[test]
+    fn on_demand_wording_works_alongside_a_named_profile() {
+        let (_dir, store, agent, profile) = fixture();
+        for wording in ["ON-DEMAND", "on demand", "on   demand"] {
+            let source = Uuid::new_v4();
+            let auth = store
+                .authorize_experts(
+                    agent.id,
+                    source,
+                    &format!(
+                        "Delegate design to UI Designer and create {wording} teammates for testing"
+                    ),
+                    &[],
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(auth.expert_ids, vec![profile.id, source]);
+            assert_eq!(auth.temporary_experts.len(), 1);
+        }
+    }
+
     #[test]
     fn temporary_selection_is_durable_and_does_not_change_saved_profiles() {
         let (dir, store, agent, profile) = fixture();
@@ -943,6 +1198,7 @@ mod tests {
                 r.add_plans(
                     parent.id,
                     vec![TaskPlan {
+                        model_request: None,
                         key: "ui".into(),
                         expert_id: p.id,
                         goal: "UI".into(),

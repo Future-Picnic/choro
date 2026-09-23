@@ -321,7 +321,7 @@ impl CenterArea {
                     }
                 }
             }
-            cx.notify();
+            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
         });
         if let Some(timeline) = timeline_to_persist {
             if let Err(error) = persist_timeline_snapshot(agent_id, &timeline) {

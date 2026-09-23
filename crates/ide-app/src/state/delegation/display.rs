@@ -604,6 +604,7 @@ mod tests {
         DelegationTask {
             id: Uuid::new_v4(),
             plan: TaskPlan {
+                model_request: None,
                 key: goal.to_lowercase().replace(' ', "-"),
                 expert_id: expert.profile.id,
                 goal: goal.into(),

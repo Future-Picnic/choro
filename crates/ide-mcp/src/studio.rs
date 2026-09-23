@@ -6,6 +6,7 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
     [
         "studio_context",
         "studio_project_read",
+        "studio_import_propose",
         "studio_read",
         "studio_apply",
         "studio_snapshot",
@@ -33,6 +34,7 @@ pub(super) fn allowed(name: &str) -> bool {
     matches!(
         name,
         "studio_project_read"
+            | "studio_import_propose"
             | "studio_context"
             | "studio_read"
             | "studio_apply"
@@ -67,6 +69,7 @@ impl Tool for StudioTool {
     }
     fn description(&self) -> &'static str {
         match self.0 {
+            "studio_import_propose" => "Save results of an authorized From code analysis for native review. Does not create or publish systems. Provide summary and systems: [{name,platform,description,sources:{project_relative_file:evidence},system:{schema_version:1,revision:0,tokens,recipes,font_faces},assets?:{font_filename:project_relative_file},existing_system_id?:uuid}]. Recover distinct systems from real UI evidence; shared app themes are one system. Up to 16 systems; an empty list explains no UI found. Only From code agents can call this tool.",
             "studio_project_read" => "Read project context without shell access. Optional path is a contained project-relative file or directory (default root). Files return up to 200 lines starting at optional start_line. Directories return up to 200 children. No writes.",
             "studio_context" => "Read this Studio agent's exact design, current host-authorized turn scope, effective tokens, screen list, revision and fingerprint. Call before editing. Scope cannot be expanded through MCP.",
             "studio_read" => "Read an HTML screen (screen_id), a bundled asset (asset_path), or all design source if omitted. Other screens are read-only unless listed in studio_context scope.",
@@ -78,6 +81,9 @@ impl Tool for StudioTool {
     }
     fn input_schema(&self) -> Value {
         match self.0 {
+            "studio_import_propose" => {
+                json!({"type":"object","properties":{"scope_id":{"type":"string","format":"uuid"},"summary":{"type":"string","maxLength":4000},"systems":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"name":{"type":"string"},"platform":{"type":"string"},"description":{"type":"string"},"sources":{"type":"object","additionalProperties":{"type":"string"}},"system":{"type":"object"},"assets":{"type":"object","additionalProperties":{"type":"string"}},"existing_system_id":{"type":"string","format":"uuid"}},"required":["name","platform","description","sources","system"],"additionalProperties":false}}},"required":["scope_id","summary","systems"],"additionalProperties":false})
+            }
             "studio_project_read" => {
                 json!({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1}},"additionalProperties":false})
             }
@@ -131,7 +137,17 @@ impl Tool for StudioTool {
                     }
                     "full" => serde_json::to_value(&snapshot)?,
                     _ => {
-                        json!({"handoff_id":snapshot.id,"snapshot_path":snapshot_path,"manifest":snapshot.design.manifest,"screen_ids":snapshot.screen_ids,"instruction":snapshot.instruction,"fingerprint":snapshot.design.fingerprint,"asset_paths":snapshot.assets.keys().collect::<Vec<_>>()})
+                        json!({
+                            "handoff_id": snapshot.id,
+                            "snapshot_path": snapshot_path,
+                            "manifest": snapshot.design.manifest,
+                            "design_system_context": snapshot.design_system_context,
+                            "design_system_usage": "Read section=tokens for this snapshot's effective tokens, component recipes, and fonts. When a design system is selected, use that captured system together with screen-local styles and overrides; do not substitute a generic theme or a newer system revision. Otherwise use the captured local styles without attaching an unrelated system.",
+                            "screen_ids": snapshot.screen_ids,
+                            "instruction": snapshot.instruction,
+                            "fingerprint": snapshot.design.fingerprint,
+                            "asset_paths": snapshot.assets.keys().collect::<Vec<_>>(),
+                        })
                     }
                 }
             };
@@ -143,6 +159,23 @@ impl Tool for StudioTool {
             scope.design_id == role.design_id,
             "Studio role and scope do not match"
         );
+        if role.target == StudioAgentTarget::DesignSystemImport {
+            match self.0 {
+                "studio_context" => return Ok(vec![text_content(store.request_context(ctx.agent_id()?)?.to_string())]),
+                "studio_import_propose" => {
+                    ensure!(serde_json::to_vec(args)?.len() <= 1024 * 1024, "Import proposal is too large");
+                    let proposal = store.propose_code_systems(
+                        ctx.agent_id()?, parse_id(args, "scope_id")?, args["summary"].as_str().context("Missing summary")?.to_owned(),
+                        serde_json::from_value(args["systems"].clone())?,
+                    )?;
+                    return Ok(vec![text_content(json!({"proposal_id":proposal.proposal_id,"systems":proposal.candidates.len(),"status":"Ready for the user to select and create drafts. No system has been created or applied."}).to_string())]);
+                }
+                "studio_project_read" => {},
+                _ => anyhow::bail!("From code analysis can only read project files and propose systems"),
+            }
+        } else {
+            ensure!(self.0 != "studio_import_propose", "Start From code in the design-system library before proposing systems");
+        }
         if self.0 == "studio_project_read" {
             let relative = args.get("path").and_then(Value::as_str).unwrap_or("");
             let path = if relative.is_empty() {
@@ -170,6 +203,9 @@ impl Tool for StudioTool {
                     "File is too large for Studio context"
                 );
                 let text = fs::read_to_string(path)?;
+                if role.target == StudioAgentTarget::DesignSystemImport {
+                    store.record_code_import_read(ctx.agent_id()?, relative, text.as_bytes())?;
+                }
                 let start = args
                     .get("start_line")
                     .and_then(Value::as_u64)
@@ -211,6 +247,9 @@ impl Tool for StudioTool {
                 } else if args.get("screen_id").is_some() {
                     {
                         let id = parse_id(args, "screen_id")?;
+                        if design.documents.contains_key(&id) {
+                            store.record_focus(ctx.agent_id()?, scope.id, role.design_id, id)?;
+                        }
                         let recovered =
                             fs::read(store.cache.join("drafts").join(format!("{id}.json")))
                                 .ok()
@@ -229,17 +268,27 @@ impl Tool for StudioTool {
                         .context("Missing transaction")?,
                 )?;
                 let result = store.apply_for_agent(ctx.agent_id()?, &transaction)?;
+                if let Some(StudioOperation::WriteScreen { screen_id, .. }) = transaction
+                    .operations
+                    .iter()
+                    .rev()
+                    .find(|op| matches!(op, StudioOperation::WriteScreen { .. }))
+                {
+                    store.record_focus(ctx.agent_id()?, scope.id, role.design_id, *screen_id)?;
+                }
                 json!({"revision":result.manifest.revision,"fingerprint":result.fingerprint,"transaction_id":transaction.id})
             }
             "studio_review" => {
+                let reviewed = parse_id(args, "screen_id")?;
                 store.review_screen(
                     ctx.agent_id()?,
-                    parse_id(args, "screen_id")?,
+                    reviewed,
                     args["fingerprint"]
                         .as_str()
                         .context("Missing fingerprint")?,
                     args["notes"].as_str().context("Missing review notes")?,
                 )?;
+                store.clear_focus(ctx.agent_id()?, reviewed);
                 json!({"review":"passed"})
             }
             "studio_snapshot" => {
@@ -277,6 +326,44 @@ fn parse_id(args: &Value, name: &str) -> Result<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn from_code_agent_can_read_and_propose_but_cannot_write_designs() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = LocalStore::open(temp.path().join("store")).unwrap();
+        let root = temp.path().join("project");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("theme.css"), ":root { --color-primary: #123456; }").unwrap();
+        let project = ide_core::Project::from_path(root.clone());
+        let mut config = ide_core::AppConfig::default();
+        config.projects.push(project.clone());
+        local.save_workspace_config(&config).unwrap();
+        let store = StudioStore::new(root.clone(), local.root()).unwrap();
+        let import = store.create_code_import().unwrap();
+        let agent = uuid::Uuid::new_v4();
+        let role = StudioAgentContext { target: StudioAgentTarget::DesignSystemImport, design_id: import.id, conversation_id: import.id };
+        store.prepare_code_import(agent, &role).unwrap();
+        let ctx = ServerContext { studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
+        let registry = ToolRegistry::default();
+        let read = registry.call(&ctx, &json!({"name":"studio_project_read","arguments":{"path":"theme.css"}}));
+        assert_ne!(read["isError"], true);
+        assert!(read["content"][0]["text"].as_str().unwrap().contains("#123456"));
+        let scope = store.scope(agent).unwrap();
+        let proposal = registry.call(&ctx, &json!({"name":"studio_import_propose","arguments":{
+            "scope_id":scope.id,"summary":"Found the web theme.","systems":[{
+                "name":"Web","platform":"Web","description":"One shared theme.",
+                "sources":{"theme.css":"Defines the primary color."},
+                "system":{"schema_version":1,"revision":0,"tokens":{"color-primary":"#123456"},"recipes":{}}
+            }]
+        }}));
+        assert_ne!(proposal["isError"], true, "{proposal}");
+        assert!(store.systems().unwrap().is_empty());
+        for name in ["studio_apply", "studio_snapshot", "studio_read", "create_choro_doc"] {
+            let denied = registry.call(&ctx, &json!({"name":name,"arguments":{}}));
+            assert_eq!(denied["isError"], true, "{name}: {denied}");
+        }
+        assert_eq!(fs::read_to_string(root.join("theme.css")).unwrap(), ":root { --color-primary: #123456; }");
+    }
+
     #[test]
     fn screenshot_schema_requires_exact_revision_and_review_is_scoped() {
         let schema = StudioTool("studio_snapshot").input_schema();

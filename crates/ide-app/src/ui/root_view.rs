@@ -36,7 +36,7 @@ use crate::app_update::{AppUpdateController, AppUpdatePhase};
 use crate::remote::dto::RemoteEvent;
 use crate::state::{
     AgentActivityCache, AgentCapabilityCacheFile, AgentChatState, AgentRecords, DesignsState,
-    DocAssistantState, DocsState, GitStates, OrbitState, PenpotState, QuickAskEvent, QuickAskPhase,
+    DocAssistantState, DocsState, GitStates, OrbitState, QuickAskEvent, QuickAskPhase,
     QuickAskState, ServicesState, TasksState, TerminalManager, Workspace,
 };
 use crate::ui::agents_panel::AgentsPanel;
@@ -205,7 +205,6 @@ pub struct RootView {
     tasks: Entity<TasksState>,
     docs: Entity<DocsState>,
     orbit: Entity<OrbitState>,
-    penpot: Entity<PenpotState>,
     git_states: Entity<GitStates>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
@@ -356,8 +355,6 @@ impl RootView {
         let tasks = TasksState::view(workspace.clone(), cx);
         let services = ServicesState::view(workspace.clone(), cx);
         let orbit = OrbitState::view(workspace.clone(), cx);
-        let penpot = PenpotState::view(workspace.read(cx).beta_features.penpot, cx);
-        penpot.update(cx, |penpot, cx| penpot.ensure_auto_provisioned(cx));
         let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
         let quick_ask = cx.new(|cx| QuickAskState::load(workspace.clone(), cx));
         let app_update = cx.new(|_| AppUpdateController::new());
@@ -374,7 +371,6 @@ impl RootView {
             services.clone(),
             orbit.clone(),
             doc_assistants,
-            penpot.clone(),
             voice.clone(),
             quick_ask.clone(),
             window,
@@ -423,7 +419,7 @@ impl RootView {
             terminals.clone(),
             agent_chats.clone(),
             agents.clone(),
-            agent_activity,
+            agent_activity.clone(),
             center.downgrade(),
             cx,
         );
@@ -462,12 +458,6 @@ impl RootView {
         );
         let services_panel =
             crate::ui::services_panel::ServicesPanel::view(workspace.clone(), orbit.clone(), cx);
-        let penpot_panel = crate::ui::penpot_panel::PenpotPanel::view(
-            workspace.clone(),
-            penpot.clone(),
-            center.downgrade(),
-            cx,
-        );
         let right_panel = RightPanel::view(
             git_panel,
             file_tree,
@@ -477,7 +467,6 @@ impl RootView {
             designs_panel,
             tasks_panel,
             services_panel,
-            penpot_panel,
             center.clone(),
             cx,
         );
@@ -607,20 +596,32 @@ impl RootView {
             cx.observe(&right_panel, |_: &mut Self, _, cx| cx.notify())
                 .detach();
             let chat_remote_events = remote_events.clone();
-            cx.observe(&agent_chats, move |this: &mut Self, _, cx| {
-                let _ = chat_remote_events.send(RemoteEvent::HostSnapshotChanged);
-                this.update_dock_badge(cx);
-                cx.notify();
+            cx.subscribe(&agent_chats, move |this: &mut Self, _, event, cx| {
+                let crate::state::agent_chat::AgentChatEvent::SessionChanged(change) = event else { return; };
+                let _ = chat_remote_events.send(RemoteEvent::AgentChanged { agent_id: change.agent_id.to_string() });
+                if change.categories.navigation || change.categories.identity {
+                    let _ = chat_remote_events.send(RemoteEvent::HostSnapshotChanged);
+                    this.update_dock_badge(cx);
+                    cx.notify();
+                }
             })
             .detach();
+            // Transcript updates and read acknowledgements also change sidebar
+            // attention, even when the provider runtime does not change.
+            let activity_remote_events = remote_events.clone();
+            cx.observe(&agent_activity, move |_: &mut Self, _, _| {
+                let _ = activity_remote_events.send(RemoteEvent::HostSnapshotChanged);
+            }).detach();
+            let attention_remote_events = remote_events.clone();
+            cx.observe(&terminals, move |_: &mut Self, _, _| {
+                let _ = attention_remote_events.send(RemoteEvent::HostSnapshotChanged);
+            }).detach();
             let agent_remote_events = remote_events.clone();
             cx.observe(&agents, move |_: &mut Self, _, cx| {
                 let _ = agent_remote_events.send(RemoteEvent::HostSnapshotChanged);
                 cx.notify();
             })
             .detach();
-            cx.observe(&penpot, |_: &mut Self, _, cx| cx.notify())
-                .detach();
             cx.subscribe(&title_branch_query, |_, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
@@ -657,7 +658,6 @@ impl RootView {
                 tasks,
                 docs,
                 orbit,
-                penpot,
                 git_states,
                 agents,
                 agent_chats,
@@ -1044,6 +1044,7 @@ fn modifiers_include(actual: Modifiers, required: Modifiers) -> bool {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.project_list.update(cx, |list, cx| list.set_visible(self.show_left, cx));
         let sidebar_style = self.workspace.read(cx).sidebar_style;
         let separator_style = self.workspace.read(cx).separator_style;
         let (left_size, right_size) = {
@@ -1713,11 +1714,11 @@ impl Render for RootView {
                                                         div()
                                                             .flex_1()
                                                             .min_h(px(0.))
-                                                            // Composer edits redraw the root. Keep
-                                                            // unchanged sidebar rows out of that path;
-                                                            // its own notifications still invalidate it.
-                                                            .child(gpui::AnyView::from(self.project_list.clone())
-                                                                .cached(gpui::StyleRefinement::default().size_full())),
+                                                            .relative()
+                                                            // An inexpensive shell, cached keyed rows,
+                                                            // and a sibling animation layer.
+                                                            .child(self.project_list.clone())
+                                                            .child(self.project_list.read(cx).activity_layer.clone()),
                                                     )
                                                     .child(self.left_sidebar_footer(cx)),
                                             )

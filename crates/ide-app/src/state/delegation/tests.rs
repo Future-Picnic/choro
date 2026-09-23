@@ -16,6 +16,52 @@ fn available(_: AgentKind) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "ui-layout-tests")]
+#[gpui::test]
+fn reload_hints_reject_stale_results_and_unchanged_polls_are_silent(cx: &mut gpui::TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    let notifications = Rc::new(Cell::new(0));
+    let coordinator = cx.update(|cx| {
+        let agents = cx.new(|_| AgentRecords::in_memory(vec![]));
+        let chats = cx.new(|_| AgentChatState::new());
+        let terminals = cx.new(|_| TerminalManager::new());
+        let (wake, _) = async_channel::bounded(1);
+        let coordinator = cx.new(|_| DelegationCoordinator {
+            runs: vec![], error: None, agents, chats, terminals, settled: HashMap::new(), cursor: 0,
+            stopped_parents: HashSet::new(), wake, reload_epoch: 0, snapshot: vec![],
+        });
+        let count = notifications.clone();
+        cx.observe(&coordinator, move |_, _| count.set(count.get() + 1)).detach();
+        coordinator
+    });
+    let mut run = DelegationRun::new(Uuid::new_v4(), ide_core::ProjectId::new(), Uuid::new_v4(), "Work".into(), vec![], false, Default::default());
+    let install = |run: &DelegationRun, epoch, cx: &mut gpui::TestAppContext| {
+        let runs = vec![run.clone()];
+        let bytes = run_stamps(&runs).unwrap();
+        cx.update(|cx| coordinator.update(cx, |s, cx| s.accept_snapshot(epoch, runs, bytes, cx)))
+    };
+    assert!(install(&run, 0, cx));
+    let count = notifications.get();
+    for _ in 0..10 { assert!(install(&run, 0, cx)); }
+    assert_eq!(notifications.get(), count);
+    // Telemetry/event data can move without an authority revision.
+    let revision = run.revision;
+    run.event(run.parent_agent_id, None, "telemetry", "Updated usage");
+    assert!(install(&run, 0, cx));
+    assert_eq!(run.revision, revision);
+    assert_eq!(notifications.get(), count + 1);
+    cx.update(|cx| coordinator.update(cx, |s, _| s.request_reload()));
+    run.status = RunStatus::Completed;
+    assert!(!install(&run, 0, cx));
+    cx.update(|cx| assert_ne!(coordinator.read(cx).runs[0].status, RunStatus::Completed));
+    cx.update(|cx| coordinator.update(cx, |s, cx| s.accept_error(1, "Unavailable".into(), cx)));
+    let count = notifications.get();
+    cx.update(|cx| coordinator.update(cx, |s, cx| s.accept_error(1, "Unavailable".into(), cx)));
+    assert_eq!(notifications.get(), count);
+    assert!(install(&run, 1, cx));
+    cx.update(|cx| { assert!(coordinator.read(cx).error.is_none()); assert_eq!(coordinator.read(cx).runs[0].status, RunStatus::Completed); });
+}
+
 #[test]
 fn stopped_delegation_stops_lead_once_and_preserves_expert_gate() {
     let fixture = Fixture::new();
@@ -40,6 +86,72 @@ fn stopped_delegation_stops_lead_once_and_preserves_expert_gate() {
         run.status = status;
         assert!(parent_stop_required(&mut stopped, &run));
     }
+}
+
+#[test]
+fn on_demand_model_override_reaches_the_prepared_child_without_changing_lead() {
+    let mut fixture = Fixture::new();
+    let lead_model = fixture.parent.model;
+    let lead_provider = fixture.parent.provider;
+    let source = Uuid::new_v4();
+    let auth = fixture
+        .store
+        .authorize_experts(
+            fixture.parent.id,
+            source,
+            "Delegate teammates using GPT6 asrta and Sonnet 5",
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    let run = fixture
+        .store
+        .begin_delegation(fixture.parent.id, source)
+        .unwrap();
+    assert_eq!(run.id, fixture.run);
+    let plans = ["GPT6 asrta", "Sonnet 5"]
+        .iter()
+        .enumerate()
+        .map(|(i, model)| TaskPlan {
+            model_request: Some((*model).into()),
+            key: format!("model-variant-{i}"),
+            expert_id: source,
+            goal: format!("Independent variant {i}"),
+            brief: "Build a separate deliverable from the same source brief".into(),
+            expected_outcome: "Verified result".into(),
+            repository: fixture.parent.project_path.clone(),
+            dependencies: vec![],
+            kind: TaskKind::Implementation,
+            held: false,
+        })
+        .collect();
+    fixture
+        .store
+        .update_delegation(run.id, None, |r| {
+            r.add_plans(fixture.parent.id, plans, &auth.temporary_experts)
+        })
+        .unwrap();
+    fixture.configure();
+    let tasks: Vec<_> = fixture
+        .load()
+        .tasks
+        .into_iter()
+        .filter(|t| t.plan.expert_id == source)
+        .collect();
+    assert_eq!(tasks.len(), 2);
+    for (task, (provider, model)) in tasks.into_iter().zip([
+        (AgentKind::Codex, AgentModel::CodexGpt6Astra),
+        (AgentKind::Claude, AgentModel::ClaudeSonnet),
+    ]) {
+        let child = fixture.prepare(task.id);
+        assert_eq!(child.provider, provider);
+        assert_eq!(child.model, model);
+        assert_eq!(child.expert_snapshot.as_ref().unwrap().profile.model, model);
+        assert_ne!(child.id, fixture.parent.id);
+    }
+    assert_eq!(fixture.parent.model, lead_model);
+    assert_eq!(fixture.parent.provider, lead_provider);
 }
 
 #[test]
@@ -126,6 +238,7 @@ impl Fixture {
             .iter()
             .enumerate()
             .map(|(i, p)| TaskPlan {
+                model_request: None,
                 key: format!("task-{i}"),
                 expert_id: p.id,
                 goal: p.name.clone(),
@@ -848,4 +961,308 @@ fn runtime_failure_requires_reconciling_dispatched_work_before_resume() {
     run.deliveries[0].status = DeliveryStatus::Acknowledged;
     run.resume().unwrap();
     assert_eq!(run.status, RunStatus::Preparing);
+}
+
+#[test]
+fn paused_teammate_corrections_survive_resume_and_other_assignments_keep_running() {
+    let mut f = Fixture::new();
+    f.configure();
+    let ids = f.load().ready_tasks(0);
+    let child = f.prepare(ids[0]);
+    let workspace = child.runtime_path().to_path_buf();
+    fs::write(workspace.join("partial.txt"), "keep this work").unwrap();
+    let old_revision = f.load().task(ids[0]).unwrap().revision;
+    f.store
+        .update_delegation(f.run, None, |r| {
+            let task = r.task_mut(ids[0])?;
+            task.paused_status = Some(task.status);
+            task.status = TaskStatus::Paused;
+            r.wait = Some(ide_core::delegation::WaitCondition {
+                after_sequence: r.events.last().map_or(0, |e| e.sequence),
+                tasks: vec![ids[0]],
+            });
+            r.user_correction(ids[0], "Keep the video to thirty seconds".into())?;
+            r.message(
+                r.parent_agent_id,
+                ids[0],
+                "Keep the original voiceover".into(),
+                false,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let paused = f.load();
+    assert_eq!(paused.task(ids[0]).unwrap().status, TaskStatus::Paused);
+    assert!(paused.wait_satisfied());
+    assert!(paused.ready_tasks(0).contains(&ids[1]));
+    let source = Uuid::new_v4();
+    assert_eq!(
+        f.store
+            .prepare_delegation_submission(
+                f.parent.id,
+                source,
+                "Add another teammate to check accessibility",
+                &[],
+                false
+            )
+            .unwrap(),
+        Some(f.run)
+    );
+    let expanded = f.load();
+    let mut plan = expanded.tasks[1].plan.clone();
+    plan.key = "accessibility".into();
+    plan.expert_id = source;
+    let expert = expanded
+        .temporary_experts
+        .iter()
+        .find(|e| e.profile.id == source)
+        .unwrap()
+        .clone();
+    f.store
+        .update_delegation(f.run, None, |r| {
+            r.add_plans(r.parent_agent_id, vec![plan], &[expert])
+        })
+        .unwrap();
+    assert_eq!(f.load().tasks.len(), 3);
+    assert_eq!(f.load().task(ids[0]).unwrap().status, TaskStatus::Paused);
+    // The same aggregate survives a restart without executing a queued message.
+    let reopened = LocalStore::open(f.store.root().to_path_buf()).unwrap();
+    assert_eq!(
+        reopened
+            .load_delegation(f.run)
+            .unwrap()
+            .task(ids[0])
+            .unwrap()
+            .status,
+        TaskStatus::Paused
+    );
+    f.store
+        .update_delegation(f.run, None, |r| {
+            r.deliveries
+                .iter_mut()
+                .find(|d| d.target == child.id)
+                .unwrap()
+                .status = DeliveryStatus::Uncertain;
+            Ok(())
+        })
+        .unwrap();
+    assert!(f
+        .store
+        .update_delegation(f.run, None, |r| r.resume_user_task(ids[0]))
+        .is_err());
+    assert_eq!(f.load().task(ids[0]).unwrap().status, TaskStatus::Paused);
+    f.store
+        .update_delegation(f.run, None, |r| {
+            r.deliveries
+                .iter_mut()
+                .find(|d| d.target == child.id && d.status == DeliveryStatus::Uncertain)
+                .unwrap()
+                .status = DeliveryStatus::Acknowledged;
+            Ok(())
+        })
+        .unwrap();
+    f.store
+        .update_delegation(f.run, None, |r| r.resume_user_task(ids[0]))
+        .unwrap();
+    let resumed = f.load();
+    assert!(resumed.task(ids[0]).unwrap().revision > old_revision);
+    assert_eq!(
+        resumed
+            .task(ids[0])
+            .unwrap()
+            .attempt()
+            .unwrap()
+            .child_agent_id,
+        child.id
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("partial.txt")).unwrap(),
+        "keep this work"
+    );
+    let deliveries = resumed
+        .deliveries
+        .iter()
+        .filter(|d| d.target == child.id && d.status == DeliveryStatus::Queued)
+        .map(|d| d.id)
+        .collect();
+    let effect = f
+        .job(Job::Deliver(
+            resumed.clone(),
+            child,
+            deliveries,
+            AgentInteractionMode::Default,
+        ))
+        .unwrap();
+    let Effect::Send(_, _, text, _, _) = effect else {
+        panic!("Expected correction delivery");
+    };
+    assert!(text.contains("thirty seconds"));
+    assert!(text.contains("original voiceover"));
+    assert!(text.contains(&format!(
+        "Current task revision: {}",
+        resumed.task(ids[0]).unwrap().revision
+    )));
+}
+
+#[test]
+fn corrections_before_start_and_after_integration_use_the_current_baseline() {
+    let mut f = Fixture::new();
+    let task = f.load().tasks[0].id;
+    f.store
+        .update_delegation(f.run, None, |r| {
+            r.user_correction(task, "Use compact controls".into())
+        })
+        .unwrap();
+    assert_eq!(f.load().task(task).unwrap().status, TaskStatus::Queued);
+    f.configure();
+    let first = f.prepare(task);
+    assert!(f
+        .load()
+        .task(task)
+        .unwrap()
+        .plan
+        .brief
+        .contains("compact controls"));
+    fs::write(first.runtime_path().join("first.txt"), "first result").unwrap();
+    f.report(task);
+    f.integrate(task);
+    fs::write(
+        f.parent.runtime_path().join("later.txt"),
+        "later parent work",
+    )
+    .unwrap();
+    f.store
+        .update_delegation(f.run, None, |r| {
+            r.user_correction(task, "Add keyboard support".into())
+        })
+        .unwrap();
+    assert_eq!(f.load().task(task).unwrap().status, TaskStatus::Queued);
+    let second = f.prepare(task);
+    assert_eq!(first.id, second.id);
+    assert_ne!(first.runtime_path(), second.runtime_path());
+    assert_eq!(
+        fs::read_to_string(second.runtime_path().join("later.txt")).unwrap(),
+        "later parent work"
+    );
+    assert_eq!(
+        fs::read_to_string(second.runtime_path().join("first.txt")).unwrap(),
+        "first result"
+    );
+    fs::write(
+        second.runtime_path().join("keyboard.txt"),
+        "keyboard support",
+    )
+    .unwrap();
+    f.report(task);
+    f.integrate(task);
+    assert_eq!(
+        fs::read_to_string(f.parent.runtime_path().join("first.txt")).unwrap(),
+        "first result"
+    );
+    assert!(first.runtime_path().exists());
+}
+
+#[test]
+fn paused_integration_cannot_lose_its_result_to_a_correction() {
+    let mut f = Fixture::new();
+    f.configure();
+    let task = f.load().tasks[0].id;
+    let child = f.prepare(task);
+    fs::write(child.runtime_path().join("output.txt"), "ready work").unwrap();
+    f.report(task);
+    f.store
+        .update_delegation(f.run, None, |r| {
+            r.task_mut(task)?.status = TaskStatus::Paused;
+            r.task_mut(task)?.paused_status = Some(TaskStatus::Integrating);
+            Ok(())
+        })
+        .unwrap();
+    let before = serde_json::to_value(f.load()).unwrap();
+    assert!(f
+        .store
+        .update_delegation(f.run, None, |r| r
+            .user_correction(task, "Replace the result".into()))
+        .is_err());
+    assert!(f
+        .store
+        .update_delegation(f.run, None, |r| r.message(
+            r.parent_agent_id,
+            task,
+            "Replace the result".into(),
+            false
+        ))
+        .is_err());
+    assert_eq!(serde_json::to_value(f.load()).unwrap(), before);
+}
+
+#[test]
+fn preparing_assignment_accepts_corrections_without_losing_a_users_pause() {
+    let mut f = Fixture::new();
+    f.configure();
+    let task_id = f.load().tasks[0].id;
+    let child = f.prepare(task_id);
+    let mut run = f.load();
+    let task = run.task_mut(task_id).unwrap();
+    let revision = task.revision;
+    let attempt_id = task.attempt().unwrap().id;
+    let snapshot = task.attempt_mut().unwrap().snapshot.take().unwrap();
+    task.status = TaskStatus::Paused;
+    task.paused_status = Some(TaskStatus::Preparing);
+    run.user_correction(task_id, "Use the revised video script".into())
+        .unwrap();
+    run.message(
+        run.parent_agent_id,
+        task_id,
+        "Retain the closing title".into(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        run.task(task_id).unwrap().paused_status,
+        Some(TaskStatus::Preparing)
+    );
+    let mut context = "Original assignment".to_string();
+    assert!(record_prepared_assignment(
+        &mut run,
+        task_id,
+        attempt_id,
+        revision,
+        snapshot,
+        &mut context
+    )
+    .unwrap());
+    let task = run.task(task_id).unwrap();
+    assert_eq!(task.status, TaskStatus::Paused);
+    assert_eq!(task.paused_status, Some(TaskStatus::Running));
+    assert!(task.attempt().unwrap().snapshot.is_some());
+    assert!(context.contains("revised video script"));
+    assert!(context.contains("Retain the closing title"));
+    assert!(context.contains(&format!("Current task revision: {}", task.revision)));
+    assert_eq!(task.attempt().unwrap().child_agent_id, child.id);
+    run.resume_user_task(task_id).unwrap();
+    assert_eq!(run.task(task_id).unwrap().status, TaskStatus::Running);
+}
+
+#[test]
+fn resume_before_initial_snapshot_reprepares_without_a_new_chat() {
+    let mut f = Fixture::new();
+    f.configure();
+    let task_id = f.load().tasks[0].id;
+    let first = f.prepare(task_id);
+    f.store
+        .update_delegation(f.run, None, |r| {
+            let task = r.task_mut(task_id)?;
+            task.attempt_mut().unwrap().snapshot = None;
+            task.status = TaskStatus::Paused;
+            task.paused_status = Some(TaskStatus::Preparing);
+            r.user_correction(task_id, "Use the corrected brief".into())?;
+            r.resume_user_task(task_id)
+        })
+        .unwrap();
+    assert!(f.load().ready_tasks(0).contains(&task_id));
+    let second = f.prepare(task_id);
+    assert_eq!(second.id, first.id);
+    assert!(second.doc.contains("corrected brief"));
+    assert_eq!(f.load().task(task_id).unwrap().status, TaskStatus::Running);
+    assert!(first.runtime_path().exists());
 }
