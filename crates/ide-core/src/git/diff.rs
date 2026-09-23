@@ -154,6 +154,52 @@ mod tests {
     use crate::git::read::fixtures::*;
     use std::fs;
 
+    fn patch_survives_worktree_truncation(tracked: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(dir.path());
+        let file = if tracked { "README.md" } else { "new.txt" };
+        let path = workdir(&repo).join(file);
+        // Cross several OS pages so a file-backed mapping cannot hide the bug
+        // in the final partial page. Patch line content outlives this file write.
+        let content = "snapshot line\n".repeat(8192);
+        fs::write(&path, &content).unwrap();
+        let mut options = DiffOptions::new();
+        options
+            .pathspec(file)
+            .include_untracked(true)
+            .show_untracked_content(true);
+        let diff = repo
+            .diff_index_to_workdir(None, Some(&mut options))
+            .unwrap();
+        let patch = Patch::from_diff(&diff, 0).unwrap().unwrap();
+
+        // The application has no control over another editor/agent truncating
+        // a file after libgit2 has loaded it. The patch must own its bytes.
+        fs::write(&path, []).unwrap();
+
+        let mut added = Vec::new();
+        for hunk_index in 0..patch.num_hunks() {
+            let (_, line_count) = patch.hunk(hunk_index).unwrap();
+            for line_index in 0..line_count {
+                let line = patch.line_in_hunk(hunk_index, line_index).unwrap();
+                if line.origin() == '+' {
+                    added.extend_from_slice(line.content());
+                }
+            }
+        }
+        assert_eq!(added, content.as_bytes());
+    }
+
+    #[test]
+    fn tracked_patch_survives_worktree_truncation() {
+        patch_survives_worktree_truncation(true);
+    }
+
+    #[test]
+    fn untracked_patch_survives_worktree_truncation() {
+        patch_survives_worktree_truncation(false);
+    }
+
     #[test]
     fn unstaged_diff_shows_added_and_removed_lines() {
         let dir = tempfile::tempdir().unwrap();

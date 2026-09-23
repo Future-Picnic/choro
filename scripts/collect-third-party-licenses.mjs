@@ -37,6 +37,10 @@ copyRequired(
 const bundledFiles = [
   "vendor/block/LICENSE-MIT",
   "vendor/block/CHORO_MODIFICATIONS.md",
+  "vendor/libgit2-sys/LICENSE-APACHE",
+  "vendor/libgit2-sys/LICENSE-MIT",
+  "vendor/libgit2-sys/libgit2/COPYING",
+  "vendor/libgit2-sys/CHORO_PATCH.md",
   "vendor/gpui-component/LICENSE-APACHE",
   "vendor/gpui-component/CHORO_MODIFICATIONS.md",
   "vendor/gpui-terminal/LICENSE-APACHE",

@@ -11,12 +11,14 @@ packages under `Contents/Resources/licenses/third-party`.
 | Component | Baseline | License | Upstream |
 | --- | --- | --- | --- |
 | `block` | 0.1.6 / commit `47178790cfc9d4a8b092051d8b413b78bd31254a` | MIT | <https://github.com/SSheldon/rust-block> |
+| `libgit2-sys` / libgit2 | 0.18.5+1.9.4 / 1.9.4 | MIT OR Apache-2.0 (bindings); GPL-2.0 with linking exception (libgit2; see `COPYING`) | <https://github.com/rust-lang/git2-rs>, <https://github.com/libgit2/libgit2> |
 | `gpui-component` | 0.5.1 / commit `0f0ab35233212f8f3277028995caf0c41e13ee6c` | Apache-2.0 | <https://github.com/longbridge/gpui-component> |
 | `gpui-terminal` | 0.1.0 / commit `45c63e57181d27c260124a81c7e4b68a6b6e57b0` | MIT OR Apache-2.0 | <https://github.com/zortax/gpui-terminal> |
 | `velotype` | 0.6.0 / commit `7802fb1d02fae12cf95f5308a3568a27cdcefa32` | Apache-2.0 | <https://github.com/manyougz/velotype> |
 
 These directories contain Choro-specific modifications. Each directory carries
-its upstream license and a `CHORO_MODIFICATIONS.md` record. Modified Apache-2.0
+its upstream license and a `CHORO_MODIFICATIONS.md` record (or `CHORO_PATCH.md`
+for `libgit2-sys`). Modified Apache-2.0
 source files also carry a prominent Choro modification notice.
 
 ## Principal Rust components
