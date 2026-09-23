@@ -40,7 +40,7 @@ const MAX_PATH_BYTES: usize = 2_048;
 const MAX_BODY_BYTES: usize = 6 * 1024 * 1024;
 const SESSION_TTL_SECS: u64 = 30 * 60;
 const AUTH_SYNC_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_RELAY_URL: &str = "https://choro-relay.onrender.com";
+const DEFAULT_RELAY_URL: &str = "https://relay.choro.dev";
 const RELAY_KEYCHAIN_SERVICE: &str = "com.ritmus.choro.remote.relay";
 const RELAY_KEYCHAIN_ACCOUNT: &str = "host-identity";
 

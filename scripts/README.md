@@ -36,3 +36,22 @@ The other files are not additional app modes:
 - `list-agent-runtime-skills.mjs` is the one runtime helper included in apps.
 
 The feedback receiver lives in the private `choro-relay` project.
+
+## iPhone releases
+
+Run `./scripts/release-ios.sh` to build Choro Remote locally and upload it to
+App Store Connect for TestFlight. It uses the private sibling checkout at
+`../choro-relay/apps/choro-remote`; set `CHORO_MOBILE_ROOT` if it lives elsewhere.
+Xcode uses the existing FuturePicnic Apple signing setup and manages the uploaded
+build number. The current mobile working copy is copied into an isolated release
+directory; this command does not commit, push, or publish a public App Store release.
+
+```bash
+./scripts/release-ios.sh --dry-run
+./scripts/release-ios.sh                 # Build, verify, upload for TestFlight
+./scripts/release-ios.sh --version 0.1.1 # Choose a new marketing version
+./scripts/release-ios.sh --build-only    # Produce a local IPA without uploading
+```
+
+See the mobile checkout's `RELEASE.md` for prerequisites, retained artifacts,
+resuming an upload, and Apple's processing and export-compliance steps.

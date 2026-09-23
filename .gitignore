@@ -6,6 +6,7 @@ node_modules/
 .remotion/
 .expo/
 dist/
+/docs
 !crates/ide-app/web/doc-editor/dist/
 !crates/ide-app/web/doc-editor/dist/**
 !crates/ide-app/web/studio-canvas/dist/
