@@ -344,13 +344,8 @@ CURRENT_STAGE="local validation"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")" == "$BUILD_VERSION" ]]
 file "$APP_PATH/Contents/MacOS/choro" | grep -q 'arm64'
 file "$APP_PATH/Contents/MacOS/choro-mcp" | grep -q 'arm64'
+file "$APP_PATH/Contents/MacOS/choro-studio-thumbnail" | grep -q 'arm64'
 file "$APP_PATH/Contents/Frameworks/Sparkle.framework/Sparkle" | grep -q 'arm64'
-for HELPER_PLIST in "$APP_PATH"/Contents/Frameworks/choro\ Helper*.app/Contents/Info.plist; do
-  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HELPER_PLIST")" == "$CANDIDATE_VERSION" ]]
-  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$HELPER_PLIST")" == "$BUILD_VERSION" ]]
-  HELPER_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$HELPER_PLIST")"
-  file "${HELPER_PLIST:h}/MacOS/$HELPER_EXECUTABLE" | grep -q 'arm64'
-done
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 verify_signing_authority "$APP_PATH"
 
@@ -633,6 +628,7 @@ fi
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXTRACTED_APP/Contents/Info.plist")" == "$BUILD_VERSION" ]]
 file "$EXTRACTED_APP/Contents/MacOS/choro" | grep -q 'arm64'
 file "$EXTRACTED_APP/Contents/MacOS/choro-mcp" | grep -q 'arm64'
+file "$EXTRACTED_APP/Contents/MacOS/choro-studio-thumbnail" | grep -q 'arm64'
 file "$EXTRACTED_APP/Contents/Frameworks/Sparkle.framework/Sparkle" | grep -q 'arm64'
 codesign --verify --deep --strict --verbose=2 "$EXTRACTED_APP"
 xcrun stapler validate "$EXTRACTED_APP"
