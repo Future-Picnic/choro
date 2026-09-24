@@ -7,6 +7,7 @@ pub mod remote;
 pub mod repository;
 pub mod snapshot;
 pub mod write;
+mod worktree_diff;
 
 use std::path::{Component, Path};
 

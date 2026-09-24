@@ -72,20 +72,28 @@ pub(crate) fn is_internal_untracked_delta(delta: &DiffDelta<'_>) -> bool {
 pub fn diff_file(repo_path: &Path, file: &Path, staged: bool) -> Result<FileDiff> {
     let repo = Repository::open(repo_path).context("not a git repository")?;
 
+    if !staged {
+        return Ok(super::worktree_diff::patches(
+            &repo,
+            super::worktree_diff::Base::Index,
+            Some(file),
+        )?
+        .into_iter()
+        .find(|diff| diff.path == file)
+        .unwrap_or_else(|| FileDiff {
+            path: file.to_path_buf(),
+            ..Default::default()
+        }));
+    }
+
     let mut options = DiffOptions::new();
     options
         .pathspec(file)
         .context_lines(3)
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
+        .disable_pathspec_match(true);
 
-    let diff = if staged {
-        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-        repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut options))?
-    } else {
-        repo.diff_index_to_workdir(None, Some(&mut options))?
-    };
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut options))?;
 
     build_file_diff(&diff, file)
 }
@@ -139,6 +147,7 @@ fn extract_delta(diff: &Diff, delta_index: usize, result: &mut FileDiff) -> Resu
         return Ok(());
     };
 
+    result.is_binary |= patch.delta().flags().is_binary();
     extract_patch(&patch, result)
 }
 
@@ -186,31 +195,20 @@ mod tests {
         // in the final partial page. Patch line content outlives this file write.
         let content = "snapshot line\n".repeat(8192);
         fs::write(&path, &content).unwrap();
-        let mut options = DiffOptions::new();
-        options
-            .pathspec(file)
-            .include_untracked(true)
-            .show_untracked_content(true);
-        let diff = repo
-            .diff_index_to_workdir(None, Some(&mut options))
-            .unwrap();
-        let patch = Patch::from_diff(&diff, 0).unwrap().unwrap();
+        let diff = diff_file(dir.path(), Path::new(file), false).unwrap();
 
-        // The application has no control over another editor/agent truncating
-        // a file after libgit2 has loaded it. The patch must own its bytes.
+        // Another editor/agent can truncate the file immediately after capture.
+        // Choro's result must own its bytes independently of that file.
         fs::write(&path, []).unwrap();
 
-        let mut added = Vec::new();
-        for hunk_index in 0..patch.num_hunks() {
-            let (_, line_count) = patch.hunk(hunk_index).unwrap();
-            for line_index in 0..line_count {
-                let line = patch.line_in_hunk(hunk_index, line_index).unwrap();
-                if line.origin() == '+' {
-                    added.extend_from_slice(line.content());
-                }
-            }
-        }
-        assert_eq!(added, content.as_bytes());
+        let added = diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .filter(|line| line.origin == LineOrigin::Add)
+            .map(|line| format!("{}\n", line.text))
+            .collect::<String>();
+        assert_eq!(added, content);
     }
 
     #[test]

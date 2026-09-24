@@ -36,3 +36,4 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+turso_core = { version = "=0.7.2", default-features = false }

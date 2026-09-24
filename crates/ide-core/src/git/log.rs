@@ -79,16 +79,7 @@ pub fn ahead_behind(repo_path: &Path, local: &str, base: &str) -> Result<(usize,
 /// the "project diff" view.
 pub fn worktree_diffs(repo_path: &Path) -> Result<Vec<FileDiff>> {
     let repo = Repository::open(repo_path).context("not a git repository")?;
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-
-    let mut options = git2::DiffOptions::new();
-    options
-        .context_lines(3)
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true);
-    let diff = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options))?;
-    diffs_from(&diff)
+    super::worktree_diff::patches(&repo, super::worktree_diff::Base::Head, None)
 }
 
 #[cfg(test)]

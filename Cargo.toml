@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "net", "ti
 axum = { version = "0.8", features = ["ws"] }
 async-channel = "2"
 crossbeam-channel = "0.5"
-turso = { version = "=0.7.0-pre.14", default-features = false, features = ["fts"] }
+turso = { version = "=0.7.2", default-features = false, features = ["fts"] }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 git2 = { version = "0.21", features = ["vendored-libgit2"] }
@@ -47,9 +47,6 @@ parking_lot = "0.12"
 ide-core = { path = "crates/ide-core" }
 
 [patch.crates-io]
-# Working-tree files can be truncated by agents/editors while a diff is alive.
-# Use owned read buffers instead of mmap in libgit2's workdir diff loader.
-libgit2-sys = { path = "vendor/libgit2-sys" }
 # block 0.1.6 models an external Objective-C class as an uninhabited type,
 # which future Rust versions reject. Keep its API and runtime behavior intact
 # while making the opaque marker inhabited.

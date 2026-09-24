@@ -42,41 +42,12 @@ pub fn read_snapshot(repo_path: &Path) -> Result<GitSnapshot> {
 
 /// +/- line counts of all uncommitted changes vs HEAD.
 fn worktree_line_stats(repo: &Repository) -> (usize, usize) {
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    let mut options = git2::DiffOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
-        .max_size(MAX_LINE_STAT_FILE_BYTES);
-    let Ok(diff) = repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options))
-    else {
-        return (0, 0);
-    };
-    let mut insertions = 0;
-    let mut deletions = 0;
-    let mut untracked_files = 0usize;
-    for delta_index in 0..diff.deltas().len() {
-        let Some(delta) = diff.get_delta(delta_index) else {
-            continue;
-        };
-        if is_internal_untracked_delta(&delta) {
-            continue;
-        }
-        if delta.status() == git2::Delta::Untracked {
-            if untracked_files >= MAX_UNTRACKED_LINE_STAT_FILES {
-                continue;
-            }
-            untracked_files += 1;
-        }
-        if let Ok(Some(patch)) = Patch::from_diff(&diff, delta_index) {
-            if let Ok((_, added, removed)) = patch.line_stats() {
-                insertions += added;
-                deletions += removed;
-            }
-        }
-    }
-    (insertions, deletions)
+    super::worktree_diff::line_stats(repo, super::worktree_diff::Base::Head)
+        .unwrap_or_default()
+        .values()
+        .fold((0, 0), |(added, removed), stats| {
+            (added + stats.insertions, removed + stats.deletions)
+        })
 }
 
 /// Per-file line counts for the index side and worktree side independently.
@@ -96,19 +67,7 @@ fn status_line_stats(
         })
         .unwrap_or_default();
 
-    let mut unstaged_options = git2::DiffOptions::new();
-    unstaged_options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .show_untracked_content(true)
-        .max_size(MAX_LINE_STAT_FILE_BYTES);
-    let unstaged = repo
-        .diff_index_to_workdir(None, Some(&mut unstaged_options))
-        .ok()
-        .map(|mut diff| {
-            diff.find_similar(None).ok();
-            line_stats_by_path(&diff)
-        })
+    let unstaged = super::worktree_diff::line_stats(repo, super::worktree_diff::Base::Index)
         .unwrap_or_default();
 
     (staged, unstaged)
