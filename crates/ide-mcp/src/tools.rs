@@ -225,6 +225,7 @@ pub struct ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(GetAgentChangesTool),
             Box::new(TaskReadTool),
             Box::new(TaskListTool),
             Box::new(TaskImageTool),
@@ -258,6 +259,71 @@ impl Default for ToolRegistry {
 }
 
 // ── Orbit ───────────────────────────────────────────────────────────────────
+struct GetAgentChangesTool;
+impl Tool for GetAgentChangesTool {
+    fn name(&self) -> &'static str {
+        "get_agent_changes"
+    }
+    fn title(&self) -> &'static str {
+        "Read agent changes"
+    }
+    fn description(&self) -> &'static str {
+        "Read this agent's confirmed edits separately from other agents' contributions and unattributed workspace changes. Reads persisted evidence only; check freshness and incomplete receipts before reverting, overwriting, or shipping dirty files. Shared paths do not imply ownership of all their contents."
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type":"object","properties":{"paths":{"type":"array","maxItems":100,"items":{"type":"string"}},"cursor":{"type":"string"}},"additionalProperties":false})
+    }
+    fn call(&self, ctx: &ServerContext, args: &Value) -> Result<Vec<Value>> {
+        anyhow::ensure!(
+            args.as_object()
+                .is_some_and(|o| o.keys().all(|k| matches!(k.as_str(), "paths" | "cursor"))),
+            "only paths and cursor are supported"
+        );
+        let agent_id = ctx.agent_id()?;
+        let project_id = ctx.project_id()?;
+        let agent = ctx
+            .store()?
+            .load_agents()?
+            .into_iter()
+            .find(|a| a.id == agent_id && a.project_id == project_id)
+            .ok_or_else(|| anyhow!("agent does not belong to the bound project"))?;
+        let root = agent.runtime_path();
+        let mut paths = Vec::new();
+        if let Some(values) = args.get("paths") {
+            let values = values
+                .as_array()
+                .ok_or_else(|| anyhow!("paths must be an array"))?;
+            anyhow::ensure!(values.len() <= 100, "at most 100 paths per request");
+            for value in values {
+                paths.push(
+                    ide_core::agent_changes::relative_path(
+                        root,
+                        Path::new(
+                            value
+                                .as_str()
+                                .ok_or_else(|| anyhow!("path must be a string"))?,
+                        ),
+                    )
+                    .ok_or_else(|| anyhow!("path is outside this working directory"))?,
+                );
+            }
+        }
+        let cursor = args
+            .get("cursor")
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| anyhow!("invalid cursor"))
+                    .and_then(|v| v.parse::<i64>().map_err(Into::into))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        anyhow::ensure!(cursor >= 0, "invalid cursor");
+        let result =
+            ctx.store()?
+                .query_agent_changes(project_id.0, agent_id, root, &paths, cursor)?;
+        Ok(vec![text_content(serde_json::to_string(&result)?)])
+    }
+}
 
 fn read_invocation_id(args: &Value) -> Result<uuid::Uuid> {
     args.get("invocation_id")
@@ -2349,6 +2415,43 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].source_agent_id, Some(agent.id));
         assert!(records[0].source_batch_id.is_some());
+    }
+
+    #[test]
+    fn change_queries_use_bound_identity_and_never_scan_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("data");
+        let store = LocalStore::open(root.clone()).unwrap();
+        // A missing working directory is intentional: this is a persisted-only API.
+        let project = Project::from_path(dir.path().join("missing-project"));
+        let mut config = AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        let agent = AgentRecord::new(
+            project.id,
+            project.path.clone(),
+            "test",
+            "test",
+            AgentKind::Codex,
+            AgentModel::CodexDefault,
+            AgentEffort::Medium,
+            AgentAccessMode::FullAccess,
+        );
+        store.save_agents(std::slice::from_ref(&agent)).unwrap();
+        let ctx = ServerContext::new(Some(project.id.0), Some(agent.id), Some(root.clone()));
+        let result = GetAgentChangesTool.call(&ctx, &json!({})).unwrap();
+        let result: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert!(result["workspace"].is_null());
+        assert!(result["own_edits"].as_array().unwrap().is_empty());
+        for args in [
+            json!({"agent_id":uuid::Uuid::new_v4()}),
+            json!({"paths":["../outside.rs"]}),
+            json!({"cursor":"-1"}),
+        ] {
+            assert!(GetAgentChangesTool.call(&ctx, &args).is_err());
+        }
+        let other = ServerContext::new(Some(uuid::Uuid::new_v4()), Some(agent.id), Some(root));
+        assert!(GetAgentChangesTool.call(&other, &json!({})).is_err());
     }
 
     #[test]

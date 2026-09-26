@@ -52,7 +52,8 @@ impl ClaudeBridgeRuntime {
                 text,
                 mode,
                 read_only,
-            } => self.send_turn(text, mode, read_only)?,
+                turn_id,
+            } => self.send_turn(text, mode, read_only, turn_id)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
@@ -89,6 +90,7 @@ impl ClaudeBridgeRuntime {
         text: String,
         mode: AgentInteractionMode,
         read_only: bool,
+        turn_id: String,
     ) -> anyhow::Result<()> {
         let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
@@ -115,6 +117,7 @@ impl ClaudeBridgeRuntime {
             .ok();
         self.write_json(&json!({
             "type": "send_turn",
+            "turn_id": turn_id,
             "text": text,
             "cwd": self.agent.runtime_path(),
             "sessionId": self.agent.cli_session_id,
@@ -137,7 +140,9 @@ impl ClaudeBridgeRuntime {
         }))
     }
 
-    fn handle_message(&mut self, message: Value) -> anyhow::Result<()> {
+    fn handle_message(&mut self, message: impl Into<ProviderMessage>) -> anyhow::Result<()> {
+        let ProviderMessage { value: message, _reservation } = message.into();
+        if message.get("_choro_evidence_incomplete").and_then(Value::as_bool) == Some(true) { self.events.mark_evidence_overflow(); }
         let Some(event_type) = message.get("type").and_then(Value::as_str) else {
             return Ok(());
         };
@@ -275,46 +280,10 @@ impl ClaudeBridgeRuntime {
                         .ok();
                 }
             }
+            "evidence_overflow" => self.events.mark_evidence_overflow(),
             "changed_files" => {
-                let parse_files = |key: &str| {
-                    message
-                        .get(key)
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|file| {
-                            file_change_stat_from_bridge(file, key == "observed_files")
-                        })
-                        .collect::<Vec<_>>()
-                };
-                let files = parse_files("files");
-                let observed_files = parse_files("observed_files");
-                if !files.is_empty() || !observed_files.is_empty() {
-                    let summary = capture_changed_files_snapshot(
-                        &self.agent,
-                        ChangedFilesSummary {
-                            files,
-                            observed_files,
-                            turn_id: message
-                                .get("turn_id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .or_else(|| Some(next_request_id())),
-                            attribution_version: message
-                                .get("attribution_version")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(1)
-                                as u8,
-                            ..Default::default()
-                        },
-                        "agent_changed_files",
-                    );
-                    if !summary.is_empty() {
-                        self.events
-                            .send_blocking(ChatBackendEvent::ChangedFiles(summary))
-                            .ok();
-                    }
-                }
+                let turn = message.get("turn_id").and_then(Value::as_str).unwrap_or("claude-turn");
+                self.events.send_blocking(ChatBackendEvent::ChangedFiles(ChangedFilesSummary::attributed(turn, vec![], vec![]))).ok();
             }
             "usage" => {
                 if let Some(usage) = conversation_usage_from_bridge_message(message) {
@@ -421,8 +390,7 @@ fn file_change_stat_from_bridge(file: &Value, projection: bool) -> Option<FileCh
     let path = file.get("path").and_then(Value::as_str)?;
     let additions = file.get("additions").and_then(Value::as_u64).unwrap_or(0) as usize;
     let deletions = file.get("deletions").and_then(Value::as_u64).unwrap_or(0) as usize;
-    Some(
-        FileChangeStat::new(path, additions, deletions)
+    let mut stat = FileChangeStat::new(path, additions, deletions)
             .with_count_projection(projection)
             .with_cleared_projection(
                 file.get("clears_projection")
@@ -444,8 +412,9 @@ fn file_change_stat_from_bridge(file: &Value, projection: bool) -> Option<FileCh
                 file.get("result_content")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-            ),
-    )
+            );
+    stat.counts_unavailable = true;
+    Some(stat)
 }
 
 fn conversation_usage_from_bridge_message(message: Value) -> Option<ConversationUsage> {

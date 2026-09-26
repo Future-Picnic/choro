@@ -37,7 +37,8 @@ pub(crate) fn load_history_from_store(
     Ok(timeline)
 }
 
-pub(crate) fn hydrate(session: &mut AgentChatSession, timeline: Vec<AgentChatTimelineItem>) {
+pub(crate) fn hydrate(session: &mut AgentChatSession, mut timeline: Vec<AgentChatTimelineItem>) {
+    place_change_receipts(&mut timeline);
     let mut changed_files = ChangedFilesSummary::default();
     session.messages.clear();
     session.work_log.clear();

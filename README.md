@@ -92,6 +92,33 @@ Local-first does not mean the providers run offline: their CLIs may communicate
 with their own services under their own terms. Remote connections use a
 separate relay service.
 
+## Built for your Mac
+
+<p align="center">
+  <a href="https://www.rust-lang.org/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/readme/rust-logo-dark.svg">
+      <img src="assets/readme/rust-logo.svg" width="24" alt="Rust logo">
+    </picture>
+    Rust
+  </a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://gpui.rs/"><strong>GPUI</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://turso.tech/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/readme/turso-logo-dark.svg">
+      <img src="assets/readme/turso-logo.svg" width="24" alt="Turso logo">
+    </picture>
+    Turso (local)
+  </a>
+</p>
+
+Rust and GPUI give Choro a native Mac interface, designed to feel quick and
+natural as you move between agents, code, designs, and previews. Embedded Turso
+keeps your Choro workspace data on your Mac. We don't host your workspace or
+have access to your local work; no Turso Cloud account is required.
+
 ## Get started
 
 Choro currently targets **Apple silicon Macs running macOS 13 or later**.

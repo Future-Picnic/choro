@@ -24,7 +24,9 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             "local store schema version {current} is newer than this Choro build supports ({STORE_SCHEMA_VERSION})"
         ));
     }
+    migrate_turso_fts_storage(conn).await?;
     if current == STORE_SCHEMA_VERSION {
+        super::agent_changes::ensure_schema(conn).await?;
         // Development and preview builds can share the same local database while
         // independently assigning a schema version. If another build recorded
         // version 19 before the Penpot tables existed, the version alone is not
@@ -588,7 +590,64 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             Ok(())
         })).await?;
     }
+    if current < 37 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            super::agent_changes::ensure_schema(conn).await?;
+            ensure_chat_file_ledger_schema_inner(conn).await?;
+            record_schema_version(conn, 37).await?;
+            Ok(())
+        })).await?;
+    }
+    if current < 38 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            super::agent_changes::ensure_schema(conn).await?;
+            ensure_chat_file_ledger_schema_inner(conn).await?;
+            record_schema_version(conn, 38).await?;
+            Ok(())
+        })).await?;
+    }
+
     Ok(())
+}
+
+/// Turso 0.8 cannot read the FTS index storage produced by 0.7. Rebuild only
+/// Choro's derived indexes, preserving their source rows. Track the engine
+/// format separately from the application's schema migrations, since an
+/// existing database can already have the current application schema.
+async fn migrate_turso_fts_storage(conn: &Connection) -> Result<()> {
+    const KEY: &str = "turso_fts_storage_format";
+    const FORMAT: &str = "0.8.0-pre.13";
+    if get_meta(conn, KEY).await?.as_deref() == Some(FORMAT) {
+        return Ok(());
+    }
+    execute_transaction(conn, |conn| {
+        Box::pin(async move {
+            // Recheck after reserving the writer in case another opener ran it.
+            if get_meta(conn, KEY).await?.as_deref() == Some(FORMAT) {
+                return Ok(());
+            }
+            for (index, table, columns) in [
+                (
+                    "idx_agent_search_fts_text",
+                    "agent_search_fts",
+                    "title, summary_text",
+                ),
+                ("idx_chat_messages_fts_text", "chat_messages_fts", "text"),
+            ] {
+                if table_exists(conn, table).await? {
+                    conn.execute(format!("DROP INDEX IF EXISTS {index}"), ())
+                        .await?;
+                    conn.execute(
+                        format!("CREATE INDEX {index} ON {table} USING fts ({columns})"),
+                        (),
+                    )
+                    .await?;
+                }
+            }
+            set_meta(conn, KEY, FORMAT).await
+        })
+    })
+    .await
 }
 
 async fn ensure_quick_ask_schema(conn: &Connection) -> Result<()> {
@@ -666,7 +725,12 @@ async fn ensure_chat_file_ledger_schema_inner(conn: &Connection) -> Result<()> {
         )
         .await?;
     }
-    for (column, definition) in [("baseline_content", "TEXT"), ("result_content", "TEXT")] {
+    for (column, definition) in [
+        ("baseline_content", "TEXT"),
+        ("result_content", "TEXT"),
+        ("counts_unavailable", "INTEGER NOT NULL DEFAULT 0"),
+        ("segments_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ] {
         if !column_exists(conn, "chat_file_ledger", column).await? {
             conn.execute(
                 format!("ALTER TABLE chat_file_ledger ADD COLUMN {column} {definition}"),
@@ -1273,7 +1337,6 @@ pub(super) async fn column_exists(conn: &Connection, table: &str, column: &str) 
     Ok(false)
 }
 
-#[cfg(test)]
 pub(super) async fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let mut rows = conn
         .query(

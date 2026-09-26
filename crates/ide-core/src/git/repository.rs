@@ -15,6 +15,7 @@ const MAX_DISCOVERY_DEPTH: usize = 8;
 /// recognizes both `.git` directories and gitfiles used by worktrees and
 /// submodules.
 pub fn discover_repositories(workspace_root: &Path) -> Vec<PathBuf> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let mut repositories = Vec::new();
     let mut pending = VecDeque::from([(workspace_root.to_path_buf(), 0usize)]);
 
@@ -91,6 +92,7 @@ fn should_skip_directory(name: &str) -> bool {
 /// Return uncommitted diffs from every repository in a workspace, with paths
 /// normalized relative to the workspace root.
 pub fn workspace_worktree_diffs(workspace_root: &Path) -> anyhow::Result<Vec<super::FileDiff>> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repositories = discover_repositories(workspace_root);
     if repositories.is_empty() {
         return super::worktree_diffs(workspace_root);
@@ -123,6 +125,7 @@ pub fn workspace_worktree_diffs(workspace_root: &Path) -> anyhow::Result<Vec<sup
 /// Inventory every staged, unstaged, deleted, renamed, and untracked path for
 /// review discovery. This reads status only, without loading patches or blobs.
 pub fn workspace_changed_paths(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let canonical_root = fs::canonicalize(workspace_root)?;
     let workspace_root = canonical_root.as_path();
     let mut repositories = discover_repositories(workspace_root);

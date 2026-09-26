@@ -20,6 +20,7 @@ impl CenterArea {
         if visible_files.is_empty() {
             return div().into_any_element();
         }
+        let counts_available=visible_files.iter().all(|f| !f.counts_unavailable);
         let total_additions = visible_files
             .iter()
             .map(|file| file.additions)
@@ -61,7 +62,7 @@ impl CenterArea {
                                 div()
                                     .text_size(crate::ui::design::text_ui())
                                     .text_color(crate::ui::design::t2(cx))
-                                    .child("Files changed"),
+                                    .child(if summary.attribution_version < 2 {"Files changed · Legacy record"} else {"Files changed"}),
                             )
                             .child(
                                 div()
@@ -74,13 +75,13 @@ impl CenterArea {
                         div()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::sage(cx))
-                            .child(format!("+{}", total_additions)),
+                            .child(if counts_available {format!("+{}", total_additions)} else {"Details unavailable".to_string()}),
                     )
                     .child(
                         div()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::rose(cx))
-                            .child(format!("-{}", total_deletions)),
+                            .child(if counts_available {format!("-{}", total_deletions)} else {String::new()}),
                     )
                     .child(div().flex_1())
                     .child(
@@ -191,7 +192,7 @@ impl CenterArea {
                     .text_color(crate::ui::design::t2(cx))
                     .child(name),
             )
-            .when(file.additions > 0, |row| {
+            .when(!file.counts_unavailable && file.additions > 0, |row| {
                 row.child(
                     div()
                         .flex_none()
@@ -200,7 +201,7 @@ impl CenterArea {
                         .child(format!("+{}", file.additions)),
                 )
             })
-            .when(file.deletions > 0, |row| {
+            .when(!file.counts_unavailable && file.deletions > 0, |row| {
                 row.child(
                     div()
                         .flex_none()
@@ -293,7 +294,7 @@ impl CenterArea {
                             .font_family(crate::ui::design::FONT_MONO)
                             .text_size(crate::ui::design::text_label())
                             .text_color(crate::ui::design::sage(cx))
-                            .child(if file.additions > 0 {
+                            .child(if file.counts_unavailable { "—".to_string() } else if file.additions > 0 {
                                 format!("+{}", file.additions)
                             } else {
                                 String::new()
@@ -306,7 +307,7 @@ impl CenterArea {
                             .font_family(crate::ui::design::FONT_MONO)
                             .text_size(crate::ui::design::text_label())
                             .text_color(crate::ui::design::rose(cx))
-                            .child(if file.deletions > 0 {
+                            .child(if !file.counts_unavailable && file.deletions > 0 {
                                 format!("−{}", file.deletions)
                             } else {
                                 String::new()

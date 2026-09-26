@@ -61,10 +61,11 @@ pub struct ChangedFilesSummary {
     pub commit_sha: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileChangeStat {
     pub path: PathBuf,
     pub additions: usize,
+    pub counts_unavailable: bool,
     pub deletions: usize,
     /// The counts describe the current worktree projection rather than a
     /// turn-local delta. Repeated projections replace earlier totals so they
@@ -86,6 +87,13 @@ pub struct FileChangeStat {
     /// Provider-owned hunks for the immutable turn snapshot. Timeline and ledger
     /// serialization omit this payload; the snapshot stores it separately.
     pub attributed_diff: Option<ide_core::git::FileDiff>,
+    /// Bounded provider patch; parsed only by the evidence worker.
+    #[serde(default)]
+    pub raw_patch: Option<(Option<String>, String)>,
+    /// Closed continuous chains, in mutation order. The main fields retain the
+    /// last chain's identities and the total counts across all chains.
+    #[serde(default)]
+    pub prior_segments: Vec<FileChangeStat>,
 }
 
 /// One file mutation surfaced while a provider turn is still running. This is
@@ -298,6 +306,11 @@ impl ChangedFilesSummary {
         // cumulative ledger tracks counts/content without retaining patch history.
         for file in &mut self.files {
             file.attributed_diff = None;
+            file.prior_segments = file
+                .prior_segments
+                .iter()
+                .map(FileChangeStat::metadata)
+                .collect();
         }
         self.attribution_version = self.attribution_version.max(turn.attribution_version);
         self.snapshot_id = turn.snapshot_id.or(self.snapshot_id);
@@ -308,26 +321,104 @@ impl ChangedFilesSummary {
 }
 
 fn merge_file_stat(files: &mut BTreeMap<PathBuf, FileChangeStat>, next: &FileChangeStat) {
+    // Legacy workspace projections replace the preceding observation. They are
+    // never combined with confirmed evidence by the callers above.
+    if next.counts_are_projection {
+        if next.clears_projection {
+            files.remove(&next.path);
+        } else {
+            files.insert(next.path.clone(), next.clone());
+        }
+        return;
+    }
+    let continuous = files.get(&next.path).is_none_or(|existing| {
+        if let (Some(a), Some(b)) = (&existing.result_hash, &next.baseline_hash) {
+            return a == b;
+        }
+        existing
+            .result_content
+            .as_ref()
+            .zip(next.baseline_content.as_ref())
+            .is_some_and(|(a, b)| a == b)
+    });
+    if !next.prior_segments.is_empty() {
+        for segment in &next.prior_segments {
+            merge_file_stat(files, segment);
+        }
+        let mut last = next.clone();
+        last.additions = last
+            .additions
+            .saturating_sub(last.prior_segments.iter().map(|s| s.additions).sum());
+        last.deletions = last
+            .deletions
+            .saturating_sub(last.prior_segments.iter().map(|s| s.deletions).sum());
+        last.prior_segments.clear();
+        merge_file_stat(files, &last);
+        return;
+    }
+    if !continuous {
+        let mut previous = files
+            .remove(&next.path)
+            .expect("disconnected existing chain");
+        let mut segments = std::mem::take(&mut previous.prior_segments);
+        previous.additions = previous
+            .additions
+            .saturating_sub(segments.iter().map(|s| s.additions).sum());
+        previous.deletions = previous
+            .deletions
+            .saturating_sub(segments.iter().map(|s| s.deletions).sum());
+        segments.push(previous);
+        let mut file = next.clone();
+        file.additions += segments.iter().map(|s| s.additions).sum::<usize>();
+        file.deletions += segments.iter().map(|s| s.deletions).sum::<usize>();
+        file.counts_unavailable |= segments.iter().any(|s| s.counts_unavailable);
+        file.prior_segments = segments;
+        files.insert(file.path.clone(), file);
+        return;
+    }
+    let prior_additions = files.get(&next.path).map_or(0, |f| {
+        f.prior_segments.iter().map(|s| s.additions).sum::<usize>()
+    });
+    let prior_deletions = files.get(&next.path).map_or(0, |f| {
+        f.prior_segments.iter().map(|s| s.deletions).sum::<usize>()
+    });
     let baseline = files.get(&next.path).map_or_else(
         || next.baseline_hash.clone(),
         |existing| existing.baseline_hash.clone(),
     );
+    let baseline = continuous.then_some(baseline).flatten();
     let baseline_content = files.get(&next.path).map_or_else(
         || bounded_content(next.baseline_content.clone()),
         |existing| existing.baseline_content.clone(),
     );
+    let baseline_content = continuous.then_some(baseline_content).flatten();
     // A missing new result is unknown. Reusing the previous text can hide a
     // large/binary edit or falsely turn it into a revert after restoration.
     let result_content = bounded_content(next.result_content.clone());
     let returned_to_baseline = match (baseline.as_ref(), next.result_hash.as_ref()) {
         (Some(baseline), Some(result)) => baseline == result,
+        (Some(hash), None) | (None, Some(hash)) if hash == "missing" => false,
         _ => {
             (baseline_content.is_some() && result_content == baseline_content)
                 || next.clears_projection
         }
     };
     if returned_to_baseline {
-        files.remove(&next.path);
+        if let Some(existing) = files
+            .get_mut(&next.path)
+            .filter(|f| !f.prior_segments.is_empty())
+        {
+            existing.additions = prior_additions;
+            existing.deletions = prior_deletions;
+            existing.result_hash = next.result_hash.clone();
+            existing.result_content = result_content;
+            existing.attributed_diff = Some(ide_core::git::FileDiff {
+                path: next.path.clone(),
+                ..Default::default()
+            });
+        } else {
+            files.remove(&next.path);
+        }
         return;
     }
 
@@ -338,9 +429,10 @@ fn merge_file_stat(files: &mut BTreeMap<PathBuf, FileChangeStat>, next: &FileCha
 
     match files.get_mut(&next.path) {
         Some(existing) => {
+            existing.counts_unavailable |= next.counts_unavailable;
             if let Some((additions, deletions)) = net_counts {
-                existing.additions = additions;
-                existing.deletions = deletions;
+                existing.additions = prior_additions + additions;
+                existing.deletions = prior_deletions + deletions;
             } else if next.counts_are_projection {
                 existing.additions = next.additions;
                 existing.deletions = next.deletions;
@@ -468,6 +560,7 @@ impl FileChangeStat {
         Self {
             path: path.into(),
             additions,
+            counts_unavailable: false,
             deletions,
             counts_are_projection: false,
             clears_projection: false,
@@ -476,7 +569,19 @@ impl FileChangeStat {
             baseline_content: None,
             result_content: None,
             attributed_diff: None,
+            raw_patch: None,
+            prior_segments: Vec::new(),
         }
+    }
+
+    pub fn metadata(&self) -> Self {
+        let mut file = self.clone();
+        file.baseline_content = None;
+        file.result_content = None;
+        file.attributed_diff = None;
+        file.raw_patch = None;
+        file.prior_segments = self.prior_segments.iter().map(Self::metadata).collect();
+        file
     }
 
     pub fn with_content_hashes(
@@ -517,6 +622,40 @@ impl FileChangeStat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disconnected_chain_can_revert_without_erasing_the_earlier_chain() {
+        let edit = |id, before: &str, after: &str| {
+            FileChangeActivity::new(
+                id,
+                "turn",
+                FileChangeStat::new("shared.rs", 1, 1)
+                    .with_content_projection(Some(before.into()), Some(after.into())),
+                false,
+                0,
+            )
+        };
+        let activities = [
+            edit("one", "original\n", "agent one\n"),
+            edit("two", "manual\n", "agent two\n"),
+            edit("revert-two", "agent two\n", "manual\n"),
+        ];
+        let receipt = ChangedFilesSummary::from_activities("turn", &activities);
+        assert_eq!(receipt.files.len(), 1);
+        assert_eq!(receipt.files[0].prior_segments.len(), 1);
+        assert_eq!(
+            (receipt.files[0].additions, receipt.files[0].deletions),
+            (1, 1)
+        );
+        assert_eq!(
+            receipt.files[0].baseline_content.as_deref(),
+            Some("manual\n")
+        );
+        assert_eq!(
+            receipt.files[0].prior_segments[0].result_content.as_deref(),
+            Some("agent one\n")
+        );
+    }
 
     #[test]
     fn conversation_files_exclude_shared_observations_and_keep_real_zero_line_edits() {
@@ -898,7 +1037,17 @@ mod tests {
 
         let summary = ChangedFilesSummary::from_activities("turn-a", &activities);
 
-        assert_eq!(summary.files, vec![FileChangeStat::new("index.html", 3, 1)]);
+        assert_eq!(summary.files.len(), 1);
+        assert_eq!(summary.files[0].path, Path::new("index.html"));
+        assert_eq!(
+            (summary.files[0].additions, summary.files[0].deletions),
+            (3, 1)
+        );
+        assert_eq!(
+            summary.files[0].prior_segments.len(),
+            1,
+            "no identity evidence connects these actions"
+        );
         assert_eq!(summary.observed_files.len(), 1);
         assert_eq!(
             summary.observed_files[0].path,

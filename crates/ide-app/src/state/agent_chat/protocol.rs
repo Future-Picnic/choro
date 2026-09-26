@@ -1,9 +1,11 @@
+mod change_tracking;
 mod claude;
 mod codex;
 mod events;
 pub(crate) mod managed;
 mod open_code;
 mod process;
+#[cfg(test)]
 mod worktree_changes;
 
 use codex::capture_changed_files_snapshot;
@@ -68,6 +70,10 @@ fn append_choro_visualization_instructions(
     instructions: String,
     visualization_dir: Option<&Path>,
 ) -> String {
+    let instructions = format!(
+        "{instructions}\n\n{}",
+        ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS
+    );
     let Some(visualization_dir) = visualization_dir else {
         return instructions;
     };
@@ -96,9 +102,88 @@ fn agent_visualization_dir(agent: &AgentRecord) -> Option<PathBuf> {
 /// Events flow to the GPUI foreground through an awaitable channel so the
 /// per-chat consumer task sleeps until a backend actually produces something,
 /// instead of polling on a timer.
-pub(crate) type EventSender = async_channel::Sender<ChatBackendEvent>;
+#[derive(Clone)]
+pub(crate) struct EventSender {
+    tx: async_channel::Sender<ChatBackendEvent>,
+    overflow: Arc<AtomicBool>,
+    initial_turn_id: String,
+}
+impl From<async_channel::Sender<ChatBackendEvent>> for EventSender {
+    fn from(tx: async_channel::Sender<ChatBackendEvent>) -> Self {
+        Self {
+            tx,
+            overflow: Arc::new(AtomicBool::new(false)),
+            initial_turn_id: next_request_id(),
+        }
+    }
+}
+impl EventSender {
+    fn mark_evidence_overflow(&self) {
+        if !self.overflow.swap(true, Ordering::Relaxed) {
+            let _ = self.tx.send_blocking(ChatBackendEvent::EvidenceOverflow);
+        }
+    }
+    fn send_blocking(
+        &self,
+        event: ChatBackendEvent,
+    ) -> Result<(), async_channel::SendError<ChatBackendEvent>> {
+        let bytes = match &event {
+            ChatBackendEvent::FileChangeActivity(activity) => Some(
+                change_tracking::file_payload_bytes(&activity.file)
+                    + activity.id.len()
+                    + activity.turn_id.len(),
+            ),
+            ChatBackendEvent::ChangeReceiptReady { summary, .. } => Some(
+                summary
+                    .files
+                    .iter()
+                    .chain(&summary.observed_files)
+                    .map(change_tracking::file_payload_bytes)
+                    .sum::<usize>()
+                    + 512,
+            ),
+            _ => None,
+        };
+        if let Some(bytes) = bytes {
+            let Some(permit) = ide_core::agent_changes::EvidenceBudget::global().reserve(bytes)
+            else {
+                self.mark_evidence_overflow();
+                if let ChatBackendEvent::ChangeReceiptReady { summary, .. } = event {
+                    return self.tx.send_blocking(ChatBackendEvent::ChangeReceiptReady {
+                        summary: ChangedFilesSummary::attributed(
+                            summary.turn_id.unwrap_or_default(),
+                            vec![],
+                            vec![],
+                        ),
+                        state: ide_core::agent_changes::ChangeReceiptState::Partial,
+                    });
+                }
+                return Ok(());
+            };
+            return self.tx.send_blocking(ChatBackendEvent::ReservedEvidence {
+                event: Box::new(event),
+                reservation: Arc::new(permit),
+            });
+        }
+        self.tx.send_blocking(event)
+    }
+}
+
+fn event_channel() -> (EventSender, async_channel::Receiver<ChatBackendEvent>) {
+    let (tx, rx) = async_channel::unbounded();
+    (tx.into(), rx)
+}
+
+#[cfg(test)]
+fn unpack_event(event: ChatBackendEvent) -> ChatBackendEvent {
+    match event {
+        ChatBackendEvent::ReservedEvidence { event, .. } => *event,
+        event => event,
+    }
+}
 
 pub struct ChatBackendController {
+    timing: Arc<ide_core::agent_changes::DispatchTiming>,
     studio_scope: Option<(PathBuf, uuid::Uuid)>,
     tx: Sender<ChatBackendCommand>,
     shutdown: Arc<AtomicBool>,
@@ -116,6 +201,21 @@ impl ChatBackendStopSignal {
     }
 }
 
+// Keep this wait on the backend worker, never on the UI thread. Even if this
+// replacement is stopped too, its stop signal must cover its predecessor so
+// a third backend cannot overtake cleanup and resume the same provider thread.
+fn wait_for_previous_backend(
+    previous: Option<ChatBackendStopSignal>,
+    shutdown: &AtomicBool,
+) -> bool {
+    if let Some(previous) = previous {
+        while !previous.is_stopped() {
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+    !shutdown.load(Ordering::SeqCst)
+}
+
 struct BackendStoppedOnDrop(Arc<AtomicBool>);
 
 impl Drop for BackendStoppedOnDrop {
@@ -130,14 +230,14 @@ impl Drop for BackendStoppedOnDrop {
 enum BackendInbound {
     Command(ChatBackendCommand),
     CommandsClosed,
-    Message(Value),
+    Message(ProviderMessage),
     MessagesClosed,
     FlushTick,
 }
 
 fn next_backend_inbound(
     commands: &Receiver<ChatBackendCommand>,
-    messages: &Receiver<Value>,
+    messages: &Receiver<ProviderMessage>,
     flush_pending: bool,
 ) -> BackendInbound {
     match commands.try_recv() {
@@ -181,6 +281,7 @@ pub enum ChatBackendCommand {
         text: String,
         mode: AgentInteractionMode,
         read_only: bool,
+        turn_id: String,
     },
     UpdateAccessMode {
         access_mode: AgentAccessMode,
@@ -202,6 +303,11 @@ pub enum ChatBackendCommand {
 
 #[derive(Clone, Debug)]
 pub enum ChatBackendEvent {
+    ReservedEvidence {
+        event: Box<ChatBackendEvent>,
+        reservation: Arc<ide_core::agent_changes::EvidenceReservation>,
+    },
+    EvidenceOverflow,
     ChatSessionReady {
         session_id: String,
     },
@@ -225,6 +331,11 @@ pub enum ChatBackendEvent {
     Verification(Verification),
     ReviewChecklist(ReviewChecklist),
     ChangedFiles(ChangedFilesSummary),
+    ChangeReceiptPending(String),
+    ChangeReceiptReady {
+        summary: ChangedFilesSummary,
+        state: ide_core::agent_changes::ChangeReceiptState,
+    },
     Usage(ConversationUsage),
     Compaction(bool),
     Status(AgentChatStatus),
@@ -236,6 +347,11 @@ impl ChatBackendController {
         &self,
         command: ChatBackendCommand,
     ) -> Result<(), crossbeam_channel::SendError<ChatBackendCommand>> {
+        if matches!(&command, ChatBackendCommand::SendTurn { .. }) {
+            self.timing
+                .prompt
+                .store(ide_core::agent_changes::now_micros(), Ordering::Relaxed);
+        }
         self.tx.send(command)
     }
 
@@ -248,6 +364,9 @@ impl ChatBackendController {
     }
 
     pub fn cancel_turn(&self) {
+        self.timing
+            .interrupt
+            .store(ide_core::agent_changes::now_micros(), Ordering::Relaxed);
         if let Some((root, agent)) = &self.studio_scope {
             ide_core::studio::revoke_scope_at(root, *agent);
         }
@@ -276,12 +395,28 @@ impl Drop for ChatBackendController {
 }
 
 pub fn spawn_chat_backend(
-    mut agent: AgentRecord,
+    agent: AgentRecord,
     initial_mode: AgentInteractionMode,
 ) -> anyhow::Result<(
     ChatBackendController,
     async_channel::Receiver<ChatBackendEvent>,
 )> {
+    spawn_chat_backend_after_stop(agent, initial_mode, None, None)
+}
+
+pub(super) fn spawn_chat_backend_after_stop(
+    mut agent: AgentRecord,
+    initial_mode: AgentInteractionMode,
+    previous_stop: Option<ChatBackendStopSignal>,
+    initial_turn_id: Option<String>,
+) -> anyhow::Result<(
+    ChatBackendController,
+    async_channel::Receiver<ChatBackendEvent>,
+)> {
+    agent.doc.push_str("\n\n");
+    agent
+        .doc
+        .push_str(ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS);
     agent.doc =
         prompt_with_connected_context(&agent.doc, &agent, &AgentConnectedContextExtras::default());
     anyhow::ensure!(agent.design_context.is_none(),
@@ -303,7 +438,11 @@ pub fn spawn_chat_backend(
         .as_ref()
         .map(|_| (agent.project_path.clone(), agent.id));
     let (command_tx, command_rx) = crossbeam_channel::unbounded();
-    let (event_tx, event_rx) = async_channel::unbounded();
+    let (mut event_tx, provider_rx) = event_channel();
+    if let Some(id) = initial_turn_id { event_tx.initial_turn_id = id; }
+    let (output, event_rx) = async_channel::unbounded();
+    let timing = Arc::new(ide_core::agent_changes::DispatchTiming::default());
+    change_tracking::route(agent.clone(), provider_rx, output.into(), timing.clone());
     let shutdown = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     match agent.provider {
@@ -314,6 +453,7 @@ pub fn spawn_chat_backend(
             event_tx,
             shutdown.clone(),
             stopped.clone(),
+            previous_stop,
         )?,
         AgentKind::Claude => spawn_claude_bridge(
             agent,
@@ -322,6 +462,7 @@ pub fn spawn_chat_backend(
             event_tx,
             shutdown.clone(),
             stopped.clone(),
+            previous_stop,
         )?,
         AgentKind::OpenCode => open_code::spawn_open_code_acp(
             agent,
@@ -330,10 +471,12 @@ pub fn spawn_chat_backend(
             event_tx,
             shutdown.clone(),
             stopped.clone(),
+            previous_stop,
         )?,
     }
     Ok((
         ChatBackendController {
+            timing,
             studio_scope,
             tx: command_tx,
             shutdown,
@@ -350,11 +493,15 @@ fn spawn_claude_bridge(
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    previous_stop: Option<ChatBackendStopSignal>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
         .name("choro-claude-chat-bridge".into())
         .spawn(move || {
             let _stopped = BackendStoppedOnDrop(stopped);
+            if !wait_for_previous_backend(previous_stop, &shutdown) {
+                return;
+            }
             if let Err(error) =
                 run_claude_bridge(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
@@ -373,11 +520,15 @@ fn spawn_codex_app_server(
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    previous_stop: Option<ChatBackendStopSignal>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
         .name("choro-codex-app-server".into())
         .spawn(move || {
             let _stopped = BackendStoppedOnDrop(stopped);
+            if !wait_for_previous_backend(previous_stop, &shutdown) {
+                return;
+            }
             if let Err(error) =
                 run_codex_app_server(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
@@ -412,27 +563,26 @@ impl StudioReviewGate {
 struct CodexRuntime {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
-    messages: Receiver<Value>,
+    messages: Receiver<ProviderMessage>,
     commands: Receiver<ChatBackendCommand>,
     events: EventSender,
     shutdown: Arc<AtomicBool>,
     agent: AgentRecord,
     thread_id: Option<String>,
+    turn_control: codex::CodexTurnControl,
     assistant_buffer: String,
     assistant_stream: StreamChunkBuffer,
     studio_review: StudioReviewGate,
     plan_buffer: String,
     pending_changed_files: Option<ChangedFilesSummary>,
-    pending_file_actions: std::collections::BTreeMap<String, Vec<FileChangeStat>>,
-    pending_file_previews: std::collections::BTreeMap<String, Vec<FileChangeStat>>,
+    pending_file_previews: ide_core::agent_changes::PendingEvidence<Vec<FileChangeStat>>,
     pending_observed_files: Vec<FileChangeStat>,
-    worktree_baseline: Option<worktree_changes::WorktreeChanges>,
     active_turn_id: String,
     command_ran_this_turn: bool,
     active_command_item_id: Option<String>,
     pending_user_inputs: std::collections::HashMap<String, PendingRequest>,
     pending_approvals: std::collections::HashMap<String, PendingApprovalRequest>,
-    deferred_turns: VecDeque<(String, AgentInteractionMode, bool)>,
+    deferred_turns: VecDeque<(String, AgentInteractionMode, bool, String)>,
     active_reconnect_work_log_id: Option<String>,
     model: Option<String>,
     effort: String,
@@ -458,7 +608,7 @@ enum PendingApprovalResponseKind {
 struct ClaudeBridgeRuntime {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
-    messages: Receiver<Value>,
+    messages: Receiver<ProviderMessage>,
     commands: Receiver<ChatBackendCommand>,
     events: EventSender,
     shutdown: Arc<AtomicBool>,
@@ -617,7 +767,7 @@ fn run_claude_bridge(
         .take()
         .context("Claude bridge stderr unavailable")?;
 
-    let (message_tx, message_rx) = crossbeam_channel::unbounded();
+    let (message_tx, message_rx) = crossbeam_channel::bounded(1);
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "Claude bridge");
 
@@ -644,7 +794,7 @@ fn run_claude_bridge(
     if let Some(prompt) =
         initial_chat_prompt(&runtime.agent, runtime.agent.cli_session_id.is_some())
     {
-        runtime.send_turn(prompt.to_owned(), initial_mode, false)?;
+        runtime.send_turn(prompt.to_owned(), initial_mode, false, runtime.events.initial_turn_id.clone())?;
     }
     runtime.run_loop()
 }
@@ -1080,7 +1230,7 @@ fn run_codex_app_server(
         .take()
         .context("codex app-server stderr unavailable")?;
 
-    let (message_tx, message_rx) = crossbeam_channel::unbounded();
+    let (message_tx, message_rx) = crossbeam_channel::bounded(1);
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "Codex app-server");
 
@@ -1095,15 +1245,14 @@ fn run_codex_app_server(
         shutdown,
         agent: agent.clone(),
         thread_id: None,
+        turn_control: codex::CodexTurnControl::default(),
         assistant_buffer: String::new(),
         assistant_stream: StreamChunkBuffer::new(),
         studio_review: StudioReviewGate::default(),
         plan_buffer: String::new(),
         pending_changed_files: None,
-        pending_file_actions: Default::default(),
         pending_file_previews: Default::default(),
         pending_observed_files: Vec::new(),
-        worktree_baseline: None,
         active_turn_id: next_request_id(),
         command_ran_this_turn: false,
         active_command_item_id: None,
@@ -1172,7 +1321,7 @@ fn run_codex_app_server(
                         "codex-resume-fallback",
                         "codex-resume-fallback",
                         WorkLogEntryKind::System,
-                        format!("Codex resume failed; started a new backend thread: {error:#}"),
+                        format!("Codex could not resume the existing conversation: {error:#}"),
                         WorkLogStatus::Failed,
                     )));
                 return Err(error).context(
@@ -1196,8 +1345,10 @@ fn run_codex_app_server(
             })
             .ok();
     }
-    if let Some(prompt) = initial_chat_prompt(&agent, is_resuming_existing_thread) {
-        runtime.send_turn(prompt.to_owned(), initial_mode, false)?;
+    if let Some(prompt) = initial_chat_prompt(&agent, is_resuming_existing_thread)
+        .filter(|_| !runtime.studio_review.cancelled)
+    {
+        runtime.send_turn(prompt.to_owned(), initial_mode, false, runtime.events.initial_turn_id.clone())?;
     }
 
     runtime.run_loop()
@@ -1213,11 +1364,71 @@ fn initial_chat_prompt(agent: &AgentRecord, resuming: bool) -> Option<&str> {
     .then_some(agent.doc.as_str())
 }
 
-fn spawn_json_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<Value>) {
+struct ProviderMessage {
+    value: Value,
+    _reservation: Option<ide_core::agent_changes::EvidenceReservation>,
+}
+impl std::ops::Deref for ProviderMessage {
+    type Target = Value;
+    fn deref(&self) -> &Value {
+        &self.value
+    }
+}
+impl From<Value> for ProviderMessage {
+    fn from(mut value: Value) -> Self {
+        let bytes = serde_json::to_vec(&value).map_or(usize::MAX, |s| s.len());
+        let reservation = ide_core::agent_changes::EvidenceBudget::global().reserve(bytes);
+        if reservation.is_none() {
+            // Retain protocol routing/terminal fields, discard unsupported
+            // evidence payloads and explicitly mark the receipt incomplete.
+            fn strip(value: &mut Value) {
+                match value {
+                    Value::Object(fields) => {
+                        for key in [
+                            "diff",
+                            "changes",
+                            "oldText",
+                            "newText",
+                            "rawInput",
+                            "content",
+                            "file",
+                            "files",
+                            "observed_files",
+                        ] {
+                            fields.remove(key);
+                        }
+                        for value in fields.values_mut() {
+                            strip(value);
+                        }
+                    }
+                    Value::Array(values) => {
+                        for value in values {
+                            strip(value);
+                        }
+                    }
+                    Value::String(s) if s.len() > 4096 => {
+                        s.truncate(s.floor_char_boundary(4096));
+                    }
+                    _ => {}
+                }
+            }
+            strip(&mut value);
+            value["_choro_evidence_incomplete"] = json!(true);
+        }
+        Self {
+            value,
+            _reservation: reservation,
+        }
+    }
+}
+
+fn spawn_json_reader(stdout: impl std::io::Read + Send + 'static, tx: Sender<ProviderMessage>) {
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                let _ = tx.send(value);
+                if tx.send(value.into()).is_err() {
+                    break;
+                }
             }
         }
     });
@@ -1291,6 +1502,51 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn replacement_waits_until_previous_backend_cleanup_finishes() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let previous = ChatBackendStopSignal {
+            stopped: stopped.clone(),
+        };
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let worker = thread::spawn(move || {
+            tx.send(wait_for_previous_backend(
+                Some(previous),
+                &AtomicBool::new(false),
+            ))
+            .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(60)).is_err());
+        stopped.store(true, Ordering::SeqCst);
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn stopping_a_waiting_replacement_does_not_release_its_predecessor() {
+        let predecessor_stopped = Arc::new(AtomicBool::new(false));
+        let replacement_stopped = Arc::new(AtomicBool::new(false));
+        let previous = ChatBackendStopSignal {
+            stopped: predecessor_stopped.clone(),
+        };
+        let replacement = replacement_stopped.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let worker = thread::spawn(move || {
+            let _stopped = BackendStoppedOnDrop(replacement);
+            tx.send(wait_for_previous_backend(
+                Some(previous),
+                &AtomicBool::new(true),
+            ))
+            .unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(60)).is_err());
+        assert!(!replacement_stopped.load(Ordering::SeqCst));
+        predecessor_stopped.store(true, Ordering::SeqCst);
+        assert!(!rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        worker.join().unwrap();
+        assert!(replacement_stopped.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn studio_codex_checks_shell_gate_not_execution_backend_selector() {
@@ -1519,8 +1775,8 @@ mod tests {
     #[test]
     fn backend_inbound_prefers_commands_over_messages() {
         let (command_tx, command_rx) = crossbeam_channel::unbounded();
-        let (message_tx, message_rx) = crossbeam_channel::unbounded();
-        message_tx.send(json!({"type": "noise"})).unwrap();
+        let (message_tx, message_rx) = crossbeam_channel::bounded(1);
+        message_tx.send(json!({"type": "noise"}).into()).unwrap();
         command_tx.send(ChatBackendCommand::CancelTurn).unwrap();
 
         match next_backend_inbound(&command_rx, &message_rx, false) {
@@ -1538,7 +1794,7 @@ mod tests {
     #[test]
     fn backend_inbound_reports_closed_channels() {
         let (command_tx, command_rx) = crossbeam_channel::unbounded::<ChatBackendCommand>();
-        let (message_tx, message_rx) = crossbeam_channel::unbounded::<Value>();
+        let (message_tx, message_rx) = crossbeam_channel::unbounded::<ProviderMessage>();
 
         drop(message_tx);
         match next_backend_inbound(&command_rx, &message_rx, false) {
@@ -1556,7 +1812,7 @@ mod tests {
     #[test]
     fn backend_inbound_ticks_only_while_a_flush_is_pending() {
         let (_command_tx, command_rx) = crossbeam_channel::unbounded::<ChatBackendCommand>();
-        let (_message_tx, message_rx) = crossbeam_channel::unbounded::<Value>();
+        let (_message_tx, message_rx) = crossbeam_channel::unbounded::<ProviderMessage>();
 
         let start = Instant::now();
         match next_backend_inbound(&command_rx, &message_rx, true) {
@@ -1568,7 +1824,7 @@ mod tests {
 
     #[test]
     fn stream_chunk_buffer_flushes_exact_text_batch() {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = event_channel();
         let mut buffer = StreamChunkBuffer::new();
 
         buffer.push(Some("msg-1".into()), "hel", &tx);
@@ -1587,7 +1843,7 @@ mod tests {
 
     #[test]
     fn stream_chunk_buffer_flushes_before_switching_message_ids() {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = event_channel();
         let mut buffer = StreamChunkBuffer::new();
 
         buffer.push(Some("msg-1".into()), "first", &tx);
@@ -1619,7 +1875,7 @@ mod tests {
 
     #[test]
     fn stream_chunk_buffer_generates_ids_for_anonymous_chunks_per_turn() {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = event_channel();
         let mut buffer = StreamChunkBuffer::new();
 
         buffer.push(None, "first ", &tx);

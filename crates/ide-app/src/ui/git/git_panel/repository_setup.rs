@@ -388,6 +388,7 @@ fn sensitive_publish_paths(repo: &Path) -> Vec<PathBuf> {
 }
 
 fn git_path_is_ignored(repo: &Path, relative: &Path) -> bool {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
     Command::new("git")
         .args(["check-ignore", "--quiet", "--no-index", "--"])
         .arg(relative)

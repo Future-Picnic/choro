@@ -109,7 +109,7 @@ impl Server {
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
-            "instructions": CHORO_NATIVE_TOOL_INSTRUCTIONS,
+            "instructions": format!("{}\n\n{}",CHORO_NATIVE_TOOL_INSTRUCTIONS,ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS),
             "serverInfo": {
                 "name": "ide-mcp",
                 "version": env!("CARGO_PKG_VERSION"),

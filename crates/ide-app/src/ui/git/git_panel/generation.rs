@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) fn git_output(repo: &Path, args: &[&str]) -> anyhow::Result<String> {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
     let output = Command::new("git").args(args).current_dir(repo).output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

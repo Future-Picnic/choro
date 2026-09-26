@@ -104,6 +104,7 @@ pub(super) fn run_agent_ship_operation(
     create_branch: bool,
     branch_name: &str,
     needs_upstream: bool,
+    scope: AgentShipScope,
     files: &[PathBuf],
     commit_message: &str,
     pr_base_branch: &str,
@@ -112,6 +113,9 @@ pub(super) fn run_agent_ship_operation(
     pending_commit: Option<AgentShipPendingCommit>,
     action: AgentShipAction,
 ) -> Result<AgentShipOutcome, AgentShipOperationFailure> {
+    let repository_lock = ide_core::agent_changes::repository_operation_lock(repo);
+    let _repository_guard = repository_lock.lock().unwrap_or_else(|e| e.into_inner());
+
     let retry_commit = pending_commit.clone();
     let (branch, mut committed) = (|| -> anyhow::Result<_> {
         if commit_message.trim().is_empty() {
@@ -126,6 +130,26 @@ pub(super) fn run_agent_ship_operation(
         }
         if matches!(action, AgentShipAction::CommitPushPr) && pr_base_branch.trim().is_empty() {
             anyhow::bail!("Choose a base branch for the pull request");
+        }
+
+        let commit_message = commit_message.trim().to_string();
+        let mut normalized_files = files.iter()
+            .map(|path| normalize_agent_ship_path(repo, path)).collect::<Vec<_>>();
+        normalized_files.sort();
+        normalized_files.dedup();
+        if pending_commit.is_none() {
+            if scope == AgentShipScope::Conversation {
+                let pending = ide_core::local_store::LocalStore::open_default()?
+                    .pending_agent_repository_paths(agent_id, repo)?;
+                normalized_files.retain(|path| pending.contains(path));
+            }
+            let dirty = ide_core::agent_changes::observer::status_paths(repo, &[repo.to_path_buf()])?;
+            normalized_files.retain(|path| dirty.contains(path));
+            anyhow::ensure!(!normalized_files.is_empty(), "The selected contributions are already committed or no longer pending. Refresh Ship before continuing.");
+            // Recheck under the lock, before any branch or index mutation.
+            let selected = normalized_files.iter().collect::<HashSet<_>>();
+            let snapshot = ide_core::git::read_snapshot(repo)?;
+            anyhow::ensure!(snapshot.entries.iter().all(|entry| entry.staged.is_none() || selected.contains(&entry.path)), "Unstage files outside this Ship selection before continuing");
         }
 
         let branch = if create_branch {
@@ -144,38 +168,45 @@ pub(super) fn run_agent_ship_operation(
             }
             requested
         } else {
-            current_branch
-                .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("Current Git HEAD is not on a branch"))?
+            let actual = ide_core::git::read_head(repo)?.branch;
+            anyhow::ensure!(actual.as_deref() == current_branch, "The branch changed after Ship was opened. Refresh Ship before continuing.");
+            actual.ok_or_else(|| anyhow::anyhow!("Current Git HEAD is not on a branch"))?
         };
         if matches!(action, AgentShipAction::CommitPushPr) {
             validate_agent_ship_pr_branches(&branch, pr_base_branch)?;
         }
 
-        let commit_message = commit_message.trim().to_string();
-        let mut normalized_files = files
-            .iter()
-            .map(|path| normalize_agent_ship_path(repo, path))
-            .collect::<Vec<_>>();
-        normalized_files.sort();
-        normalized_files.dedup();
-        let selected = normalized_files.iter().cloned().collect::<HashSet<_>>();
-        let has_selected_changes = ide_core::git::worktree_diffs(repo)?
-            .into_iter()
-            .any(|diff| selected.contains(&normalize_agent_ship_path(repo, &diff.path)));
+        if let Some(pending) = pending_commit {
+            let head = git_head_sha(repo).ok_or_else(|| anyhow::anyhow!("Could not read the commit from the previous Ship attempt"))?;
+            validate_pending_ship_commit(&pending, &branch, &commit_message, &normalized_files, &head)?;
+            // A retry pushes the recorded commit. Later edits stay pending.
+            return Ok((branch, pending));
+        }
 
-        let committed = if has_selected_changes {
+        let committed = {
             let snapshot_id =
-                match capture_agent_ship_diff_snapshot(repo, agent_id, project_id, files) {
+                match capture_agent_ship_diff_snapshot(repo, agent_id, project_id, &normalized_files) {
                     Ok(snapshot_id) => snapshot_id,
                     Err(error) => {
                         eprintln!("failed to capture pre-commit diff snapshot: {error:#}");
                         None
                     }
                 };
-            let refs = files.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+            let refs = normalized_files.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+            let included_through = ide_core::agent_changes::now_micros();
             ide_core::git::write::stage(repo, &refs)?;
             let commit = ide_core::git::write::commit(repo, &commit_message)?;
+            // Settle the included history even if someone edits the file
+            // immediately after staging. Later evidence keeps its own pending state.
+            if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
+                if let Err(error) = ide_core::agent_changes::settle_repository_paths(
+                    &store, repo, &normalized_files, included_through,
+                ) {
+                    eprintln!("ship contribution settlement: {error:#}");
+                }
+            }
+            ide_core::agent_changes::observer::refresh(repo);
+
             if let Some(snapshot_id) = snapshot_id {
                 if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
                     if let Err(error) =
@@ -194,23 +225,6 @@ pub(super) fn run_agent_ship_operation(
                 files: normalized_files,
                 pushed: false,
             }
-        } else {
-            let pending = pending_commit.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Selected files no longer have changes, and no exact commit is recorded for this Ship attempt"
-                )
-            })?;
-            let head = git_head_sha(repo).ok_or_else(|| {
-                anyhow::anyhow!("Could not read the commit from the previous Ship attempt")
-            })?;
-            validate_pending_ship_commit(
-                &pending,
-                &branch,
-                &commit_message,
-                &normalized_files,
-                &head,
-            )?;
-            pending
         };
 
         Ok((branch, committed))
@@ -362,6 +376,7 @@ pub(super) fn capture_agent_ship_diff_snapshot(
 }
 
 pub(super) fn git_head_sha(repo: &Path) -> Option<String> {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -385,6 +400,7 @@ pub(super) fn agent_ship_pr_status_colors(
 }
 
 pub(super) fn validate_agent_ship_branch_name(repo: &Path, name: &str) -> anyhow::Result<()> {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
     if name.trim().is_empty() {
         anyhow::bail!("Branch name cannot be empty");
     }
@@ -399,6 +415,7 @@ pub(super) fn validate_agent_ship_branch_name(repo: &Path, name: &str) -> anyhow
 }
 
 pub(super) fn agent_ship_branch_exists(repo: &Path, name: &str) -> bool {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
     std::process::Command::new("git")
         .args([
             "rev-parse",

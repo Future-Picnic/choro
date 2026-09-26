@@ -1,5 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock, Weak,
+};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -40,7 +46,76 @@ pub struct GitWatcher {
 /// tick per burst. Expensive/generated directories are ignored before ticks are
 /// sent so background builds do not continuously refresh git status.
 pub struct WorktreeWatcher {
-    _watcher: RecommendedWatcher,
+    _watcher: Arc<SharedWorktreeWatch>,
+}
+
+type WatchMessage = std::result::Result<notify::Event, String>;
+type Subscriber = (mpsc::SyncSender<WatchMessage>, Arc<AtomicBool>);
+pub(crate) struct SharedWorktreeWatch {
+    _watcher: Mutex<RecommendedWatcher>,
+    subscribers: Arc<Mutex<Vec<Subscriber>>>,
+}
+pub(crate) struct WorktreeEvents {
+    rx: mpsc::Receiver<WatchMessage>,
+    overflow: Arc<AtomicBool>,
+}
+impl WorktreeEvents {
+    pub(crate) fn recv(&self) -> Option<WatchMessage> {
+        let event = self.rx.recv().ok()?;
+        Some(if self.overflow.swap(false, Ordering::Relaxed) {
+            Err("filesystem event overflow; reconcile workspace".into())
+        } else {
+            event
+        })
+    }
+}
+
+/// Git UI and agent tracking share the same OS subscription. Each consumer
+/// debounces independently; a slow consumer receives an explicit rescan hint.
+pub(crate) fn shared_worktree_events(
+    root: &Path,
+) -> Result<(Arc<SharedWorktreeWatch>, WorktreeEvents)> {
+    static WATCHES: OnceLock<Mutex<HashMap<PathBuf, Weak<SharedWorktreeWatch>>>> = OnceLock::new();
+    let root = std::fs::canonicalize(root)?;
+    let mut watches = WATCHES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let shared = if let Some(watch) = watches.get(&root).and_then(Weak::upgrade) {
+        watch
+    } else {
+        let subscribers: Arc<Mutex<Vec<Subscriber>>> = Arc::new(Mutex::new(Vec::new()));
+        let listeners = subscribers.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                let event = event.map_err(|e| e.to_string());
+                listeners.lock().unwrap_or_else(|e| e.into_inner()).retain(
+                    |(tx, overflow)| match tx.try_send(event.clone()) {
+                        Ok(()) => true,
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            overflow.store(true, Ordering::Relaxed);
+                            true
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => false,
+                    },
+                );
+            })?;
+        watcher.watch(&root, RecursiveMode::Recursive)?;
+        let shared = Arc::new(SharedWorktreeWatch {
+            _watcher: Mutex::new(watcher),
+            subscribers,
+        });
+        watches.insert(root, Arc::downgrade(&shared));
+        shared
+    };
+    let (tx, rx) = mpsc::sync_channel(64);
+    let overflow = Arc::new(AtomicBool::new(false));
+    shared
+        .subscribers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((tx, overflow.clone()));
+    Ok((shared, WorktreeEvents { rx, overflow }))
 }
 
 impl GitWatcher {
@@ -103,16 +178,19 @@ impl WorktreeWatcher {
         let (raw_tx, raw_rx) = mpsc::channel::<()>();
         let (tick_tx, tick_rx) = mpsc::channel::<()>();
 
-        let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if let Ok(event) = event {
-                    if is_relevant_worktree_event(&event) {
-                        let _ = raw_tx.send(());
+        let (watcher, events) = shared_worktree_events(repo_path)?;
+        std::thread::spawn(move || {
+            while let Some(event) = events.recv() {
+                if event
+                    .as_ref()
+                    .map_or(true, |event| is_relevant_worktree_event(event))
+                {
+                    if raw_tx.send(()).is_err() {
+                        break;
                     }
                 }
-            })?;
-
-        watcher.watch(repo_path, RecursiveMode::Recursive)?;
+            }
+        });
 
         std::thread::spawn(move || {
             debounce_ticks(

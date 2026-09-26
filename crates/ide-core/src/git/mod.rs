@@ -1,4 +1,6 @@
 mod accounts;
+mod background;
+pub use background::BackgroundGitPermit;
 pub mod diff;
 pub mod ignore;
 pub mod log;

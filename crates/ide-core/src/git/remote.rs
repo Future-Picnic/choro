@@ -56,6 +56,7 @@ fn run_git_with_timeout(
 }
 
 pub fn push(repo_path: &Path, branch: Option<&str>, set_upstream: bool) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let mut args = vec!["push"];
     if set_upstream {
         args.push("-u");
@@ -68,38 +69,46 @@ pub fn push(repo_path: &Path, branch: Option<&str>, set_upstream: bool) -> Resul
 }
 
 pub fn pull(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["pull", "--ff-only"])
 }
 
 pub fn pull_rebase(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["pull", "--rebase"])
 }
 
 pub fn push_force(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["push", "--force-with-lease"])
 }
 
 pub fn fetch(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["fetch", "--prune"])
 }
 
 /// Stash all changes (staged, unstaged and untracked).
 pub fn stash_all(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["stash", "push", "--include-untracked"])
 }
 
 /// Apply the latest stash and remove it from the stash list.
 pub fn stash_pop(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["stash", "pop"])
 }
 
 /// Apply the latest stash but keep it in the stash list.
 pub fn stash_apply(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["stash", "apply"])
 }
 
 /// Number of entries in the stash.
 pub fn stash_count(repo_path: &Path) -> usize {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["stash", "list", "--format=%gd"])
         .map(|out| out.stdout.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0)
@@ -107,6 +116,7 @@ pub fn stash_count(repo_path: &Path) -> usize {
 
 /// Soft-reset the last commit, keeping its changes staged (Zed's "Uncommit").
 pub fn uncommit(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["reset", "--soft", "HEAD~1"])
 }
 
@@ -119,6 +129,7 @@ pub fn worktree_add(
     branch: &str,
     base: &str,
 ) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let lane = lane_path.to_string_lossy().into_owned();
     run_git(repo_path, &["worktree", "add", "-b", branch, &lane, base])
 }
@@ -130,6 +141,7 @@ pub fn worktree_add_existing(
     lane_path: &Path,
     branch: &str,
 ) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let lane = lane_path.to_string_lossy().into_owned();
     run_git(repo_path, &["worktree", "add", &lane, branch])
 }
@@ -138,6 +150,7 @@ pub fn worktree_add_existing(
 /// lane has uncommitted changes — that refusal is the teardown guard's
 /// backstop, so only pass `force` after the user explicitly confirmed.
 pub fn worktree_remove(repo_path: &Path, lane_path: &Path, force: bool) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let lane = lane_path.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove"];
     if force {
@@ -154,11 +167,13 @@ pub fn worktree_remove(repo_path: &Path, lane_path: &Path, force: bool) -> Resul
 /// Drop stale worktree bookkeeping (e.g. a lane directory deleted from disk).
 /// Run before re-adding a lane at a previously used path.
 pub fn worktree_prune(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["worktree", "prune"])
 }
 
 /// Stage everything (tracked + untracked) — the pre-Rejoin sweep of a lane.
 pub fn stage_all(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     // The local exclude normally keeps generated dependency trees out already.
     // The negative pathspec is the final backstop if a project-level negation
     // overrides that exclude: Rejoin must never sweep tool-owned output into a
@@ -180,18 +195,21 @@ pub fn stage_all(repo_path: &Path) -> Result<RemoteOutput> {
 /// Merge `branch` into the current branch (Solo "Rejoin"). `--no-ff` keeps the
 /// Solo's work visible as its own merge; `--no-edit` keeps it non-interactive.
 pub fn merge(repo_path: &Path, branch: &str) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["merge", "--no-ff", "--no-edit", branch])
 }
 
 /// Abort an in-progress merge, restoring the pre-merge state. Used when a
 /// Rejoin hits conflicts — the main tree returns to clean, the lane untouched.
 pub fn merge_abort(repo_path: &Path) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     run_git(repo_path, &["merge", "--abort"])
 }
 
 /// Delete a local branch. `force` uses `-D` (drops unmerged work) — only after
 /// explicit user confirmation.
 pub fn delete_branch(repo_path: &Path, branch: &str, force: bool) -> Result<RemoteOutput> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let flag = if force { "-D" } else { "-d" };
     run_git(repo_path, &["branch", flag, branch])
 }

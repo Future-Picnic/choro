@@ -56,6 +56,8 @@ mod remote_page;
 mod render;
 mod shortcuts;
 mod skills_page;
+mod skill_document;
+use skill_document::{skill_document_body, skill_markdown_style};
 mod theme_preview;
 mod voice;
 
@@ -83,7 +85,7 @@ pub(crate) enum SettingsSection {
 impl SettingsSection {
     fn title(self) -> &'static str {
         match self {
-            Self::Design => "Design",
+            Self::Design => "Studio",
             Self::Generation => "AI generation",
             Self::Voice => "Voice",
             Self::Companion => "Companion",
@@ -104,7 +106,7 @@ impl SettingsSection {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Design => "Studio is your local design workspace.",
+            Self::Design => "Manage the skills and design preferences Studio uses across your projects.",
             Self::Generation => {
                 "Choose defaults for agents, Quick Ask, and generated content, plus review behavior."
             }
@@ -198,6 +200,7 @@ pub(crate) struct ProjectSource {
 
 /// Settings dialog: editable keyboard shortcuts (persisted to config).
 pub struct SettingsView {
+    studio_settings: design::StudioSettingsEditor,
     experts: Vec<ide_core::experts::ExpertProfile>,
     expert_editor: Option<experts_page::ExpertEditor>,
     experts_status: Option<experts_page::ExpertsNotice>,
@@ -363,7 +366,7 @@ impl SettingsView {
             remote_auth,
             relay_identity,
             relay_control,
-            SettingsSection::AgentSkills,
+            SettingsSection::Appearance,
             window,
             cx,
         )
@@ -402,6 +405,7 @@ impl SettingsView {
                     .display()
                     .to_string()
             });
+        let studio_preferences = state.studio.preferences.clone();
         let code_review_prompt_value = state.effective_code_review_prompt().to_string();
         let active_project = state.active;
         let companion_music = state.companion_music.clone();
@@ -437,7 +441,11 @@ impl SettingsView {
             cx.new(|cx| InputState::new(window, cx).placeholder("Search bandmates"));
         let cached_skills = AgentCapabilityCacheFile::load();
         let riffs = ChoroRiffStore::load().riffs;
+        let studio_settings = design::StudioSettingsEditor::new(&studio_preferences, window, cx);
         let view = cx.new(|cx| {
+            for input in [&studio_settings.preferences, &studio_settings.search] {
+                cx.subscribe(input, |_: &mut Self, _, _: &InputEvent, cx| cx.notify()).detach();
+            }
             cx.subscribe(
                 &code_review_prompt,
                 |this: &mut Self, _, event: &InputEvent, cx| {
@@ -507,6 +515,7 @@ impl SettingsView {
             })
             .detach();
             Self {
+                studio_settings,
                 experts: LocalStore::open_default()
                     .and_then(|s| s.load_experts())
                     .unwrap_or_default(),

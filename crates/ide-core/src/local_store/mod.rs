@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 36;
+const STORE_SCHEMA_VERSION: u32 = 38;
 const EXPORT_FORMAT_VERSION: u32 = 9;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -56,11 +56,15 @@ pub struct StoredChatMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredChatFileLedgerEntry {
+    #[serde(default)]
+    pub segments_json: String,
     pub agent_id: Uuid,
     pub path: PathBuf,
     pub observed: bool,
     pub additions: usize,
     pub deletions: usize,
+    #[serde(default)]
+    pub counts_unavailable: bool,
     pub baseline_hash: Option<String>,
     pub result_hash: Option<String>,
     pub baseline_content: Option<String>,
@@ -768,6 +772,7 @@ struct ExportChecksum {
 }
 
 mod agents;
+mod agent_changes;
 mod api;
 mod archive;
 mod brain;

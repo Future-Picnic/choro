@@ -665,6 +665,8 @@ pub struct AppConfig {
     /// Instruction sent when the Code review action is used in an agent chat.
     #[serde(default = "default_code_review_prompt")]
     pub code_review_prompt: String,
+    #[serde(default)]
+    pub studio: crate::studio::StudioSettings,
     /// App-owned response contract appended to every code-review request.
     #[serde(default = "default_code_review_output_instructions")]
     pub code_review_output_instructions: String,
@@ -724,6 +726,7 @@ impl Default for AppConfig {
             new_agent_defaults: None,
             favorite_models: Vec::new(),
             code_review_prompt: default_code_review_prompt(),
+            studio: crate::studio::StudioSettings::default(),
             code_review_output_instructions: default_code_review_output_instructions(),
             memory_proposals_enabled: true,
             verification_mode: VerificationMode::Ask,
@@ -917,6 +920,7 @@ mod tests {
                 AgentModel::ClaudeHaiku45,
             )],
             code_review_prompt: default_code_review_prompt(),
+            studio: crate::studio::StudioSettings::default(),
             code_review_output_instructions: default_code_review_output_instructions(),
             memory_proposals_enabled: true,
             verification_mode: VerificationMode::Ask,

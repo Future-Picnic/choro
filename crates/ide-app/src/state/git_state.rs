@@ -170,7 +170,7 @@ impl GitState {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { op(path) })
+                .spawn(async move { let _git_permit = ide_core::git::BackgroundGitPermit::acquire(); op(path) })
                 .await;
             this.update(cx, |state, cx| {
                 state.is_busy = false;
@@ -213,7 +213,7 @@ impl GitState {
                 .background_executor()
                 .spawn({
                     let path = path.clone();
-                    async move { op(path) }
+                    async move { let _git_permit = ide_core::git::BackgroundGitPermit::acquire(); op(path) }
                 })
                 .await;
             this.update(cx, |state, cx| {
@@ -564,6 +564,7 @@ impl GitState {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        ide_core::agent_changes::observer::invalidate_existing(&self.repo_path);
         if !self.is_repo {
             return;
         }
@@ -577,6 +578,7 @@ impl GitState {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
                     let snapshot = ide_core::git::read_snapshot(&path);
                     let history = ide_core::git::list_commits(&path, 100).unwrap_or_default();
                     let stash_count = ide_core::git::remote::stash_count(&path);

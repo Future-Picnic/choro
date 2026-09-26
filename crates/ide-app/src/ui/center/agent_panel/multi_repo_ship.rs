@@ -48,6 +48,9 @@ impl MultiRepoShipRepository {
     }
 
     fn included_files(&self, scope: AgentShipScope) -> Vec<PathBuf> {
+        if let Some(pending) = &self.pending_commit {
+            return pending.files.clone();
+        }
         self.scope_files(scope)
             .iter()
             .filter(|path| !self.deselected.contains(*path))
@@ -56,6 +59,9 @@ impl MultiRepoShipRepository {
     }
 
     fn staged_outside_scope(&self, scope: AgentShipScope) -> Vec<PathBuf> {
+        if self.pending_commit.is_some() {
+            return Vec::new();
+        }
         let included = self
             .included_files(scope)
             .into_iter()
@@ -350,6 +356,7 @@ impl MultiRepoShipDialog {
         let agent_id = self.agent_id;
         let project_id = self.project_id;
         let create_branch = self.create_branch;
+        let scope = self.scope;
         let center = self.center.clone();
         let window_handle = window.window_handle();
         self.busy = true;
@@ -370,6 +377,7 @@ impl MultiRepoShipDialog {
                             create_branch,
                             &request.branch_name,
                             request.needs_upstream,
+                            scope,
                             &request.files,
                             &request.commit_message,
                             &request.pr_base_branch,

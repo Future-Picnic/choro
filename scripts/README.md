@@ -2,7 +2,7 @@
 
 ## App builders
 
-These are the only three app modes:
+These are the only four app modes:
 
 - `bundle.sh` builds the normal `Choro.app` release.
 - `bundle-new-user.sh` builds `Choro New User.app` with a unique empty data
@@ -11,6 +11,10 @@ These are the only three app modes:
 - `bundle-demo.sh` builds `Choro Demo.app`. Every launch resets its isolated
   data, uses fresh Demo-only keychain namespaces, and recreates the fictional
   demo workspace from tracked fixtures.
+- `bundle-recording-demo.sh` builds `Choro Recording.app` for marketing
+  captures. It seeds the same fictional demo workspace on first launch only,
+  then keeps prepared scenes across relaunches in its own data directory and
+  keychain namespaces. It is never installed to `/Applications`.
 
 Each builder creates its app under `target/release/bundle/`. By default it also
 installs its distinctly named app in `/Applications`; set the matching

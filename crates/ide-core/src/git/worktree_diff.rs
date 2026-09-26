@@ -19,6 +19,7 @@ use super::snapshot::LineStats;
 
 const MAX_UNTRACKED_STAT_FILES: usize = 512;
 const MAX_STAT_BYTES: u64 = 1024 * 1024;
+const MAX_UNTRACKED_PATCH_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 pub(super) enum Base {
@@ -133,6 +134,10 @@ pub(super) fn patches(repo: &Repository, base: Base, file: Option<&Path>) -> Res
             });
             continue;
         }
+        if let Some(diff) = untracked_patch(repo, &absolute, &path)? {
+            results.push(diff);
+            continue;
+        }
         let mut command = command(repo)?;
         command
             .args([
@@ -164,6 +169,69 @@ pub(super) fn patches(repo: &Repository, base: Base, file: Option<&Path>) -> Res
     }
     results.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(results)
+}
+
+// Untracked files are additions against an empty buffer. Reading owned bytes
+// preserves the truncation safety of the Git subprocess without launching one
+// process (and its polling/reader threads) per generated file. Large text still
+// uses Git; binary assets need no full content read to produce their FileDiff.
+fn untracked_patch(repo: &Repository, absolute: &Path, path: &Path) -> Result<Option<FileDiff>> {
+    let metadata = fs::symlink_metadata(absolute)?;
+    let policy = untracked_binary_policy(repo, path)?;
+    let binary = || FileDiff {
+        path: path.to_path_buf(),
+        is_binary: true,
+        ..Default::default()
+    };
+    let bytes = if metadata.is_symlink() {
+        fs::read_link(absolute)?.as_os_str().as_encoded_bytes().to_vec()
+    } else if metadata.is_file() {
+        if policy == Some(true) {
+            return Ok(Some(binary()));
+        }
+        if metadata.len() > MAX_UNTRACKED_PATCH_BYTES {
+            if policy != Some(false) {
+                let mut prefix = Vec::new();
+                fs::File::open(absolute)?.take(8000).read_to_end(&mut prefix)?;
+                if prefix.contains(&0) {
+                    return Ok(Some(binary()));
+                }
+            }
+            return Ok(None);
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(absolute)?
+            .take(MAX_UNTRACKED_PATCH_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_UNTRACKED_PATCH_BYTES {
+            return Ok(None);
+        }
+        bytes
+    } else {
+        return Ok(None);
+    };
+    let mut options = DiffOptions::new();
+    if let Some(binary) = policy {
+        options.force_binary(binary).force_text(!binary);
+    }
+    let patch = Patch::from_buffers(&[], Some(path), &bytes, Some(path), Some(&mut options))?;
+    let mut diff = FileDiff {
+        path: path.to_path_buf(),
+        is_binary: patch.delta().flags().is_binary(),
+        ..Default::default()
+    };
+    super::diff::extract_patch(&patch, &mut diff)?;
+    Ok(Some(diff))
+}
+
+fn untracked_binary_policy(repo: &Repository, path: &Path) -> Result<Option<bool>> {
+    let attr = repo.get_attr(path, "diff", AttrCheckFlags::FILE_THEN_INDEX)?;
+    Ok(match AttrValue::from_string(attr) {
+        AttrValue::False => Some(true),
+        AttrValue::True => Some(false),
+        AttrValue::String(driver) => repo.config()?.get_bool(&format!("diff.{driver}.binary")).ok(),
+        _ => None,
+    })
 }
 
 fn parse_patch(bytes: &[u8]) -> Result<Vec<FileDiff>> {
@@ -273,20 +341,8 @@ fn untracked_line_stats(repo: &Repository, root: &Path, path: &Path) -> Result<L
         return Ok(LineStats::default());
     };
     let mut options = DiffOptions::new();
-    let attr = repo.get_attr(path, "diff", AttrCheckFlags::FILE_THEN_INDEX)?;
-    match AttrValue::from_string(attr) {
-        AttrValue::False => {
-            options.force_binary(true);
-        }
-        AttrValue::True => {
-            options.force_text(true);
-        }
-        AttrValue::String(driver) => {
-            if let Ok(binary) = repo.config()?.get_bool(&format!("diff.{driver}.binary")) {
-                options.force_binary(binary).force_text(!binary);
-            }
-        }
-        _ => {}
+    if let Some(binary) = untracked_binary_policy(repo, path)? {
+        options.force_binary(binary).force_text(!binary);
     }
     let patch = Patch::from_buffers(&[], Some(path), &bytes, Some(path), Some(&mut options))?;
     let (_, insertions, deletions) = patch.line_stats()?;
