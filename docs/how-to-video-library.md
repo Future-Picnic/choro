@@ -1,5 +1,17 @@
 # Choro content marketing hub
 
+## Mobile refresh — September 25, 2026
+
+**Setup lessons now finished:** **Pair Your iPhone with Choro** (52.1s, `mobile-pair-v2`) and **Choose What Your Phone Can Do** (51.1s, `mobile-access-v2`) are completed with current Simulator/Demo recordings, fresh Alex D / ElevenLabs and HeyGen, approved titles and shared outro. Pairing identifiers and codes are masked. The permission control cycles levels when clicked; it is not a menu. The original pairing remained Full access, while the temporary recording pairing was left View only and its app stopped. No product code or relay configuration changed. Successful live flows were recorded, but connection intermittency was observed outside those takes and is documented separately, not claimed fixed.
+
+**Current total: 68 of 70 tutorials complete; all eight Mobile-related lessons (including the Getting Started overview) are finished.** The two unrelated outstanding lessons are Studio comparison and Companion agent-following. The six-video checkpoint below is historical.
+
+Six current-interface Mobile exports are completed: **Respond to Questions, Plans, and Approvals** (53.7s), **Review Results and Ask for Fixes on Mobile** (59.3s), **Meet Choro Remote** (51.2s), **Check Agent Progress from Your Phone** (50.7s), **Start or Continue Agent Work on Mobile** (66.8s), and the Getting Started overview **Take Choro with You on Mobile** (53.3s). The library now points to their `mobile-*-v2` exports, with playback, script, file and folder actions. Four reuse existing approved narration/avatar assets; the two new lessons use fresh Alex D / ElevenLabs and HeyGen. Original versions remain preserved.
+
+The current Simulator connected to Demo through its existing pairing. Genuine question, plan, approval, follow-up, fix and verification results were captured; Mac shots match the phone follow-up. Sparse phone captures were normalized to CFR before trimming. All six passed full decoding, narration recognition, audio timing and sampled visual review; human creative/lip-articulation review remains. Native captures are 1206×2622 phone and 1280×820 Mac, framed into 4K without added source detail.
+
+**66 of 70 tutorials complete.** Two Mobile setup lessons remain unrecorded pending confirmation of a temporary Simulator pairing and its View only / Control / Full access demonstration. Existing pairing permissions were not changed. Studio comparison and Companion agent-following remain separate outstanding lessons; historical checkpoints below are not current totals.
+
 ## Top-level navigation
 
 **Tutorials**, **Short Videos**, **Social Media Plan**, **Competitors**, and **Influencers** are separate main-menu destinations. The existing HTML filename stays unchanged so saved links still work. Open `http://127.0.0.1:8769/how-to-video-library.html#shorts` for shorts, `#social-plan` for the plan, `#competitors` for the comparison, or `#influencers` for the creator outreach list, with the local launcher running; the same hashes work on a direct-file copy.

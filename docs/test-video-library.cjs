@@ -62,6 +62,25 @@ async function check(mode, initialHash = 'start') {
   const agentQuestionVideo=manifest.find(video=>video.title===agentQuestionTitle);
   assert.equal(agentQuestionVideo.avatar,true);
   assert.equal(agentQuestionVideo.duration,39.7);
+  const refreshedMobile = [
+    ['mobile-overview-v2','Take Choro with You on Mobile'],
+    ['mobile-meet-v2','Meet Choro Remote'],
+    ['mobile-progress-v2','Check Agent Progress from Your Phone'],
+    ['mobile-continue-v2','Start or Continue Agent Work on Mobile'],
+    ['mobile-pair-v2','Pair Your iPhone with Choro'],
+    ['mobile-access-v2','Choose What Your Phone Can Do'],
+    ['mobile-decisions-v2','Respond to Questions, Plans, and Approvals'],
+    ['mobile-review-v2','Review Results and Ask for Fixes on Mobile']
+  ];
+  for (const [id,title] of refreshedMobile) {
+    const matches=manifest.filter(video=>video.title===title);
+    assert.equal(matches.length,1,`${title} must resolve to one current export`);
+    assert.equal(matches[0].id,id);
+    assert.equal(matches[0].avatar,true);
+    assert.equal(matches[0].file,'final-alex-d-4k.mp4');
+    assert.match(matches[0].note,/September 25/);
+    assert.equal(planned[title],undefined);
+  }
   const socials=JSON.parse(q('#social-video-files').textContent);
   const available=[...manifest,...drafts];
   const studioTitles=['Design, Build, and Preview with Studio','Meet Choro Studio','Create a Design from Scratch','Build and Use a Design System','Create a Design from a Doc or Task','Refine a Design with the Assistant','Implement a Design with an Agent','Use Visual References with an Agent'];

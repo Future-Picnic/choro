@@ -13,6 +13,56 @@ mod stream_routing_tests {
     }
 
     #[test]
+    fn late_receipt_uses_persisted_user_anchor_without_any_file_activity() {
+        let user = |text: &str, time| {
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: text.into(),
+                display_text: None,
+                tags: vec![],
+                created_at: time,
+            })
+        };
+        let original = user("original", 1);
+        let key = super::super::persistence::stored_timeline_event_parts(&original)
+            .unwrap()
+            .1
+            .unwrap();
+        let turn = format!("unique-turn|{key}");
+        let mut receipt = ChangedFilesSummary::attributed(
+            &turn,
+            vec![FileChangeStat::new("file.rs", 1, 0)],
+            vec![],
+        );
+        receipt.attribution_version = 2;
+        let marker = AgentChatTimelineItem::WorkLog(WorkLogEntry::new(
+            format!("file-receipt:{turn}"),
+            format!("file-receipt:{turn}"),
+            WorkLogEntryKind::System,
+            "Changes recorded",
+            WorkLogStatus::Completed,
+        ));
+        // Persisted writes may finish out of order. Neither activity nor the
+        // original in-memory marker is needed to find the source message.
+        let mut timeline = vec![
+            AgentChatTimelineItem::ChangedFiles(receipt),
+            original,
+            user("newer", 2),
+            marker,
+        ];
+        place_change_receipts(&mut timeline);
+        assert!(
+            matches!(&timeline[0], AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) if text == "original")
+        );
+        assert!(matches!(
+            &timeline[2],
+            AgentChatTimelineItem::ChangedFiles(_)
+        ));
+        assert!(
+            matches!(&timeline[3], AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) if text == "newer")
+        );
+    }
+
+    #[test]
     fn interleaved_replies_keep_complete_text_in_messages_and_timeline() {
         let mut messages = Vec::new();
         let mut timeline = Vec::new();
@@ -202,13 +252,14 @@ pub(super) fn upsert_timeline_file_change_activity(
 ) {
     if let Some(AgentChatTimelineItem::FileChangeActivity(existing)) =
         timeline.iter_mut().rev().find(|item| match item {
-            AgentChatTimelineItem::FileChangeActivity(existing) => existing.id == activity.id,
+            AgentChatTimelineItem::FileChangeActivity(existing) => existing.id == activity.id && existing.turn_id == activity.turn_id,
             _ => false,
         })
     {
         *existing = activity;
     } else {
-        timeline.push(AgentChatTimelineItem::FileChangeActivity(activity));
+        let target = receipt_position(timeline, &activity.turn_id);
+        timeline.insert(target, AgentChatTimelineItem::FileChangeActivity(activity));
     }
 }
 
@@ -314,23 +365,93 @@ pub(super) fn upsert_timeline_orbit_update(
     }
 }
 
+fn receipt_position(timeline: &[AgentChatTimelineItem], turn_id: &str) -> usize {
+    let position = if let Some((_, source)) = turn_id.split_once('|') {
+        let position = timeline.iter().position(|item| {
+            matches!(
+                item,
+                AgentChatTimelineItem::Message(AgentChatMessage::User { .. })
+            ) && super::persistence::stored_timeline_event_parts(item)
+                .and_then(|(_, key, _, _)| key)
+                .as_deref()
+                == Some(source)
+        });
+        // An older source outside this loaded page belongs before this page.
+        let Some(position) = position else {
+            return 0;
+        };
+        Some(position)
+    } else {
+        timeline.iter().position(|item| matches!(item, AgentChatTimelineItem::WorkLog(entry) if entry.id == format!("file-receipt:{turn_id}")))
+            .or_else(|| timeline.iter().position(|item| matches!(item, AgentChatTimelineItem::FileChangeActivity(a) if a.turn_id == turn_id)))
+    };
+    position
+        .and_then(|p| {
+            timeline
+                .iter()
+                .enumerate()
+                .skip(p + 1)
+                .find(|(_, item)| {
+                    matches!(
+                        item,
+                        AgentChatTimelineItem::Message(AgentChatMessage::User { .. })
+                    )
+                })
+                .map(|(i, _)| i)
+        })
+        .unwrap_or(timeline.len())
+}
+
 pub(super) fn append_timeline_changed_files(
     timeline: &mut Vec<AgentChatTimelineItem>,
     summary: ChangedFilesSummary,
 ) {
-    if timeline
-        .iter()
-        .rev()
-        .take_while(|item| !matches!(item, AgentChatTimelineItem::Message(AgentChatMessage::User { .. })))
-        .any(|item| matches!(item, AgentChatTimelineItem::ChangedFiles(existing) if existing == &summary))
-    {
-        return;
-    }
-    if let Some(AgentChatTimelineItem::ChangedFiles(existing)) = timeline.last_mut() {
-        *existing = summary;
+    if let Some(turn_id) = summary.turn_id.as_deref() {
+        if let Some(existing) = timeline.iter_mut().find_map(|item| match item {
+            AgentChatTimelineItem::ChangedFiles(existing)
+                if existing.turn_id.as_deref() == Some(turn_id) =>
+            {
+                Some(existing)
+            }
+            _ => None,
+        }) {
+            *existing = summary;
+            return;
+        }
+        let target = receipt_position(timeline, turn_id);
+        timeline.insert(target, AgentChatTimelineItem::ChangedFiles(summary));
         return;
     }
     timeline.push(AgentChatTimelineItem::ChangedFiles(summary));
+}
+
+/// Persistence order follows completion order. Re-anchor delayed receipts
+/// when history pages are hydrated, including after an application restart.
+pub(crate) fn place_change_receipts(timeline: &mut Vec<AgentChatTimelineItem>) {
+    let mut receipts = Vec::new();
+    let mut markers = Vec::new();
+    for item in std::mem::take(timeline) {
+        match item {
+            AgentChatTimelineItem::ChangedFiles(summary) if summary.attribution_version >= 2 => {
+                receipts.push(summary)
+            }
+            AgentChatTimelineItem::WorkLog(mut entry) if entry.id.starts_with("file-receipt:") => {
+                if entry.status == WorkLogStatus::InProgress {
+                    entry.status = WorkLogStatus::Failed;
+                    entry.title = "Change recording was interrupted".into();
+                }
+                markers.push(entry);
+            }
+            other => timeline.push(other),
+        }
+    }
+    for entry in markers {
+        let target = receipt_position(timeline, &entry.id["file-receipt:".len()..]);
+        timeline.insert(target, AgentChatTimelineItem::WorkLog(entry));
+    }
+    for receipt in receipts {
+        append_timeline_changed_files(timeline, receipt);
+    }
 }
 
 pub(super) fn remove_proposed_plan_blocks_from_timeline(timeline: &mut Vec<AgentChatTimelineItem>) {
@@ -347,6 +468,44 @@ pub(super) fn remove_proposed_plan_blocks_from_timeline(timeline: &mut Vec<Agent
 #[cfg(test)]
 mod file_activity_tests {
     use super::*;
+
+    #[test]
+    fn delayed_receipts_return_to_the_original_turn_during_hydration() {
+        let activity = FileChangeActivity::new(
+            "edit",
+            "old-turn",
+            FileChangeStat::new("shared.rs", 1, 1),
+            false,
+            1,
+        );
+        let mut receipt =
+            ChangedFilesSummary::attributed("old-turn", vec![activity.file.clone()], vec![]);
+        receipt.attribution_version = 2;
+        let mut timeline = vec![
+            AgentChatTimelineItem::FileChangeActivity(activity),
+            AgentChatTimelineItem::Message(AgentChatMessage::User {
+                text: "next request".into(),
+                display_text: None,
+                tags: vec![],
+                created_at: 2,
+            }),
+            AgentChatTimelineItem::ChangedFiles(receipt.clone()),
+        ];
+        place_change_receipts(&mut timeline);
+        assert!(
+            matches!(&timeline[1],AgentChatTimelineItem::ChangedFiles(r) if r.turn_id.as_deref()==Some("old-turn"))
+        );
+        assert!(matches!(
+            &timeline[2],
+            AgentChatTimelineItem::Message(AgentChatMessage::User { .. })
+        ));
+        receipt.snapshot_id = Some(uuid::Uuid::new_v4());
+        append_timeline_changed_files(&mut timeline, receipt.clone());
+        assert_eq!(timeline.len(), 3);
+        assert!(
+            matches!(&timeline[1],AgentChatTimelineItem::ChangedFiles(r) if r.snapshot_id==receipt.snapshot_id)
+        );
+    }
 
     #[test]
     fn streaming_updates_replace_only_the_same_live_file_row() {

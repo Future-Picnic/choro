@@ -459,7 +459,7 @@ fn real_managed_providers_return_structured_results() {
                 .or(child.cli_session_id.clone());
             let (controller, events) =
                 spawn_chat_backend(child.clone(), AgentInteractionMode::Default).unwrap();
-            controller.send(ChatBackendCommand::SendTurn{text:format!("{}\n\nAcceptance fixture: write only the assigned file containing a short to-do checklist, read it back, and call delegation_complete. No dependencies, network services or external actions are needed.",child.doc),mode:AgentInteractionMode::Default,read_only:false}).unwrap();
+            controller.send(ChatBackendCommand::SendTurn{turn_id: uuid::Uuid::new_v4().to_string(),text:format!("{}\n\nAcceptance fixture: write only the assigned file containing a short to-do checklist, read it back, and call delegation_complete. No dependencies, network services or external actions are needed.",child.doc),mode:AgentInteractionMode::Default,read_only:false}).unwrap();
             let started = std::time::Instant::now();
             let mut running = false;
             let mut settled = false;

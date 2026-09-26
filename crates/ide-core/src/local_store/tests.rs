@@ -90,6 +90,8 @@ fn chat_file_ledger_round_trips_exact_and_observed_entries() {
     let agent_id = agent.id;
     let entries = vec![
         StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+            counts_unavailable: true,
             agent_id,
             path: PathBuf::from("src/exact.rs"),
             observed: false,
@@ -102,6 +104,8 @@ fn chat_file_ledger_round_trips_exact_and_observed_entries() {
             updated_at: 10,
         },
         StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+            counts_unavailable: false,
             agent_id,
             path: PathBuf::from("generated.css"),
             observed: true,
@@ -141,6 +145,8 @@ fn chat_file_ledger_replacement_removes_reverted_paths() {
             agent_id,
             1,
             &[StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+                counts_unavailable: false,
                 agent_id,
                 path: PathBuf::from("src/reverted.rs"),
                 observed: false,
@@ -175,6 +181,8 @@ fn stale_chat_file_ledger_write_cannot_overwrite_a_newer_revision() {
     store.save_agents(std::slice::from_ref(&agent)).unwrap();
 
     let entry = |path: &str| StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+        counts_unavailable: false,
         agent_id: agent.id,
         path: PathBuf::from(path),
         observed: false,
@@ -216,6 +224,8 @@ fn concurrent_chat_file_ledger_writers_keep_the_newest_revision() {
         let barrier = barrier.clone();
         std::thread::spawn(move || {
             let entry = StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+                counts_unavailable: false,
                 agent_id,
                 path: PathBuf::from(path),
                 observed: false,
@@ -256,6 +266,8 @@ fn changed_file_receipt_and_ledger_roll_back_together() {
     store.save_agents(std::slice::from_ref(&agent)).unwrap();
 
     let invalid_entry = StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+        counts_unavailable: false,
         agent_id: agent.id,
         path: PathBuf::from("src/atomic.rs"),
         observed: false,
@@ -297,6 +309,8 @@ fn changed_file_receipt_and_ledger_commit_together() {
     store.save_agents(std::slice::from_ref(&agent)).unwrap();
 
     let entry = StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+        counts_unavailable: false,
         agent_id: agent.id,
         path: PathBuf::from("src/atomic.rs"),
         observed: false,
@@ -2836,6 +2850,8 @@ fn export_import_round_trip() {
         )
         .unwrap();
     let file_ledger = vec![StoredChatFileLedgerEntry {
+            segments_json: "[]".into(),
+        counts_unavailable: false,
         agent_id: agent.id,
         path: PathBuf::from("src/lib.rs"),
         observed: false,

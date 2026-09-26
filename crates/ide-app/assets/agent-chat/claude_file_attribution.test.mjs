@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rename } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rename, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  projectDirectMutation,
+  completeDirectMutationBaseline,
+  EvidenceBudget,
+  readMutationState,
   compactionEventForSdkMessage,
   countTextLines,
   commandChangesSince,
@@ -335,4 +339,69 @@ test("unchanged failed edits are ignored while large and binary files stay finge
     assert.match(state.hash, /^[a-f0-9]{64}$/);
     assert.equal(state.content, null);
   }
+});
+
+
+test("direct mutation projections preserve unrelated text and reject ambiguous edits", () => {
+  const before = "someone else's line\nold\n";
+  assert.equal(projectDirectMutation("Edit", { old_string: "old", new_string: "new" }, before), "someone else's line\nnew\n");
+  assert.equal(projectDirectMutation("Edit", { old_string: "old", new_string: "new" }, "old old"), null);
+  assert.equal(projectDirectMutation("Edit", { old_string: "old", new_string: "new", replace_all: true }, "old old"), "new new");
+  assert.equal(projectDirectMutation("NotebookEdit", { new_source: "text" }, before), null);
+});
+
+test("a discontinuity between edits cannot claim other writers' text", () => {
+  const changes = new Map();
+  mergeTurnChange(changes, {path:"shared.rs",additions:1,deletions:1,baseline_hash:"a",result_hash:"b",baseline_content:"a",result_content:"b"});
+  mergeTurnChange(changes, {path:"shared.rs",additions:1,deletions:1,baseline_hash:"external",result_hash:"c",baseline_content:"external",result_content:"c"});
+  assert.equal(changes.get("shared.rs").baseline_hash,null);
+  assert.equal(changes.get("shared.rs").baseline_content,null);
+});
+
+
+test("failed and mismatched file tools stay observations; successful edits retain their own evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "choro-mutation-proof-"));
+  const path = join(root, "shared.txt");
+  await writeFile(path, "external\nold\n");
+  const before = await readMutationState(path);
+  const baseline = {toolName:"Edit",toolInput:{old_string:"old",new_string:"new"},states:new Map([[path,before]]),turnId:"original-turn",direct:new Map(),observed:new Map()};
+  await writeFile(path, "external\nnew\n");
+  const [confirmed] = await completeDirectMutationBaseline("ok", baseline, true);
+  assert.equal(confirmed.observed, false);
+  assert.equal(confirmed.file.result_content,"external\nnew\n");
+  baseline.direct.clear();
+  await writeFile(path,"other writer\nnew\n");
+  const [mismatch] = await completeDirectMutationBaseline("mismatch",baseline,true);
+  assert.equal(baseline.direct.size,0);
+  assert.equal(mismatch.observed, true);
+  assert.equal(mismatch.file.result_content,null);
+  await completeDirectMutationBaseline("failed",baseline,false);
+  assert.equal(baseline.direct.size,0);
+});
+
+test("large target files are not read or hashed for attribution", async () => {
+  const root = await mkdtemp(join(tmpdir(), "choro-large-mutation-"));
+  const path = join(root,"video.bin");
+  const handle = await open(path,"w");
+  await handle.truncate(3_000_000_000);await handle.close();
+  const state = await readMutationState(path);
+  assert.equal(state.content,null);assert.equal(state.hash,null);
+  const baseline = {toolName:"Write",toolInput:{content:"large body"},states:new Map([[path,state]]),turnId:"large-turn",direct:new Map(),observed:new Map()};
+  const [activity] = await completeDirectMutationBaseline("large-success",baseline,true);
+  assert.equal(activity.observed,false);
+  assert.equal(activity.file.result_content,null);
+  assert.equal(baseline.observed.size,0);
+});
+
+test("pending evidence has byte and event bounds and reservations release once", () => {
+  const budget = new EvidenceBudget(32, 2);
+  const first = budget.reserve(20);
+  assert.equal(budget.reserve(13), null);
+  const second = budget.reserve(12);
+  assert.equal(budget.reserve(0), null);
+  first(); first();
+  assert.equal(budget.bytes, 12);
+  assert.equal(budget.count, 1);
+  second();
+  assert.equal(budget.bytes, 0);
 });

@@ -143,9 +143,20 @@ impl AgentShipDialog {
     }
 
     fn included_files(&self) -> Vec<PathBuf> {
+        if let Some(pending) = &self.pending_commit {
+            return pending.files.clone();
+        }
+        let pending = if self.scope == AgentShipScope::Conversation {
+            ide_core::agent_changes::cached_pending_repository_paths(self.agent_id, &self.repo_path)
+        } else {
+            None
+        };
         self.scope_files()
             .iter()
-            .filter(|path| !self.deselected.contains(*path))
+            .filter(|path| {
+                !self.deselected.contains(*path)
+                    && pending.as_ref().is_none_or(|paths| paths.contains(*path))
+            })
             .cloned()
             .collect()
     }
@@ -205,6 +216,9 @@ impl AgentShipDialog {
     }
 
     fn staged_outside_scope(&self) -> Vec<PathBuf> {
+        if self.pending_commit.is_some() {
+            return Vec::new();
+        }
         let included = self
             .included_files()
             .into_iter()
@@ -450,6 +464,7 @@ impl AgentShipDialog {
         let pr_title = self.pr_title.read(cx).value().trim().to_string();
         let pr_description = self.pr_description.read(cx).value().trim().to_string();
         let pending_commit = self.pending_commit.clone();
+        let scope = self.scope;
         let agent_id = self.agent_id;
         let project_id = self.project_id;
         let center = self.center.clone();
@@ -478,6 +493,7 @@ impl AgentShipDialog {
                         create_branch,
                         &branch_name,
                         needs_upstream,
+                        scope,
                         &files,
                         &commit_message,
                         &pr_base_branch,
@@ -593,6 +609,7 @@ impl AgentShipDialog {
                         true,
                         &operation_branch,
                         false,
+                        AgentShipScope::All,
                         &files,
                         &commit_message,
                         "",
@@ -725,14 +742,23 @@ impl AgentShipDialog {
         let current_branch = self.branch.clone();
         let needs_upstream = self.needs_upstream;
         let create_branch = self.create_branch;
-        let branch_name = self.branch_name.read(cx).value().trim().to_string();
-        let commit_message = self.commit_message.read(cx).value().trim().to_string();
+        let branch_name = self
+            .pending_commit
+            .as_ref()
+            .map(|p| p.branch.clone())
+            .unwrap_or_else(|| self.branch_name.read(cx).value().trim().to_string());
+        let commit_message = self
+            .pending_commit
+            .as_ref()
+            .map(|p| p.commit_message.clone())
+            .unwrap_or_else(|| self.commit_message.read(cx).value().trim().to_string());
         let pr_base_branch = self.pr_base_branch.trim().to_string();
         let pr_title = self.pr_title.read(cx).value().trim().to_string();
         let pr_description = self.pr_description.read(cx).value().trim().to_string();
         let agent_title = self.agent_title.clone();
         let generation_agent = self.generation_agent.clone();
         let pending_commit = self.pending_commit.clone();
+        let scope = self.scope;
         let agent_id = self.agent_id;
         let project_id = self.project_id;
         let center = self.center.clone();
@@ -793,6 +819,7 @@ impl AgentShipDialog {
                         create_branch,
                         resolved_branch,
                         needs_upstream,
+                        scope,
                         &files,
                         &preparation.commit_message,
                         &pr_base_branch,

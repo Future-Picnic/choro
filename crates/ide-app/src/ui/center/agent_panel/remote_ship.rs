@@ -81,6 +81,11 @@ impl CenterArea {
                 related.insert(normalize_agent_ship_path(agent.runtime_path(), &file.path));
             }
         }
+        if let Some(pending) =
+            ide_core::agent_changes::cached_pending_paths(agent.id, agent.runtime_path())
+        {
+            related.retain(|p| pending.contains(p));
+        }
         let conversation_files = all_files
             .iter()
             .filter(|path| related.contains(*path))
@@ -166,6 +171,10 @@ impl CenterArea {
                 if !branches.iter().any(|b|b.name==base||b.name==format!("origin/{base}")) {return Err(RemoteError::conflict("The PR base is no longer available. Refresh Ship."));}
             }
         }
+        let scope = match request.scope {
+            ShipScopeDto::Conversation => AgentShipScope::Conversation,
+            ShipScopeDto::All => AgentShipScope::All,
+        };
         let files = match request.scope {
             ShipScopeDto::Conversation => source.conversation_files.clone(),
             ShipScopeDto::All => source.all_files.clone(),
@@ -266,6 +275,7 @@ impl CenterArea {
                         create_branch,
                         resolved_branch,
                         needs_upstream,
+                        scope,
                         &files,
                         &preparation.commit_message,
                         &pr_base_branch,

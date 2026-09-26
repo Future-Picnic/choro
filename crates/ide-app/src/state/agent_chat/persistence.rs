@@ -37,9 +37,11 @@ pub fn load_persisted_file_ledger(agent_id: Uuid) -> Option<ChangedFilesSummary>
     summary.attribution_version = 1;
     summary.ledger_revision = ledger.revision;
     for entry in ledger.entries {
-        let file = FileChangeStat::new(entry.path, entry.additions, entry.deletions)
+        let mut file = FileChangeStat::new(entry.path, entry.additions, entry.deletions)
             .with_content_hashes(entry.baseline_hash, entry.result_hash)
             .with_content_projection(entry.baseline_content, entry.result_content);
+        file.counts_unavailable = entry.counts_unavailable;
+        file.prior_segments = serde_json::from_str(&entry.segments_json).unwrap_or_default();
         if entry.observed {
             summary.observed_files.push(file);
         } else {
@@ -75,6 +77,15 @@ pub(super) fn persist_changed_files_turn(
                 observed,
                 additions: file.additions,
                 deletions: file.deletions,
+                counts_unavailable: file.counts_unavailable,
+                segments_json: serde_json::to_string(
+                    &file
+                        .prior_segments
+                        .iter()
+                        .map(FileChangeStat::metadata)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".into()),
                 baseline_hash: file.baseline_hash.clone(),
                 result_hash: file.result_hash.clone(),
                 baseline_content: file.baseline_content.clone(),
@@ -218,6 +229,12 @@ pub(super) fn stored_timeline_event_parts(
 impl StoredFileChange {
     pub(super) fn from_stat(file: &FileChangeStat) -> Self {
         Self {
+            counts_unavailable: file.counts_unavailable,
+            prior_segments: file
+                .prior_segments
+                .iter()
+                .map(FileChangeStat::metadata)
+                .collect(),
             path: file.path.to_string_lossy().to_string(),
             additions: file.additions,
             deletions: file.deletions,
@@ -229,10 +246,13 @@ impl StoredFileChange {
     }
 
     fn into_stat(self) -> FileChangeStat {
-        FileChangeStat::new(self.path, self.additions, self.deletions)
+        let mut file = FileChangeStat::new(self.path, self.additions, self.deletions)
             .with_count_projection(self.counts_are_projection)
             .with_cleared_projection(self.clears_projection)
-            .with_content_hashes(self.baseline_hash, self.result_hash)
+            .with_content_hashes(self.baseline_hash, self.result_hash);
+        file.counts_unavailable = self.counts_unavailable;
+        file.prior_segments = self.prior_segments;
+        file
     }
 }
 
@@ -328,6 +348,12 @@ impl StoredTimelinePayload {
                     .files
                     .iter()
                     .map(|file| StoredFileChange {
+                        counts_unavailable: file.counts_unavailable,
+                        prior_segments: file
+                            .prior_segments
+                            .iter()
+                            .map(FileChangeStat::metadata)
+                            .collect(),
                         path: file.path.to_string_lossy().to_string(),
                         additions: file.additions,
                         deletions: file.deletions,
@@ -341,6 +367,12 @@ impl StoredTimelinePayload {
                     .observed_files
                     .iter()
                     .map(|file| StoredFileChange {
+                        counts_unavailable: file.counts_unavailable,
+                        prior_segments: file
+                            .prior_segments
+                            .iter()
+                            .map(FileChangeStat::metadata)
+                            .collect(),
                         path: file.path.to_string_lossy().to_string(),
                         additions: file.additions,
                         deletions: file.deletions,
@@ -581,12 +613,7 @@ impl StoredTimelinePayload {
                 snapshot_id,
                 commit_sha,
             } => {
-                let restore = |file: StoredFileChange| {
-                    FileChangeStat::new(file.path, file.additions, file.deletions)
-                        .with_count_projection(file.counts_are_projection)
-                        .with_cleared_projection(file.clears_projection)
-                        .with_content_hashes(file.baseline_hash, file.result_hash)
-                };
+                let restore = StoredFileChange::into_stat;
                 let mut files = files.into_iter().map(restore).collect::<Vec<_>>();
                 let mut observed_files =
                     observed_files.into_iter().map(restore).collect::<Vec<_>>();
@@ -814,7 +841,9 @@ impl StoredTimelinePayload {
                 ),
             }),
             Self::WorkLog { id, .. } => Some(format!("work_log:{id}")),
-            Self::FileChangeActivity { id, .. } => Some(format!("file_change_activity:{id}")),
+            Self::FileChangeActivity { id, turn_id, .. } => {
+                Some(format!("file_change_activity:{turn_id}:{id}"))
+            }
             Self::PendingUserInput { request_id, .. } => {
                 Some(format!("pending_user_input:{request_id}"))
             }
@@ -890,6 +919,51 @@ pub(super) fn work_log_kind_label(kind: WorkLogEntryKind) -> &'static str {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn disconnected_segments_survive_restore_and_a_later_local_revert() {
+        let edit = |id: &str, before: &str, after: &str| {
+            FileChangeActivity::new(
+                id,
+                "turn",
+                FileChangeStat::new("shared", 1, 1)
+                    .with_content_hashes(Some(before.into()), Some(after.into())),
+                false,
+                0,
+            )
+        };
+        let summary = ChangedFilesSummary::from_activities(
+            "turn",
+            &[edit("first", "A", "B"), edit("second", "manual", "C")],
+        );
+        let (_, _, raw, _) =
+            stored_timeline_event_parts(&AgentChatTimelineItem::ChangedFiles(summary)).unwrap();
+        let restored = serde_json::from_str::<StoredTimelinePayload>(&raw)
+            .unwrap()
+            .into_timeline_item()
+            .unwrap();
+        let AgentChatTimelineItem::ChangedFiles(restored) = restored else {
+            panic!("receipt");
+        };
+        assert_eq!(restored.files[0].prior_segments.len(), 1);
+        let mut ledger = ChangedFilesSummary::default();
+        ledger.merge_turn(&restored);
+        ledger.merge_turn(&ChangedFilesSummary::attributed(
+            "later",
+            vec![FileChangeStat::new("shared", 1, 1)
+                .with_content_hashes(Some("C".into()), Some("manual".into()))],
+            vec![],
+        ));
+        assert_eq!(ledger.files.len(), 1);
+        assert_eq!(
+            (ledger.files[0].additions, ledger.files[0].deletions),
+            (1, 1)
+        );
+        assert_eq!(
+            ledger.files[0].prior_segments[0].result_hash.as_deref(),
+            Some("B")
+        );
+    }
 
     #[test]
     fn message_payload_persists_folded_visible_search_text() {
@@ -1073,7 +1147,7 @@ mod tests {
         assert_eq!(kind, "file_change_activity");
         assert_eq!(
             event_key.as_deref(),
-            Some("file_change_activity:codex:tool-7:index.html")
+            Some("file_change_activity:turn-7:codex:tool-7:index.html")
         );
         assert_eq!(created_at, 42);
 

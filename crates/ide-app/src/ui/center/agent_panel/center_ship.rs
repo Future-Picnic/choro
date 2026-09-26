@@ -16,6 +16,86 @@ fn conversation_files_for_repository(
         .collect()
 }
 
+fn refreshed_conversation_files(
+    dirty: &[PathBuf],
+    previous: &[PathBuf],
+    pending: Option<&HashSet<PathBuf>>,
+) -> Vec<PathBuf> {
+    dirty
+        .iter()
+        .filter(|p| pending.map_or_else(|| previous.contains(p), |paths| paths.contains(*p)))
+        .cloned()
+        .collect()
+}
+
+fn refresh_single_ship_inventory(dialog: &mut AgentShipDialog, cx: &mut Context<AgentShipDialog>) {
+    if let Some(snapshot) = dialog.git.read(cx).snapshot.as_ref() {
+        let dirty = snapshot
+            .entries
+            .iter()
+            .map(|e| e.path.clone())
+            .collect::<HashSet<_>>();
+        dialog.all_files = dirty.iter().cloned().collect();
+        dialog.all_files.sort();
+        dialog.staged_files = snapshot
+            .entries
+            .iter()
+            .filter(|e| e.staged.is_some())
+            .map(|e| e.path.clone())
+            .collect();
+        dialog.file_kinds = snapshot
+            .entries
+            .iter()
+            .filter_map(|e| Some((e.path.clone(), e.staged.or(e.unstaged)?)))
+            .collect();
+        let pending = ide_core::agent_changes::cached_pending_repository_paths(
+            dialog.agent_id,
+            &dialog.repo_path,
+        );
+        dialog.conversation_files = refreshed_conversation_files(
+            &dialog.all_files,
+            &dialog.conversation_files,
+            pending.as_ref(),
+        );
+    }
+}
+fn refresh_multi_ship_inventory(
+    dialog: &mut MultiRepoShipDialog,
+    cx: &mut Context<MultiRepoShipDialog>,
+) {
+    for repository in &mut dialog.repositories {
+        if let Some(snapshot) = repository.git.read(cx).snapshot.as_ref() {
+            let dirty = snapshot
+                .entries
+                .iter()
+                .map(|e| e.path.clone())
+                .collect::<HashSet<_>>();
+            repository.all_files = dirty.iter().cloned().collect();
+            repository.all_files.sort();
+            repository.staged_files = snapshot
+                .entries
+                .iter()
+                .filter(|e| e.staged.is_some())
+                .map(|e| e.path.clone())
+                .collect();
+            repository.file_kinds = snapshot
+                .entries
+                .iter()
+                .filter_map(|e| Some((e.path.clone(), e.staged.or(e.unstaged)?)))
+                .collect();
+            let pending = ide_core::agent_changes::cached_pending_repository_paths(
+                dialog.agent_id,
+                &repository.repo_path,
+            );
+            repository.conversation_files = refreshed_conversation_files(
+                &repository.all_files,
+                &repository.conversation_files,
+                pending.as_ref(),
+            );
+        }
+    }
+}
+
 fn append_unique_ship_result(
     timeline: &mut Vec<AgentChatTimelineItem>,
     result: crate::state::agent_chat::ShipResult,
@@ -37,12 +117,11 @@ fn append_unique_ship_result(
 fn attach_ship_commit_metadata(
     changed_files: &mut crate::state::agent_chat::ChangedFilesSummary,
     timeline: &mut [AgentChatTimelineItem],
-    ship_snapshot_id: Option<Uuid>,
+    _ship_snapshot_id: Option<Uuid>,
     commit_sha: &str,
 ) -> (Option<Uuid>, Option<AgentChatTimelineItem>) {
     let mut snapshot_id = None;
     if !changed_files.is_empty() {
-        changed_files.snapshot_id = changed_files.snapshot_id.or(ship_snapshot_id);
         changed_files.commit_sha = Some(commit_sha.to_owned());
         snapshot_id = changed_files.snapshot_id;
     }
@@ -50,7 +129,6 @@ fn attach_ship_commit_metadata(
         let AgentChatTimelineItem::ChangedFiles(summary) = item else {
             continue;
         };
-        summary.snapshot_id = summary.snapshot_id.or(ship_snapshot_id);
         summary.commit_sha = Some(commit_sha.to_owned());
         snapshot_id = summary.snapshot_id.or(snapshot_id);
         return (
@@ -118,7 +196,11 @@ impl CenterArea {
             if let Some(receipt) = receipt {
                 crate::state::agent_chat::persist_timeline_item(agent_id, receipt, cx);
             }
-            chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
+            chats.publish_change(
+                agent_id,
+                crate::state::agent_chat::ChatChangeCategories::CONTENT,
+                cx,
+            );
             snapshot_id
         });
 
@@ -196,7 +278,11 @@ impl CenterArea {
                     AgentChatTimelineItem::ShipResult(ship_result),
                     cx,
                 );
-                chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
+                chats.publish_change(
+                    agent_id,
+                    crate::state::agent_chat::ChatChangeCategories::CONTENT,
+                    cx,
+                );
             }
         });
 
@@ -487,6 +573,11 @@ impl CenterArea {
             }
         }
 
+        if let Some(pending) =
+            ide_core::agent_changes::cached_pending_paths(agent.id, agent.runtime_path())
+        {
+            related.retain(|path| pending.contains(path));
+        }
         let conversation_files = if whole_workspace {
             conversation_files_for_repository(&agent.project_path, &repo_path, &all_files, &related)
         } else {
@@ -547,6 +638,37 @@ impl CenterArea {
             crate::ui::onboarding::ship_uses_demo_pull_request(agent.project_id, cx);
         let center = cx.entity().downgrade();
         let dialog = cx.new(|cx| {
+            let initial_revision = ide_core::agent_changes::pending_revision();
+            cx.spawn(async move |this, cx| {
+                let mut revision = initial_revision;
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                    if this.upgrade().is_none() {
+                        break;
+                    }
+                    let next = ide_core::agent_changes::pending_revision();
+                    if next != revision {
+                        revision = next;
+                        if this
+                            .update(cx, |dialog, cx| {
+                                refresh_single_ship_inventory(dialog, cx);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+            .detach();
+            cx.observe(&git, |dialog: &mut AgentShipDialog, _, cx| {
+                refresh_single_ship_inventory(dialog, cx);
+                cx.notify();
+            })
+            .detach();
             // Re-render as the user types in the base-branch search field so the
             // filtered list updates live (the dialog owns the input entity).
             cx.subscribe(&pr_base_branch_query, |_, _, event: &InputEvent, cx| {
@@ -629,6 +751,11 @@ impl CenterArea {
             }
         }
 
+        if let Some(pending) =
+            ide_core::agent_changes::cached_pending_paths(agent.id, agent.runtime_path())
+        {
+            related.retain(|path| pending.contains(path));
+        }
         let git_repositories = self.git_states.read(cx).repositories(agent.project_id);
         let mut repositories = Vec::new();
         for git in git_repositories {
@@ -737,28 +864,66 @@ impl CenterArea {
         let create_branch =
             crate::ui::onboarding::ship_defaults_to_new_branch(agent.project_id, cx);
         let center = cx.entity().downgrade();
-        let dialog = cx.new(|cx| MultiRepoShipDialog {
-            agent_id: agent.id,
-            project_id: agent.project_id,
-            center,
-            agent_title: agent.title.clone(),
-            generation_agent: self.workspace.read(cx).generation_agent.clone(),
-            repositories,
-            selected_repository: 0,
-            files_collapsed: false,
-            create_branch,
-            scope: if all_changes {
-                AgentShipScope::All
-            } else {
-                AgentShipScope::Conversation
-            },
-            push: true,
-            open_pr: false,
-            auto_ship: false,
-            busy: false,
-            prepared: false,
-            summary_maintenance_started: false,
-            error: None,
+        let dialog = cx.new(|cx| {
+            let initial_revision = ide_core::agent_changes::pending_revision();
+            cx.spawn(async move |this, cx| {
+                let mut revision = initial_revision;
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                    if this.upgrade().is_none() {
+                        break;
+                    }
+                    let next = ide_core::agent_changes::pending_revision();
+                    if next != revision {
+                        revision = next;
+                        if this
+                            .update(cx, |dialog, cx| {
+                                refresh_multi_ship_inventory(dialog, cx);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+            .detach();
+            for repository in &repositories {
+                cx.observe(
+                    &repository.git,
+                    |dialog: &mut MultiRepoShipDialog, _, cx| {
+                        refresh_multi_ship_inventory(dialog, cx);
+                        cx.notify();
+                    },
+                )
+                .detach();
+            }
+            MultiRepoShipDialog {
+                agent_id: agent.id,
+                project_id: agent.project_id,
+                center,
+                agent_title: agent.title.clone(),
+                generation_agent: self.workspace.read(cx).generation_agent.clone(),
+                repositories,
+                selected_repository: 0,
+                files_collapsed: false,
+                create_branch,
+                scope: if all_changes {
+                    AgentShipScope::All
+                } else {
+                    AgentShipScope::Conversation
+                },
+                push: true,
+                open_pr: false,
+                auto_ship: false,
+                busy: false,
+                prepared: false,
+                summary_maintenance_started: false,
+                error: None,
+            }
         });
         window.open_dialog(cx, move |dialog_view, _, _| {
             dialog_view
@@ -782,6 +947,24 @@ impl CenterArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_paths_and_new_paths_return_for_later_confirmed_contributions() {
+        let dirty = vec![
+            PathBuf::from("shared.rs"),
+            PathBuf::from("new.rs"),
+            PathBuf::from("manual.rs"),
+        ];
+        let settled = HashSet::new();
+        assert!(
+            refreshed_conversation_files(&dirty, &["shared.rs".into()], Some(&settled)).is_empty()
+        );
+        let later = HashSet::from([PathBuf::from("shared.rs"), PathBuf::from("new.rs")]);
+        assert_eq!(
+            refreshed_conversation_files(&dirty, &[], Some(&later)),
+            vec![PathBuf::from("shared.rs"), PathBuf::from("new.rs")]
+        );
+    }
 
     #[test]
     fn ship_metadata_updates_only_the_latest_receipt_in_a_large_chat() {
@@ -813,7 +996,7 @@ mod tests {
             "shipped-commit",
         );
 
-        assert_eq!(snapshot, Some(snapshot_id));
+        assert_eq!(snapshot, None);
         assert_eq!(ledger.commit_sha.as_deref(), Some("shipped-commit"));
         assert_eq!(timeline.len(), 2_001);
         for item in &timeline[..2_000] {
@@ -826,7 +1009,7 @@ mod tests {
         };
         assert_eq!(receipt.turn_id.as_deref(), Some("current-turn"));
         assert_eq!(receipt.files.len(), 250);
-        assert_eq!(receipt.snapshot_id, Some(snapshot_id));
+        assert_eq!(receipt.snapshot_id, None);
         assert_eq!(receipt.commit_sha.as_deref(), Some("shipped-commit"));
     }
 

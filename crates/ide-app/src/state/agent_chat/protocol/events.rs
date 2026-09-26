@@ -547,8 +547,35 @@ pub(super) fn format_plan_detail(params: &Value) -> Option<String> {
 }
 
 pub(super) fn file_stat_from_patch_change(change: &Value) -> Option<FileChangeStat> {
+    let mut file = FileChangeStat::new(change.get("path")?.as_str()?, 0, 0);
+    file.counts_unavailable = true;
+    file.raw_patch = change
+        .get("diff")
+        .and_then(Value::as_str)
+        .filter(|s| s.len() <= ide_core::agent_changes::MAX_CONTENT_BYTES)
+        .map(|s| {
+            (
+                change
+                    .pointer("/kind/type")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                s.to_owned(),
+            )
+        });
+    Some(file)
+}
+
+pub(super) fn render_patch_change(change: &Value) -> Option<FileChangeStat> {
     let path = change.get("path").and_then(Value::as_str)?;
-    let diff = change.get("diff").and_then(Value::as_str).unwrap_or("");
+    let Some(diff) = change
+        .get("diff")
+        .and_then(Value::as_str)
+        .filter(|diff| diff.len() <= ide_core::agent_changes::MAX_CONTENT_BYTES)
+    else {
+        let mut file = FileChangeStat::new(path, 0, 0);
+        file.counts_unavailable = true;
+        return Some(file);
+    };
     // Current Codex FileUpdateChange events carry full, unprefixed content for
     // adds/deletes. Only updates (and legacy patch-shaped events) carry hunks.
     // Counting '+'/'-' prefixes in raw content silently reports zero for most
@@ -557,6 +584,11 @@ pub(super) fn file_stat_from_patch_change(change: &Value) -> Option<FileChangeSt
         .get("kind")
         .and_then(|kind| kind.get("type"))
         .and_then(Value::as_str);
+    if diff.is_empty() && !matches!(kind, Some("add" | "delete")) {
+        let mut file = FileChangeStat::new(path, 0, 0);
+        file.counts_unavailable = true;
+        return Some(file);
+    }
     let (additions, deletions) = match kind {
         Some("add") => (diff.lines().count(), 0),
         Some("delete") => (0, diff.lines().count()),
@@ -589,12 +621,17 @@ pub(super) fn file_stat_from_patch_change(change: &Value) -> Option<FileChangeSt
     };
     // Even if the provider patch cannot be rendered, do not substitute a Git
     // diff containing unrelated edits by another conversation on this path.
-    let mut owned_diff = owned_diff.unwrap_or_else(|error| {
-        eprintln!("failed to parse attributed file-change diff: {error:#}");
-        ide_core::git::FileDiff::default()
-    });
-    owned_diff.path = file.path.clone();
-    file.attributed_diff = Some(owned_diff);
+    match owned_diff {
+        Ok(mut owned_diff) => {
+            owned_diff.path = file.path.clone();
+            file.counts_unavailable = owned_diff.is_binary;
+            file.attributed_diff = Some(owned_diff);
+        }
+        Err(error) => {
+            eprintln!("failed to parse attributed file-change diff: {error:#}");
+            file.counts_unavailable = true;
+        }
+    }
     Some(file)
 }
 
@@ -611,7 +648,27 @@ pub(super) fn completed_file_change_stats(params: &Value) -> Vec<FileChangeStat>
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(file_stat_from_patch_change)
+        .flat_map(|change| {
+            let mut files = file_stat_from_patch_change(change)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(target) = change
+                .pointer("/kind/move_path")
+                .or_else(|| change.pointer("/kind/movePath"))
+                .and_then(Value::as_str)
+            {
+                if !target.is_empty()
+                    && files
+                        .first()
+                        .is_some_and(|file| file.path != Path::new(target))
+                {
+                    let mut moved = FileChangeStat::new(target, 0, 0);
+                    moved.counts_unavailable = true;
+                    files.push(moved);
+                }
+            }
+            files
+        })
         .collect()
 }
 
@@ -863,8 +920,10 @@ mod work_log_tests {
                 "type": "fileChange", "status": "completed",
                 "changes": [{"path": "qa.txt", "kind": {"type": kind}, "diff": content}]
             }});
-            let files = completed_file_change_stats(&params);
-            assert_eq!(files.len(), 1);
+            let queued = completed_file_change_stats(&params);
+            assert_eq!(queued.len(), 1);
+            assert!(queued[0].attributed_diff.is_none(), "adapter must not render on the provider thread");
+            let files = vec![render_patch_change(&params["item"]["changes"][0]).unwrap()];
             assert_eq!((files[0].additions, files[0].deletions), expected);
             let snapshot = files[0].attributed_diff.as_ref().unwrap();
             let lines = snapshot.hunks.iter().flat_map(|hunk| &hunk.lines);
@@ -877,7 +936,7 @@ mod work_log_tests {
         }
         let update = json!({"path": "qa.txt", "kind": {"type": "update", "move_path": null},
             "diff": "@@ -1 +1,2 @@\n beta-owned-by-B\n+beta-second-line-B\n"});
-        let file = file_stat_from_patch_change(&update).unwrap();
+        let file = render_patch_change(&update).unwrap();
         assert_eq!((file.additions, file.deletions), (1, 0));
     }
 
@@ -887,7 +946,7 @@ mod work_log_tests {
         let change = json!({"path": "/project/space and\ttab.txt",
             "kind": {"type": "update", "move_path": null},
             "diff": "@@ -1,2 +1,3 @@\n alpha-owned-by-A\n second-line-A\n+third-line-written-by-B\n"});
-        let file = file_stat_from_patch_change(&change).unwrap();
+        let file = render_patch_change(&change).unwrap();
         let diff = file.attributed_diff.as_ref().unwrap();
         assert_eq!(diff.path, file.path);
         assert_eq!((file.additions, file.deletions), (1, 0));
@@ -905,12 +964,17 @@ mod work_log_tests {
 
     #[test]
     fn malformed_owned_patch_does_not_allow_shared_worktree_substitution() {
-        let file = file_stat_from_patch_change(&json!({
+        let file = render_patch_change(&json!({
             "path": "shared.txt", "kind": {"type": "update"}, "diff": "not a patch"
         }))
         .unwrap();
-        assert!(file.attributed_diff.is_some());
-        assert!(file.attributed_diff.unwrap().hunks.is_empty());
+        assert!(file.attributed_diff.is_none());
+        assert!(file.counts_unavailable);
+        let missing =
+            render_patch_change(&json!({"path":"shared.txt","kind":{"type":"update"}}))
+                .unwrap();
+        assert!(missing.attributed_diff.is_none());
+        assert!(missing.counts_unavailable);
     }
 
     #[test]
@@ -974,8 +1038,10 @@ mod work_log_tests {
             }
         });
 
-        let files = completed_file_change_stats(&params);
-        assert_eq!(files.len(), 1);
+        let queued = completed_file_change_stats(&params);
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].raw_patch.is_some());
+        let files = vec![render_patch_change(&params["item"]["changes"][0]).unwrap()];
         assert_eq!(files[0].path, Path::new("simple-mock.html"));
         assert_eq!((files[0].additions, files[0].deletions), (2, 0));
         assert_eq!(

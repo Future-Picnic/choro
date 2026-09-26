@@ -1,5 +1,45 @@
 use super::*;
 
+#[derive(Default)]
+pub(super) struct CodexTurnControl {
+    starting: bool,
+    active_id: Option<String>,
+    cancel_requested: bool,
+    interrupt_request_id: Option<String>,
+}
+
+impl CodexTurnControl {
+    fn begin(&mut self) {
+        *self = Self {
+            starting: true,
+            ..Self::default()
+        };
+    }
+
+    fn started(&mut self, turn_id: &str) {
+        self.starting = false;
+        self.active_id = Some(turn_id.to_owned());
+    }
+
+    fn completed(&mut self) {
+        self.starting = false;
+        self.active_id = None;
+    }
+
+    fn interrupt_request(&mut self, thread_id: &str) -> Option<Value> {
+        if !self.cancel_requested || self.interrupt_request_id.is_some() {
+            return None;
+        }
+        let turn_id = self.active_id.as_ref()?;
+        let id = next_request_id();
+        self.interrupt_request_id = Some(id.clone());
+        Some(json!({
+            "jsonrpc": "2.0", "id": id, "method": "turn/interrupt",
+            "params": { "threadId": thread_id, "turnId": turn_id }
+        }))
+    }
+}
+
 impl CodexRuntime {
     pub(super) fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
@@ -7,8 +47,8 @@ impl CodexRuntime {
                 self.assistant_stream.flush(&self.events);
                 break;
             }
-            if let Some((text, mode, read_only)) = self.deferred_turns.pop_front() {
-                self.send_turn(text, mode, read_only)?;
+            if let Some((text, mode, read_only, turn_id)) = self.deferred_turns.pop_front() {
+                self.send_turn(text, mode, read_only, turn_id)?;
                 continue;
             }
             match next_backend_inbound(
@@ -113,6 +153,7 @@ impl CodexRuntime {
         text: String,
         mode: AgentInteractionMode,
         read_only: bool,
+        turn_id: String,
     ) -> anyhow::Result<()> {
         let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
@@ -134,13 +175,10 @@ impl CodexRuntime {
         self.assistant_buffer.clear();
         self.plan_buffer.clear();
         self.pending_changed_files = None;
-        self.pending_file_actions.clear();
+
         self.pending_file_previews.clear();
         self.pending_observed_files.clear();
-        self.worktree_baseline = worktree_changes::WorktreeChanges::capture(&self.agent)
-            .map_err(|error| eprintln!("failed to capture turn file baseline: {error:#}"))
-            .ok();
-        self.active_turn_id = next_request_id();
+        self.active_turn_id = turn_id;
         self.command_ran_this_turn = false;
         self.active_command_item_id = None;
         self.events
@@ -180,7 +218,8 @@ impl CodexRuntime {
         } else {
             self.access_mode.codex_approval_policy()
         };
-        let _ = self.request(
+        self.turn_control.begin();
+        let result = self.request(
             "turn/start",
             json!({
                 "threadId": thread_id,
@@ -199,6 +238,14 @@ impl CodexRuntime {
                 }
             }),
         )?;
+        // Normally turn/started supplies the id while the request is pending.
+        // Also accept the response, without resurrecting an already completed turn.
+        if self.turn_control.starting {
+            if let Some(id) = result.pointer("/turn/id").and_then(Value::as_str) {
+                self.turn_control.started(id);
+                self.send_pending_interrupt()?;
+            }
+        }
         Ok(())
     }
 
@@ -213,7 +260,8 @@ impl CodexRuntime {
                 text,
                 mode,
                 read_only,
-            } => self.send_turn(text, mode, read_only)?,
+                turn_id,
+            } => self.send_turn(text, mode, read_only, turn_id)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
@@ -264,8 +312,9 @@ impl CodexRuntime {
                     text,
                     mode,
                     read_only,
+                    turn_id,
                 }) => {
-                    self.deferred_turns.push_back((text, mode, read_only));
+                    self.deferred_turns.push_back((text, mode, read_only, turn_id));
                     self.events
                         .send_blocking(ChatBackendEvent::WorkLog(
                             WorkLogEntry::new(
@@ -358,17 +407,34 @@ impl CodexRuntime {
 
     fn cancel_turn(&mut self) -> anyhow::Result<()> {
         self.studio_review.cancel();
+        self.deferred_turns.clear();
+        self.turn_control.cancel_requested = true;
         ide_core::studio::revoke_agent_scope(&self.agent);
-        self.observe_worktree_changes();
         self.assistant_stream.flush(&self.events);
         self.finish_reconnect(WorkLogStatus::Completed, "Reconnect stopped", None);
         self.deny_all_pending_approvals()?;
-        if let Some(thread_id) = self.thread_id.clone() {
-            self.notify("turn/cancel", json!({ "threadId": thread_id }))?;
-        }
+        self.send_pending_interrupt()?;
+        let status = if self.turn_control.starting || self.turn_control.active_id.is_some() {
+            AgentChatStatus::Cancelling
+        } else {
+            AgentChatStatus::Idle
+        };
         self.events
-            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Cancelling))
+            .send_blocking(ChatBackendEvent::Status(status))
             .ok();
+        Ok(())
+    }
+
+    fn send_pending_interrupt(&mut self) -> anyhow::Result<()> {
+        if let Some(request) = self
+            .thread_id
+            .as_deref()
+            .and_then(|id| self.turn_control.interrupt_request(id))
+        {
+            // Do not nest a blocking request inside turn/start: its response
+            // could otherwise be consumed by the interrupt's response loop.
+            self.write_json(&request)?;
+        }
         Ok(())
     }
 
@@ -380,7 +446,22 @@ impl CodexRuntime {
         Ok(())
     }
 
-    fn handle_message(&mut self, message: Value) -> anyhow::Result<()> {
+    fn handle_message(&mut self, message: impl Into<ProviderMessage>) -> anyhow::Result<()> {
+        let ProviderMessage { value: message, _reservation } = message.into();
+        if message.get("_choro_evidence_incomplete").and_then(Value::as_bool) == Some(true) { self.events.mark_evidence_overflow(); }
+        if message.get("method").is_none()
+            && message
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| self.turn_control.interrupt_request_id.as_deref() == Some(id))
+        {
+            if let Some(error) = message.get("error") {
+                if self.turn_control.active_id.is_some() {
+                    return Err(anyhow!("turn/interrupt returned error: {error}"));
+                }
+            }
+            return Ok(());
+        }
         if message.get("method").is_some() && message.get("id").is_some() {
             if message
                 .get("method")
@@ -416,6 +497,12 @@ impl CodexRuntime {
             return Ok(());
         }
         match method {
+            "turn/started" => {
+                if let Some(id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                    self.turn_control.started(id);
+                    self.send_pending_interrupt()?;
+                }
+            }
             "item/agentMessage/delta" => {
                 if let Some(delta) = params.get("delta").and_then(Value::as_str) {
                     self.assistant_buffer.push_str(delta);
@@ -467,20 +554,6 @@ impl CodexRuntime {
                 }
             }
             "item/completed" => {
-                // Commands and delegated tools can write files without any
-                // provider fileChange event. Observe actual Git/content changes
-                // at tool completion so they also appear while the turn runs.
-                if matches!(
-                    item_type_from_params(&params),
-                    Some(
-                        "commandExecution"
-                            | "mcpToolCall"
-                            | "dynamicToolCall"
-                            | "collabAgentToolCall"
-                    )
-                ) {
-                    self.observe_worktree_changes();
-                }
                 if item_type_from_params(&params) == Some("fileChange") {
                     let action_id = item_id_from_params(&params)
                         .unwrap_or_else(|| format!("file-change-{}", self.active_turn_id));
@@ -495,7 +568,6 @@ impl CodexRuntime {
                             if files.is_empty() { preview } else { files },
                         );
                     }
-                    self.observe_worktree_changes();
                 }
                 if let Some(plan) = plan_text_from_completed_item(&params)
                     .or_else(|| {
@@ -546,50 +618,14 @@ impl CodexRuntime {
                 // A preview may still fail or be declined. Attribute it only
                 // when completion confirms success; show real writes as Git
                 // observations in the meantime.
-                self.pending_file_previews.insert(action_id, files);
-                self.observe_worktree_changes();
+                let bytes = files.iter().map(change_tracking::file_payload_bytes).sum();
+                if !self.pending_file_previews.insert(action_id, files, bytes) {
+                    self.events.mark_evidence_overflow();
+                }
             }
             "turn/diff/updated" => {
-                if self.worktree_baseline.is_some() {
-                    // Provider patches can lag the disk (especially after a
-                    // shell revert). They must not overwrite verified states.
-                    self.observe_worktree_changes();
-                } else if let Some(diff) = self
-                    .command_ran_this_turn
-                    .then(|| params.get("diff").and_then(Value::as_str))
-                    .flatten()
-                {
-                    let files = changed_files_from_unified_diff(diff);
-                    let exact_paths = self
-                        .pending_changed_files
-                        .as_ref()
-                        .into_iter()
-                        .flat_map(|summary| &summary.files)
-                        .map(|file| file.path.clone())
-                        .collect::<HashSet<_>>();
-                    let observed = files
-                        .into_iter()
-                        .filter(|file| !exact_paths.contains(&file.path))
-                        .map(FileChangeStat::as_count_projection)
-                        .collect::<Vec<_>>();
-                    let action_id = self.active_command_item_id.as_deref().unwrap_or("command");
-                    for file in &observed {
-                        let activity_id =
-                            format!("codex:{action_id}:{}", file.path.to_string_lossy());
-                        self.events
-                            .send_blocking(ChatBackendEvent::FileChangeActivity(
-                                FileChangeActivity::new(
-                                    activity_id,
-                                    self.active_turn_id.clone(),
-                                    file.clone(),
-                                    true,
-                                    unix_now(),
-                                ),
-                            ))
-                            .ok();
-                    }
-                    upsert_file_change_stats(&mut self.pending_observed_files, observed);
-                }
+                // Workspace observations come from the shared observer. A turn
+                // diff cannot establish authorship and needs no provider work.
             }
             "thread/tokenUsage/updated" => {
                 if let Some(usage) = codex_conversation_usage(&params, self.model.as_deref()) {
@@ -599,6 +635,7 @@ impl CodexRuntime {
                 }
             }
             "turn/completed" => {
+                self.turn_control.completed();
                 let was_cancelled = self.studio_review.cancelled;
                 let interrupted = was_cancelled
                     || params
@@ -751,54 +788,13 @@ impl CodexRuntime {
     }
 
     fn emit_pending_changed_files(&mut self) {
-        self.observe_worktree_changes();
-        self.worktree_baseline = None;
         let mut summary = self.pending_changed_files.take().unwrap_or_default();
         summary.observed_files = std::mem::take(&mut self.pending_observed_files);
         summary.turn_id = Some(self.active_turn_id.clone());
         summary.attribution_version = 1;
-        if !summary.is_empty() {
-            let summary =
-                capture_changed_files_snapshot(&self.agent, summary, "agent_changed_files");
-            if !summary.is_empty() {
-                self.events
-                    .send_blocking(ChatBackendEvent::ChangedFiles(summary))
-                    .ok();
-            }
-        }
-    }
-
-    fn observe_worktree_changes(&mut self) {
-        let Some(before) = self.worktree_baseline.as_ref() else {
-            return;
-        };
-        let current = match worktree_changes::WorktreeChanges::capture(&self.agent) {
-            Ok(current) => current,
-            Err(error) => {
-                eprintln!("failed to observe turn file changes: {error:#}");
-                return;
-            }
-        };
-        let files = current.changes_since(before);
-        self.worktree_baseline = Some(current);
-        for file in &files {
-            self.events
-                .send_blocking(ChatBackendEvent::FileChangeActivity(
-                    FileChangeActivity::new(
-                        format!(
-                            "codex:worktree:{}:{}",
-                            self.active_turn_id,
-                            file.path.to_string_lossy()
-                        ),
-                        self.active_turn_id.clone(),
-                        file.clone(),
-                        true,
-                        unix_now(),
-                    ),
-                ))
-                .ok();
-        }
-        upsert_file_change_stats(&mut self.pending_observed_files, files);
+        self.events
+            .send_blocking(ChatBackendEvent::ChangedFiles(summary))
+            .ok();
     }
 
     fn record_exact_file_changes(&mut self, action_id: String, mut files: Vec<FileChangeStat>) {
@@ -822,29 +818,6 @@ impl CodexRuntime {
                 ))
                 .ok();
         }
-        // Streaming updates replace the same action. Distinct actions editing
-        // one file must accumulate rather than overwriting each other's counts.
-        self.pending_file_actions.insert(action_id, files);
-        let activities = self
-            .pending_file_actions
-            .iter()
-            .flat_map(|(id, files)| {
-                files.iter().map(|file| {
-                    FileChangeActivity::new(
-                        id.clone(),
-                        self.active_turn_id.clone(),
-                        file.clone(),
-                        false,
-                        0,
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-        let summary = self
-            .pending_changed_files
-            .get_or_insert_with(ChangedFilesSummary::default);
-        summary.files =
-            ChangedFilesSummary::from_activities(self.active_turn_id.clone(), &activities).files;
     }
 
     fn handle_server_request(&mut self, message: Value) -> anyhow::Result<()> {
@@ -923,6 +896,256 @@ impl CodexRuntime {
         writeln!(stdin, "{}", serde_json::to_string(value)?)?;
         stdin.flush()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod interruption_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn echo_runtime() -> (CodexRuntime, async_channel::Receiver<ChatBackendEvent>) {
+        // A local pipe echoes client requests; no provider, credentials, or
+        // conversation store is involved in this protocol regression test.
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let (message_tx, messages) = crossbeam_channel::unbounded();
+        spawn_json_reader(child.stdout.take().unwrap(), message_tx);
+        let (_, commands) = crossbeam_channel::unbounded();
+        let (events, event_rx) = async_channel::unbounded();
+        let runtime = CodexRuntime {
+            child,
+            stdin,
+            messages,
+            commands,
+            events: events.into(),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            agent: AgentRecord::new(
+                ide_core::ProjectId(uuid::Uuid::new_v4()),
+                PathBuf::from("/tmp"),
+                "Stop test",
+                "",
+                AgentKind::Codex,
+                AgentModel::default_for(AgentKind::Codex),
+                AgentEffort::default(),
+                AgentAccessMode::FullAccess,
+            ),
+            thread_id: Some("test-thread".into()),
+            turn_control: CodexTurnControl::default(),
+            assistant_buffer: String::new(),
+            assistant_stream: StreamChunkBuffer::new(),
+            studio_review: StudioReviewGate::default(),
+            plan_buffer: String::new(),
+            pending_changed_files: None,
+            pending_file_previews: Default::default(),
+            pending_observed_files: Vec::new(),
+            active_turn_id: "local-receipt-id".into(),
+            command_ran_this_turn: false,
+            active_command_item_id: None,
+            pending_user_inputs: Default::default(),
+            pending_approvals: Default::default(),
+            deferred_turns: VecDeque::new(),
+            active_reconnect_work_log_id: None,
+            model: None,
+            effort: "medium".into(),
+            access_mode: AgentAccessMode::FullAccess,
+            visualization_dir: None,
+        };
+        (runtime, event_rx)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_interrupts_the_provider_turn_and_waits_for_completion() {
+        let (mut runtime, events) = echo_runtime();
+        runtime.turn_control.begin();
+        runtime.cancel_turn().unwrap();
+        assert!(runtime.messages.try_recv().is_err());
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ChatBackendEvent::Status(AgentChatStatus::Cancelling)
+        ));
+
+        runtime
+            .handle_message(json!({
+                "method": "turn/started", "params": {
+                    "threadId": "test-thread", "turn": { "id": "provider-turn" }
+                }
+            }))
+            .unwrap();
+        let request = runtime
+            .messages
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(request["method"], "turn/interrupt");
+        assert_eq!(request["params"]["turnId"], "provider-turn");
+        runtime
+            .handle_message(json!({"id": request["id"], "result": {}}))
+            .unwrap();
+        assert!(
+            events.try_recv().is_err(),
+            "An interrupt ack is not completion"
+        );
+        runtime
+            .handle_message(json!({
+                "method": "turn/completed", "params": {
+                    "threadId": "test-thread",
+                    "turn": { "id": "provider-turn", "status": "interrupted" }
+                }
+            }))
+            .unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ChatBackendEvent::ChangedFiles(_)
+        ));
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            ChatBackendEvent::Status(AgentChatStatus::Idle)
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn blocked_tracker_cannot_delay_prompt_or_interrupt_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(dir.path().join("state")).unwrap();
+        let tracker = ide_core::agent_changes::ChangeTracker::with_store(store);
+        let (release, blocked) = std::sync::mpsc::channel();
+        assert!(tracker.enqueue(0, move |_| {
+            let _ = blocked.recv();
+        }));
+        let (mut runtime, events) = echo_runtime();
+        let (_command_tx, command_rx) = crossbeam_channel::unbounded();
+        runtime.commands = command_rx;
+        runtime.agent.project_path = dir.path().to_path_buf();
+        fs::File::create(dir.path().join("asset.zip"))
+            .unwrap()
+            .set_len(3_000_000_000)
+            .unwrap();
+        let (output, received) = async_channel::unbounded();
+        super::super::change_tracking::route_with_tracker(
+            runtime.agent.clone(),
+            events,
+            output.into(),
+            tracker,
+            Arc::new(Default::default()),
+        );
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let requests = std::mem::replace(&mut runtime.messages, reply_rx);
+        let (sent_tx, sent_rx) = crossbeam_channel::unbounded();
+        thread::spawn(move || {
+            while let Ok(request) = requests.recv() {
+                let method = request["method"].as_str().unwrap_or_default().to_string();
+                let result = if method == "turn/start" {
+                    json!({"turn":{"id":"provider-turn"}})
+                } else {
+                    json!({})
+                };
+                let _ = sent_tx.send(method);
+                if reply_tx
+                    .send(json!({"id":request["id"],"result":result}).into())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let started = Instant::now();
+        runtime
+            .send_turn("hello".into(), AgentInteractionMode::Default, false, "test-turn".into())
+            .unwrap();
+        assert_eq!(
+            sent_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "turn/start"
+        );
+        let prompt_delay = started.elapsed();
+        runtime.record_exact_file_changes(
+            "edit".into(),
+            vec![FileChangeStat::new("shared.rs", 1, 1)
+                .with_content_projection(Some("before\n".into()), Some("after\n".into()))],
+        );
+        let started = Instant::now();
+        runtime.cancel_turn().unwrap();
+        assert_eq!(
+            sent_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            "turn/interrupt"
+        );
+        let interrupt_delay = started.elapsed();
+        assert!(prompt_delay < Duration::from_secs(2));
+        assert!(interrupt_delay < Duration::from_secs(2));
+        while let Ok(event) = received.try_recv() {
+            assert!(!matches!(
+                event,
+                ChatBackendEvent::ChangeReceiptReady { .. }
+            ));
+        }
+        eprintln!("blocked tracking: prompt dispatch {prompt_delay:?}, interrupt dispatch {interrupt_delay:?}");
+        runtime.emit_pending_changed_files();
+        release.send(()).unwrap();
+        loop {
+            if let ChatBackendEvent::ChangeReceiptReady { state, .. } =
+                unpack_event(received.recv_blocking().unwrap())
+            {
+                assert_eq!(state, ide_core::agent_changes::ChangeReceiptState::Ready);
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn stop_during_start_waits_for_the_provider_turn_id() {
+        let mut control = CodexTurnControl::default();
+        control.begin();
+        control.cancel_requested = true;
+        assert!(control.interrupt_request("thread-1").is_none());
+
+        control.started("provider-turn-1");
+        let request = control.interrupt_request("thread-1").unwrap();
+        assert_eq!(request["method"], "turn/interrupt");
+        assert!(request["id"].is_string());
+        assert_eq!(
+            request["params"],
+            json!({
+                "threadId": "thread-1", "turnId": "provider-turn-1"
+            })
+        );
+        assert!(control.interrupt_request("thread-1").is_none());
+    }
+
+    #[test]
+    fn stop_completion_allows_an_independent_next_turn() {
+        let mut control = CodexTurnControl::default();
+        control.begin();
+        control.started("first");
+        control.cancel_requested = true;
+        let first = control.interrupt_request("thread-1").unwrap();
+        control.completed();
+        assert!(!control.starting);
+        assert!(control.active_id.is_none());
+
+        control.begin();
+        control.started("second");
+        assert!(control.interrupt_request("thread-1").is_none());
+        control.cancel_requested = true;
+        let second = control.interrupt_request("thread-1").unwrap();
+        assert_eq!(second["params"]["turnId"], "second");
+        assert_ne!(first["id"], second["id"]);
+    }
+
+    #[test]
+    fn completed_turn_is_not_resurrected_by_late_start_response() {
+        let mut control = CodexTurnControl::default();
+        control.begin();
+        control.started("finished");
+        control.completed();
+        assert!(!control.starting);
+        control.cancel_requested = true;
+        assert!(control.interrupt_request("thread-1").is_none());
     }
 }
 
@@ -1136,6 +1359,7 @@ pub(super) fn capture_changed_files_snapshot(
     agent: &AgentRecord,
     mut summary: ChangedFilesSummary,
     source: &str,
+    store: &LocalStore,
 ) -> ChangedFilesSummary {
     let repo_path = agent.runtime_path().to_path_buf();
     summary.reconcile_final_files(&repo_path);
@@ -1149,47 +1373,21 @@ pub(super) fn capture_changed_files_snapshot(
         .conversation_files()
         .filter_map(|file| attributed_file_diff(file, &repo_path))
         .collect::<Vec<_>>();
-    let owned_paths = owned_diffs
-        .iter()
-        .map(|diff| diff.path.clone())
-        .collect::<HashSet<_>>();
-    let fallback_paths = summary
-        .conversation_files()
-        .map(|file| normalize_repo_path(&repo_path, &file.path))
-        .filter(|path| !owned_paths.contains(path))
-        .collect::<HashSet<_>>();
-    let mut diffs = owned_diffs;
-    if !fallback_paths.is_empty() {
-        let diffs_result = if agent.repository_path.is_none() && !agent.is_active_solo() {
-            ide_core::git::workspace_worktree_diffs(&agent.project_path)
-        } else {
-            ide_core::git::worktree_diffs(&repo_path)
-        };
-        match diffs_result {
-            Ok(fallback) => diffs.extend(fallback.into_iter().filter(|diff| {
-                fallback_paths.contains(&normalize_repo_path(&repo_path, &diff.path))
-            })),
-            Err(error) => {
-                eprintln!("failed to capture changed-files diff snapshot: {error:#}");
-            }
-        }
-    }
+    let diffs = owned_diffs;
     if diffs.is_empty() {
         return summary;
     }
 
-    match ide_core::local_store::LocalStore::open_default().and_then(|store| {
-        store.create_agent_diff_snapshot(
-            agent.id,
-            agent.project_id,
-            repo_path.clone(),
-            source,
-            git_head_sha(&repo_path),
-            None,
-            None,
-            diffs,
-        )
-    }) {
+    match store.create_agent_diff_snapshot(
+        agent.id,
+        agent.project_id,
+        repo_path.clone(),
+        source,
+        None,
+        None,
+        None,
+        diffs,
+    ) {
         Ok(snapshot) => {
             summary.snapshot_id = Some(snapshot.id);
         }
@@ -1205,7 +1403,21 @@ fn attributed_file_diff(
     file: &FileChangeStat,
     repo_path: &Path,
 ) -> Option<ide_core::git::FileDiff> {
-    let mut diff = if let Some(diff) = &file.attributed_diff {
+    if !file.prior_segments.is_empty() {
+        let mut last = file.clone();
+        last.prior_segments.clear();
+        let mut result = ide_core::git::FileDiff { path: normalize_repo_path(repo_path, &file.path), ..Default::default() };
+        for (index, segment) in file.prior_segments.iter().chain(std::iter::once(&last)).enumerate() {
+            let diff = attributed_file_diff(segment, repo_path)?;
+            result.is_binary |= diff.is_binary;
+            result.hunks.push(ide_core::git::DiffHunk { header: format!("Edit segment {} (separate evidence chain)", index + 1), lines: vec![] });
+            result.hunks.extend(diff.hunks);
+        }
+        return Some(result);
+    }
+    let mut diff = if let Some((before, after)) = file.baseline_content.as_deref().zip(file.result_content.as_deref()) {
+        ide_core::git::diff::diff_from_contents(&file.path, before, after).ok()?
+    } else if let Some(diff) = &file.attributed_diff {
         diff.clone()
     } else {
         let (before, after) = file
@@ -1272,10 +1484,10 @@ mod snapshot_tests {
 
     #[test]
     fn multiple_owned_actions_survive_turn_receipt_but_not_ledger_patch_history() {
-        let first = file_stat_from_patch_change(&json!({"path": "/project/shared.txt",
+        let first = render_patch_change(&json!({"path": "/project/shared.txt",
             "kind": {"type": "update"}, "diff": "@@ -1 +1,2 @@\n other-agent\n+first-edit\n"}))
         .unwrap();
-        let second = file_stat_from_patch_change(&json!({"path": "/project/shared.txt",
+        let second = render_patch_change(&json!({"path": "/project/shared.txt",
             "kind": {"type": "update"}, "diff": "@@ -1,2 +1,3 @@\n other-agent\n first-edit\n+second-edit\n"})).unwrap();
         let activities = [
             FileChangeActivity::new("one", "turn", first, false, 1),

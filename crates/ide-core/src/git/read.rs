@@ -16,12 +16,14 @@ const MAX_LINE_STAT_FILE_BYTES: i64 = 1024 * 1024;
 
 /// Lightweight read used by the project list (branch label only).
 pub fn read_head(repo_path: &Path) -> Result<HeadInfo> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
     head_info(&repo)
 }
 
 /// Full read for the git panel: HEAD, branches, status.
 pub fn read_snapshot(repo_path: &Path) -> Result<GitSnapshot> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
     let (insertions, deletions) = worktree_line_stats(&repo);
     let (staged_stats, unstaged_stats) = status_line_stats(&repo);

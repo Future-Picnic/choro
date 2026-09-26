@@ -622,9 +622,11 @@ fn request_context_is_frozen_and_contains_scope_tokens_overrides_and_conventions
         Some(design.manifest.screens[0].id),
         Some("title".into()),
     );
+    scope.design_guidance = StudioSettings { preferences: "Use compact layouts".into(), ..Default::default() }.request_guidance();
     store.save_scope(agent, &scope).unwrap();
     let frozen = store.request_context(agent).unwrap();
     assert_eq!(frozen["scope"]["selected_element"], "title");
+    assert!(frozen["scope"]["design_guidance"].as_str().unwrap().contains("Use compact layouts"));
     assert_eq!(frozen["fingerprint"], design.fingerprint);
     assert_eq!(
         frozen["effective_tokens"],
@@ -640,6 +642,7 @@ fn request_context_is_frozen_and_contains_scope_tokens_overrides_and_conventions
         .unwrap();
     fs::write(store.project.join("AGENTS.md"), "New conventions").unwrap();
     scope.current_screen_id = None;
+    scope.design_guidance = StudioSettings::default().request_guidance();
     store.save_scope(agent, &scope).unwrap();
     assert_eq!(store.request_context(agent).unwrap(), frozen);
 }

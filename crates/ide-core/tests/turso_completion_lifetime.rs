@@ -1,10 +1,9 @@
-//! Diagnostics for upstream completion ownership, including dropped handles.
+//! Regression checks for upstream completion ownership, including dropped handles.
 //!
-//! Choro uses the official Turso 0.7.2 release. It still contains the leak
-//! tracked by https://github.com/tursodatabase/turso/pull/7447, so the lifetime
-//! assertions remain opt-in until that fix ships. This upgrade does not claim
-//! to fix the leak. Recheck a future release with:
-//! `cargo test -p ide-core --test turso_completion_lifetime -- --ignored`
+//! The official Turso 0.8.0-pre.13 release includes the completion-group leak
+//! fix from https://github.com/tursodatabase/turso/pull/7447. Keep these checks
+//! enabled to catch ownership regressions in future upgrades:
+//! `cargo test -p ide-core --test turso_completion_lifetime`
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Weak,
@@ -21,15 +20,18 @@ fn observed_group() -> (CompletionGroup, Weak<()>) {
 }
 
 #[test]
-#[ignore = "upstream Turso #7447 is not fixed in 0.7.2"]
 fn completed_groups_release_their_captures_repeatedly() {
     // This is the synchronous path responsible for the original 288-byte
     // retained allocation pattern. A callback capture makes release observable.
     for _ in 0..10_000 {
+        let child = Completion::new_write(|_| {});
         let (mut group, capture) = observed_group();
-        group.add(&Completion::new_yield());
+        // Turso requires registration before the I/O completion can finish.
+        group.add(&child);
+        child.complete(0);
         let group = group.build();
         assert!(group.succeeded());
+        drop(child);
         drop(group);
         assert!(
             capture.upgrade().is_none(),
@@ -39,12 +41,11 @@ fn completed_groups_release_their_captures_repeatedly() {
 }
 
 #[test]
-#[ignore = "upstream Turso #7447 is not fixed in 0.7.2"]
-fn groups_with_already_failed_children_are_released() {
+fn groups_with_children_failed_before_build_are_released() {
     let child = Completion::new_write(|_| {});
-    child.error(CompletionError::Aborted);
     let (mut group, capture) = observed_group();
     group.add(&child);
+    child.error(CompletionError::Aborted);
     let group = group.build();
     assert_eq!(group.get_error(), Some(CompletionError::Aborted));
     drop(group);
@@ -53,7 +54,6 @@ fn groups_with_already_failed_children_are_released() {
 }
 
 #[test]
-#[ignore = "upstream Turso #7447 is not fixed in 0.7.2"]
 fn pending_groups_are_released_after_success_or_error() {
     for fail in [false, true] {
         let child = Completion::new_write(|_| {});
@@ -74,7 +74,6 @@ fn pending_groups_are_released_after_success_or_error() {
 }
 
 #[test]
-#[ignore = "upstream Turso #7447 is not fixed in 0.7.2"]
 fn abandoned_pending_groups_do_not_retain_themselves() {
     let child = Completion::new_write(|_| {});
     let (mut group, capture) = observed_group();
@@ -88,7 +87,6 @@ fn abandoned_pending_groups_do_not_retain_themselves() {
 }
 
 #[test]
-#[ignore = "upstream Turso #7447 is not fixed in 0.7.2"]
 fn nested_groups_finish_after_intermediate_handles_are_dropped() {
     for fail in [false, true] {
         let first = Completion::new_write(|_| {});
@@ -120,7 +118,6 @@ fn nested_groups_finish_after_intermediate_handles_are_dropped() {
 }
 
 #[test]
-#[ignore = "upstream Turso #7447 is not fixed in 0.7.2"]
 fn dropping_all_group_handles_still_delivers_callback_once() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);

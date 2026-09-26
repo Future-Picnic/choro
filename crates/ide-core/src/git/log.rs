@@ -17,6 +17,7 @@ pub struct CommitInfo {
 
 /// Most recent commits on HEAD, newest first.
 pub fn list_commits(repo_path: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
     let mut walk = repo.revwalk()?;
     walk.set_sorting(Sort::TIME)?;
@@ -47,6 +48,7 @@ pub fn list_commits(repo_path: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
 
 /// The full diff a commit introduced (vs its first parent).
 pub fn commit_diff(repo_path: &Path, sha: &str) -> Result<Vec<FileDiff>> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
     let commit = repo
         .find_commit(git2::Oid::from_str(sha)?)
@@ -63,6 +65,7 @@ pub fn commit_diff(repo_path: &Path, sha: &str) -> Result<Vec<FileDiff>> {
 /// Commits `(ahead, behind)` of `local` relative to `base` — powers the
 /// "On the side" strip's "M commits ahead" for Solo branches.
 pub fn ahead_behind(repo_path: &Path, local: &str, base: &str) -> Result<(usize, usize)> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
     let local_oid = repo
         .revparse_single(local)
@@ -78,6 +81,7 @@ pub fn ahead_behind(repo_path: &Path, local: &str, base: &str) -> Result<(usize,
 /// All uncommitted changes (staged + unstaged + untracked) vs HEAD —
 /// the "project diff" view.
 pub fn worktree_diffs(repo_path: &Path) -> Result<Vec<FileDiff>> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
     super::worktree_diff::patches(&repo, super::worktree_diff::Base::Head, None)
 }

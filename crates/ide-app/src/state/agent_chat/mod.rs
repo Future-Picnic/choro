@@ -36,7 +36,9 @@ pub use pending_approval::{PendingApproval, PendingApprovalKind};
 pub use pending_user_input::{PendingUserInput, PendingUserInputOption, PendingUserInputQuestion};
 pub use proposed_plan::{split_proposed_plan, ProposedPlan};
 pub(crate) use protocol::ChatBackendStopSignal;
-use protocol::{spawn_chat_backend, ChatBackendCommand, ChatBackendController, ChatBackendEvent};
+use protocol::{
+    spawn_chat_backend_after_stop, ChatBackendCommand, ChatBackendController, ChatBackendEvent,
+};
 pub use review_checklist::{
     split_review_checklist, ReviewChecklist, ReviewChecklistItem, ReviewChecklistStatus,
     REVIEW_CHECKLIST_REQUEST_MARKER,
@@ -56,6 +58,7 @@ pub use persistence::{
     load_persisted_file_ledger, persist_timeline_snapshot, timeline_item_from_store_event,
 };
 use timeline::*;
+pub(crate) use timeline::place_change_receipts;
 
 mod changes;
 pub use changes::{ChatChange, ChatChangeCategories};
@@ -92,7 +95,9 @@ pub struct AgentChatState {
     current_event_received_at: Option<std::time::Instant>,
     pub(crate) sessions: HashMap<Uuid, AgentChatSession>,
     controllers: HashMap<Uuid, ChatBackendController>,
+    stopping_backends: HashMap<Uuid, ChatBackendStopSignal>,
     backend_generations: HashMap<Uuid, u64>,
+    finished_file_turns: HashSet<(Uuid, String)>,
     cancellation_requested: HashSet<Uuid>,
     /// Stop pauses automatic dispatch until the user sends another message.
     paused_queues: HashSet<Uuid>,
@@ -621,7 +626,11 @@ struct StoredPendingAnswer {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredFileChange {
+    #[serde(default)]
+    prior_segments: Vec<FileChangeStat>,
     path: String,
+    #[serde(default)]
+    counts_unavailable: bool,
     additions: usize,
     deletions: usize,
     #[serde(default)]
@@ -785,7 +794,15 @@ impl AgentChatState {
         }
 
         let generation = self.next_backend_generation(agent.id);
-        let (controller, event_rx) = spawn_chat_backend(agent.clone(), initial_mode)?;
+        let initial_turn_id = (agent.cli_session_id.is_none() && agent.delegation.is_none() && !agent.hidden_doc_assistant)
+            .then(|| self.anchor_change_turn(agent.id, cx));
+        let (controller, event_rx) = spawn_chat_backend_after_stop(
+            agent.clone(),
+            initial_mode,
+            self.stopping_backends.get(&agent.id).cloned(),
+            initial_turn_id,
+        )?;
+        self.stopping_backends.remove(&agent.id);
         self.controllers.insert(agent.id, controller);
         let agent_id = agent.id;
         // Await the channel instead of polling on a timer: an idle chat costs
@@ -834,6 +851,37 @@ impl AgentChatState {
         Ok(())
     }
 
+    fn anchor_change_turn(&mut self, agent_id: Uuid, cx: &mut Context<Self>) -> String {
+        let source = self
+            .sessions
+            .get(&agent_id)
+            .and_then(|session| {
+                session.timeline.iter().rev().find(|item| {
+                    matches!(
+                        item,
+                        AgentChatTimelineItem::Message(AgentChatMessage::User { .. })
+                    )
+                })
+            })
+            .and_then(persistence::stored_timeline_event_parts)
+            .and_then(|(_, key, _, _)| key);
+        let turn_id = match source {
+            Some(key) => format!("{}|{key}", Uuid::new_v4()),
+            None => Uuid::new_v4().to_string(),
+        };
+        let entry = WorkLogEntry::new(
+            format!("file-receipt:{turn_id}"),
+            format!("file-receipt:{turn_id}"),
+            WorkLogEntryKind::System,
+            "Updating changes",
+            WorkLogStatus::InProgress,
+        );
+        let session = self.ensure_backend_event_session(agent_id, unix_now());
+        upsert_timeline_work_log(&mut session.timeline, entry.clone());
+        persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
+        turn_id
+    }
+
     pub fn send_turn(
         &mut self,
         agent_id: Uuid,
@@ -841,8 +889,10 @@ impl AgentChatState {
         mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) {
+        let turn_id = self.anchor_change_turn(agent_id, cx);
         if let Some(controller) = self.controllers.get(&agent_id) {
             let _ = controller.send(ChatBackendCommand::SendTurn {
+                turn_id,
                 text,
                 mode,
                 read_only: false,
@@ -872,8 +922,10 @@ impl AgentChatState {
         mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) {
+        let turn_id = self.anchor_change_turn(agent_id, cx);
         if let Some(controller) = self.controllers.get(&agent_id) {
             let _ = controller.send(ChatBackendCommand::SendTurn {
+                turn_id,
                 text,
                 mode,
                 read_only: true,
@@ -1195,7 +1247,7 @@ impl AgentChatState {
         self.next_backend_generation(agent_id);
         // Dropping the controller sends Shutdown; the backend thread exits its
         // run loop and its Drop impl terminates the whole process group.
-        self.controllers.remove(&agent_id);
+        self.remove_backend_controller(agent_id);
         self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         true
     }
@@ -1263,11 +1315,10 @@ impl AgentChatState {
             }
         }
         self.next_backend_generation(agent_id);
-        let stop_signal = self.controllers.remove(&agent_id).map(|controller| {
-            let stop_signal = controller.stop_signal();
+        if let Some(controller) = self.remove_backend_controller(agent_id) {
             controller.force_shutdown();
-            stop_signal
-        });
+        }
+        let stop_signal = self.stopping_backends.get(&agent_id).cloned();
         self.cancellation_requested.remove(&agent_id);
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             if let Some(entry) = settle_hard_stopped_session(session, record_user_stop) {
@@ -1276,6 +1327,13 @@ impl AgentChatState {
         }
         self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
         stop_signal
+    }
+
+    fn remove_backend_controller(&mut self, agent_id: Uuid) -> Option<ChatBackendController> {
+        let controller = self.controllers.remove(&agent_id)?;
+        self.stopping_backends
+            .insert(agent_id, controller.stop_signal());
+        Some(controller)
     }
 
     pub fn submit_pending_user_input(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -1376,6 +1434,11 @@ impl AgentChatState {
         event: ChatBackendEvent,
         cx: &mut Context<Self>,
     ) {
+        let (event, _reservation) = match event {
+            ChatBackendEvent::ReservedEvidence { event, reservation } => (*event, Some(reservation)),
+            ChatBackendEvent::EvidenceOverflow => return,
+            other => (other, None),
+        };
         self.current_event_received_at = Some(std::time::Instant::now());
         self.process_backend_event(agent_id, generation, event, cx);
         self.current_event_received_at = None;
@@ -1389,6 +1452,68 @@ impl AgentChatState {
             _ => ChatChangeCategories::CONTENT,
         };
         let now = unix_now();
+        let current_generation =
+            self.backend_generations.get(&agent_id).copied() == Some(generation);
+        // Receipts belong to immutable turns, including retired backends. They
+        // cannot change provider status, consume queued prompts, or end new work.
+        match &event {
+            ChatBackendEvent::ChangeReceiptPending(turn_id) => {
+                let session = self.ensure_backend_event_session(agent_id, now);
+                let entry = WorkLogEntry::new(
+                    format!("file-receipt:{turn_id}"),
+                    format!("file-receipt:{turn_id}"),
+                    WorkLogEntryKind::System,
+                    "Updating changes",
+                    WorkLogStatus::InProgress,
+                );
+                upsert_timeline_work_log(&mut session.timeline, entry.clone());
+                persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
+                self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
+                return;
+            }
+            ChatBackendEvent::ChangeReceiptReady { summary, state } => {
+                let session = self.ensure_backend_event_session(agent_id, now);
+                let turn_id = summary.turn_id.clone().unwrap_or_default();
+                let complete = *state == ide_core::agent_changes::ChangeReceiptState::Ready;
+                let entry = WorkLogEntry::new(
+                    format!("file-receipt:{turn_id}"),
+                    format!("file-receipt:{turn_id}"),
+                    WorkLogEntryKind::System,
+                    if complete {
+                        "Changes recorded"
+                    } else {
+                        "Some change details are unavailable"
+                    },
+                    if complete {
+                        WorkLogStatus::Completed
+                    } else {
+                        WorkLogStatus::Failed
+                    },
+                );
+                upsert_timeline_work_log(&mut session.timeline, entry.clone());
+                persist_timeline_item(agent_id, AgentChatTimelineItem::WorkLog(entry), cx);
+                if let Some((receipt, ledger)) =
+                    apply_changed_files_summary(session, summary.clone())
+                {
+                    persist_changed_files_turn(agent_id, receipt, ledger, cx);
+                }
+                let review = current_generation
+                    && matches!(
+                        session.status,
+                        AgentChatStatus::Idle | AgentChatStatus::PlanReady
+                    )
+                    && latest_changed_source_turn(&session.timeline).as_deref() == Some(&turn_id);
+                if review && self.finished_file_turns.insert((agent_id, turn_id.clone())) {
+                    cx.emit(AgentChatEvent::TurnFinished {
+                        agent_id,
+                        source_turn_id: turn_id,
+                    });
+                }
+                self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
+                return;
+            }
+            _ => {}
+        }
         if self.backend_generations.get(&agent_id).copied() != Some(generation) {
             if self.apply_stale_backend_event(agent_id, &event, now) {
                 self.publish_change(agent_id, change_categories, cx);
@@ -1404,10 +1529,22 @@ impl AgentChatState {
                 .get(&agent_id)
                 .is_some_and(|session| latest_user_is_review_checklist(&session.timeline));
         if matches!(&event, ChatBackendEvent::Error(_)) && !checklist_maintenance_error {
-            self.controllers.remove(&agent_id);
+            self.remove_backend_controller(agent_id);
         }
         if self.cancellation_requested.contains(&agent_id) {
             let should_drain_queue = match event {
+                ChatBackendEvent::FileChangeActivity(activity) => {
+                    // A successful mutation can finish while Stop is in flight.
+                    // Keep its original turn anchor without reviving the run.
+                    let session = self.ensure_backend_event_session(agent_id, now);
+                    upsert_timeline_file_change_activity(&mut session.timeline, activity.clone());
+                    persist_timeline_item(
+                        agent_id,
+                        AgentChatTimelineItem::FileChangeActivity(activity),
+                        cx,
+                    );
+                    false
+                }
                 ChatBackendEvent::Status(AgentChatStatus::Idle | AgentChatStatus::Failed)
                 | ChatBackendEvent::Error(_) => {
                     self.cancellation_requested.remove(&agent_id);
@@ -1590,6 +1727,13 @@ impl AgentChatState {
                     cx,
                 );
             }
+            ChatBackendEvent::ReservedEvidence { .. } | ChatBackendEvent::EvidenceOverflow => {
+                unreachable!("evidence transport must be consumed by the router")
+            }
+            ChatBackendEvent::ChangeReceiptPending(_)
+            | ChatBackendEvent::ChangeReceiptReady { .. } => {
+                unreachable!("handled independently of backend status")
+            }
             ChatBackendEvent::ChangedFiles(summary) => {
                 if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
                     persist_changed_files_turn(agent_id, receipt, ledger, cx);
@@ -1698,7 +1842,9 @@ impl AgentChatState {
         let finished_source_turn = work_finished
             .then(|| latest_changed_source_turn(&session.timeline))
             .flatten();
-        if let Some(source_turn_id) = finished_source_turn {
+        if let Some(source_turn_id) = finished_source_turn
+            .filter(|id| self.finished_file_turns.insert((agent_id, id.clone())))
+        {
             cx.emit(AgentChatEvent::TurnFinished {
                 agent_id,
                 source_turn_id,
@@ -1896,14 +2042,27 @@ fn apply_changed_files_summary(
             previous.turn_id == summary.turn_id
                 && stats(&previous.files) == stats(&summary.files)
                 && stats(&previous.observed_files) == stats(&summary.observed_files)
+                && previous.snapshot_id == summary.snapshot_id
         })
     {
         return None;
     }
-    session.changed_files.merge_turn(&summary);
+    let revision = session
+        .changed_files
+        .ledger_revision
+        .max(summary.ledger_revision)
+        .saturating_add(1);
     let mut receipt = summary;
-    receipt.ledger_revision = session.changed_files.ledger_revision;
+    receipt.ledger_revision = revision;
     append_timeline_changed_files(&mut session.timeline, receipt.clone());
+    let mut merged = ChangedFilesSummary::default();
+    for item in &session.timeline {
+        if let AgentChatTimelineItem::ChangedFiles(turn) = item {
+            merged.merge_turn(turn);
+        }
+    }
+    merged.ledger_revision = revision;
+    session.changed_files = merged;
     Some((receipt, session.changed_files.clone()))
 }
 

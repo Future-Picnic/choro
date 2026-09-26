@@ -629,6 +629,18 @@
     .short-meta b { display: block; color: var(--text); font-weight: 500; }
     .short-meta .ready { color: var(--success); }
     .short-note a, .archive-back { color: var(--accent); text-underline-offset: 4px; }
+    .discovery-brief { margin-top: 48px; padding: clamp(20px, 4vw, 36px); border: 1px solid var(--accent-line); border-radius: var(--radius); background: var(--panel); }
+    .discovery-brief h3 { margin: 10px 0 14px; font-size: clamp(24px, 3vw, 32px); letter-spacing: -.025em; }
+    .discovery-brief h4 { margin: 26px 0 10px; font-size: 17px; }
+    .discovery-brief p, .discovery-brief li { max-width: 850px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+    .discovery-brief strong { color: var(--text); }
+    .discovery-brief ul { padding-left: 22px; }
+    .discovery-brief li + li { margin-top: 8px; }
+    .discovery-beats { list-style: none; padding: 0; margin: 16px 0; }
+    .discovery-beats li { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+    .discovery-beats strong { display: block; margin-bottom: 4px; }
+    .discovery-brief blockquote { margin: 16px 0; padding: 12px 18px; border-left: 3px solid var(--accent); background: var(--accent-soft); }
+    .discovery-brief blockquote p { margin: 0; color: var(--text); }
     #short-video-area[hidden], .short-group[hidden], .short-list li[hidden], .tabs-shell[hidden], .summary[hidden] { display: none; }
     @media (max-width: 600px) {
       .short-open { grid-template-columns: 1fr; gap: 8px; }
@@ -831,22 +843,27 @@
 
     <section id="release-checklist-area" aria-labelledby="release-heading" hidden>
       <div class="panel-heading"><h2 id="release-heading">Beta release checklist</h2><p id="release-progress" role="status" aria-live="polite">0 completed</p></div>
-      <p class="release-intro">The agreed soft launch: make Choro and Getting Started available, announce the beta, send it to friends and groups, contact 30 creators, and post in selected Reddit communities. We’ll plan post-release content separately.</p>
+      <p class="release-intro">Launch with the existing full-length landscape videos: the main product tour and all 16 Getting Started lessons. Prepare the libraries on YouTube, Facebook and X, plus linked resources on the website, Discord, our subreddit and personal LinkedIn. Then send Choro to friends and groups, contact 30 creators, and post in selected Reddit communities. Instagram and TikTok content is deferred until the standalone vertical videos are ready; it does not block release.</p>
       <p class="release-intro" id="release-save-note">Checks are saved in this browser only. Checking a task records progress; it does not publish or send anything.</p>
       <section class="release-stage"><h3>Prepare for release</h3><ul class="release-tasks">
-        <li><label for="release-launch-content"><input id="release-launch-content" type="checkbox" data-release-task="launch-content"><span><strong>Prepare the launch message and visuals</strong><span class="release-detail">Review the Hebrew and English drafts in Launch Messages, confirm the website download is ready, and match the website tour or existing assets to each channel.</span></span></label></li>
+        <li><label for="release-channel-library-prep"><input id="release-channel-library-prep" type="checkbox" data-release-task="channel-library-prep"><span><strong>Prepare the existing full-length tour and all 16 tutorials</strong><span class="release-detail">Keep the complete landscape recordings. Check the YouTube, Facebook and X uploads for accepted format, duration, readable screen text, audio and covers. Prepare titles, descriptions and download links from Launch Messages, and use full YouTube links where a destination cannot accept a recording. No vertical edits or new promotional videos are required for this release.</span></span></label></li>
         <li><label for="release-creator-selection"><input id="release-creator-selection" type="checkbox" data-release-task="creator-selection"><span><strong>Choose 30 creators and prepare their emails</strong><span class="release-detail">Use the influencer Sheet, confirm each public business contact and write a personal introduction referencing their relevant content. Include the tour and download link.</span></span></label></li>
         <li><label for="release-reddit-selection"><input id="release-reddit-selection" type="checkbox" data-release-task="reddit-selection"><span><strong>Choose the Reddit communities and prepare the posts</strong><span class="release-detail">Use the researched list to pick a few suitable communities. Check current rules and account eligibility, then write a specific post or showcase-thread comment for each.</span></span></label></li>
       </ul></section>
       <section class="release-stage"><h3>Release the beta</h3><ul class="release-tasks">
         <li><label for="release-go-live"><input id="release-go-live" type="checkbox" data-release-task="go-live"><span><strong>Make the website, download and GitHub ready for visitors</strong><span class="release-detail">Make the intended repository public and verify the download, installation instructions and release information without signing in. Check the Discord help and UserGist feedback links.</span></span></label></li>
-        <li><label for="release-tutorial-public"><input id="release-tutorial-public" type="checkbox" data-release-task="tutorial-public"><span><strong>Make Getting Started available in full</strong><span class="release-detail">Review the 16 videos and playlist, including order, titles, descriptions and thumbnails. When we decide to release, make them public together and check playback without signing in.</span></span></label></li>
-        <li><label for="release-tour-visibility"><input id="release-tour-visibility" type="checkbox" data-release-task="tour-visibility"><span><strong>Check the product tour on the website and YouTube</strong><span class="release-detail">Verify the website embed and final YouTube details. The tour can stay unlisted for sharing and embedding; make it public if we want it visible on the channel for release.</span></span></label></li>
-        <li><label for="release-announce"><input id="release-announce" type="checkbox" data-release-task="announce"><span><strong>Publish the release announcement on our active channels</strong><span class="release-detail">Use the prepared content on X, Instagram, Facebook, TikTok and Discord. Check the posts and download links after publishing; use native posting where the scheduler is not connected.</span></span></label></li>
+        <li><label for="release-tutorial-public"><input id="release-tutorial-public" type="checkbox" data-release-task="tutorial-public"><span><strong>YouTube — publish all 16 Getting Started videos and the playlist</strong><span class="release-detail">Review the complete set, including order, titles, descriptions and thumbnails. When the owner requests release, make them public together and check playback without signing in.</span></span></label></li>
+        <li><label for="release-youtube-tour-public"><input id="release-youtube-tour-public" type="checkbox" data-release-task="youtube-tour-public"><span><strong>YouTube and website — make the main tour visible</strong><span class="release-detail">When the owner requests release, make the main tour public on YouTube, feature it on the channel and surface the Getting Started playlist. Verify the website video and links to the full tutorial library.</span></span></label></li>
+        <li><label for="release-facebook-library"><input id="release-facebook-library" type="checkbox" data-release-task="facebook-library"><span><strong>Facebook — main tour + all 16 tutorials</strong><span class="release-detail">Upload the complete set to the Choro page with consistent covers, clear lesson titles and suitable descriptions. Feature the tour and a Start Here post linking the lessons in order. Check every video and the website download link.</span></span></label></li>
+        <li><label for="release-x-library"><input id="release-x-library" type="checkbox" data-release-task="x-library"><span><strong>X — main tour + all 16 tutorials</strong><span class="release-detail">Post the tour and each complete tutorial, then pin a Start Here index linking all lessons in order. Check the account’s video limits first: non-Premium uploads are limited to 140 seconds and 512 MB. If a lesson exceeds the limit, link its full YouTube version and record that exception. Check the tour, all lesson destinations and the download link.</span></span></label></li>
+        <li><label for="release-discord-library"><input id="release-discord-library" type="checkbox" data-release-task="discord-library"><span><strong>Discord — pin the tour and complete Getting Started index</strong><span class="release-detail">Create a Start Here resource with the main tour, the ordered playlist, links to all 16 lessons, the download and support routes. Use the existing channels and linked videos rather than uploading 17 duplicate attachments. Check access as a regular member.</span></span></label></li>
+        <li><label for="release-own-reddit-library"><input id="release-own-reddit-library" type="checkbox" data-release-task="own-reddit-library"><span><strong>Our subreddit — pin the tour and complete Getting Started index</strong><span class="release-detail">In r/chorodev, create a Start Here resource linking the main tour, all 16 lessons in order, the download and source code. Check it as a visitor. This is our own resource library; outreach to other subreddits remains a separate task below.</span></span></label></li>
+        <li><label for="release-personal-linkedin"><input id="release-personal-linkedin" type="checkbox" data-release-task="personal-linkedin"><span><strong>Personal LinkedIn — share the tour and tutorial library</strong><span class="release-detail">Use Liran’s prepared personal story with the main tour and links to the download and full Getting Started playlist. Check the published post. Choro and Future Picnic company pages remain on hold.</span></span></label></li>
         <li><label for="release-warm-audience"><input id="release-warm-audience" type="checkbox" data-release-task="warm-audience"><span><strong>Send the beta to friends, family and relevant WhatsApp groups</strong><span class="release-detail">Send a personal message with the download and short demo. Ask people who can use the Mac app to try a real task and tell us where they get stuck.</span></span></label></li>
         <li><label for="release-launch-creators"><input id="release-launch-creators" type="checkbox" data-release-task="launch-creators"><span><strong>Send the 30 creator invitations</strong><span class="release-detail">Send the prepared personal emails, invite each creator to try Choro and consider covering it if it fits their audience. Record the contact and sent date in the Sheet.</span></span></label></li>
         <li><label for="release-first-reddit"><input id="release-first-reddit" type="checkbox" data-release-task="first-reddit"><span><strong>Publish the prepared Reddit posts</strong><span class="release-detail">Use the selected communities or required showcase threads, disclose that we built Choro, and ask for specific feedback. Record each post link and answer replies.</span></span></label></li>
       </ul></section>
+      <p class="release-intro">Finish the full-video destinations listed above before sending outreach: the main tour and all 16 lessons must be accessible, either natively or through the documented index/link route. Instagram, TikTok and YouTube Shorts are outside this release checklist; their future vertical content does not count toward completion. Review live upload limits before publishing; <a href="https://help.x.com/en/using-x/x-videos" target="_blank" rel="noopener noreferrer">X video limits</a> were checked September 25, 2026. This checklist update does not authorize publishing; existing video visibility stays unchanged until the owner requests release.</p>
       <p class="release-intro"><a href="#launch-messages">Hebrew and English launch messages</a> · <a href="#social-plan">Channel copy templates</a> · <a href="#influencers">Creator outreach Sheet</a> · <a href="#reddit">Reddit communities and rules</a></p>
     </section>
 
@@ -871,6 +888,39 @@
       <p id="short-empty" class="short-note" hidden>No concepts match. Try another benefit or feature.</p>
       <div id="short-concepts"></div>
       <p class="short-note">Intentionally left out: setup walkthroughs, settings tours, connection forms, and multiple clips that repeat the same promise. <a id="short-archive-link" href="#tiktok">Earlier vertical cuts &amp; comparison renders</a> remain available separately; they are not this new production plan.</p>
+      <section class="discovery-brief" id="discovery-short-pilot" aria-labelledby="discovery-short-pilot-heading">
+        <span class="short-eyebrow">New direction to test · One creator brief · Not produced</span>
+        <h3 id="discovery-short-pilot-heading">“No. The OTHER button.”</h3>
+        <p><strong>The assignment:</strong> Make one 20–25 second vertical short for TikTok and Instagram Reels. Use a quick comedy scene about describing the wrong button, then show a genuine visual edit in Choro. This is a new treatment of the existing “Point to it” idea, so we can compare the storytelling while keeping the capability familiar.</p>
+        <p><strong>Who it is for:</strong> Someone who uses AI to build websites or apps, but has never heard of Choro. The desired reaction is “I want to work like that,” followed by visiting choro.dev to download it.</p>
+
+        <h4>What to prepare</h4>
+        <p>Use an owned demo page with several visible buttons and one clear target. In Choro Preview, record selecting that target, requesting “Make this button purple with rounded corners,” and the actual updated page. Keep a matching before-and-after crop. Confirm the result before editing the video.</p>
+
+        <h4>Creator script and shot list</h4>
+        <ol class="discovery-beats">
+          <li><strong>0–3 seconds · The recognizable frustration</strong>Open directly on the demo page with several buttons. The creator’s voice says: “No. The OTHER button.” A cursor hesitates between two buttons. Large caption: “The OTHER button.” Play this as a comic reenactment, not fabricated footage of an AI failure.</li>
+          <li><strong>3–6 seconds · Build the joke</strong>The creator tries again: “The one underneath… next to… you know what?” Show the explanation growing as an editorial text overlay. Keep it out of the product chat so it cannot be mistaken for an actual conversation.</li>
+          <li><strong>6–11 seconds · Choro makes the difference</strong>Cut to the real Choro recording. Show the target being selected and the short request being submitted. Voice: “In Choro, I can just point to it.” On-screen label: “Choro · Build with AI.” Crop tightly enough to understand the selection on a phone; keep enough product context to identify Choro.</li>
+          <li><strong>11–18 seconds · Deliver the payoff</strong>Cut the wait with a small “After the edit” label. Show the actual purple, rounded button, then hold a matching before-and-after comparison. Voice: “That button. That’s what I meant.” Give the result room to land.</li>
+          <li><strong>18–23 seconds · Give them a next step</strong>Keep the finished page visible with the approved Choro logo and readable CTA: “Download Choro for Mac · choro.dev.” Voice: “Build with Choro. Download at choro dot dev.”</li>
+        </ol>
+
+        <h4>How to make it feel</h4>
+        <ul>
+          <li>Use a conversational, lightly frustrated delivery that turns into relief. A real creator’s voice is preferred for this pilot; their face is optional. Start with the situation immediately.</li>
+          <li>Use a 9:16 frame, readable captions inside phone-safe areas, and close crops of the action. Skip the full-screen presenter introduction and menu explanations. If a keyboard shortcut is demonstrated, show it as a large, readable centered overlay timed to its use.</li>
+          <li>The opening is a sketch; the selection, submitted request, and resulting change must be genuine Choro footage. Compress waiting clearly. Do not imply every edit succeeds instantly or that competing tools always choose the wrong element.</li>
+        </ul>
+
+        <h4>Why this differs from the current shorts</h4>
+        <p>The current “Point to it” example opens with a presenter asking about the problem, then explains how selection supplies context. Other scripts introduce terms such as worktrees or on-demand teammates. Those details help an interested viewer understand the workflow, but a first-time viewer still needs a reason to care.</p>
+        <p>This version lets the viewer recognize a frustrating moment before hearing an explanation. The joke earns attention, the real edit gives Choro a clear role, and the visible result supplies a reason to try it. We deliberately reuse one capability to test a different format. Future variety can come from build stories, visual transformations, suspense, or Companion moments as well as different features.</p>
+        <blockquote><p>Creative test: Can someone who has never seen Choro understand the frustration, see what Choro changes, and want to try it—without learning any feature names?</p></blockquote>
+
+        <h4>What to hand back and evaluate</h4>
+        <p>Deliver one finished 1080 × 1920 review draft, with captions and sound, plus the clean product recording. Timing above is an edit target. Bring the draft back for review before publishing. First check whether a newcomer can explain what Choro helped with. If published later, compare it with the existing “Point to it” short on the same channel: early retention, visits to the download page, and attributable downloads where measurable. Views alone do not establish that the new direction works.</p>
+      </section>
     </section>
 
     <div class="tabs-shell">
@@ -910,7 +960,7 @@
         <tr data-status="completed"><td><span class="video-title">Work in Parallel with Specialist Agents</span><span class="duration">2:00</span><span class="completion-badge">Completed</span></td><td>Meet Band <span class="flow-arrow">→</span> one shared goal <span class="flow-arrow">→</span> parallel assignments <span class="flow-arrow">→</span> combined result</td><td class="value-text">Introduces specialist teamwork: one lead coordinates the bandmates and checks their contributions together.</td></tr>
         <tr data-status="completed"><td><span class="video-title">Try Parallel Work with Solo</span><span class="duration">2:00</span><span class="completion-badge">Completed</span></td><td>Start Solo <span class="flow-arrow">→</span> separate lane <span class="flow-arrow">→</span> switch work <span class="flow-arrow">→</span> bring home</td><td class="value-text">Shows how to run isolated work in parallel without mixing branches.</td></tr>
         <tr data-status="completed"><td><span class="video-title">Meet Choro Companion</span><span class="duration">0:38</span><span class="completion-badge">Completed</span></td><td>Desktop presence <span class="flow-arrow">→</span> attention hint <span class="flow-arrow">→</span> music moods <span class="flow-arrow">→</span> live processes and visibility</td><td class="value-text">Introduces Companion as a useful part of everyday Choro: stay connected to the work without keeping the full workspace in front of you.</td></tr>
-        <tr data-status="completed"><td><span class="video-title">Take Choro with You on Mobile</span><span class="duration">0:50</span><span class="completion-badge">Completed</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> respond remotely</td><td class="value-text">Ends with the simple mobile promise: the Mac does the work while the phone keeps you connected.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Take Choro with You on Mobile</span><span class="duration">0:53</span><span class="completion-badge">Completed</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> respond remotely</td><td class="value-text">Ends with the simple mobile promise: the Mac does the work while the phone keeps you connected.</td></tr>
       </tbody></table></div>
     </section>
 
@@ -1008,12 +1058,12 @@
       <div class="panel-heading"><h2>Choro Mobile</h2><p>Pair an iPhone, follow agent work away from the Mac, and respond with the right level of access.</p></div>
       <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
         <tr data-status="completed"><td><span class="video-title">Meet Choro Remote</span><span class="duration">0:51</span><span class="completion-badge">Completed</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> monitor and respond away from the desk</td><td class="value-text">Explains what Choro Remote is, what stays on the Mac, and when the phone is useful.</td></tr>
-        <tr><td><span class="video-title">Pair Your iPhone with Choro</span><span class="duration">2:00</span></td><td>Remote access <span class="flow-arrow">→</span> Connect &amp; pair <span class="flow-arrow">→</span> enter Mac ID and code <span class="flow-arrow">→</span> connected</td><td class="value-text">Securely connects Choro Remote to the correct Mac with a one-time code.</td></tr>
-        <tr><td><span class="video-title">Choose What Your Phone Can Do</span><span class="duration">1:45</span></td><td>Paired devices <span class="flow-arrow">→</span> View only, Control, or Full access <span class="flow-arrow">→</span> confirm</td><td class="value-text">Keeps remote actions limited to the authority the user actually wants.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Pair Your iPhone with Choro</span><span class="duration">0:52</span><span class="completion-badge">Completed</span></td><td>Remote access <span class="flow-arrow">→</span> Connect &amp; pair <span class="flow-arrow">→</span> enter Mac ID and code <span class="flow-arrow">→</span> connected</td><td class="value-text">Securely connects Choro Remote to the correct Mac with a one-time code.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Choose What Your Phone Can Do</span><span class="duration">0:51</span><span class="completion-badge">Completed</span></td><td>Paired devices <span class="flow-arrow">→</span> cycle the permission label <span class="flow-arrow">→</span> refresh phone controls</td><td class="value-text">Keeps remote actions limited to the authority the user actually wants.</td></tr>
         <tr data-status="completed"><td><span class="video-title">Check Agent Progress from Your Phone</span><span class="duration">0:51</span><span class="completion-badge">Completed</span></td><td>Projects <span class="flow-arrow">→</span> active agent <span class="flow-arrow">→</span> timeline and status <span class="flow-arrow">→</span> result</td><td class="value-text">Lets users understand progress and see when an agent needs attention.</td></tr>
-        <tr data-status="completed"><td><span class="video-title">Start or Continue Agent Work on Mobile</span><span class="duration">1:07</span><span class="completion-badge">Completed</span></td><td>Choose project <span class="flow-arrow">→</span> new or existing agent <span class="flow-arrow">→</span> configure <span class="flow-arrow">→</span> send</td><td class="value-text">Starts useful work or adds a follow-up without returning to the desktop.</td></tr>
-        <tr><td><span class="video-title">Respond to Questions, Plans, and Approvals</span><span class="duration">2:15</span></td><td>Needs attention <span class="flow-arrow">→</span> review request <span class="flow-arrow">→</span> answer or approve <span class="flow-arrow">→</span> continue</td><td class="value-text">Unblocks agents remotely while keeping higher-risk approvals protected.</td></tr>
-        <tr><td><span class="video-title">Review Results and Ask for Fixes on Mobile</span><span class="duration">2:00</span></td><td>Completed agent <span class="flow-arrow">→</span> changed files and verification <span class="flow-arrow">→</span> Ask to fix</td><td class="value-text">Turns a phone check into a precise correction instead of simple acceptance.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Start or Continue Agent Work on Mobile</span><span class="duration">1:07</span><span class="completion-badge">Completed</span></td><td>Open conversation <span class="flow-arrow">→</span> scoped follow-up <span class="flow-arrow">→</span> send <span class="flow-arrow">→</span> matching Mac result</td><td class="value-text">Adds a useful follow-up without returning to the desktop.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Respond to Questions, Plans, and Approvals</span><span class="duration">0:54</span><span class="completion-badge">Completed</span></td><td>Needs attention <span class="flow-arrow">→</span> review request <span class="flow-arrow">→</span> answer or approve <span class="flow-arrow">→</span> continue</td><td class="value-text">Unblocks agents remotely while keeping higher-risk approvals protected.</td></tr>
+        <tr data-status="completed"><td><span class="video-title">Review Results and Ask for Fixes on Mobile</span><span class="duration">0:59</span><span class="completion-badge">Completed</span></td><td>Completed agent <span class="flow-arrow">→</span> changed files and verification <span class="flow-arrow">→</span> Ask to fix</td><td class="value-text">Turns a phone check into a precise correction instead of simple acceptance.</td></tr>
       </tbody></table></div>
     </section>
 
@@ -4588,122 +4638,98 @@
   "Start or Continue Agent Work on Mobile": {
     "title": "Start or Continue Agent Work on Mobile",
     "playlist": "mobile",
-    "titleLines": [
-      "Give the next",
-      "direction from mobile"
-    ],
-    "subtitle": "Continue the same agent conversation",
     "review": {
       "approvedForDraft": true,
-      "outcome": "Send a follow-up from the phone and see it continue on the Mac.",
-      "critique": "Choose the continue branch of this lesson; do not pretend new-agent configuration was captured.",
-      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
-      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
-      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
     },
     "scenes": [
       {
         "id": "intro",
-        "shown": "Open a connected project on iPhone.",
-        "text": "A small follow-up doesn’t always need to wait until you’re back at your desk. With control enabled for your phone, you can continue an existing agent conversation in Choro Remote."
+        "text": "A small follow-up doesn’t always need to wait until you’re back at your desk. With control enabled for your phone, you can continue an existing agent conversation in Choro Remote.",
+        "shown": "Open a connected project on iPhone."
       },
       {
         "id": "context",
-        "shown": "Read existing conversation.",
-        "text": "Choose the project and open the conversation that already holds the relevant work. Read the latest context first. A continuation belongs in this thread when it builds on the same goal and earlier decisions."
+        "text": "Choose the project and open the conversation that already holds the relevant work. Read the latest context first. A continuation belongs in this thread when it builds on the same goal and earlier decisions.",
+        "shown": "Read existing conversation."
       },
       {
         "id": "write",
-        "shown": "Compose the genuine follow-up.",
-        "text": "Write the next instruction with a clear boundary: what should happen now, and what should remain unchanged. The phone gives you a smaller screen, but the request still deserves the same care as it would on the Mac."
+        "text": "Write the next instruction with a clear boundary: what should happen now, and what should remain unchanged. The phone gives you a smaller screen, but the request still deserves the same care as it would on the Mac.",
+        "shown": "Compose the genuine follow-up."
       },
       {
         "id": "send",
-        "shown": "Tap Send on the phone and show continuation.",
-        "text": "Check the message, then send it. Wait for the conversation to show that the work has continued. If the device does not have permission for the action, change that deliberately on the Mac rather than assuming every phone can act."
+        "text": "Check the message, then send it. Wait for the conversation to show that the work has continued. If the device does not have permission for the action, change that deliberately on the Mac rather than assuming every phone can act.",
+        "shown": "Tap Send on the phone and show continuation."
       },
       {
         "id": "mac",
-        "shown": "Show the resulting Mac conversation.",
-        "text": "On the Mac, the follow-up and result are in that same conversation. You can inspect the changed files there when you return. The handoff is between devices, not between two disconnected versions of the task."
+        "text": "On the Mac, the follow-up and result are in that same conversation. You can inspect the changed files there when you return. The handoff is between devices, not between two disconnected versions of the task.",
+        "shown": "Show the resulting Mac conversation."
       }
     ]
   },
   "Meet Choro Remote": {
     "title": "Meet Choro Remote",
     "playlist": "mobile",
-    "titleLines": [
-      "Your project,",
-      "away from the desk"
-    ],
-    "subtitle": "Follow the Mac from your iPhone",
     "review": {
       "approvedForDraft": true,
-      "outcome": "Understand the phone as a companion to a connected Mac, not a replacement execution environment.",
-      "critique": "Do not imply the phone runs local development tools or demonstrate pairing without footage.",
-      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
-      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
-      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
     },
     "scenes": [
       {
         "id": "intro",
-        "shown": "Projects on the connected phone.",
-        "text": "Stepping away from your desk shouldn’t mean losing track of the work. Choro Remote gives you a way to follow your projects and agent conversations from your iPhone."
+        "text": "Stepping away from your desk shouldn’t mean losing track of the work. Choro Remote gives you a way to follow your projects and agent conversations from your iPhone.",
+        "shown": "Projects on the connected phone."
       },
       {
         "id": "place",
-        "shown": "Open an existing conversation.",
-        "text": "The project and the agent work stay on the Mac. The phone is your connection to that workspace, so the Mac needs to be available. You’re continuing the same work, not copying it into a separate mobile project."
+        "text": "The project and the agent work stay on the Mac. The phone is your connection to that workspace, so the Mac needs to be available. You’re continuing the same work, not copying it into a separate mobile project.",
+        "shown": "Open an existing conversation."
       },
       {
         "id": "respond",
-        "shown": "Type and send an actual phone reply.",
-        "text": "When a conversation needs you, read the context and respond from the phone. The actions available depend on the access you’ve granted that device. You don’t have to give every phone the same level of control."
+        "text": "When a conversation needs you, read the context and respond from the phone. The actions available depend on the access you’ve granted that device. You don’t have to give every phone the same level of control.",
+        "shown": "Type and send an actual phone reply."
       },
       {
         "id": "result",
-        "shown": "Matching continuation on the Mac.",
-        "text": "Back on the Mac, that reply is part of the same conversation. That’s the useful idea: check in, give the next direction when needed, and return to your existing workspace. Pairing and access choices have their own lessons."
+        "text": "Back on the Mac, that reply is part of the same conversation. That’s the useful idea: check in, give the next direction when needed, and return to your existing workspace. Pairing and access choices have their own lessons.",
+        "shown": "Matching continuation on the Mac."
       }
     ]
   },
   "Check Agent Progress from Your Phone": {
     "title": "Check Agent Progress from Your Phone",
     "playlist": "mobile",
-    "titleLines": [
-      "Check in without",
-      "starting over"
-    ],
-    "subtitle": "Read the project and conversation before responding",
     "review": {
       "approvedForDraft": true,
-      "outcome": "Find the relevant phone conversation and distinguish reading progress from approving results.",
-      "critique": "Do not show internal review prompt leaked later in the old mobile take. Only use clean early conversation ranges.",
-      "overlap": "Skip the broad Getting Started tour; focus on this specific decision and workflow.",
-      "revision": "Remove claims not supported by captured UI; use a self-contained opening and concrete value.",
-      "evidenceGate": "Existing genuine Mac/Simulator recordings. Inspect selected scenes before publishing."
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
     },
     "scenes": [
       {
         "id": "intro",
-        "shown": "Connected phone project list.",
-        "text": "If you’ve stepped away while an agent is working, start by finding the right project. The phone lets you check the conversation without starting another task just to ask what happened."
+        "text": "If you’ve stepped away while an agent is working, start by finding the right project. The phone lets you check the conversation without starting another task just to ask what happened.",
+        "shown": "Connected phone project list."
       },
       {
         "id": "thread",
-        "shown": "Open the existing agent thread.",
-        "text": "Open the agent and read the latest messages. Check the request as well as the reply, so you understand what the agent is trying to do. A status tells you where to look; the conversation gives you the reason."
+        "text": "Open the agent and read the latest messages. Check the request as well as the reply, so you understand what the agent is trying to do. A status tells you where to look; the conversation gives you the reason.",
+        "shown": "Open the existing agent thread."
       },
       {
         "id": "decision",
-        "shown": "Conversation and composer.",
-        "text": "Decide whether you need to respond. If a choice is waiting on you, answer it clearly. If you only wanted an update, you can leave the conversation as it is. Checking progress does not require giving another instruction."
+        "text": "Decide whether you need to respond. If a choice is waiting on you, answer it clearly. If you only wanted an update, you can leave the conversation as it is. Checking progress does not require giving another instruction.",
+        "shown": "Conversation and composer."
       },
       {
         "id": "continue",
-        "shown": "Actual continuation after phone reply.",
-        "text": "When you do respond, keep following that same thread. Look for the new activity after your message, and review the result when it’s ready. Sending a reply and approving the finished work are separate decisions."
+        "text": "When you do respond, keep following that same thread. Look for the new activity after your message, and review the result when it’s ready. Sending a reply and approving the finished work are separate decisions.",
+        "shown": "Actual continuation after phone reply."
       }
     ]
   },
@@ -5430,6 +5456,186 @@
         "text": "Less relaying. More building."
       }
     ]
+  },
+  "Respond to Questions, Plans, and Approvals": {
+    "title": "Respond to Questions, Plans, and Approvals",
+    "playlist": "mobile",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "text": "An agent can keep working on your Mac, but sometimes it needs your decision. Choro Remote brings those moments to your phone, in the same conversation.",
+        "shown": "Connected phone conversation with a genuine pending question."
+      },
+      {
+        "id": "question",
+        "text": "Open the question, read the choices, and send your answer. Here, we choose who the guide is for. That decision goes back to the agent on the Mac.",
+        "shown": "Actual audience question, Clients choice and Send answer."
+      },
+      {
+        "id": "plan",
+        "text": "When a plan is ready, review what the agent intends to change before choosing Implement plan. The phone lets you make the decision; the Mac still does the work.",
+        "shown": "Real plan content and Implement plan tap."
+      },
+      {
+        "id": "approval",
+        "text": "For an approval request, read the command and its scope before you approve. This phone has Full access, which allows remote approvals. That does not mean you should accept a request without checking it.",
+        "shown": "Actual read-only command approval and successful continuation."
+      },
+      {
+        "id": "result",
+        "text": "Then follow the conversation through to its result. Answering a question, approving a plan, and allowing a command are different decisions, all connected to the same work.",
+        "shown": "Real completed guide and changed file on the phone."
+      }
+    ]
+  },
+  "Review Results and Ask for Fixes on Mobile": {
+    "title": "Review Results and Ask for Fixes on Mobile",
+    "playlist": "mobile",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "text": "Checking work from your phone should be more than reading a finished message. You can review what was checked, spot a missing requirement, and send a focused correction back to the agent.",
+        "shown": "Genuine verification with one met and one missed requirement."
+      },
+      {
+        "id": "inspect",
+        "text": "Here, verification found that one requirement is met and another is missing. Read the evidence under each item. The status is a useful starting point, but the explanation tells you what actually needs attention.",
+        "shown": "Owner met and explicit rollback instruction missing, with file evidence."
+      },
+      {
+        "id": "fix",
+        "text": "Tap Ask to fix to send the missing requirement back to the agent. You do not need to rewrite the whole task. The follow-up keeps the correction connected to the work you are reviewing.",
+        "shown": "Actual Ask to fix tap and agent continuation; no simulated success."
+      },
+      {
+        "id": "result",
+        "text": "When the agent finishes, check the result rather than assuming the request was enough. Open the changed file and inspect the relevant lines. In this example, the missing instruction is now present.",
+        "shown": "Actual changed-file summary and diff, then evidence-backed passing recheck."
+      },
+      {
+        "id": "finish",
+        "text": "Use the phone to make a clear decision: accept the result, or ask for a specific follow-up. The work stays in the same conversation, ready to continue on your Mac.",
+        "shown": "Final genuine verification evidence, with both requirements met."
+      }
+    ]
+  },
+  "Take Choro with You on Mobile": {
+    "title": "Take Choro with You on Mobile",
+    "playlist": "start",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "text": "Sometimes the agent is still working, but you don't want to stay at your desk just to keep an eye on it. Choro Remote lets you follow that work from your phone.",
+        "shown": "Current Mobile UI and genuine Demo conversation."
+      },
+      {
+        "id": "projects",
+        "text": "Here are our projects and agents on the phone. The work is still running on the Mac. The phone gives us a way to check in without sitting in front of it.",
+        "shown": "Current Mobile UI and genuine Demo conversation."
+      },
+      {
+        "id": "conversation",
+        "text": "We can open the conversation and see where things are. It's the same piece of work, not a second agent we have to keep in sync ourselves.",
+        "shown": "Current Mobile UI and genuine Demo conversation."
+      },
+      {
+        "id": "respond",
+        "text": "And when the agent needs a decision, we can respond here and let the work continue. The Mac needs to stay available for this—the phone isn't taking over the build.",
+        "shown": "Current Mobile UI and genuine Demo conversation."
+      },
+      {
+        "id": "closing",
+        "text": "That's the basic mobile idea: the Mac does the work, and you can stay connected from somewhere else. We'll cover connecting your devices in its own walkthrough. For now, you've seen the core Choro flow, from starting a project to following it on the go.",
+        "shown": "Current Mobile UI and genuine Demo conversation."
+      }
+    ]
+  },
+  "Pair Your iPhone with Choro": {
+    "title": "Pair Your iPhone with Choro",
+    "playlist": "mobile",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "text": "Your Mac runs the agents. Your iPhone lets you follow their work. Start by pairing Choro Remote with the Mac you want to reach.",
+        "shown": "Fresh Choro Remote pairing screen."
+      },
+      {
+        "id": "mac",
+        "text": "On your Mac, open Settings, then Remote access. Choose Connect and pair to reveal the Mac ID and a one-time pairing code. Keep those details private.",
+        "shown": "Actual Connect and pair action; identifier and code masked."
+      },
+      {
+        "id": "phone",
+        "text": "In Choro Remote, enter that Mac ID and the complete pairing code, then tap Pair securely. Use the current code shown on your Mac, not the hidden example in this video.",
+        "shown": "Actual entry and Pair securely tap, with private values masked."
+      },
+      {
+        "id": "connect",
+        "text": "Keep Remote connection on. If the phone is disconnected, check that Choro is open on your Mac, then retry the connection. Look for Connected and your project list.",
+        "shown": "Actual Demo connection recovery and phone Connected project list."
+      },
+      {
+        "id": "finish",
+        "text": "The phone now appears under Paired devices. Your Mac still does the work. You can choose what this phone is allowed to do from the same settings page.",
+        "shown": "Actual second paired device, with original pairing preserved."
+      }
+    ]
+  },
+  "Choose What Your Phone Can Do": {
+    "title": "Choose What Your Phone Can Do",
+    "playlist": "mobile",
+    "review": {
+      "approvedForDraft": true,
+      "outcome": "Follow real Demo work on the current Mobile UI.",
+      "evidenceGate": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+    },
+    "scenes": [
+      {
+        "id": "intro",
+        "text": "Pairing your phone does not have to mean giving it every permission. On your Mac, open Settings, Remote access, and find the phone under Paired devices.",
+        "shown": "Paired devices and the temporary phone's permission control."
+      },
+      {
+        "id": "view",
+        "text": "Click the permission label to cycle through the levels. View only is for checking progress and reading results. The phone cannot send new instructions.",
+        "shown": "View only selected; conversation and disabled phone composer."
+      },
+      {
+        "id": "control",
+        "text": "Control lets you send instructions to agents that allow it. Here, we ask for a one-sentence summary and get an answer, without changing any files.",
+        "shown": "Control selected, real message sent and genuine summary returned."
+      },
+      {
+        "id": "full",
+        "text": "Full access also permits remote approvals and shipping. Choose it only when you want that authority on this phone. It does not automatically approve every request.",
+        "shown": "Full access selected on temporary device; no shipping or approval performed in this shot."
+      },
+      {
+        "id": "finish",
+        "text": "Choose the lowest level you need. You can change it later on the Mac. After changing access, refresh the phone to see its updated controls.",
+        "shown": "Temporary phone returned to View only; original phone remains Full access."
+      }
+    ]
   }
 }
 </script>
@@ -5578,12 +5784,6 @@
     "title": "Try Parallel Work with Solo",
     "folder": "solo-worktrees-and-previews-20260919",
     "file": "solo-worktrees-and-previews-alex-d-final-4k-new-endcards.mp4"
-  },
-  {
-    "id": "mobile",
-    "title": "Take Choro with You on Mobile",
-    "folder": "mobile-remote-overview-20260919",
-    "file": "take-choro-with-you-on-mobile-alex-d-clear-layout-4k.mp4"
   },
   {
     "id": "draft-band-on-demand",
@@ -5766,18 +5966,6 @@
     "revisionPending": false
   },
   {
-    "id": "draft-mobile-continue",
-    "title": "Start or Continue Agent Work on Mobile",
-    "folder": "playlist-final-20260921/mobile-continue",
-    "file": "final-alex-d-4k.mp4",
-    "poster": "intro-check.png",
-    "draft": false,
-    "duration": 67,
-    "note": "Verified Alex D / HeyGen export. Original screen demonstration and instructional copy retained; approved intro and shared outro.",
-    "avatar": true,
-    "revisionPending": false
-  },
-  {
     "id": "draft-band-feature",
     "title": "Build a Feature with Your Band",
     "folder": "playlist-final-20260921/band-feature",
@@ -5797,30 +5985,6 @@
     "poster": "intro-check.png",
     "draft": false,
     "duration": 79,
-    "note": "Verified Alex D / HeyGen export. Original screen demonstration and instructional copy retained; approved intro and shared outro.",
-    "avatar": true,
-    "revisionPending": false
-  },
-  {
-    "id": "draft-mobile-meet",
-    "title": "Meet Choro Remote",
-    "folder": "playlist-final-20260921/mobile-meet",
-    "file": "final-alex-d-4k.mp4",
-    "poster": "intro-check.png",
-    "draft": false,
-    "duration": 51,
-    "note": "Verified Alex D / HeyGen export. Original screen demonstration and instructional copy retained; approved intro and shared outro.",
-    "avatar": true,
-    "revisionPending": false
-  },
-  {
-    "id": "draft-mobile-progress",
-    "title": "Check Agent Progress from Your Phone",
-    "folder": "playlist-final-20260921/mobile-progress",
-    "file": "final-alex-d-4k.mp4",
-    "poster": "intro-check.png",
-    "draft": false,
-    "duration": 51,
     "note": "Verified Alex D / HeyGen export. Original screen demonstration and instructional copy retained; approved intro and shared outro.",
     "avatar": true,
     "revisionPending": false
@@ -6171,6 +6335,94 @@
     "avatar": true,
     "draft": false,
     "note": "Fresh real same-project agent Question and returned answer; Alex D / ElevenLabs, HeyGen, approved Productivity intro and shared outro. Native 1280×820 window-only recording; a 4K container does not add source detail. No product source changes."
+  },
+  {
+    "id": "mobile-decisions-v2",
+    "title": "Respond to Questions, Plans, and Approvals",
+    "folder": "playlist-final-20260921/mobile-decisions-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 53.666667,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-review-v2",
+    "title": "Review Results and Ask for Fixes on Mobile",
+    "folder": "playlist-final-20260921/mobile-review-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 59.333333,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-meet-v2",
+    "title": "Meet Choro Remote",
+    "folder": "playlist-final-20260921/mobile-meet-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 51.2,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-progress-v2",
+    "title": "Check Agent Progress from Your Phone",
+    "folder": "playlist-final-20260921/mobile-progress-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 50.666667,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-continue-v2",
+    "title": "Start or Continue Agent Work on Mobile",
+    "folder": "playlist-final-20260921/mobile-continue-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 66.766667,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-overview-v2",
+    "title": "Take Choro with You on Mobile",
+    "folder": "playlist-final-20260921/mobile-overview-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 53.3,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-pair-v2",
+    "title": "Pair Your iPhone with Choro",
+    "folder": "playlist-final-20260921/mobile-pair-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 52.1,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
+  },
+  {
+    "id": "mobile-access-v2",
+    "title": "Choose What Your Phone Can Do",
+    "folder": "playlist-final-20260921/mobile-access-v2",
+    "file": "final-alex-d-4k.mp4",
+    "poster": "poster.png",
+    "duration": 51.066667,
+    "avatar": true,
+    "draft": false,
+    "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
   }
 ]
 </script>
@@ -6689,7 +6941,7 @@
       "Choose What Your Phone Can Do": {
         steps: [
           "Open Settings → Remote access and find the prepared iPhone under Paired devices.",
-          "Open its permission menu and pause on View only, Control, and Full access.",
+          "Click its permission label to cycle through View only, Control, and Full access.",
           "Choose the permission level for the example workflow.",
           "On the iPhone, open an agent and show that the available actions match the selected permission."
         ],
@@ -7036,20 +7288,20 @@
         "note": "Recorded creating Release Checklist with fields and an evidence-based agent job, saving it and adding its empty grouped view to the project. The draft does not invent populated records."
       },
       "Pair Your iPhone with Choro": {
-        "status": "Connection investigation",
-        "note": "September 22: desktop-control permission is granted. Demo Remote access was Off and is now On, but the existing Simulator pairing still reports Mac unavailable after relaunch. A complete fresh pairing recording is pending. No pairing reset, service change or product-code edit was made."
+        "status": "Completed",
+        "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
       },
       "Choose What Your Phone Can Do": {
-        "status": "Connection investigation",
-        "note": "Prior footage shows Control refusing command approval. The current Simulator cannot reconnect even after Demo Remote access is On, so the complete permission comparison is still pending. Existing paired-device permissions remain unchanged; no product-code fix is authorized."
+        "status": "Completed",
+        "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
       },
       "Respond to Questions, Plans, and Approvals": {
-        "status": "Connection investigation",
-        "note": "Earlier footage includes a real question and phone answer, followed by Control refusing command approval. September 22 reconnect attempts still show Mac unavailable. The approval and completed plan-decision sequence is not yet recorded; no successful outcome is claimed."
+        "status": "Completed",
+        "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
       },
       "Review Results and Ask for Fixes on Mobile": {
-        "status": "Product blocker",
-        "note": "Recorded verification shows 1 of 2 requirements met, but Ask to fix returns Invalid remote request. Source reconfirmed September 22: POST /v1/agents/{id}/verification/fix exists in server.rs but is absent from remote/relay.rs allowlisted_route. LEFT PENDING under the user's no-product-code-changes instruction. No successful fix video was fabricated; fixture and failed take are preserved."
+        "status": "Completed",
+        "note": "Current Mobile UI recorded September 25 with real Demo conversations. Alex D narration and HeyGen, approved intro/shared outro; original takes preserved. Native Simulator 1206×2622, Mac 1280×820; 4K export does not add detail."
       },
       "Quick Ask or Agent?": {
         "status": "Draft ready",

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, readdir, lstat, readlink } from "node:fs/promises";
+import { readFile, readdir, lstat, readlink, open } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -50,8 +50,28 @@ let usageRevision = 0;
 let cumulativeUsage = emptyUsage();
 const cumulativeModelUsage = new Map();
 
+export class EvidenceBudget {
+  constructor(limit = 32 * 1024 * 1024, events = 4096) { this.limit = limit; this.events = events; this.bytes = 0; this.count = 0; }
+  reserve(bytes) {
+    if (bytes + this.bytes > this.limit || this.count >= this.events) return null;
+    this.bytes += bytes; this.count++;
+    let released = false;
+    return () => { if (!released) { released = true; this.bytes -= bytes; this.count--; } };
+  }
+}
+const evidenceBudget = new EvidenceBudget();
+let evidenceOverflow = false;
+function markEvidenceOverflow() {
+  if (!evidenceOverflow) { evidenceOverflow = true; emit({ type: "evidence_overflow" }); }
+}
+
 function emit(event) {
-  process.stdout.write(`${JSON.stringify(event)}\n`);
+  const line = `${JSON.stringify(event)}\n`;
+  if (event.type === "file_change_activity") {
+    const release = evidenceBudget.reserve(Buffer.byteLength(line));
+    if (!release) { markEvidenceOverflow(); return; }
+    process.stdout.write(line, release);
+  } else process.stdout.write(line);
 }
 
 function emitError(error) {
@@ -464,13 +484,41 @@ function mutationPaths(toolName, input) {
   );
 }
 
-async function readMutationState(path, cwd = currentCwd) {
+export async function readMutationState(path, cwd = currentCwd) {
   const absolute = isAbsolute(path) ? path : join(cwd, path);
-  try {
-    return mutationStateForContents(await readFile(absolute));
-  } catch (error) {
-    return error.code === "ENOENT" ? { hash: "missing", lines: 0, content: "" } : { hash: null, lines: 0, content: null };
+  let timer;
+  const unknown = { hash: null, lines: 0, content: null };
+  const read = async () => {
+    let handle;
+    try {
+      const metadata = await lstat(absolute);
+      if (!metadata.isFile() || metadata.size > 2 * 1024 * 1024) return unknown;
+      handle = await open(absolute, "r");
+      const bytes = Buffer.alloc(Math.min(metadata.size + 1, 2 * 1024 * 1024 + 1));
+      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+      if (bytesRead !== metadata.size || bytesRead > 2 * 1024 * 1024 || (await handle.stat()).size !== metadata.size) return unknown;
+      return mutationStateForContents(bytes.subarray(0, bytesRead));
+    } catch (error) {
+      return error.code === "ENOENT" ? { hash: "missing", lines: 0, content: "" } : unknown;
+    } finally { await handle?.close().catch(() => {}); }
+  };
+  try { return await Promise.race([read(), new Promise(resolve => { timer = setTimeout(() => resolve(unknown), 200); })]); }
+  finally { clearTimeout(timer); }
+}
+
+export function projectDirectMutation(toolName, input, before) {
+  if (typeof before !== "string") return null;
+  if (toolName === "Write") return typeof input.content === "string" ? input.content : null;
+  const edits = toolName === "Edit" ? [input] : toolName === "MultiEdit" ? input.edits : null;
+  if (!Array.isArray(edits)) return null;
+  let result = before;
+  for (const edit of edits) {
+    if (typeof edit.old_string !== "string" || !edit.old_string || typeof edit.new_string !== "string") return null;
+    const parts = result.split(edit.old_string);
+    if (parts.length < 2 || (!edit.replace_all && parts.length !== 2)) return null;
+    result = edit.replace_all ? parts.join(edit.new_string) : result.replace(edit.old_string, () => edit.new_string);
   }
+  return result.length <= 2 * 1024 * 1024 ? result : null;
 }
 
 function mutationStateForContents(contents) {
@@ -534,10 +582,10 @@ function mergeTurnChange(target, change) {
     path: change.path,
     additions: existing.additions + change.additions,
     deletions: existing.deletions + change.deletions,
-    baseline_hash: existing.baseline_hash ?? change.baseline_hash ?? null,
+    baseline_hash: existing.result_hash && existing.result_hash === change.baseline_hash ? existing.baseline_hash : null,
     result_hash: change.result_hash ?? existing.result_hash ?? null,
     baseline_content:
-      existing.baseline_content ?? change.baseline_content ?? null,
+      existing.result_hash && existing.result_hash === change.baseline_hash ? (existing.baseline_content ?? null) : null,
     result_content: change.result_content ?? existing.result_content ?? null,
   });
 }
@@ -567,6 +615,7 @@ async function finishTurnAfterFileReceipt(flushChanges, finish) {
 
 function trackMutation(work) {
   const pending = pendingMutationTasks;
+  if (pending.size >= 4096) { markEvidenceOverflow(); return Promise.resolve({}); }
   const task = Promise.resolve().then(work);
   pending.add(task);
   return task.finally(() => pending.delete(task));
@@ -582,16 +631,17 @@ async function captureToolMutationBaselineImpl(input, toolUseID) {
   const id = input?.tool_use_id || toolUseID || randomUUID();
   if (isEditTool(toolName)) {
     const paths = mutationPaths(toolName, toolInput);
+    const inputBytes = Buffer.byteLength(JSON.stringify(toolInput));
+    const release = inputBytes <= 2 * 1024 * 1024 && evidenceBudget.reserve(inputBytes + paths.length * 8 * 1024 * 1024);
+    if (!release) { markEvidenceOverflow(); return {}; }
     const states = new Map();
-    await Promise.all(
-      paths.map(async (path) => states.set(path, await readMutationState(path))),
-    );
-    toolMutationBaselines.set(id, { toolName, toolInput, states });
-  } else if (toolName === "Bash") {
-    // Commands do not expose authoritative write paths. A command-scoped diff
-    // is still useful, but it is emitted separately as an observation.
-    commandDiffBaselines.set(id, await readChangedFileSnapshot());
+    try {
+      await Promise.all(paths.map(async (path) => states.set(path, await readMutationState(path))));
+      toolMutationBaselines.get(id)?.release?.();
+      toolMutationBaselines.set(id, { toolName, toolInput, states, turnId: activeTurnId, release });
+    } catch (error) { release(); markEvidenceOverflow(); }
   }
+
   return {};
 }
 
@@ -608,7 +658,7 @@ async function captureCompletedToolMutationImpl(input, toolUseID) {
     if (!baseline) {
       return {};
     }
-    await completeDirectMutationBaseline(id, baseline);
+    await completeDirectMutationBaseline(id, baseline, input?.hook_event_name !== "PostToolUseFailure");
   } else if (toolName === "Bash") {
     const baseline = commandDiffBaselines.get(id);
     commandDiffBaselines.delete(id);
@@ -619,30 +669,26 @@ async function captureCompletedToolMutationImpl(input, toolUseID) {
   return {};
 }
 
-async function completeDirectMutationBaseline(id, baseline) {
-  for (const [path, before] of baseline.states) {
-    const after = await readMutationState(path);
-    if (mutationStateUnchanged(before, after)) {
-      continue;
-    }
-    const [additions, deletions] = directEditCounts(
-      baseline.toolName,
-      baseline.toolInput,
-      before,
-      after,
-    );
-    const change = {
-      path,
-      additions,
-      deletions,
-      baseline_hash: before.hash,
-      result_hash: after.hash,
-      baseline_content: before.content,
-      result_content: after.content,
-    };
-    mergeTurnChange(turnDirectChanges, change);
-    emitFileChangeActivity(id, change, false);
-  }
+export async function completeDirectMutationBaseline(id, baseline, success = false) {
+  const activities = [];
+  try { for (const [path, before] of baseline.states) {
+    const projected = success ? projectDirectMutation(baseline.toolName, baseline.toolInput, before.content) : null;
+    const after = success ? await readMutationState(path) : { hash: null, content: null };
+    if (success && mutationStateUnchanged(before, after)) continue;
+    const exact = projected != null && projected === after.content;
+    const expected = exact ? mutationStateForContents(Buffer.from(projected)) : { hash: null, content: null };
+    const [additions, deletions] = [0, 0]; // Derived by the background evidence worker.
+    const change = { path, additions, deletions,
+      baseline_hash: exact ? before.hash : null, result_hash: expected.hash,
+      baseline_content: exact ? before.content : null, result_content: expected.content };
+    // Success proves the targeted mutation even when the bounded reader cannot
+    // preserve a large/binary body. A readable mismatch remains uncertain.
+    const confirmed = exact || (success && (before.content == null || after.content == null));
+    const activity = { ...fileChangeActivityEvent(id, change, !confirmed), turn_id: baseline.turnId };
+    activities.push(activity);
+    emit(activity);
+  } } finally { baseline.release?.(); }
+  return activities;
 }
 
 async function commandChangesSince(baseline, current) {
@@ -681,23 +727,10 @@ async function completeCommandMutationBaseline(id, baseline, next,
 }
 
 async function captureOutstandingToolMutations() {
-  // Remove entries before awaiting reads. If a late SDK completion hook races
-  // cancellation, only one path owns each baseline and the receipt stays exact.
   const direct = Array.from(toolMutationBaselines.entries());
   toolMutationBaselines.clear();
-  for (const [id, baseline] of direct) {
-    await completeDirectMutationBaseline(id, baseline);
-  }
-
-  const commands = Array.from(commandDiffBaselines.entries());
   commandDiffBaselines.clear();
-  if (commands.length > 0) {
-    const next = await readChangedFileSnapshot();
-    for (const [id, baseline] of commands) {
-      if (!baseline) continue;
-      await completeCommandMutationBaseline(id, baseline, next);
-    }
-  }
+  for (const [id, baseline] of direct) await completeDirectMutationBaseline(id, baseline, false);
 }
 
 async function finishCancelledTurn(capturePending, flushChanges, finish) {
@@ -1246,16 +1279,8 @@ function emitChangedFiles() {
     turnFileFlush = onceAsync(async () => {
       while (pending.size) await Promise.allSettled([...pending]);
       await captureOutstandingToolMutations();
-      if (baseline) {
-        await completeCommandMutationBaseline(`turn:${turnId}`, baseline, null, observed, turnId);
-      }
-      const files = Array.from(direct.values());
-      // Rust reconciles exact paths with final command projections. Dropping
-      // overlaps here would lose shell edits/reverts after an Edit or Write.
-      const observed_files = Array.from(observed.values());
-      if (files.length || observed_files.length) {
-        emit({ type: "changed_files", turn_id: turnId, attribution_version: 1, files, observed_files });
-      }
+
+      emit({ type: "changed_files", turn_id: turnId, attribution_version: 1, files: [], observed_files: [] });
     });
   }
   return turnFileFlush();
@@ -1275,7 +1300,7 @@ async function handleCommand(command) {
       if (stale()) return;
       planCaptured = false;
       capturedPlanKeys.clear();
-      activeTurnId = randomUUID();
+      activeTurnId = command.turn_id || randomUUID();
       turnDirectChanges = new Map();
       turnObservedChanges = new Map();
       toolMutationBaselines = new Map();
@@ -1284,7 +1309,7 @@ async function handleCommand(command) {
       pendingMutationTasks = new Set();
       await ensureRuntime(command);
       if (stale()) return;
-      turnFileBaseline = await readChangedFileSnapshot();
+      turnFileBaseline = null;
       if (stale()) return;
       emit({ type: "status", status: "running" });
       promptController?.enqueue(command.text || "");

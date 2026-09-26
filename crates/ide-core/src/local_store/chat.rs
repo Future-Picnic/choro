@@ -140,8 +140,8 @@ pub(super) async fn replace_chat_file_ledger_async(
         conn.execute(
             "INSERT INTO chat_file_ledger
              (agent_id, path, attribution, additions, deletions, baseline_hash, result_hash,
-              baseline_content, result_content, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              baseline_content, result_content, updated_at, counts_unavailable, segments_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 agent_id.to_string(),
                 path_to_string(&entry.path),
@@ -153,6 +153,8 @@ pub(super) async fn replace_chat_file_ledger_async(
                 entry.baseline_content.clone(),
                 entry.result_content.clone(),
                 u64_to_i64(entry.updated_at)?,
+                i64::from(entry.counts_unavailable),
+                entry.segments_json.clone(),
             ],
         )
         .await?;
@@ -179,7 +181,7 @@ pub(super) async fn load_chat_file_ledger_async(
     let mut rows = conn
         .query(
             "SELECT path, attribution, additions, deletions, baseline_hash, result_hash,
-                    baseline_content, result_content, updated_at
+                    baseline_content, result_content, updated_at, counts_unavailable, segments_json
              FROM chat_file_ledger WHERE agent_id = ?1 ORDER BY path ASC",
             [agent_id.to_string()],
         )
@@ -199,6 +201,8 @@ pub(super) async fn load_chat_file_ledger_async(
             baseline_content: opt_text(&row, 6)?,
             result_content: opt_text(&row, 7)?,
             updated_at: i64_to_u64(row.get(8)?)?,
+            counts_unavailable: row.get::<i64>(9)? != 0,
+            segments_json: row.get::<String>(10)?,
         });
     }
     Ok(Some(StoredChatFileLedger {

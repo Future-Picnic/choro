@@ -85,6 +85,19 @@ Anthropic's endorsement or approval of Choro.
 The corresponding font license files and the Devicon subset provenance record
 are stored beside the assets and copied into packaged applications.
 
+## README technology marks
+
+The unmodified Rust logo files in `assets/readme/` come from the
+[Rust artwork repository](https://github.com/rust-lang/rust-artwork/tree/main/logo).
+The Rust Foundation distributes them under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); Rust's
+[trademark policy](https://rust-lang.org/policies/media-guide) also applies.
+The Turso logomarks in the same directory are unmodified files from
+[Turso's brand kit](https://turso.tech/brand). They are used only to identify
+the local embedded database technology. GPUI is identified by name without
+using Zed's logo. None of these marks is included in Choro's Apache-2.0
+license grant, and no endorsement is implied.
+
 ## Product and provider marks
 
 The Asana, Anthropic/Claude, Atlassian/Jira, ClickUp, Figma, Linear, OpenAI,

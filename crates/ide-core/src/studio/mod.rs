@@ -1,4 +1,6 @@
 //! Local, revisioned HTML design documents. Every writer (UI or MCP) uses this service.
+mod settings;
+pub use settings::*;
 mod activity;
 mod agent;
 mod canvas;
@@ -256,6 +258,8 @@ pub enum StudioAgentTarget {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioTurnScope {
+    #[serde(default)]
+    pub design_guidance: String,
     pub id: Uuid,
     pub design_id: Uuid,
     pub screen_ids: BTreeSet<Uuid>,
@@ -282,6 +286,7 @@ impl StudioTurnScope {
         Self {
             id: Uuid::new_v4(),
             design_id,
+            design_guidance: String::new(),
             screen_ids: [screen_id].into(),
             selected_element: None,
             current_screen_id: Some(screen_id),

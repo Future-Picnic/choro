@@ -70,6 +70,7 @@ pub(crate) fn is_internal_untracked_delta(delta: &DiffDelta<'_>) -> bool {
 /// Diff a single file: worktree-vs-index (unstaged) or index-vs-HEAD (staged).
 /// Untracked files are shown as an all-added diff against /dev/null.
 pub fn diff_file(repo_path: &Path, file: &Path, staged: bool) -> Result<FileDiff> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path).context("not a git repository")?;
 
     if !staged {
@@ -151,7 +152,7 @@ fn extract_delta(diff: &Diff, delta_index: usize, result: &mut FileDiff) -> Resu
     extract_patch(&patch, result)
 }
 
-fn extract_patch(patch: &Patch<'_>, result: &mut FileDiff) -> Result<()> {
+pub(super) fn extract_patch(patch: &Patch<'_>, result: &mut FileDiff) -> Result<()> {
     for hunk_index in 0..patch.num_hunks() {
         let (hunk, line_count) = patch.hunk(hunk_index)?;
         let header = String::from_utf8_lossy(hunk.header())

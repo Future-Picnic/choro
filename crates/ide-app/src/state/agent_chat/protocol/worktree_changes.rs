@@ -5,6 +5,35 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+const MAX_CAPTURE_BYTES: u64 = 2 * 1024 * 1024;
+
+// Large assets stay in the observation inventory, but must not be streamed
+// through SHA-256 before each turn/tool result. This is change detection, not
+// a content hash: never publish this metadata as a file's SHA-256 identity.
+#[derive(PartialEq, Eq)]
+struct LargeFileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+fn large_file_stamp(path: &Path) -> Option<LargeFileStamp> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() <= MAX_CAPTURE_BYTES {
+        return None;
+    }
+    Some(LargeFileStamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        identity: {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+        },
+    })
+}
+
 /// Git observations supplement provider edit events: shell scripts, generators,
 /// and delegated tools need not emit a `fileChange` event. Keep these separate
 /// from exact attribution because another writer may share this working tree.
@@ -19,6 +48,7 @@ pub(super) struct WorktreeChanges {
 struct ObservedFile {
     diff: ide_core::git::FileDiff,
     fingerprint: Option<[u8; 32]>,
+    large_file_stamp: Option<LargeFileStamp>,
     content: Option<String>,
 }
 
@@ -41,11 +71,13 @@ impl WorktreeChanges {
                     let path = diff.path.clone();
                     let fingerprint = fingerprint(&root.join(&path));
                     let content = bounded_text(&root.join(&path));
+                    let large_file_stamp = large_file_stamp(&root.join(&path));
                     (
                         path,
                         ObservedFile {
                             diff,
                             fingerprint,
+                            large_file_stamp,
                             content,
                         },
                     )
@@ -151,8 +183,9 @@ fn bounded_text(path: &Path) -> Option<String> {
     if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.contains(&0) {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_CAPTURE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_CAPTURE_BYTES || bytes.contains(&0) {
         return None;
     }
     String::from_utf8(bytes).ok()
@@ -169,13 +202,17 @@ fn fingerprint(path: &Path) -> Option<[u8; 32]> {
                 .as_encoded_bytes(),
         );
     } else if metadata.is_file() {
-        let mut file = std::fs::File::open(path).ok()?;
+        if metadata.len() > MAX_CAPTURE_BYTES { return None; }
+        let mut file = std::fs::File::open(path).ok()?.take(MAX_CAPTURE_BYTES + 1);
+        let mut total = 0;
         let mut buffer = [0; 16 * 1024];
         loop {
             let count = file.read(&mut buffer).ok()?;
             if count == 0 {
                 break;
             }
+            total += count;
+            if total as u64 > MAX_CAPTURE_BYTES { return None; }
             hash.update(&buffer[..count]);
         }
     } else {

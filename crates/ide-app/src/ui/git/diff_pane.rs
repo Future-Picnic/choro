@@ -150,8 +150,7 @@ impl DiffPane {
                             if let Some(snapshot_id) = snapshot_id {
                                 load_agent_snapshot_diffs(snapshot_id, &paths)
                             } else {
-                                ide_core::git::workspace_worktree_diffs(&repo)
-                                    .map(|diffs| filter_conversation_diffs(&repo, &paths, diffs))
+                                Err(anyhow::anyhow!("Historical change details are unavailable for this receipt"))
                             }
                         }
                     }
@@ -456,6 +455,8 @@ fn load_agent_snapshot_diffs(
     let snapshot = ide_core::local_store::LocalStore::open_default()?
         .load_agent_diff_snapshot(snapshot_id)?
         .ok_or_else(|| anyhow::anyhow!("diff snapshot {snapshot_id} not found"))?;
+    let known=snapshot.files.iter().map(|file|normalize_snapshot_path(&snapshot.repo_path,&file.path)).collect::<HashSet<_>>();
+    anyhow::ensure!(paths.iter().all(|path|known.contains(&normalize_snapshot_path(&snapshot.repo_path,path))),"Historical details are unavailable for one or more selected files");
     Ok(filter_conversation_diffs(
         &snapshot.repo_path,
         paths,

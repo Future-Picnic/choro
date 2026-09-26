@@ -5,6 +5,7 @@ use git2::{build::CheckoutBuilder, BranchType, ErrorCode, Repository};
 
 /// Stage files (handles new, modified and deleted paths).
 pub fn stage(repo_path: &Path, paths: &[&Path]) -> Result<()> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path)?;
     let mut index = repo.index()?;
     let workdir = repo.workdir().context("bare repository")?;
@@ -21,6 +22,7 @@ pub fn stage(repo_path: &Path, paths: &[&Path]) -> Result<()> {
 
 /// Unstage files (reset index entries back to HEAD).
 pub fn unstage(repo_path: &Path, paths: &[&Path]) -> Result<()> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path)?;
     match repo.head() {
         Ok(head) => {
@@ -41,6 +43,7 @@ pub fn unstage(repo_path: &Path, paths: &[&Path]) -> Result<()> {
 
 /// Discard unstaged changes to the given files (restore from index).
 pub fn discard(repo_path: &Path, paths: &[&Path]) -> Result<()> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path)?;
     let index = repo.index()?;
     let workdir = repo.workdir().context("bare repository")?;
@@ -93,6 +96,7 @@ pub struct CommitResult {
 }
 
 pub fn commit(repo_path: &Path, message: &str) -> Result<CommitResult> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     if message.trim().is_empty() {
         bail!("commit message is empty");
     }
@@ -131,6 +135,7 @@ pub fn commit(repo_path: &Path, message: &str) -> Result<CommitResult> {
 
 /// Safe checkout: refuses to clobber local changes.
 pub fn checkout_branch(repo_path: &Path, name: &str) -> Result<()> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path)?;
     let reference = repo
         .find_reference(&format!("refs/heads/{name}"))
@@ -154,6 +159,7 @@ pub fn checkout_branch(repo_path: &Path, name: &str) -> Result<()> {
 /// Checks out a local branch, or creates a local tracking branch from a
 /// remote-tracking branch such as `origin/feature/x`.
 pub fn checkout_branch_or_remote(repo_path: &Path, name: &str) -> Result<String> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path)?;
     if repo.find_branch(name, BranchType::Local).is_ok() {
         drop(repo);
@@ -208,6 +214,7 @@ fn local_name_for_remote_branch(branch: &git2::Branch<'_>, remote_name: &str) ->
 
 /// Create a new branch at HEAD and switch to it.
 pub fn create_branch(repo_path: &Path, name: &str) -> Result<()> {
+    let _git_permit = super::BackgroundGitPermit::acquire();
     let repo = Repository::open(repo_path)?;
     let head = repo.head().context("repository has no commits yet")?;
     let commit = head.peel_to_commit()?;

@@ -5,7 +5,7 @@ impl Render for SettingsView {
         let section = self.section;
         let contained_page = matches!(
             section,
-            SettingsSection::AgentSkills | SettingsSection::Experts
+            SettingsSection::AgentSkills | SettingsSection::Experts | SettingsSection::Design
         );
         let editing_bandmate = section == SettingsSection::Experts && self.expert_editor.is_some();
         let settings_query = self.settings_search.read(cx).value().trim().to_lowercase();
@@ -239,7 +239,7 @@ impl Render for SettingsView {
                                 )
                             })
                             .child(match section {
-                                SettingsSection::Design => self.render_design_section(cx),
+                                SettingsSection::Design => self.render_design_section(window, cx),
                                 SettingsSection::Brain => self.render_brain_section(window, cx),
                                 SettingsSection::Memory => self.render_memory_section(cx),
                                 SettingsSection::Voice => self.render_voice_section(cx),

@@ -766,33 +766,6 @@ fn render_bundled_skill_details(
         )
 }
 
-/// The catalog already presents title, source and license. YAML is metadata,
-/// not part of the readable instructions. Leave malformed/non-leading fences alone.
-fn skill_document_body(content: &str) -> &str {
-    let source = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let mut lines = source.split_inclusive('\n');
-    if lines.next().map(str::trim_end) != Some("---") {
-        return content;
-    }
-    let mut offset = source.len() - lines.clone().map(str::len).sum::<usize>();
-    for line in lines {
-        offset += line.len();
-        if matches!(line.trim_end(), "---" | "...") {
-            return source[offset..].trim_start_matches(['\r', '\n']);
-        }
-    }
-    content
-}
-
-fn skill_markdown_style() -> TextViewStyle {
-    TextViewStyle::default()
-        .paragraph_gap(gpui::rems(0.6))
-        .heading_font_size(|level, _| match level {
-            1 => design::text_head(),
-            _ => design::text_body(),
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::skill_document_body;

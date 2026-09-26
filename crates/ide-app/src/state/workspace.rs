@@ -57,6 +57,7 @@ pub struct Workspace {
     stored_new_agent_defaults: Option<NewAgentDefaults>,
     pub favorite_models: Vec<ide_core::model_favorites::ModelFavorite>,
     pub code_review_prompt: String,
+    pub studio: ide_core::studio::StudioSettings,
     pub code_review_output_instructions: String,
     pub memory_proposals_enabled: bool,
     pub verification_mode: VerificationMode,
@@ -166,6 +167,7 @@ impl Workspace {
             stored_new_agent_defaults: config.new_agent_defaults.map(NewAgentDefaults::normalized),
             favorite_models: config.favorite_models,
             code_review_prompt: user_code_review_prompt(config.code_review_prompt),
+            studio: config.studio,
             code_review_output_instructions: config.code_review_output_instructions,
             memory_proposals_enabled: config.memory_proposals_enabled,
             verification_mode: config.verification_mode,
@@ -483,6 +485,14 @@ impl Workspace {
         self.stored_new_agent_defaults = Some(defaults);
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    pub fn set_studio_settings(&mut self, settings: ide_core::studio::StudioSettings, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        settings.validate()?;
+        self.studio = settings;
+        self.schedule_save(cx);
+        cx.notify();
+        Ok(())
     }
 
     pub fn set_code_review_prompt(&mut self, prompt: String, cx: &mut Context<Self>) {
@@ -1241,6 +1251,7 @@ impl Workspace {
             new_agent_defaults: self.stored_new_agent_defaults.clone(),
             favorite_models: self.favorite_models.clone(),
             code_review_prompt: self.code_review_prompt.clone(),
+            studio: self.studio.clone(),
             code_review_output_instructions: self.code_review_output_instructions.clone(),
             memory_proposals_enabled: self.memory_proposals_enabled,
             verification_mode: self.verification_mode,

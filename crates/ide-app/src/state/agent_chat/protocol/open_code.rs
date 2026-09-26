@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashMap;
 
 struct OpenCodePermission {
     jsonrpc_id: Value,
@@ -7,12 +6,14 @@ struct OpenCodePermission {
     reject_option: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OpenCodePathAttribution {
     Exact,
     Observed,
 }
 
+#[cfg(test)]
 fn open_code_path_attribution(kind: Option<&str>) -> Option<OpenCodePathAttribution> {
     match kind {
         Some("edit" | "delete" | "move") => Some(OpenCodePathAttribution::Exact),
@@ -25,7 +26,7 @@ fn open_code_path_attribution(kind: Option<&str>) -> Option<OpenCodePathAttribut
 enum OpenCodeInbound {
     Command(ChatBackendCommand),
     CommandsClosed,
-    Message(Value),
+    Message(ProviderMessage),
     MessagesClosed,
     Question(Value),
     QuestionsClosed,
@@ -44,7 +45,7 @@ struct OpenCodeQuestionBridge {
 struct OpenCodeRuntime {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
-    messages: Receiver<Value>,
+    messages: Receiver<ProviderMessage>,
     questions: Receiver<Value>,
     commands: Receiver<ChatBackendCommand>,
     events: EventSender,
@@ -62,12 +63,9 @@ struct OpenCodeRuntime {
     known_question_ids: HashSet<String>,
     active_question: Option<Value>,
     queued_questions: VecDeque<Value>,
-    changed_paths: HashSet<PathBuf>,
-    observed_changed_paths: HashSet<PathBuf>,
-    tool_changed_paths: HashMap<String, Vec<(PathBuf, bool)>>,
+    tool_updates: ide_core::agent_changes::PendingEvidence<Value>,
     active_turn_id: String,
-    worktree_baseline: Option<super::worktree_changes::WorktreeChanges>,
-    deferred_turns: VecDeque<(String, AgentInteractionMode, bool)>,
+    deferred_turns: VecDeque<(String, AgentInteractionMode, bool, String)>,
     read_only_turn: bool,
     /// True while a `session/prompt` is in flight. The question poller only
     /// needs its fast cadence during a turn — questions are asked by a running
@@ -82,11 +80,15 @@ pub(super) fn spawn_open_code_acp(
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
+    previous_stop: Option<ChatBackendStopSignal>,
 ) -> anyhow::Result<()> {
     thread::Builder::new()
         .name("choro-opencode-acp".into())
         .spawn(move || {
             let _stopped = super::BackendStoppedOnDrop(stopped);
+            if !wait_for_previous_backend(previous_stop, &shutdown) {
+                return;
+            }
             if let Err(error) =
                 run_open_code_acp(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
             {
@@ -157,7 +159,7 @@ fn run_open_code_acp(
         .stderr
         .take()
         .context("OpenCode ACP stderr unavailable")?;
-    let (message_tx, message_rx) = crossbeam_channel::unbounded();
+    let (message_tx, message_rx) = crossbeam_channel::bounded(1);
     spawn_json_reader(stdout, message_tx);
     spawn_stderr_reader(stderr, event_tx.clone(), "OpenCode ACP");
     let (question_tx, question_rx) = crossbeam_channel::unbounded();
@@ -182,11 +184,8 @@ fn run_open_code_acp(
         known_question_ids: HashSet::new(),
         active_question: None,
         queued_questions: VecDeque::new(),
-        changed_paths: HashSet::new(),
-        observed_changed_paths: HashSet::new(),
-        tool_changed_paths: HashMap::new(),
+        tool_updates: Default::default(),
         active_turn_id: next_request_id(),
-        worktree_baseline: None,
         deferred_turns: VecDeque::new(),
         read_only_turn: false,
         turn_active: Arc::new(AtomicBool::new(false)),
@@ -261,7 +260,7 @@ fn run_open_code_acp(
     }
 
     if !was_resumed && !runtime.agent.hidden_doc_assistant && !runtime.agent.doc.trim().is_empty() {
-        runtime.send_turn(runtime.agent.doc.clone(), initial_mode, false)?;
+        runtime.send_turn(runtime.agent.doc.clone(), initial_mode, false, runtime.events.initial_turn_id.clone())?;
     }
     runtime.run_loop()
 }
@@ -274,8 +273,8 @@ impl OpenCodeRuntime {
                 return Ok(());
             }
             self.drain_questions()?;
-            if let Some((text, mode, read_only)) = self.deferred_turns.pop_front() {
-                self.send_turn(text, mode, read_only)?;
+            if let Some((text, mode, read_only, turn_id)) = self.deferred_turns.pop_front() {
+                self.send_turn(text, mode, read_only, turn_id)?;
                 continue;
             }
             match self.next_inbound() {
@@ -412,6 +411,7 @@ impl OpenCodeRuntime {
         text: String,
         mode: AgentInteractionMode,
         read_only: bool,
+        turn_id: String,
     ) -> anyhow::Result<()> {
         let Some(session_id) = self.session_id.clone() else {
             return Err(anyhow!("OpenCode session is not ready"));
@@ -419,12 +419,10 @@ impl OpenCodeRuntime {
         self.set_config_option("model", self.model_id.clone())?;
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
-        self.active_turn_id = next_request_id();
+        self.active_turn_id = turn_id;
         self.read_only_turn = read_only;
-        self.tool_changed_paths.clear();
-        self.worktree_baseline = super::worktree_changes::WorktreeChanges::capture(&self.agent)
-            .map_err(|error| eprintln!("failed to capture OpenCode file baseline: {error:#}"))
-            .ok();
+
+        self.tool_updates.clear();
         self.interaction_mode = mode;
         let is_plan = mode == AgentInteractionMode::Plan;
         self.events
@@ -442,7 +440,7 @@ impl OpenCodeRuntime {
             "session/prompt",
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": text }]
+                "prompt": [{ "type": "text", "text": format!("{}\n\n{text}",ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS) }]
             }),
         );
         self.turn_active.store(false, Ordering::SeqCst);
@@ -560,7 +558,8 @@ impl OpenCodeRuntime {
                 text,
                 mode,
                 read_only,
-            } => self.send_turn(text, mode, read_only)?,
+                turn_id,
+            } => self.send_turn(text, mode, read_only, turn_id)?,
             ChatBackendCommand::UpdateAccessMode { access_mode } => self.access_mode = access_mode,
             ChatBackendCommand::UpdateModelEffort { effort, external_model, .. } => {
                 if let Some((id,variants))=external_model {self.model_id=id;self.agent.external_model_variants=variants;}
@@ -607,8 +606,9 @@ impl OpenCodeRuntime {
                     text,
                     mode,
                     read_only,
+                    turn_id,
                 }) => {
-                    self.deferred_turns.push_back((text, mode, read_only));
+                    self.deferred_turns.push_back((text, mode, read_only, turn_id));
                 }
                 Ok(ChatBackendCommand::UpdateModelEffort { effort, external_model, .. }) => {
                     if let Some((id,variants))=external_model {self.model_id=id;self.agent.external_model_variants=variants;}
@@ -723,7 +723,9 @@ impl OpenCodeRuntime {
         Ok(())
     }
 
-    fn handle_message(&mut self, message: Value) -> anyhow::Result<()> {
+    fn handle_message(&mut self, message: impl Into<ProviderMessage>) -> anyhow::Result<()> {
+        let ProviderMessage { value: message, _reservation } = message.into();
+        if message.get("_choro_evidence_incomplete").and_then(Value::as_bool) == Some(true) { self.events.mark_evidence_overflow(); }
         if message.get("method").is_some() && message.get("id").is_some() {
             return self.handle_server_request(message);
         }
@@ -784,41 +786,35 @@ impl OpenCodeRuntime {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(next_request_id);
-                let paths = self.track_changed_paths(update);
-                if !paths.is_empty() {
-                    let tracked = self
-                        .tool_changed_paths
-                        .entry(action_id.clone())
-                        .or_default();
-                    for path in paths {
-                        if !tracked.contains(&path) {
-                            tracked.push(path);
-                        }
-                    }
+                let mut accumulated = self.tool_updates.remove(&action_id).unwrap_or_else(|| json!({}));
+                if let (Some(target), Some(fields)) = (accumulated.as_object_mut(), update.as_object()) {
+                    for (key, value) in fields { target.insert(key.clone(), value.clone()); }
                 }
                 if matches!(
                     update.get("status").and_then(Value::as_str),
                     Some("completed" | "failed")
                 ) {
-                    let paths = self
-                        .tool_changed_paths
-                        .remove(&action_id)
-                        .unwrap_or_default();
-                    if update.get("status").and_then(Value::as_str) == Some("completed") {
-                        for (path, observed) in &paths {
-                            if *observed {
-                                self.observed_changed_paths.insert(path.clone());
-                            } else {
-                                self.changed_paths.insert(path.clone());
-                            }
+                    let complete = accumulated;
+                    if complete.get("status").and_then(Value::as_str) == Some("completed") {
+                        let files = open_code_confirmed_diffs(&complete, self.agent.runtime_path());
+                        for file in &files {
+                            self.events
+                                .send_blocking(ChatBackendEvent::FileChangeActivity(
+                                    FileChangeActivity::new(
+                                        format!("opencode:{action_id}:{}", file.path.display()),
+                                        self.active_turn_id.clone(),
+                                        file.clone(),
+                                        false,
+                                        unix_now(),
+                                    ),
+                                ))
+                                .ok();
                         }
-                        self.emit_file_change_activities(&action_id, &paths);
-                    } else {
-                        // A failed mutation may still have written files. Only
-                        // disk evidence establishes that; its requested path is
-                        // not proof that an already-dirty file was edited.
-                        self.emit_file_change_activities(&action_id, &[]);
                     }
+                }
+                else {
+                    let bytes = serde_json::to_vec(&accumulated).map_or(usize::MAX, |v| v.len());
+                    if !self.tool_updates.insert(action_id, accumulated, bytes) { self.events.mark_evidence_overflow(); }
                 }
                 self.events
                     .send_blocking(ChatBackendEvent::WorkLog(open_code_tool_entry(update)))
@@ -997,157 +993,128 @@ impl OpenCodeRuntime {
         Ok(())
     }
 
-    fn track_changed_paths(&mut self, update: &Value) -> Vec<(PathBuf, bool)> {
-        let kind = update.get("kind").and_then(Value::as_str);
-        let Some(attribution) = open_code_path_attribution(kind) else {
-            // Reads often carry `locations`; treating those as mutations was
-            // another route for already-dirty files to leak into a chat.
-            return Vec::new();
-        };
-        let exact = attribution == OpenCodePathAttribution::Exact;
-        let mut paths = Vec::new();
-        for location in update
-            .get("locations")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(path) = location.get("path").and_then(Value::as_str) else {
-                continue;
-            };
-            let path = project_relative_path(self.agent.runtime_path(), Path::new(path));
-            if !paths.iter().any(|(existing, _)| existing == &path) {
-                paths.push((path, !exact));
-            }
-        }
-
-        // OpenCode's resumed ACP stream may omit `locations` from completed
-        // tool calls. Recover mutation paths from raw input, but only for
-        // mutation kinds so a read of an already-dirty file is not attributed
-        // to the agent.
-        if matches!(kind, Some("edit" | "delete" | "move")) {
-            let Some(raw_input) = update.get("rawInput").and_then(Value::as_object) else {
-                return paths;
-            };
-            for key in ["filePath", "filepath", "path", "oldPath", "newPath"] {
-                let Some(path) = raw_input.get(key).and_then(Value::as_str) else {
-                    continue;
-                };
-                let path = project_relative_path(self.agent.runtime_path(), Path::new(path));
-                if !paths.iter().any(|(existing, _)| existing == &path) {
-                    paths.push((path, false));
-                }
-            }
-        }
-        paths
-    }
-
-    fn emit_file_change_activities(&self, action_id: &str, paths: &[(PathBuf, bool)]) {
-        let summary = self.changed_files_summary();
-        let mut paths = paths.to_vec();
-        for file in &summary.observed_files {
-            if !paths.iter().any(|(path, _)| *path == file.path) {
-                paths.push((file.path.clone(), true));
-            }
-        }
-        for (path, observed) in &paths {
-            let file = summary
-                .files
-                .iter()
-                .chain(&summary.observed_files)
-                .find(|file| project_relative_path(self.agent.runtime_path(), &file.path) == *path)
-                .cloned();
-            let Some(file) = file else {
-                continue;
-            };
-            let activity_id = format!("opencode:{action_id}:{}", path.to_string_lossy());
-            self.events
-                .send_blocking(ChatBackendEvent::FileChangeActivity(
-                    FileChangeActivity::new(
-                        activity_id,
-                        self.active_turn_id.clone(),
-                        file.as_count_projection(),
-                        *observed,
-                        unix_now(),
-                    ),
-                ))
-                .ok();
-        }
-    }
-
     fn emit_changed_files_receipt(&mut self) {
         let changed = self.changed_files_summary();
-        self.changed_paths.clear();
-        self.observed_changed_paths.clear();
-        self.worktree_baseline = None;
-        if !changed.is_empty() {
-            let changed = capture_changed_files_snapshot(&self.agent, changed, "opencode-acp");
-            self.events
-                .send_blocking(ChatBackendEvent::ChangedFiles(changed))
-                .ok();
-        }
+        self.events
+            .send_blocking(ChatBackendEvent::ChangedFiles(changed))
+            .ok();
     }
 
     fn changed_files_summary(&self) -> ChangedFilesSummary {
-        let diffs = if self.agent.repository_path.is_none() && !self.agent.is_active_solo() {
-            ide_core::git::workspace_worktree_diffs(&self.agent.project_path)
-        } else {
-            ide_core::git::worktree_diffs(self.agent.runtime_path())
-        };
-        let Ok(diffs) = diffs else {
-            return ChangedFilesSummary::default();
-        };
-        let files = diffs
-            .into_iter()
-            .filter_map(|diff| {
-                let path = project_relative_path(self.agent.runtime_path(), &diff.path);
-                let exact = self.changed_paths.contains(&path);
-                let observed = self.observed_changed_paths.contains(&path);
-                if !exact && !observed {
-                    return None;
-                }
-                let additions = diff
-                    .hunks
-                    .iter()
-                    .flat_map(|hunk| &hunk.lines)
-                    .filter(|line| line.origin == ide_core::git::LineOrigin::Add)
-                    .count();
-                let deletions = diff
-                    .hunks
-                    .iter()
-                    .flat_map(|hunk| &hunk.lines)
-                    .filter(|line| line.origin == ide_core::git::LineOrigin::Remove)
-                    .count();
-                Some((
-                    exact,
-                    FileChangeStat::new(diff.path, additions, deletions).as_count_projection(),
-                ))
-            })
-            .collect::<Vec<_>>();
-        let mut summary = ChangedFilesSummary::attributed(
-            self.active_turn_id.clone(),
-            files
-                .iter()
-                .filter(|(exact, _)| *exact)
-                .map(|(_, file)| file.clone())
-                .collect(),
-            files
-                .into_iter()
-                .filter(|(exact, _)| !exact)
-                .map(|(_, file)| file)
-                .collect(),
-        );
-        if let Some(before) = &self.worktree_baseline {
-            match super::worktree_changes::WorktreeChanges::capture(&self.agent) {
-                Ok(current) => upsert_file_change_stats(
-                    &mut summary.observed_files,
-                    current.changes_since(before),
-                ),
-                Err(error) => eprintln!("failed to observe OpenCode file changes: {error:#}"),
+        ChangedFilesSummary::attributed(self.active_turn_id.clone(), vec![], vec![])
+    }
+}
+
+fn open_code_confirmed_diffs(update: &Value, root: &Path) -> Vec<FileChangeStat> {
+    if update.get("status").and_then(Value::as_str) != Some("completed") {
+        return vec![];
+    }
+    update
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("diff") {
+                return None;
             }
+            let path = ide_core::agent_changes::relative_path(
+                root,
+                Path::new(block.get("path")?.as_str()?),
+            )?;
+            let old = block.get("oldText").and_then(Value::as_str);
+            let new = block.get("newText").and_then(Value::as_str);
+            if (old.is_none() && new.is_none())
+                || (new.is_none() && update.get("kind").and_then(Value::as_str) != Some("delete"))
+            {
+                return None;
+            }
+            let before = old.unwrap_or("");
+            let after = new.unwrap_or("");
+            if before.len() > ide_core::agent_changes::MAX_CONTENT_BYTES
+                || after.len() > ide_core::agent_changes::MAX_CONTENT_BYTES
+            {
+                let mut file = FileChangeStat::new(path, 0, 0);
+                file.counts_unavailable = true;
+                return Some(file);
+            }
+            let mut file = FileChangeStat::new(path, 0, 0)
+                .with_content_projection(Some(before.to_string()), Some(after.to_string()));
+            // Rendering and counting the diff belongs to the shared worker.
+            file.counts_unavailable = true;
+            // Absence differs from an existing empty file. Content identities
+            // are calculated in the worker; these sentinels preserve existence.
+            if old.is_none() {
+                file.baseline_hash = Some("missing".into());
+            }
+            if new.is_none() {
+                file.result_hash = Some("missing".into());
+            }
+            Some(file)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod evidence_tests {
+    use super::*;
+    #[test]
+    fn empty_file_creation_and_deletion_are_mutations_not_reverts() {
+        for block in [
+            json!({"type":"diff","path":"empty","newText":""}),
+            json!({"type":"diff","path":"empty","oldText":"","newText":null}),
+        ] {
+            let files = open_code_confirmed_diffs(
+                &json!({"status":"completed","kind":"delete","content":[block]}),
+                Path::new("/project"),
+            );
+            assert_eq!(files.len(), 1);
+            let receipt = ChangedFilesSummary::from_activities(
+                "turn",
+                &[FileChangeActivity::new(
+                    "action",
+                    "turn",
+                    files[0].clone(),
+                    false,
+                    0,
+                )],
+            );
+            assert_eq!(receipt.files.len(), 1);
         }
-        summary.reconcile_final_files(self.agent.runtime_path());
-        summary
+    }
+
+    #[test]
+    fn locations_and_proposed_diffs_do_not_prove_a_write() {
+        let root = Path::new("/project");
+        assert!(open_code_confirmed_diffs(
+            &json!({"status":"completed","kind":"edit","locations":[{"path":"/project/other.rs"}]}),
+            root
+        )
+        .is_empty());
+        let mut update = json!({"status":"pending","content":[{"type":"diff","path":"/project/shared.rs","oldText":"external\nold\n","newText":"external\nnew\n"}]});
+        assert!(open_code_confirmed_diffs(&update, root).is_empty());
+        update["status"] = json!("completed");
+        let files = open_code_confirmed_diffs(&update, root);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].counts_unavailable);
+        assert!(files[0].attributed_diff.is_none());
+        let diff = ide_core::git::diff::diff_from_contents(
+            &files[0].path,
+            files[0].baseline_content.as_deref().unwrap(),
+            files[0].result_content.as_deref().unwrap(),
+        )
+        .unwrap();
+        let added = diff
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.origin == ide_core::git::LineOrigin::Add)
+            .map(|l| l.text.as_str())
+            .collect::<String>();
+        assert!(added.contains("new"));
+        assert!(!added.contains("external"));
+        update["status"] = json!("failed");
+        assert!(open_code_confirmed_diffs(&update, root).is_empty());
     }
 }
 

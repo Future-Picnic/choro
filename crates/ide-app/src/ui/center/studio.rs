@@ -1543,6 +1543,7 @@ impl CenterArea {
         if context.target == StudioAgentTarget::DesignSystemImport {
             return self.prepare_code_import_turn(agent, cx);
         }
+        let design_guidance = self.workspace.read(cx).studio.request_guidance();
         let Some(studio) = self
             .studio
             .as_mut()
@@ -1556,7 +1557,10 @@ impl CenterArea {
                 "Wait for the current edit to save before sending."
             );
             let design = studio.store.load(context.design_id)?;
-            let scope = scope_for_request(&design, studio.editing_screen().or(studio.canvas.layout.selected_screen_id), studio.selected_element.clone());
+            let mut scope = scope_for_request(&design, studio.editing_screen().or(studio.canvas.layout.selected_screen_id), studio.selected_element.clone());
+            if context.target == StudioAgentTarget::Design {
+                scope.design_guidance = design_guidance;
+            }
             studio.store.save_scope(agent.id, &scope)?;
             studio.conversations = studio.store.title_conversation(
                 context.design_id,

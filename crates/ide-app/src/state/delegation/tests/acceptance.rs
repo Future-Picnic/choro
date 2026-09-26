@@ -69,7 +69,7 @@ fn apply(
                 .unwrap();
             runtime
                 .controller
-                .send(ChatBackendCommand::SendTurn {
+                .send(ChatBackendCommand::SendTurn { turn_id: uuid::Uuid::new_v4().to_string(),
                     text,
                     mode,
                     read_only: false,
