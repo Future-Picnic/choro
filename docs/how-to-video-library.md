@@ -1,10 +1,22 @@
 # Choro content marketing hub
 
+Getting Started now has **16 lessons**, ordered as a story: **Meet Choro → Projects → First Agent → Plan → Shape an Idea with Docs → Work from Context → Design → Ship → Band → Solo → Ask and Add Context → Scripts → Code → Orbit → Companion → Mobile**. Plan appears once. “Ask and Add Context Without an Agent” follows Solo; the focused “Ask Without Starting an Agent” lesson remains in Productivity & Shortcuts. This is the local library order; the uploaded YouTube playlist is unchanged.
+
+Narration continuity: Scripts now precedes Code, matching its “Earlier, we used saved scripts” reference. Docs remains directly before Work from Context, matching its next-lesson closing line. No video or audio was changed in this ordering pass.
+
+## Tutorial framing refresh — September 27, 2026
+
+All **67 active completed tutorials** now have the approved floating-app wallpaper and large Alex treatment: 16 Getting Started exports plus 51 across the other categories. Existing final and poster paths were replaced in place, preserving audio, original focus zooms and shortcut cards. Alex stays fixed during most demonstrations and moves only to protect demonstrated controls or answer text. No new provider generation or remote upload was made.
+
+The 51-category pass completed full decoding, exact original audio/frame-count checks, duration/resolution checks and sampled visual review through each outro. All local video-range and poster routes passed; eight library DOM modes and five server tests passed. Evidence is under `tutorial-floating-20260926/final-audit.json` in the tutorial library. Getting Started has its separate `getting-started-floating-20260926/final-audit.json`. Sampled visual review is not continuous human playback.
+
+The overlapping **Quick Ask or Agent?** comparison has been removed from the active tutorial list. **Ask Without Starting an Agent** remains as the focused scope → question → answer → return walkthrough. The removed lesson's production sources and existing historical social cuts are retained; no files were deleted. Current library total: **67 of 69 tutorials complete**; Studio comparison and Companion agent-following remain outstanding.
+
 ## Mobile refresh — September 25, 2026
 
 **Setup lessons now finished:** **Pair Your iPhone with Choro** (52.1s, `mobile-pair-v2`) and **Choose What Your Phone Can Do** (51.1s, `mobile-access-v2`) are completed with current Simulator/Demo recordings, fresh Alex D / ElevenLabs and HeyGen, approved titles and shared outro. Pairing identifiers and codes are masked. The permission control cycles levels when clicked; it is not a menu. The original pairing remained Full access, while the temporary recording pairing was left View only and its app stopped. No product code or relay configuration changed. Successful live flows were recorded, but connection intermittency was observed outside those takes and is documented separately, not claimed fixed.
 
-**Current total: 68 of 70 tutorials complete; all eight Mobile-related lessons (including the Getting Started overview) are finished.** The two unrelated outstanding lessons are Studio comparison and Companion agent-following. The six-video checkpoint below is historical.
+**Mobile-refresh checkpoint: 68 of 70 tutorials complete before the Quick Ask consolidation; all eight Mobile-related lessons (including the Getting Started overview) are finished.** The two unrelated outstanding lessons are Studio comparison and Companion agent-following. The six-video checkpoint below is historical.
 
 Six current-interface Mobile exports are completed: **Respond to Questions, Plans, and Approvals** (53.7s), **Review Results and Ask for Fixes on Mobile** (59.3s), **Meet Choro Remote** (51.2s), **Check Agent Progress from Your Phone** (50.7s), **Start or Continue Agent Work on Mobile** (66.8s), and the Getting Started overview **Take Choro with You on Mobile** (53.3s). The library now points to their `mobile-*-v2` exports, with playback, script, file and folder actions. Four reuse existing approved narration/avatar assets; the two new lessons use fresh Alex D / ElevenLabs and HeyGen. Original versions remain preserved.
 

@@ -50,6 +50,30 @@ async function check(mode, initialHash = 'start') {
   assert.equal(q('#short-video-area').hidden,false);
   q('#nav-tutorials').click();
   const manifest=JSON.parse(q('#completed-video-files').textContent);
+  const startTitles=[...d.querySelectorAll('#panel-start .video-title')].map(el=>el.textContent);
+  assert.deepEqual(startTitles,[
+    'Meet Choro and the Core Workflow','Projects Are More Than Repositories',
+    'Complete Your First Agent Flow','Plan the Work Before Building',
+    'Shape an Idea with Docs','Work from Context: Tasks and Docs',
+    'Design, Build, and Preview with Studio','Ship the Completed Work',
+    'Work in Parallel with Specialist Agents','Try Parallel Work with Solo',
+    'Ask and Add Context Without an Agent','Run Scripts and Fix Backend Work',
+    'Explore Code, Files, Terminal, and Database',
+    "Explore Orbit's Project Intelligence",'Meet Choro Companion','Take Choro with You on Mobile'
+  ]);
+  assert.match(q('#start-progress').textContent,/16 of 16 completed/);
+  const movedContextRow=[...d.querySelectorAll('#panel-start tbody tr')].find(row=>row.querySelector('.video-title').textContent==='Ask and Add Context Without an Agent');
+  assert.ok(movedContextRow);
+  movedContextRow.click();
+  assert.equal(q('#scene-review').hidden,false);
+  assert.ok(q('#recording-scenes').children.length>0);
+  assert.equal(q('#finished-video').hidden,false);
+  q('.modal-done').click();
+  const productivityTitles=[...d.querySelectorAll('#panel-productivity .video-title')].map(el=>el.textContent);
+  assert.ok(productivityTitles.includes('Ask Without Starting an Agent'));
+  assert.ok(!productivityTitles.includes('Ask and Add Context Without an Agent'));
+  assert.ok(!productivityTitles.includes('Quick Ask or Agent?'));
+  assert.ok(!manifest.some(video=>video.id==='draft-productivity-choose'));
   const drafts=JSON.parse(q('#draft-video-files').textContent);
   const planned=JSON.parse(q('#planned-video-scripts').textContent);
   const agentQuestionTitle='Let Your Agents Ask Each Other';
