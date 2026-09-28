@@ -1,6 +1,9 @@
 mod auth;
 pub mod dto;
 mod relay;
+mod forwarding;
+mod tls_identity;
+mod tls_transport;
 mod server;
 pub mod protocol;
 mod receipts;

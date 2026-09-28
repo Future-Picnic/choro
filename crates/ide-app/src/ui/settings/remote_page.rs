@@ -9,6 +9,7 @@ impl SettingsView {
             let mac_id = self.remote_room_id.clone();
             let mac_id_for_copy = mac_id.clone();
             let relay_state = self.remote_relay_control.state();
+            let secure_pairing = active_code.as_ref().map(|_| self.remote_relay_control.pairing_payload(&mac_id, &self.remote_auth));
             let relay_description = match relay_state {
                 RelayState::Disconnected => {
                     "Off. Connect to pair a phone or let paired iPhones reach this Mac."
@@ -132,6 +133,18 @@ impl SettingsView {
                                                         })),
                                                 ),
                                         )
+                                        .when_some(secure_pairing, |card, payload| match payload {
+                                            Ok(payload) => {
+                                                let copy = payload.clone();
+                                                card.child(v_flex().gap_2()
+                                                    .child(div().text_size(crate::ui::design::text_ui()).child("Scan with Choro Remote, or copy the pairing information to your iPhone."))
+                                                    .child(pairing_qr(&payload))
+                                                    .child(crate::ui::style::secondary_button_compact("settings-copy-secure-pairing", "Copy pairing information")
+                                                        .on_click(move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))
+                                                    .child(div().text_size(crate::ui::design::text_label()).text_color(crate::ui::design::t3(cx)).child("Valid for five minutes. Share only with the phone you want to pair.")))
+                                            }
+                                            Err(error) => card.child(div().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::rose(cx)).child(error)),
+                                        })
                                         .child(
                                             v_flex()
                                                 .gap_1()
@@ -140,7 +153,7 @@ impl SettingsView {
                                                         .text_size(crate::ui::design::text_label())
                                                         .font_weight(FontWeight::SEMIBOLD)
                                                         .text_color(crate::ui::design::t4(cx))
-                                                        .child("MAC ID"),
+                                                        .child("MAC ID · OLDER APPS"),
                                                 )
                                                 .child(
                                                     h_flex()
@@ -231,7 +244,7 @@ impl SettingsView {
                                                                     .flex_1()
                                                                     .text_size(crate::ui::design::text_ui())
                                                                     .text_color(crate::ui::design::t3(cx))
-                                                                    .child("Enter this Mac ID and code in Choro Remote. The code encrypts pairing end to end."),
+                                                                    .child("For an older app, enter this Mac ID and code. Updated Choro Remote uses the QR code or copied pairing information above."),
                                                             )
                                                             .child(
                                                                 crate::ui::style::settings_ghost_button(
@@ -362,7 +375,7 @@ impl SettingsView {
                                                         }})),
                                                 )
                                         }))
-                                        .when_some(self.remote_status.clone(), |card, status| {
+                                        .when_some(self.remote_status.clone().or_else(|| self.remote_relay_control.secure_connection_error()), |card, status| {
                                             card.child(
                                                 div()
                                                     .text_size(crate::ui::design::text_ui())
@@ -374,4 +387,31 @@ impl SettingsView {
                                 .into_any_element()
         }
     }
+}
+
+fn pairing_qr(payload: &str) -> gpui::AnyElement {
+    let Ok(code) = qrcode::QrCode::new(payload.as_bytes()) else {
+        return div().child("Use Copy pairing information to pair this phone.").into_any_element();
+    };
+    let width = code.width();
+    let cells = code.to_colors();
+    // Four white modules on every side are the QR quiet zone. Fixed square
+    // modules keep the code readable on both light and dark desktop themes.
+    let cell = 3.0_f32;
+    gpui::canvas(|_, _, _| (), move |bounds, _, window, _| {
+        window.paint_quad(gpui::fill(bounds, gpui::rgb(0xffffff)));
+        for y in 0..width {
+            let mut x = 0;
+            while x < width {
+                if cells[y * width + x] != qrcode::Color::Dark { x += 1; continue; }
+                let start = x;
+                while x < width && cells[y * width + x] == qrcode::Color::Dark { x += 1; }
+                let rect = gpui::Bounds::new(
+                    bounds.origin + gpui::point(px((start + 4) as f32 * cell), px((y + 4) as f32 * cell)),
+                    gpui::size(px((x - start) as f32 * cell), px(cell)),
+                );
+                window.paint_quad(gpui::fill(rect, gpui::rgb(0x000000)));
+            }
+        }
+    }).size(px((width + 8) as f32 * cell)).flex_shrink_0().into_any_element()
 }

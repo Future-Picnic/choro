@@ -5,7 +5,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use async_channel::Sender;
 use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -27,8 +26,13 @@ use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use super::dto::RemoteEvent;
-use super::server::RelayStateStore;
-use super::{DevicePermission, PairingError, RelayState, RemoteAuth};
+use super::forwarding::{TunnelRequest, TunnelResponse, forwarding_client, loopback_base, valid_request, authorization_error, forward_request, json_response};
+#[cfg(test)]
+use super::forwarding::allowlisted_route;
+use super::server::{RelayPresence, RelayStateStore};
+use super::{PairingError, RelayState, RemoteAuth};
+#[cfg(test)]
+use super::DevicePermission;
 
 const PROTOCOL: u8 = 2;
 const RELAY_PROTOCOL: u32 = 3;
@@ -36,8 +40,6 @@ const HOST_AUTH_DOMAIN: &[u8] = b"choro-relay-host-v3\0";
 const HOST_AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const RECONNECT_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(20);
-const MAX_PATH_BYTES: usize = 2_048;
-const MAX_BODY_BYTES: usize = 6 * 1024 * 1024;
 const SESSION_TTL_SECS: u64 = 30 * 60;
 const AUTH_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_RELAY_URL: &str = "https://relay.choro.dev";
@@ -104,14 +106,6 @@ struct PairRequest {
 }
 
 #[derive(Deserialize)]
-struct TunnelRequest {
-    request_id: String,
-    method: String,
-    path: String,
-    body: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct SessionHello {
     session_id: String,
     device_id: String,
@@ -147,15 +141,14 @@ struct RelayAuthSync {
     pairing_open: bool,
 }
 
-#[derive(Serialize)]
-struct TunnelResponse {
-    request_id: String,
-    status: u16,
-    content_type: String,
-    body_base64: String,
-}
-
 impl RelayIdentity {
+    pub(super) fn sign_tls_challenge(&self, nonce: &[u8; 32]) -> String {
+        let mut message = b"choro-relay-host-v4\0".to_vec();
+        message.extend_from_slice(self.room_id.as_bytes());
+        message.push(0);
+        message.extend_from_slice(nonce);
+        URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&self.signing_key).sign(&message).to_bytes())
+    }
     pub fn load_default() -> Self {
         let path = ide_core::local_store::LocalStore::open_default()
             .map(|store| {
@@ -252,7 +245,7 @@ pub async fn run(
     local_address: SocketAddr,
     auth: RemoteAuth,
     events: broadcast::Sender<RemoteEvent>,
-    presence: Sender<usize>,
+    presence: RelayPresence,
     state: RelayStateStore,
 ) {
     let mut backoff = RECONNECT_MIN;
@@ -282,7 +275,7 @@ pub async fn run(
         }
         first_attempt = false;
         state.set(RelayState::Reconnecting);
-        let _ = presence.send(0).await;
+        presence.set(0);
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(RECONNECT_MAX);
     }
@@ -294,7 +287,7 @@ async fn run_connection(
     local_address: SocketAddr,
     auth: RemoteAuth,
     mut events: broadcast::Receiver<RemoteEvent>,
-    presence: &Sender<usize>,
+    presence: &RelayPresence,
     state: &RelayStateStore,
 ) -> Result<(), String> {
     let websocket_base = relay_url
@@ -363,11 +356,8 @@ async fn run_connection(
         return Err("relay rejected host authentication".into());
     }
     state.set(RelayState::Connected);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|error| error.to_string())?;
-    let local_base = format!("http://{local_address}");
+    let client = forwarding_client()?;
+    let local_base = loopback_base(local_address)?;
     let mut client_devices: HashMap<String, String> = HashMap::new();
     let mut sessions: HashMap<String, Session> = HashMap::new();
     let mut auth_sync = tokio::time::interval(AUTH_SYNC_INTERVAL);
@@ -457,9 +447,9 @@ async fn run_connection(
     }
 }
 
-fn publish_presence(presence: &Sender<usize>, client_devices: &HashMap<String, String>) {
+fn publish_presence(presence: &RelayPresence, client_devices: &HashMap<String, String>) {
     let connected_devices = connected_device_count(client_devices);
-    let _ = presence.try_send(connected_devices);
+    presence.set(connected_devices);
 }
 
 fn connected_device_count(client_devices: &HashMap<String, String>) -> usize {
@@ -663,148 +653,6 @@ fn session_accepts_envelope(session: &Session, envelope: &SealedEnvelope) -> boo
         && envelope.sequence == Some(session.receive_sequence + 1)
 }
 
-async fn forward_request(
-    client: &reqwest::Client,
-    local_base: &str,
-    request: &TunnelRequest,
-    token: &str,
-) -> TunnelResponse {
-    let method = if request.method == "GET" {
-        reqwest::Method::GET
-    } else {
-        reqwest::Method::POST
-    };
-    let mut builder = client
-        .request(method, format!("{local_base}{}", request.path))
-        .bearer_auth(token)
-        .header(reqwest::header::CONTENT_TYPE, "application/json");
-    if let Some(body) = &request.body {
-        builder = builder.body(body.clone());
-    }
-    match builder.send().await {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            let content_type = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            match response.bytes().await {
-                Ok(bytes) => TunnelResponse {
-                    request_id: request.request_id.clone(),
-                    status,
-                    content_type,
-                    body_base64: BASE64.encode(bytes),
-                },
-                Err(error) => json_response(
-                    &request.request_id,
-                    502,
-                    json!({ "error": error.to_string() }),
-                ),
-            }
-        }
-        Err(_) => json_response(
-            &request.request_id,
-            503,
-            json!({ "error": "Choro Desktop API is unavailable" }),
-        ),
-    }
-}
-
-fn valid_request(request: &TunnelRequest) -> bool {
-    matches!(request.method.as_str(), "GET" | "POST")
-        && allowlisted_route(&request.method, &request.path)
-        && !request.path.split('?').next().unwrap_or_default().contains("..")
-        && request.path.len() <= MAX_PATH_BYTES
-        && request.body.as_ref().map_or(0, String::len) <= MAX_BODY_BYTES
-        && request.request_id.len() <= 128
-}
-
-fn allowlisted_route(method: &str, path: &str) -> bool {
-    let route = path.split('?').next().unwrap_or_default();
-    let segments = route.trim_matches('/').split('/').collect::<Vec<_>>();
-    match method {
-        "GET" => matches!(
-            segments.as_slice(),
-            ["v1", "health"]
-                | ["v1", "configuration"]
-                | ["v1", "device"]
-                | ["v1", "capabilities"]
-                | ["v1", "workspace", "agents"]
-                | ["v1", "remote", "agent" | "search" | "summary" | "delegation" | "diff" | "bandmates" | "attachment"]
-                | ["v1", "projects"]
-                | ["v1", "projects", _, "agents"]
-                | ["v1", "agents", _]
-                | ["v1", "agents", _, "visualizations", "snapshot"]
-                | ["v1", "agents", _, "images", "preview"]
-                | ["v1", "agents", _, "diff"]
-                | ["v1", "agents", _, "ship", "preview"]
-        ),
-        "POST" => matches!(
-            segments.as_slice(),
-            ["v1", "agents"]
-                | ["v1", "remote", "actions"]
-                | ["v1", "remote", "uploads"]
-                | ["v1", "agents", _, "verification", "fix"]
-                | ["v1", "agents", _, "ship"]
-                | ["v1", "agents", _, "messages"]
-                | ["v1", "agents", _, "configuration"]
-                | ["v1", "agents", _, "stop"]
-                | ["v1", "agents", _, "questions", _, "answer"]
-                | ["v1", "agents", _, "plan", "resolve"]
-                | ["v1", "agents", _, "plan", "dismiss"]
-                | ["v1", "agents", _, "approvals", _, "resolve"]
-        ),
-        _ => false,
-    }
-}
-
-fn authorization_error(
-    permission: DevicePermission,
-    request: &TunnelRequest,
-) -> Option<&'static str> {
-    if request.method == "GET" {
-        return None;
-    }
-    if permission == DevicePermission::ViewOnly {
-        return Some(
-            "This iPhone is set to View only. Change it to Control in Desktop Settings → Remote access.",
-        );
-    }
-    if permission == DevicePermission::FullAccess {
-        return None;
-    }
-    if request.path.contains("/approvals/") || request.path.split('?').next().is_some_and(|p|p.ends_with("/ship")) {
-        return Some(
-            "This action requires Full access for this iPhone. Change its permission in Desktop Settings → Remote access.",
-        );
-    }
-    let requests_full_access = request.body.as_deref().is_some_and(|body| {
-        serde_json::from_str::<serde_json::Value>(body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("access_mode")
-                    .and_then(|mode| mode.as_str())
-                    .map(str::to_owned)
-            })
-            .is_some_and(|mode| mode.trim() == "full_access")
-    });
-    requests_full_access.then_some(
-        "Full access was selected for the agent, but this iPhone has Control permission. Choose Approve for me, or grant the phone Full access in Desktop Settings → Remote access.",
-    )
-}
-
-fn json_response(request_id: &str, status: u16, value: serde_json::Value) -> TunnelResponse {
-    TunnelResponse {
-        request_id: request_id.to_string(),
-        status,
-        content_type: "application/json".into(),
-        body_base64: BASE64.encode(serde_json::to_vec(&value).unwrap_or_default()),
-    }
-}
-
 fn pairing_key(code: &str) -> [u8; 32] {
     let normalized: String = code
         .chars()
@@ -941,7 +789,7 @@ fn relay_keychain_set(_secret: &str) -> Result<(), String> {
     Err("Keychain is unavailable".into())
 }
 
-fn pairing_error_status(error: &PairingError) -> u16 {
+pub(super) fn pairing_error_status(error: &PairingError) -> u16 {
     match error {
         PairingError::InvalidCode => 401,
         PairingError::TooManyAttempts => 429,
@@ -951,7 +799,7 @@ fn pairing_error_status(error: &PairingError) -> u16 {
     }
 }
 
-fn pairing_error_message(error: &PairingError) -> String {
+pub(super) fn pairing_error_message(error: &PairingError) -> String {
     match error {
         PairingError::NotActive => "Start pairing from Choro Desktop first".into(),
         PairingError::Expired => "Pairing code expired; start a new pairing session".into(),

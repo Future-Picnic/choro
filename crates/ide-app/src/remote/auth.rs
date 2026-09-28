@@ -31,6 +31,8 @@ pub struct RemoteAuth {
 struct AuthState {
     devices: Vec<StoredDevice>,
     pairing: Option<PairingWindow>,
+    pending_pairing: Option<PendingPairing>,
+    storage_error: Option<String>,
     authenticated_at: HashMap<String, Instant>,
 }
 
@@ -56,6 +58,18 @@ struct StoredDevice {
     last_seen_at: u64,
     #[serde(default)]
     expires_at: u64,
+    #[serde(default)]
+    pairing_transaction_id: Option<String>,
+}
+
+// No raw bearer or admission credentials are written to disk. A prepared phone
+// must durably save its credentials before committing this record.
+#[derive(Clone, Serialize, Deserialize)]
+struct PendingPairing {
+    transaction_id: String,
+    device: StoredDevice,
+    replaces: Option<String>,
+    expires_at: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +85,8 @@ pub enum DevicePermission {
 struct StoredAuthFile {
     #[serde(default)]
     devices: Vec<StoredDevice>,
+    #[serde(default)]
+    pending_pairing: Option<PendingPairing>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -103,6 +119,14 @@ pub struct PairingResult {
     pub device: PairedDevice,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PairingPreparation {
+    pub transaction_id: String,
+    pub token: String,
+    pub admission_token: String,
+    pub device: PairedDevice,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairingError {
     NotActive,
@@ -127,16 +151,32 @@ impl RemoteAuth {
     }
 
     #[cfg(test)]
-    fn load(storage_path: PathBuf) -> Self {
+    pub(super) fn load(storage_path: PathBuf) -> Self {
         Self::load_with_keychain(storage_path, false)
     }
 
     fn load_with_keychain(storage_path: PathBuf, use_keychain: bool) -> Self {
-        let mut devices = fs::read(&storage_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<StoredAuthFile>(&bytes).ok())
-            .map(|stored| stored.devices)
-            .unwrap_or_default();
+        let (stored, storage_error) = match fs::read(&storage_path) {
+            Ok(bytes) => match serde_json::from_slice::<StoredAuthFile>(&bytes) {
+                Ok(stored) => (stored, None),
+                Err(error) => (
+                    StoredAuthFile::default(),
+                    Some(format!(
+                        "Device storage is damaged; restore it before pairing: {error}"
+                    )),
+                ),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (StoredAuthFile::default(), None)
+            }
+            Err(error) => (
+                StoredAuthFile::default(),
+                Some(format!(
+                    "Device storage is unavailable; restore access before pairing: {error}"
+                )),
+            ),
+        };
+        let mut devices = stored.devices;
         for device in &mut devices {
             if device.expires_at == 0 {
                 device.expires_at = device.paired_at.saturating_add(DEVICE_TTL_SECS);
@@ -157,6 +197,10 @@ impl RemoteAuth {
             inner: Arc::new(Mutex::new(AuthState {
                 devices,
                 pairing: None,
+                pending_pairing: stored
+                    .pending_pairing
+                    .filter(|pending| pending.expires_at > unix_now()),
+                storage_error,
                 authenticated_at: HashMap::new(),
             })),
             storage_path: Arc::new(storage_path),
@@ -181,6 +225,13 @@ impl RemoteAuth {
             .collect::<Vec<_>>()
             .join("-");
         let mut state = self.inner.lock();
+        // Starting a new window explicitly cancels a prepared transaction, but
+        // never changes a currently authorized device.
+        let previous_pending = state.pending_pairing.take();
+        if previous_pending.is_some() && self.persist_locked(&state).is_err() {
+            state.pending_pairing = previous_pending;
+            return snapshot_locked(&mut state, now);
+        }
         state.pairing = Some(PairingWindow {
             code,
             expires_at: now + PAIRING_TTL_SECS,
@@ -192,6 +243,11 @@ impl RemoteAuth {
     pub fn cancel_pairing(&self) -> PairingSnapshot {
         let now = unix_now();
         let mut state = self.inner.lock();
+        let previous_pending = state.pending_pairing.take();
+        if previous_pending.is_some() && self.persist_locked(&state).is_err() {
+            state.pending_pairing = previous_pending;
+            return snapshot_locked(&mut state, now);
+        }
         state.pairing = None;
         snapshot_locked(&mut state, now)
     }
@@ -222,6 +278,13 @@ impl RemoteAuth {
         let now = unix_now();
         let normalized = normalize_pairing_code(code);
         let mut state = self.inner.lock();
+        if state
+            .pending_pairing
+            .as_ref()
+            .is_some_and(|pending| pending.expires_at > now)
+        {
+            return Err(PairingError::NotActive);
+        }
         let Some(pairing) = state.pairing.as_mut() else {
             return Err(PairingError::NotActive);
         };
@@ -280,6 +343,7 @@ impl RemoteAuth {
             paired_at: now,
             last_seen_at: now,
             expires_at: now + DEVICE_TTL_SECS,
+            pairing_transaction_id: None,
         };
         let previous_pairing = state.pairing.clone();
         state.devices.push(stored.clone());
@@ -297,6 +361,170 @@ impl RemoteAuth {
             admission_token,
             device: public_device(&stored),
         })
+    }
+
+    /// Reserve one pairing without invalidating an existing phone. The returned
+    /// secrets live only in memory and on the phone; the journal contains hashes.
+    pub fn prepare_pairing(
+        &self,
+        code: &str,
+        device_name: &str,
+        previous_token: Option<&str>,
+    ) -> Result<PairingPreparation, PairingError> {
+        let now = unix_now();
+        let mut state = self.inner.lock();
+        if state
+            .pending_pairing
+            .as_ref()
+            .is_some_and(|pending| pending.expires_at > now)
+        {
+            return Err(PairingError::NotActive);
+        }
+        let Some(pairing) = state.pairing.as_mut() else {
+            return Err(PairingError::NotActive);
+        };
+        if pairing.expires_at <= now {
+            state.pairing = None;
+            return Err(PairingError::Expired);
+        }
+        if code.len() > 256
+            || !constant_time_eq(
+                normalize_pairing_code(&pairing.code).as_bytes(),
+                normalize_pairing_code(code).as_bytes(),
+            )
+        {
+            pairing.failed_attempts = pairing.failed_attempts.saturating_add(1);
+            if pairing.failed_attempts >= MAX_PAIRING_ATTEMPTS {
+                state.pairing = None;
+                return Err(PairingError::TooManyAttempts);
+            }
+            return Err(PairingError::InvalidCode);
+        }
+        // An invalid supplied credential cannot be used to evict any device.
+        let replacement = previous_token
+            .filter(|token| token.starts_with(TOKEN_PREFIX) && token.len() <= 256)
+            .and_then(|token| {
+                let hash = token_hash(token);
+                state.devices.iter().find(|device| {
+                    device.expires_at > now
+                        && constant_time_eq(device.token_hash.as_bytes(), hash.as_bytes())
+                })
+            });
+        if replacement.is_none() && state.devices.len() >= MAX_PAIRED_DEVICES {
+            return Err(PairingError::DeviceLimit);
+        }
+        let transaction_id = Uuid::new_v4().to_string();
+        let token = format!(
+            "{TOKEN_PREFIX}{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let admission_token = format!(
+            "{ADMISSION_TOKEN_PREFIX}{}{}",
+            Uuid::new_v4().simple(),
+            Uuid::new_v4().simple()
+        );
+        let name = device_name.trim();
+        let device = StoredDevice {
+            id: Uuid::new_v4().to_string(),
+            name: if name.is_empty() {
+                "iPhone".into()
+            } else {
+                name.chars().take(80).collect()
+            },
+            token_hash: token_hash(&token),
+            transport_key: None,
+            admission_token_hash: token_hash(&admission_token),
+            permission: replacement
+                .map(|device| device.permission)
+                .unwrap_or_default(),
+            paired_at: now,
+            last_seen_at: now,
+            expires_at: now + DEVICE_TTL_SECS,
+            pairing_transaction_id: Some(transaction_id.clone()),
+        };
+        let pending = PendingPairing {
+            transaction_id: transaction_id.clone(),
+            device: device.clone(),
+            replaces: replacement.map(|device| device.id.clone()),
+            expires_at: now + PAIRING_TTL_SECS,
+        };
+        let previous_pending = state.pending_pairing.replace(pending);
+        if let Err(error) = self.persist_locked(&state) {
+            state.pending_pairing = previous_pending;
+            return Err(error);
+        }
+        Ok(PairingPreparation {
+            transaction_id,
+            token,
+            admission_token,
+            device: public_device(&device),
+        })
+    }
+
+    /// Idempotent across reconnection and restart. A revoked credential cannot
+    /// resurrect itself by repeating a previously committed transaction.
+    pub fn commit_pairing(
+        &self,
+        transaction_id: &str,
+        token: &str,
+    ) -> Result<PairedDevice, PairingError> {
+        if transaction_id.len() > 128 || !token.starts_with(TOKEN_PREFIX) || token.len() > 256 {
+            return Err(PairingError::InvalidCode);
+        }
+        let now = unix_now();
+        let hash = token_hash(token);
+        let mut state = self.inner.lock();
+        if let Some(device) = state.devices.iter().find(|device| {
+            device.pairing_transaction_id.as_deref() == Some(transaction_id)
+                && device.expires_at > now
+                && constant_time_eq(device.token_hash.as_bytes(), hash.as_bytes())
+        }) {
+            return Ok(public_device(device));
+        }
+        let pending = state
+            .pending_pairing
+            .as_ref()
+            .ok_or(PairingError::NotActive)?;
+        if pending.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if pending.transaction_id != transaction_id
+            || !constant_time_eq(pending.device.token_hash.as_bytes(), hash.as_bytes())
+        {
+            return Err(PairingError::InvalidCode);
+        }
+        let mut device = pending.device.clone();
+        let replaces = pending.replaces.clone();
+        if let Some(id) = replaces.as_deref() {
+            // Honor revocation and permission changes made while pairing.
+            let old = state
+                .devices
+                .iter()
+                .find(|old| old.id == id && old.expires_at > now)
+                .ok_or(PairingError::NotActive)?;
+            device.permission = old.permission;
+        } else if state.devices.len() >= MAX_PAIRED_DEVICES {
+            return Err(PairingError::DeviceLimit);
+        }
+        let previous_devices = state.devices.clone();
+        let previous_pending = state.pending_pairing.take();
+        let previous_pairing = state.pairing.take();
+        state
+            .devices
+            .retain(|old| Some(old.id.as_str()) != replaces.as_deref());
+        state.devices.push(device.clone());
+        if let Err(error) = self.persist_locked(&state) {
+            state.devices = previous_devices;
+            state.pending_pairing = previous_pending;
+            state.pairing = previous_pairing;
+            return Err(error);
+        }
+        if let Some(id) = replaces {
+            state.authenticated_at.remove(&id);
+            // Preserve the legacy Keychain entry; it is no longer authorized.
+        }
+        Ok(public_device(&device))
     }
 
     pub fn authorize(&self, token: &str) -> bool {
@@ -355,13 +583,26 @@ impl RemoteAuth {
 
     pub fn admission_token_hashes(&self) -> Vec<String> {
         let now = unix_now();
-        self.inner
-            .lock()
+        let state = self.inner.lock();
+        state
             .devices
             .iter()
             .filter(|device| device.expires_at > now && !device.admission_token_hash.is_empty())
             .map(|device| device.admission_token_hash.clone())
             .collect()
+    }
+
+    pub fn pending_admission_token_hashes(&self) -> Vec<String> {
+        let now = unix_now();
+        let state = self.inner.lock();
+        // Allows a phone that saved its prepared credentials to recover commit
+        // on a new TLS stream, including after a Mac process restart.
+        state
+            .pending_pairing
+            .as_ref()
+            .filter(|pending| pending.expires_at > now)
+            .map(|pending| vec![pending.device.admission_token_hash.clone()])
+            .unwrap_or_default()
     }
 
     pub fn device_permission(&self, device_id: &str) -> Option<DevicePermission> {
@@ -430,8 +671,12 @@ impl RemoteAuth {
     }
 
     fn persist_locked(&self, state: &AuthState) -> Result<(), PairingError> {
+        if let Some(error) = &state.storage_error {
+            return Err(PairingError::Storage(error.clone()));
+        }
         let file = StoredAuthFile {
             devices: state.devices.clone(),
+            pending_pairing: state.pending_pairing.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&file)
             .map_err(|error| PairingError::Storage(error.to_string()))?;
@@ -497,7 +742,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(target_os = "macos")]
 fn keychain_set(account: &str, secret: &str) -> Result<(), String> {
     security_framework::passwords::set_generic_password(
-        KEYCHAIN_SERVICE,
+        &transport_keychain_service(),
         account,
         secret.as_bytes(),
     )
@@ -511,8 +756,9 @@ fn keychain_set(_account: &str, _secret: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn keychain_get(account: &str) -> Result<String, String> {
-    let bytes = security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account)
-        .map_err(|error| error.to_string())?;
+    let bytes =
+        security_framework::passwords::get_generic_password(&transport_keychain_service(), account)
+            .map_err(|error| error.to_string())?;
     String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
@@ -523,8 +769,13 @@ fn keychain_get(_account: &str) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 fn keychain_delete(account: &str) -> Result<(), String> {
-    security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account)
+    security_framework::passwords::delete_generic_password(&transport_keychain_service(), account)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn transport_keychain_service() -> String {
+    std::env::var("CHORO_TRANSPORT_KEYCHAIN_SERVICE").unwrap_or_else(|_| KEYCHAIN_SERVICE.into())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -561,6 +812,188 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damaged_device_storage_is_preserved_until_explicit_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("devices.json");
+        let damaged = b"{\"devices\":[\"incomplete existing device data";
+        fs::write(&path, damaged).unwrap();
+        let auth = RemoteAuth::load(path.clone());
+        let code = auth.start_pairing().active_code.unwrap();
+        assert!(matches!(
+            auth.prepare_pairing(&code, "Phone", None),
+            Err(PairingError::Storage(_))
+        ));
+        assert!(matches!(
+            auth.pair(&code, "Legacy phone"),
+            Err(PairingError::Storage(_))
+        ));
+        assert_eq!(fs::read(path).unwrap(), damaged);
+    }
+
+    #[test]
+    fn transactional_migration_preserves_three_devices_until_durable_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("devices.json");
+        let auth = RemoteAuth::load(path.clone());
+        let code = auth.start_pairing().active_code.unwrap();
+        let original = auth.pair(&code, "Original phone").unwrap();
+        for name in ["Phone 2", "Phone 3"] {
+            let code = auth.start_pairing().active_code.unwrap();
+            auth.pair(&code, name).unwrap();
+        }
+        auth.set_device_permission(&original.device.id, DevicePermission::FullAccess)
+            .unwrap();
+        let code = auth.start_pairing().active_code.unwrap();
+        assert_eq!(
+            auth.prepare_pairing(&code, "Fourth phone", None),
+            Err(PairingError::DeviceLimit)
+        );
+        let prepared = auth
+            .prepare_pairing(&code, "Updated phone", Some(&original.token))
+            .unwrap();
+        assert_eq!(prepared.device.permission, DevicePermission::FullAccess);
+        assert!(auth.authorize(&original.token));
+        assert!(!auth.authorize(&prepared.token));
+        assert_eq!(auth.snapshot().devices.len(), 3);
+        assert_eq!(auth.admission_token_hashes().len(), 3);
+        assert_eq!(auth.pending_admission_token_hashes().len(), 1);
+        let journal = fs::read_to_string(&path).unwrap();
+        assert!(!journal.contains(&prepared.token));
+        assert!(!journal.contains(&prepared.admission_token));
+        assert_eq!(
+            auth.prepare_pairing(&code, "Concurrent phone", None),
+            Err(PairingError::NotActive)
+        );
+        assert_eq!(
+            auth.pair(&code, "Legacy concurrent phone"),
+            Err(PairingError::NotActive)
+        );
+
+        // A Mac restart and a lost commit response cannot invalidate the staged
+        // credential or create a fourth record.
+        let restarted = RemoteAuth::load(path.clone());
+        restarted
+            .set_device_permission(&original.device.id, DevicePermission::ViewOnly)
+            .unwrap();
+        let committed = restarted
+            .commit_pairing(&prepared.transaction_id, &prepared.token)
+            .unwrap();
+        assert_eq!(committed.permission, DevicePermission::ViewOnly);
+        assert_eq!(restarted.snapshot().devices.len(), 3);
+        assert!(!restarted.authorize(&original.token));
+        assert!(restarted.authorize(&prepared.token));
+        assert!(restarted.pending_admission_token_hashes().is_empty());
+        let reloaded = RemoteAuth::load(path);
+        assert_eq!(
+            reloaded
+                .commit_pairing(&prepared.transaction_id, &prepared.token)
+                .unwrap()
+                .id,
+            prepared.device.id
+        );
+        reloaded.revoke(&prepared.device.id).unwrap();
+        assert!(reloaded
+            .commit_pairing(&prepared.transaction_id, &prepared.token)
+            .is_err());
+    }
+
+    #[test]
+    fn transaction_expiry_cancellation_and_revocation_preserve_old_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let auth = RemoteAuth::load(directory.path().join("devices.json"));
+        let code = auth.start_pairing().active_code.unwrap();
+        let original = auth.pair(&code, "Original phone").unwrap();
+        let code = auth.start_pairing().active_code.unwrap();
+        let prepared = auth
+            .prepare_pairing(&code, "Updated phone", Some(&original.token))
+            .unwrap();
+        assert_eq!(
+            auth.commit_pairing(&prepared.transaction_id, "choro_device_wrong"),
+            Err(PairingError::InvalidCode)
+        );
+        auth.inner
+            .lock()
+            .pending_pairing
+            .as_mut()
+            .unwrap()
+            .expires_at = unix_now();
+        assert_eq!(
+            auth.commit_pairing(&prepared.transaction_id, &prepared.token),
+            Err(PairingError::Expired)
+        );
+        assert!(auth.authorize(&original.token));
+        assert!(auth.pending_admission_token_hashes().is_empty());
+
+        let code = auth.start_pairing().active_code.unwrap();
+        let prepared = auth
+            .prepare_pairing(&code, "Updated phone", Some(&original.token))
+            .unwrap();
+        auth.cancel_pairing();
+        assert!(auth
+            .commit_pairing(&prepared.transaction_id, &prepared.token)
+            .is_err());
+        assert!(auth.authorize(&original.token));
+
+        let code = auth.start_pairing().active_code.unwrap();
+        let prepared = auth
+            .prepare_pairing(&code, "Updated phone", Some(&original.token))
+            .unwrap();
+        auth.revoke(&original.device.id).unwrap();
+        assert_eq!(
+            auth.commit_pairing(&prepared.transaction_id, &prepared.token),
+            Err(PairingError::NotActive)
+        );
+        assert!(!auth.authorize(&prepared.token));
+    }
+
+    #[test]
+    fn commit_storage_failure_rolls_back_both_credentials_and_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = directory.path().join("remote");
+        let auth = RemoteAuth::load(storage.join("devices.json"));
+        let code = auth.start_pairing().active_code.unwrap();
+        let old = auth.pair(&code, "Old phone").unwrap();
+        let code = auth.start_pairing().active_code.unwrap();
+        let prepared = auth
+            .prepare_pairing(&code, "Updated phone", Some(&old.token))
+            .unwrap();
+        fs::rename(&storage, directory.path().join("remote-preserved")).unwrap();
+        fs::write(&storage, b"blocked").unwrap();
+        assert!(matches!(
+            auth.commit_pairing(&prepared.transaction_id, &prepared.token),
+            Err(PairingError::Storage(_))
+        ));
+        assert!(auth.authorize(&old.token));
+        assert!(!auth.authorize(&prepared.token));
+        assert_eq!(auth.pending_admission_token_hashes().len(), 1);
+    }
+
+    #[test]
+    fn secure_pairing_enforces_attempt_limit_and_one_time_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let auth = RemoteAuth::load(directory.path().join("devices.json"));
+        auth.start_pairing();
+        for _ in 0..(MAX_PAIRING_ATTEMPTS - 1) {
+            assert_eq!(
+                auth.prepare_pairing("WRONG", "Phone", None),
+                Err(PairingError::InvalidCode)
+            );
+        }
+        assert_eq!(
+            auth.prepare_pairing("WRONG", "Phone", None),
+            Err(PairingError::TooManyAttempts)
+        );
+        let code = auth.start_pairing().active_code.unwrap();
+        let prepared = auth.prepare_pairing(&code, "Phone", None).unwrap();
+        auth.commit_pairing(&prepared.transaction_id, &prepared.token)
+            .unwrap();
+        assert_eq!(
+            auth.prepare_pairing(&code, "Other phone", None),
+            Err(PairingError::NotActive)
+        );
+    }
 
     #[test]
     fn pocketcomet_presence_requires_live_authentication_and_clears_on_revoke() {

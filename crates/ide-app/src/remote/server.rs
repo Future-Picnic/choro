@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -83,6 +84,28 @@ pub(crate) struct RelayStateStore {
     updates: async_channel::Sender<RelayState>,
 }
 
+/// Combined presence across the independently reconnecting legacy and TLS hosts.
+#[derive(Clone)]
+pub(super) struct RelayPresence {
+    transport: &'static str,
+    counts: Arc<parking_lot::Mutex<HashMap<&'static str, usize>>>,
+    updates: async_channel::Sender<usize>,
+}
+
+impl RelayPresence {
+    fn new(transport: &'static str, updates: async_channel::Sender<usize>) -> Self {
+        Self { transport, counts: Arc::default(), updates }
+    }
+    fn for_transport(&self, transport: &'static str) -> Self { Self { transport, ..self.clone() } }
+    pub(super) fn set(&self, count: usize) {
+        let mut counts = self.counts.lock();
+        let previous: usize = counts.values().sum();
+        counts.insert(self.transport, count);
+        let total: usize = counts.values().sum();
+        if previous != total { let _ = self.updates.try_send(total); }
+    }
+}
+
 impl RelayStateStore {
     fn new(updates: async_channel::Sender<RelayState>) -> Self {
         Self {
@@ -119,11 +142,12 @@ enum RelayCommand {
 pub struct RelayControl {
     commands: async_channel::Sender<RelayCommand>,
     state: RelayStateStore,
+    tls_status: super::tls_transport::TlsStatus,
 }
 
 impl RelayControl {
     fn new(commands: async_channel::Sender<RelayCommand>, state: RelayStateStore) -> Self {
-        Self { commands, state }
+        Self { commands, state, tls_status: Default::default() }
     }
 
     /// Open the outbound relay tunnel. Idempotent — safe to call repeatedly.
@@ -139,6 +163,12 @@ impl RelayControl {
     pub fn state(&self) -> RelayState {
         self.state.get()
     }
+
+    pub fn pairing_payload(&self, room_id: &str, auth: &RemoteAuth) -> Result<String, String> {
+        self.tls_status.pairing_payload(room_id, auth)
+    }
+
+    pub fn secure_connection_error(&self) -> Option<String> { self.tls_status.error() }
 }
 
 pub fn start_remote_server() -> RemoteServer {
@@ -152,6 +182,7 @@ pub fn start_remote_server() -> RemoteServer {
     let (relay_state_tx, relay_state_rx) = async_channel::unbounded();
     let relay_state = RelayStateStore::new(relay_state_tx);
     let relay_control = RelayControl::new(relay_command_tx, relay_state.clone());
+    let tls_status = relay_control.tls_status.clone();
     let state = ServerState {
         commands: command_tx,
         events: event_tx.clone(),
@@ -208,18 +239,25 @@ pub fn start_remote_server() -> RemoteServer {
                                     let task_identity = thread_relay_identity.clone();
                                     let task_auth = thread_auth.clone();
                                     let task_events = thread_events.clone();
-                                    let task_presence = presence_tx.clone();
+                                    let task_presence = RelayPresence::new("legacy", presence_tx.clone());
+                                    let tls_presence = task_presence.for_transport("tls");
+                                    let task_tls_status = tls_status.clone();
                                     relay_task = Some(tokio::spawn(async move {
-                                        super::relay::run(
-                                            task_url,
-                                            task_identity,
+                                        // Legacy retains its own state so it cannot report TLS readiness.
+                                        let (legacy_updates, _legacy_rx) = async_channel::bounded(1);
+                                        let legacy_state = RelayStateStore::new(legacy_updates);
+                                        let legacy = super::relay::run(
+                                            task_url.clone(),
+                                            task_identity.clone(),
                                             address,
-                                            task_auth,
-                                            task_events,
+                                            task_auth.clone(),
+                                            task_events.clone(),
                                             task_presence,
-                                            task_state,
-                                        )
-                                        .await;
+                                            legacy_state,
+                                        );
+                                        let tls = super::tls_transport::run(task_url, task_identity,
+                                            address, task_auth, task_events, tls_presence, task_state, task_tls_status);
+                                        tokio::join!(legacy, tls);
                                     }));
                                 }
                                 RelayCommand::Disconnect => {

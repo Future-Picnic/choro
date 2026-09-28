@@ -102,6 +102,7 @@ pub enum VoiceEvent {
 }
 
 enum WorkerEvent {
+    InitialInputDevices(Vec<audio::VoiceInputDevice>),
     Download(u64, VoiceModelProgress),
     ModelsReady(u64),
     Recognition(u64, RecognitionEvent),
@@ -148,6 +149,7 @@ pub struct VoiceState {
     operation_id: u64,
     last_file: Option<String>,
     input_devices: Vec<audio::VoiceInputDevice>,
+    input_devices_initialized: bool,
     selected_input_device: Option<String>,
     #[cfg(target_os = "macos")]
     #[allow(deprecated)]
@@ -169,7 +171,9 @@ impl VoiceState {
             let voice = &workspace.read(cx).voice;
             (voice.transcript_retention_days, voice.input_device.clone())
         };
-        let input_devices = audio::input_devices().unwrap_or_default();
+        // CoreAudio can block while discovering a disconnected/remote input.
+        // Do not make opening Choro depend on a microphone responding.
+        let input_devices = Vec::new();
         if model_status == VoiceModelStatus::Ready {
             let warm_models = models.clone();
             std::thread::spawn(move || {
@@ -185,6 +189,13 @@ impl VoiceState {
             })
             .unwrap_or_default();
         let (events_tx, events_rx) = mpsc::channel();
+        let input_events = events_tx.clone();
+        let _ = std::thread::Builder::new()
+            .name("choro-initial-audio-devices".into())
+            .spawn(move || {
+                let devices = audio::input_devices().unwrap_or_default();
+                let _ = input_events.send(WorkerEvent::InitialInputDevices(devices));
+            });
         let events_rx = Arc::new(Mutex::new(events_rx));
         cx.new(|cx| {
             let mut state = Self {
@@ -221,6 +232,7 @@ impl VoiceState {
                 operation_id: 0,
                 last_file: None,
                 input_devices,
+                input_devices_initialized: false,
                 selected_input_device,
                 #[cfg(target_os = "macos")]
                 speaker: None,
@@ -291,6 +303,7 @@ impl VoiceState {
     }
 
     pub fn refresh_input_devices(&mut self, cx: &mut Context<Self>) {
+        self.input_devices_initialized = true;
         self.input_devices = audio::input_devices().unwrap_or_default();
         if self.selected_input_device.as_ref().is_some_and(|selected| {
             !self
@@ -722,6 +735,14 @@ impl VoiceState {
 
     fn handle_worker_event(&mut self, event: WorkerEvent, cx: &mut Context<Self>) {
         match event {
+            WorkerEvent::InitialInputDevices(devices) => {
+                // A deliberate refresh may already have populated this list.
+                if !self.input_devices_initialized {
+                    self.input_devices_initialized = true;
+                    self.input_devices = devices;
+                    cx.notify();
+                }
+            }
             WorkerEvent::Download(operation_id, progress) => {
                 if operation_id != self.operation_id {
                     return;
