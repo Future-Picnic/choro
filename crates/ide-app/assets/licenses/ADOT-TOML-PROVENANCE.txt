@@ -1,0 +1,7 @@
+adot-tree-sitter-toml 0.1.0 declares MIT in its Cargo.toml.
+Its published README says it contains the same code as tree-sitter-toml,
+rebuilt with a newer tree-sitter CLI. The corresponding upstream MIT license
+is included as LICENSE-ORIGINAL-MIT.txt in the package notice directory.
+
+Package source: https://crates.io/crates/adot-tree-sitter-toml/0.1.0
+Upstream grammar: https://github.com/tree-sitter-grammars/tree-sitter-toml

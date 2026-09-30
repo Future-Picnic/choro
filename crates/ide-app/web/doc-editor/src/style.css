@@ -1,0 +1,155 @@
+:root {
+  --choro-bg: #1f222b;
+  --choro-fg: #e5e9f3;
+  --choro-surface: #252935;
+  --choro-muted: #959db0;
+  --choro-border: #363c4b;
+  --choro-accent: #9f98e8;
+  --choro-danger: #df7078;
+  font-family:
+    Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--choro-bg);
+  color: var(--choro-fg);
+  color-scheme: dark;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--choro-bg);
+}
+
+.choro-boot-status,
+.choro-boot-error {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: var(--choro-muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.choro-boot-error strong {
+  color: var(--choro-danger);
+  font-size: 15px;
+}
+
+.choro-editor-shell {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--choro-bg);
+  scrollbar-color: color-mix(in srgb, var(--choro-muted) 45%, transparent)
+    transparent;
+}
+
+.choro-editor {
+  min-height: 100%;
+  background: var(--choro-bg);
+  color: var(--choro-fg);
+}
+
+.choro-editor .bn-container,
+.choro-editor .bn-editor {
+  background: var(--choro-bg);
+  color: var(--choro-fg);
+}
+
+.choro-editor .bn-editor {
+  width: min(100%, 1100px);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 32px 52px 180px;
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.choro-editor [data-content-type="heading"] {
+  color: var(--choro-fg);
+  letter-spacing: -0.02em;
+}
+
+.choro-editor [data-placeholder]::before {
+  color: color-mix(in srgb, var(--choro-muted) 82%, transparent) !important;
+}
+
+.choro-editor .bn-side-menu,
+.choro-editor .bn-drag-handle-menu,
+.choro-editor .bn-suggestion-menu,
+.choro-editor .bn-grid-suggestion-menu,
+.choro-editor .bn-formatting-toolbar,
+.choro-editor .bn-link-toolbar,
+.choro-editor .bn-file-panel,
+.choro-editor .bn-table-handle {
+  --mantine-color-body: var(--choro-surface);
+  --mantine-color-text: var(--choro-fg);
+  --mantine-color-default-border: var(--choro-border);
+}
+
+.choro-mention {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 5px;
+  padding: 0 4px;
+  background: color-mix(in srgb, var(--choro-accent) 19%, transparent);
+  color: color-mix(in srgb, var(--choro-accent) 80%, white);
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.choro-mention:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.choro-mention-folder {
+  cursor: default;
+}
+
+.choro-mention-folder:hover {
+  text-decoration: none;
+}
+
+.choro-mention-asset {
+  background: color-mix(in srgb, var(--choro-accent) 28%, transparent);
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--choro-accent) 28%, transparent);
+}
+
+/* BlockNote already handles ArrowUp/ArrowDown/Enter for slash and suggestion
+   menus. Make that keyboard selection unmistakable in every Choro theme. */
+.choro-editor .bn-suggestion-menu-item[aria-selected="true"] {
+  background: color-mix(
+    in srgb,
+    var(--choro-accent) 22%,
+    var(--choro-surface)
+  ) !important;
+  color: var(--choro-fg) !important;
+  outline: 1px solid color-mix(in srgb, var(--choro-accent) 38%, transparent);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--choro-accent) 38%, transparent);
+}
+
+@media (max-width: 760px) {
+  .choro-editor .bn-editor {
+    padding: 24px 28px 140px;
+  }
+}

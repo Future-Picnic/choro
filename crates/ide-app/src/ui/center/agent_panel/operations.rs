@@ -1,0 +1,543 @@
+use super::*;
+
+pub(super) fn prepare_agent_ship_content(
+    generation_agent: &ide_core::config::GenerationAgent,
+    repo: &Path,
+    current_branch: Option<&str>,
+    create_branch: bool,
+    branch_name: &str,
+    agent_title: &str,
+    files: &[PathBuf],
+    commit_message: &str,
+    pr_base_branch: &str,
+    pr_title: &str,
+    pr_description: &str,
+    action: AgentShipAction,
+) -> anyhow::Result<AgentShipPreparation> {
+    let commit_message = if commit_message.trim().is_empty() {
+        crate::ui::git::git_panel::generate_commit_message_for_files(generation_agent, repo, files)?
+    } else {
+        commit_message.trim().to_string()
+    };
+
+    let prompt_branch = if create_branch {
+        if branch_name.trim().is_empty() {
+            unique_agent_ship_branch_name(repo, agent_title, &commit_message, pr_title)?
+        } else {
+            branch_name.trim().to_string()
+        }
+    } else {
+        current_branch
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("Current Git HEAD is not on a branch"))?
+    };
+
+    let pr = if matches!(action, AgentShipAction::CommitPushPr) {
+        let pr_base_branch = pr_base_branch.trim();
+        if pr_base_branch.is_empty() {
+            anyhow::bail!("Choose a base branch for the pull request");
+        }
+        validate_agent_ship_pr_branches(&prompt_branch, pr_base_branch)?;
+        let generated = if pr_title.trim().is_empty() || pr_description.trim().is_empty() {
+            Some(crate::ui::git::git_panel::generate_pull_request_for_files(
+                generation_agent,
+                repo,
+                &prompt_branch,
+                pr_base_branch,
+                files,
+                &commit_message,
+            )?)
+        } else {
+            None
+        };
+        Some(crate::ui::git::git_panel::GeneratedPullRequest {
+            title: if pr_title.trim().is_empty() {
+                generated
+                    .as_ref()
+                    .map(|pr| pr.title.clone())
+                    .unwrap_or_else(|| commit_message.lines().next().unwrap_or("Update").into())
+            } else {
+                pr_title.trim().to_string()
+            },
+            body: if pr_description.trim().is_empty() {
+                generated
+                    .as_ref()
+                    .map(|pr| pr.body.clone())
+                    .unwrap_or_else(|| "## Summary\n- \n\n## Testing\n- Not run".to_string())
+            } else {
+                pr_description.trim().to_string()
+            },
+        })
+    } else {
+        None
+    };
+
+    let branch_name = if create_branch {
+        let requested = if branch_name.trim().is_empty() {
+            unique_agent_ship_branch_name(
+                repo,
+                agent_title,
+                &commit_message,
+                pr.as_ref().map(|pr| pr.title.as_str()).unwrap_or(pr_title),
+            )?
+        } else {
+            branch_name.trim().to_string()
+        };
+        validate_agent_ship_branch_name(repo, &requested)?;
+        Some(requested)
+    } else {
+        None
+    };
+
+    Ok(AgentShipPreparation {
+        branch_name,
+        commit_message,
+        pr,
+    })
+}
+
+pub(super) fn run_agent_ship_operation(
+    repo: &Path,
+    agent_id: Uuid,
+    project_id: ProjectId,
+    current_branch: Option<&str>,
+    create_branch: bool,
+    branch_name: &str,
+    needs_upstream: bool,
+    scope: AgentShipScope,
+    files: &[PathBuf],
+    commit_message: &str,
+    pr_base_branch: &str,
+    pr_title: &str,
+    pr_description: &str,
+    pending_commit: Option<AgentShipPendingCommit>,
+    action: AgentShipAction,
+) -> Result<AgentShipOutcome, AgentShipOperationFailure> {
+    let repository_lock = ide_core::agent_changes::repository_operation_lock(repo);
+    let _repository_guard = repository_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+    let retry_commit = pending_commit.clone();
+    let (branch, mut committed) = (|| -> anyhow::Result<_> {
+        if commit_message.trim().is_empty() {
+            anyhow::bail!("Generate or enter a commit message before shipping");
+        }
+        if matches!(action, AgentShipAction::CommitPushPr)
+            && (pr_title.trim().is_empty() || pr_description.trim().is_empty())
+        {
+            anyhow::bail!(
+                "Generate or enter pull request title and description before shipping"
+            );
+        }
+        if matches!(action, AgentShipAction::CommitPushPr) && pr_base_branch.trim().is_empty() {
+            anyhow::bail!("Choose a base branch for the pull request");
+        }
+
+        let commit_message = commit_message.trim().to_string();
+        let mut normalized_files = files.iter()
+            .map(|path| normalize_agent_ship_path(repo, path)).collect::<Vec<_>>();
+        normalized_files.sort();
+        normalized_files.dedup();
+        if pending_commit.is_none() {
+            if scope == AgentShipScope::Conversation {
+                let pending = ide_core::local_store::LocalStore::open_default()?
+                    .pending_agent_repository_paths(agent_id, repo)?;
+                normalized_files.retain(|path| pending.contains(path));
+            }
+            let dirty = ide_core::agent_changes::observer::status_paths(repo, &[repo.to_path_buf()])?;
+            normalized_files.retain(|path| dirty.contains(path));
+            anyhow::ensure!(!normalized_files.is_empty(), "The selected contributions are already committed or no longer pending. Refresh Ship before continuing.");
+            // Recheck under the lock, before any branch or index mutation.
+            let selected = normalized_files.iter().collect::<HashSet<_>>();
+            let snapshot = ide_core::git::read_snapshot(repo)?;
+            anyhow::ensure!(snapshot.entries.iter().all(|entry| entry.staged.is_none() || selected.contains(&entry.path)), "Unstage files outside this Ship selection before continuing");
+        }
+
+        let branch = if create_branch {
+            let requested = branch_name.trim().to_string();
+            if matches!(action, AgentShipAction::CommitPushPr) {
+                validate_agent_ship_pr_branches(&requested, pr_base_branch)?;
+            }
+            validate_agent_ship_branch_name(repo, &requested)?;
+            let already_on_requested = ide_core::git::read_head(repo)
+                .ok()
+                .and_then(|head| head.branch)
+                .as_deref()
+                == Some(requested.as_str());
+            if !already_on_requested {
+                ide_core::git::write::create_branch(repo, &requested)?;
+            }
+            requested
+        } else {
+            let actual = ide_core::git::read_head(repo)?.branch;
+            anyhow::ensure!(actual.as_deref() == current_branch, "The branch changed after Ship was opened. Refresh Ship before continuing.");
+            actual.ok_or_else(|| anyhow::anyhow!("Current Git HEAD is not on a branch"))?
+        };
+        if matches!(action, AgentShipAction::CommitPushPr) {
+            validate_agent_ship_pr_branches(&branch, pr_base_branch)?;
+        }
+
+        if let Some(pending) = pending_commit {
+            let head = git_head_sha(repo).ok_or_else(|| anyhow::anyhow!("Could not read the commit from the previous Ship attempt"))?;
+            validate_pending_ship_commit(&pending, &branch, &commit_message, &normalized_files, &head)?;
+            // A retry pushes the recorded commit. Later edits stay pending.
+            return Ok((branch, pending));
+        }
+
+        let committed = {
+            let snapshot_id =
+                match capture_agent_ship_diff_snapshot(repo, agent_id, project_id, &normalized_files) {
+                    Ok(snapshot_id) => snapshot_id,
+                    Err(error) => {
+                        eprintln!("failed to capture pre-commit diff snapshot: {error:#}");
+                        None
+                    }
+                };
+            let refs = normalized_files.iter().map(|path| path.as_path()).collect::<Vec<_>>();
+            let included_through = ide_core::agent_changes::now_micros();
+            ide_core::git::write::stage(repo, &refs)?;
+            let commit = ide_core::git::write::commit(repo, &commit_message)?;
+            // Settle the included history even if someone edits the file
+            // immediately after staging. Later evidence keeps its own pending state.
+            if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
+                if let Err(error) = ide_core::agent_changes::settle_repository_paths(
+                    &store, repo, &normalized_files, included_through,
+                ) {
+                    eprintln!("ship contribution settlement: {error:#}");
+                }
+            }
+            ide_core::agent_changes::observer::refresh(repo);
+
+            if let Some(snapshot_id) = snapshot_id {
+                if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
+                    if let Err(error) =
+                        store.update_agent_diff_snapshot_commit(snapshot_id, &commit.sha)
+                    {
+                        eprintln!("failed to attach commit SHA to diff snapshot: {error:#}");
+                    }
+                }
+            }
+            AgentShipPendingCommit {
+                branch: branch.clone(),
+                commit_sha: commit.sha,
+                commit_sha_short: commit.sha_short,
+                snapshot_id,
+                commit_message,
+                files: normalized_files,
+                pushed: false,
+            }
+        };
+
+        Ok((branch, committed))
+    })()
+    .map_err(|error| AgentShipOperationFailure {
+        error,
+        pending_commit: retry_commit,
+    })?;
+
+    if matches!(
+        action,
+        AgentShipAction::CommitPush | AgentShipAction::CommitPushPr
+    ) {
+        let output =
+            ide_core::git::remote::push(repo, Some(&branch), needs_upstream || create_branch)
+                .map_err(|error| {
+                    AgentShipOperationFailure::after_commit(error, committed.clone())
+                })?;
+        if !output.success {
+            return Err(AgentShipOperationFailure::after_commit(
+                anyhow::anyhow!("{}", output.message()),
+                committed,
+            ));
+        }
+        committed.pushed = true;
+    }
+
+    let pull_request = if matches!(action, AgentShipAction::CommitPushPr) {
+        let pull_request = crate::ui::git::git_panel::GeneratedPullRequest {
+            title: pr_title.trim().to_string(),
+            body: pr_description.trim().to_string(),
+        };
+        let pr_url = crate::ui::git::git_panel::create_pull_request_with_gh(
+            repo,
+            &branch,
+            pr_base_branch,
+            &pull_request,
+        )
+        .map_err(|error| AgentShipOperationFailure::after_commit(error, committed.clone()))?;
+        Some((pr_url, pull_request))
+    } else {
+        None
+    };
+    let pr_url = pull_request.as_ref().map(|(url, _)| url.clone());
+    let pr_title = pull_request
+        .as_ref()
+        .map(|(_, pull_request)| pull_request.title.clone());
+    let pr_body = pull_request
+        .as_ref()
+        .map(|(_, pull_request)| pull_request.body.clone());
+
+    let message = match action {
+        AgentShipAction::Commit => format!("Committed {}", committed.commit_sha_short),
+        AgentShipAction::CommitPush => {
+            format!(
+                "Committed {} and pushed {branch}",
+                committed.commit_sha_short
+            )
+        }
+        AgentShipAction::CommitPushPr => {
+            format!(
+                "Committed {}, pushed {branch}, opened PR",
+                committed.commit_sha_short
+            )
+        }
+    };
+    Ok(AgentShipOutcome {
+        message,
+        action: AgentShipDialog::action_label(action).to_string(),
+        branch: branch.clone(),
+        pr_base_branch: matches!(action, AgentShipAction::CommitPushPr)
+            .then(|| pr_base_branch.trim().to_string()),
+        pr_url,
+        pr_title,
+        pr_body,
+        tracked_pr_branch: matches!(action, AgentShipAction::CommitPushPr).then_some(branch),
+        snapshot_id: committed.snapshot_id,
+        commit_sha: committed.commit_sha,
+    })
+}
+
+pub(super) fn validate_agent_ship_pr_branches(
+    source_branch: &str,
+    base_branch: &str,
+) -> anyhow::Result<()> {
+    if source_branch.trim() == base_branch.trim() {
+        anyhow::bail!(
+            "A pull request needs a different source branch. Choose New branch before shipping to {}.",
+            base_branch.trim()
+        );
+    }
+    Ok(())
+}
+
+fn validate_pending_ship_commit(
+    pending: &AgentShipPendingCommit,
+    branch: &str,
+    commit_message: &str,
+    files: &[PathBuf],
+    head_sha: &str,
+) -> anyhow::Result<()> {
+    if pending.branch != branch
+        || pending.commit_message != commit_message
+        || pending.files != files
+    {
+        anyhow::bail!(
+            "The branch, commit message, or selected files changed after the commit; restore the original Ship settings before retrying"
+        );
+    }
+    if pending.commit_sha != head_sha {
+        anyhow::bail!(
+            "Git HEAD changed after the Ship commit; refusing to push or open a pull request for a different commit"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn capture_agent_ship_diff_snapshot(
+    repo: &Path,
+    agent_id: Uuid,
+    project_id: ProjectId,
+    files: &[PathBuf],
+) -> anyhow::Result<Option<Uuid>> {
+    let selected = files
+        .iter()
+        .map(|path| normalize_agent_ship_path(repo, path))
+        .collect::<std::collections::HashSet<_>>();
+    if selected.is_empty() {
+        return Ok(None);
+    }
+    let diffs = ide_core::git::worktree_diffs(repo)?
+        .into_iter()
+        .filter(|diff| selected.contains(&normalize_agent_ship_path(repo, &diff.path)))
+        .collect::<Vec<_>>();
+    if diffs.is_empty() {
+        return Ok(None);
+    }
+    let snapshot = ide_core::local_store::LocalStore::open_default()?.create_agent_diff_snapshot(
+        agent_id,
+        project_id,
+        repo.to_path_buf(),
+        "ship_pre_commit",
+        git_head_sha(repo),
+        None,
+        None,
+        diffs,
+    )?;
+    Ok(Some(snapshot.id))
+}
+
+pub(super) fn git_head_sha(repo: &Path) -> Option<String> {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+pub(super) fn agent_ship_pr_status_colors(
+    pr: &crate::ui::git::git_panel::BranchPullRequest,
+    cx: &mut Context<CenterArea>,
+) -> (gpui::Hsla, gpui::Hsla) {
+    // Same GitHub status palette as the git panel, so the ship badge matches the
+    // PR colours everywhere (open=green, merged=purple, closed=red, draft=grey).
+    let (_, color) = crate::ui::git::git_panel::pull_request_status_style(pr, cx);
+    (color, color)
+}
+
+pub(super) fn validate_agent_ship_branch_name(repo: &Path, name: &str) -> anyhow::Result<()> {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
+    if name.trim().is_empty() {
+        anyhow::bail!("Branch name cannot be empty");
+    }
+    let output = std::process::Command::new("git")
+        .args(["check-ref-format", "--branch", name])
+        .current_dir(repo)
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("Invalid branch name: {name}");
+    }
+    Ok(())
+}
+
+pub(super) fn agent_ship_branch_exists(repo: &Path, name: &str) -> bool {
+    let _git_permit = ide_core::git::BackgroundGitPermit::acquire();
+    std::process::Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ])
+        .current_dir(repo)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+pub(super) fn unique_agent_ship_branch_name(
+    repo: &Path,
+    agent_title: &str,
+    commit_message: &str,
+    pr_title: &str,
+) -> anyhow::Result<String> {
+    let seed = [pr_title, commit_message, agent_title]
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or("agent work");
+    let slug = agent_ship_slug(seed);
+    let base = slug;
+    validate_agent_ship_branch_name(repo, &base)?;
+    if !agent_ship_branch_exists(repo, &base) {
+        return Ok(base);
+    }
+    for index in 2..100 {
+        let candidate = format!("{base}-{index}");
+        if !agent_ship_branch_exists(repo, &candidate) {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("Could not find an available branch name for {base}");
+}
+
+pub(super) fn agent_ship_slug(seed: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for ch in seed.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            out.push(ch.to_ascii_lowercase());
+            pending_dash = false;
+        } else {
+            pending_dash = true;
+        }
+        if out.len() >= 42 {
+            break;
+        }
+    }
+    let slug = out.trim_matches('-').trim().to_string();
+    if slug.is_empty() {
+        "agent-work".to_string()
+    } else {
+        slug
+    }
+}
+
+pub(super) fn normalize_agent_ship_path(project_path: &Path, path: &Path) -> PathBuf {
+    let relative = if path.is_absolute() {
+        path.strip_prefix(project_path).unwrap_or(path)
+    } else {
+        path
+    };
+    relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(PathBuf::from(value)),
+            _ => None,
+        })
+        .fold(PathBuf::new(), |mut acc, component| {
+            acc.push(component);
+            acc
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending_commit() -> AgentShipPendingCommit {
+        AgentShipPendingCommit {
+            branch: "feature".into(),
+            commit_sha: "exact-sha".into(),
+            commit_sha_short: "exact".into(),
+            snapshot_id: None,
+            commit_message: "Ship changes".into(),
+            files: vec![PathBuf::from("src/app.rs")],
+            pushed: false,
+        }
+    }
+
+    #[test]
+    fn retry_requires_the_exact_recorded_commit() {
+        let pending = pending_commit();
+        assert!(validate_pending_ship_commit(
+            &pending,
+            "feature",
+            "Ship changes",
+            &[PathBuf::from("src/app.rs")],
+            "exact-sha",
+        )
+        .is_ok());
+        assert!(validate_pending_ship_commit(
+            &pending,
+            "feature",
+            "Ship changes",
+            &[PathBuf::from("src/app.rs")],
+            "different-sha",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn pull_request_rejects_the_base_as_its_source() {
+        assert!(validate_agent_ship_pr_branches("feature", "main").is_ok());
+        assert!(validate_agent_ship_pr_branches("main", "main").is_err());
+    }
+}

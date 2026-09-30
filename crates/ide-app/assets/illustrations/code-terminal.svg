@@ -1,0 +1,18 @@
+<svg width="160" height="110" viewBox="0 0 200 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="100" cy="116" rx="48" ry="6" fill="{{ground}}"/>
+  <g transform="rotate(-4 78 66)">
+    <rect x="46" y="32" width="60" height="76" rx="9" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2.2"/>
+    <path d="M58 48h20M66 58h24M66 68h18M58 78h26M58 88h16" stroke="{{content_line}}" stroke-width="2.2" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(4 128 78)">
+    <rect x="98" y="52" width="66" height="54" rx="9" fill="{{raised_fill}}" stroke="{{accent_stroke}}" stroke-width="2.4"/>
+    <path d="M98 64h66" stroke="{{accent_stroke}}" stroke-width="1.6" opacity="0.55"/>
+    <circle cx="107" cy="58" r="1.6" fill="{{card_stroke}}"/>
+    <circle cx="113" cy="58" r="1.6" fill="{{card_stroke}}"/>
+    <path d="M108 80l7 6-7 6" fill="none" stroke="{{accent_stroke}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M123 92h17" stroke="{{content_line}}" stroke-width="2.4" stroke-linecap="round"/>
+    <rect x="146" y="82" width="7" height="10" rx="1.5" fill="{{spark}}"/>
+  </g>
+  <circle cx="34" cy="36" r="2.6" fill="{{ambient}}"/>
+  <circle cx="176" cy="100" r="2.2" fill="{{ambient}}"/>
+</svg>
