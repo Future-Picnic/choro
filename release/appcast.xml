@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Choro Updates</title>
+    <link>https://github.com/Future-Picnic/choro</link>
+    <description>Signed stable updates for Choro.</description>
+    <language>en</language>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: yIEerinfo6DVjtc8oqWWGuCPIDn9d3+p4TynYwGEZ3N31OOaX6PFPUvquEko6GCsNuveJFpMrJ/LEtCCQ9c0BQ==
+length: 591
+-->

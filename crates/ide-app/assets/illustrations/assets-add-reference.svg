@@ -1,0 +1,16 @@
+<svg width="160" height="110" viewBox="0 0 200 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="100" cy="116" rx="48" ry="6" fill="{{ground}}"/>
+  <g transform="rotate(4 138 74)">
+    <rect x="112" y="52" width="50" height="42" rx="8" fill="{{back_fill}}" stroke="{{back_stroke}}" stroke-width="2"/>
+    <circle cx="125" cy="65" r="3.5" fill="none" stroke="{{content_line}}" stroke-width="2"/>
+    <path d="M117 89l11-11 8 7 7-6 10 9" stroke="{{content_line}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g transform="rotate(-4 74 66)">
+    <rect x="42" y="38" width="62" height="54" rx="9" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2.2"/>
+    <circle cx="59" cy="55" r="5.5" fill="{{raised_fill}}" stroke="{{accent_stroke}}" stroke-width="2.2"/>
+    <path d="M48 85l17-17 11 10 8-7 14 13" stroke="{{accent_stroke}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <circle cx="152" cy="34" r="8.5" fill="none" stroke="{{ring}}" stroke-width="2"/>
+  <path d="M152 30v8M148 34h8" stroke="{{spark}}" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="32" cy="92" r="2.4" fill="{{ambient}}"/>
+</svg>

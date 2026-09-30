@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Choro licensing overview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d12;
+        --panel: #12151d;
+        --panel-raised: #181c26;
+        --border: #2a3040;
+        --text: #f4f6fb;
+        --muted: #a8b0c0;
+        --accent: #8b9cff;
+        --accent-soft: rgba(139, 156, 255, 0.14);
+        --good: #67d6a3;
+        --warn: #ffca6b;
+        --danger: #ff8c8c;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 20% 0%, rgba(109, 124, 255, 0.15), transparent 32rem),
+          var(--bg);
+        color: var(--text);
+        font: 15px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(960px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 56px 0 72px;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(32px, 6vw, 54px);
+        line-height: 1.04;
+        letter-spacing: -0.04em;
+      }
+
+      .lede {
+        max-width: 680px;
+        margin: 16px 0 30px;
+        color: var(--muted);
+        font-size: 17px;
+      }
+
+      .status-row {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+        margin-bottom: 28px;
+      }
+
+      .status-card,
+      .content-card {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: rgba(18, 21, 29, 0.9);
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.2);
+      }
+
+      .status-card {
+        padding: 16px;
+      }
+
+      .status-card small {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+      }
+
+      .status-card strong {
+        font-size: 16px;
+      }
+
+      .good { color: var(--good); }
+      .warn { color: var(--warn); }
+      .danger { color: var(--danger); }
+
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 6px;
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-bottom: 0;
+        border-radius: 16px 16px 0 0;
+        background: var(--panel);
+      }
+
+      [role="tab"] {
+        flex: 0 0 auto;
+        padding: 10px 14px;
+        border: 0;
+        border-radius: 10px;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      [role="tab"]:hover {
+        color: var(--text);
+        background: var(--panel-raised);
+      }
+
+      [role="tab"][aria-selected="true"] {
+        color: var(--text);
+        background: var(--accent-soft);
+        box-shadow: inset 0 0 0 1px rgba(139, 156, 255, 0.32);
+      }
+
+      [role="tab"]:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .content-card {
+        min-height: 410px;
+        padding: clamp(22px, 5vw, 42px);
+        border-radius: 0 0 16px 16px;
+      }
+
+      [role="tabpanel"][hidden] {
+        display: none;
+      }
+
+      h2 {
+        margin: 0 0 8px;
+        font-size: 26px;
+        letter-spacing: -0.025em;
+      }
+
+      h3 {
+        margin: 28px 0 10px;
+        font-size: 16px;
+      }
+
+      p {
+        max-width: 760px;
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+
+      ul {
+        margin: 16px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      li {
+        position: relative;
+        margin: 10px 0;
+        padding-left: 24px;
+      }
+
+      li::before {
+        position: absolute;
+        left: 0;
+        content: "→";
+        color: var(--accent);
+      }
+
+      .callout {
+        margin: 20px 0;
+        padding: 16px 18px;
+        border: 1px solid rgba(255, 202, 107, 0.35);
+        border-radius: 12px;
+        background: rgba(255, 202, 107, 0.08);
+      }
+
+      .callout strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--warn);
+      }
+
+      .callout p {
+        margin: 0;
+      }
+
+      .follow-up {
+        margin-top: 20px;
+      }
+
+      table {
+        width: 100%;
+        margin-top: 20px;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 12px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      code {
+        color: #c7ceff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.9em;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .checklist li::before {
+        content: "□";
+        color: var(--good);
+      }
+
+      footer {
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (max-width: 700px) {
+        main { padding-top: 32px; }
+        .status-row { grid-template-columns: 1fr; }
+        .content-card { min-height: 0; }
+        table { display: block; overflow-x: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Licensing snapshot</p>
+      <h1>Choro can be Apache-2.0.</h1>
+      <p class="lede">
+        The repository groundwork is ready for private development. Third-party
+        components keep their own terms. Hosted Penpot adds an MPL source
+        disclosure and hosted-data duties; the current Claude authentication
+        path remains a separate blocker before public distribution.
+      </p>
+
+      <section class="status-row" aria-label="Current status">
+        <div class="status-card">
+          <small>Choro source</small>
+          <strong class="good">Apache-2.0 ready</strong>
+        </div>
+        <div class="status-card">
+          <small>Dependency records</small>
+          <strong class="good">Inventory automated</strong>
+        </div>
+        <div class="status-card">
+          <small>Public Claude integration</small>
+          <strong class="warn">Not cleared yet</strong>
+        </div>
+        <div class="status-card">
+          <small>Hosted Penpot</small>
+          <strong class="warn">Source must be offered</strong>
+        </div>
+      </section>
+
+      <div class="tabs" role="tablist" aria-label="Licensing topics">
+        <button id="tab-decision" type="button" role="tab" aria-selected="true" aria-controls="panel-decision">Decision</button>
+        <button id="tab-apache" type="button" role="tab" aria-selected="false" aria-controls="panel-apache" tabindex="-1">Apache scope</button>
+        <button id="tab-third-party" type="button" role="tab" aria-selected="false" aria-controls="panel-third-party" tabindex="-1">Third parties</button>
+        <button id="tab-penpot" type="button" role="tab" aria-selected="false" aria-controls="panel-penpot" tabindex="-1">Penpot</button>
+        <button id="tab-claude" type="button" role="tab" aria-selected="false" aria-controls="panel-claude" tabindex="-1">Claude</button>
+        <button id="tab-release" type="button" role="tab" aria-selected="false" aria-controls="panel-release" tabindex="-1">Before release</button>
+      </div>
+
+      <section class="content-card">
+        <div id="panel-decision" role="tabpanel" aria-labelledby="tab-decision">
+          <h2>The practical decision</h2>
+          <p>
+            License Choro's original source and documentation under Apache-2.0.
+            This supports open-source distribution, private use, modifications,
+            and paid products while preserving attribution and patent terms.
+          </p>
+          <ul>
+            <li>Use <strong>Choro contributors</strong> only as a provisional attribution, not as a substitute for identifying the owner.</li>
+            <li>Keep authorship records; if a company later becomes the owner, use a written IP assignment.</li>
+            <li>Keep provider SDKs, vendored code, fonts, and logos under their existing terms.</li>
+            <li>No cloud-agent work is required for this licensing foundation.</li>
+          </ul>
+        </div>
+
+        <div id="panel-apache" role="tabpanel" aria-labelledby="tab-apache" hidden>
+          <h2>What Apache-2.0 covers</h2>
+          <p>It covers source and documentation created specifically for Choro unless a file says otherwise.</p>
+          <table>
+            <thead><tr><th>You may</th><th>You must</th></tr></thead>
+            <tbody>
+              <tr><td>Use it privately or commercially</td><td>Include the Apache license when distributing</td></tr>
+              <tr><td>Modify and redistribute it</td><td>Preserve applicable notices</td></tr>
+              <tr><td>Sell hosted, team, or packaged versions</td><td>Mark modified Apache-covered files when required</td></tr>
+              <tr><td>Build proprietary features around it</td><td>Respect third-party licenses and trademarks separately</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="panel-third-party" role="tabpanel" aria-labelledby="tab-third-party" hidden>
+          <h2>Third parties keep their licenses</h2>
+          <table>
+            <thead><tr><th>Component</th><th>License or terms</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td><code>gpui-component</code></td><td>Apache-2.0</td><td>Baseline and modifications recorded</td></tr>
+              <tr><td><code>gpui-terminal</code></td><td>MIT OR Apache-2.0</td><td>Baseline and modifications recorded</td></tr>
+              <tr><td><code>velotype</code></td><td>Apache-2.0</td><td>Baseline and modifications recorded</td></tr>
+              <tr><td><code>block</code></td><td>MIT</td><td>License restored and changes recorded</td></tr>
+              <tr><td>BlockNote editor packages</td><td>MPL-2.0</td><td>File-level source and notice obligations; separate Choro files stay Apache-2.0</td></tr>
+              <tr><td>Hosted Penpot 2.16.2</td><td>MPL-2.0</td><td>Browser frontend is distributed; corresponding covered source must be available</td></tr>
+              <tr><td>Claude Agent SDK</td><td>Proprietary Anthropic terms</td><td>Included in inventory; public authentication gate remains unresolved</td></tr>
+              <tr><td>Fonts and icon libraries</td><td>OFL, MIT, or ISC</td><td>Provenance and license files recorded</td></tr>
+              <tr><td>Provider/product logos</td><td>Trademark and brand rules</td><td>Excluded from the Apache grant</td></tr>
+            </tbody>
+          </table>
+          <p class="follow-up">
+            The 2026-07-27 audit inventories 1,210 Rust packages, 110 agent
+            bridge Node packages, and 100 document-editor Node packages for review.
+          </p>
+        </div>
+
+        <div id="panel-penpot" role="tabpanel" aria-labelledby="tab-penpot" hidden>
+          <h2>Penpot does not change Choro's licence</h2>
+          <p>
+            Choro Design is a self-hosted Penpot 2.16.2 service under MPL-2.0.
+            MPL is file-level copyleft: modified Penpot files stay MPL, while
+            separate Choro files can remain Apache-2.0.
+          </p>
+          <div class="callout">
+            <strong>The browser frontend counts as distribution.</strong>
+            <p>
+              Server-only code is not distributed merely because the service is
+              online. HTML, CSS, and JavaScript sent to a browser or embedded
+              web view are distributed, including minified JavaScript.
+            </p>
+          </div>
+          <h3>Before public access</h3>
+          <ul>
+            <li>Preserve Penpot's MPL and copyright notices.</li>
+            <li>Archive the exact 2.16.2 source plus every Choro change to MPL-covered files.</li>
+            <li>Link the Open source notice from the landing site and hosted Design UI.</li>
+            <li>Make corresponding source available without charge while that frontend is offered.</li>
+            <li>Operate hosted-account deletion, log retention, and backup deletion as stated in Privacy.</li>
+          </ul>
+          <p class="follow-up">
+            <a href="https://www.mozilla.org/en-US/MPL/2.0/FAQ/">Read Mozilla's MPL 2.0 FAQ</a>
+          </p>
+        </div>
+
+        <div id="panel-claude" role="tabpanel" aria-labelledby="tab-claude" hidden>
+          <h2>Claude is a separate terms question</h2>
+          <p>
+            The Agent SDK is proprietary and is not converted to Apache-2.0 by
+            Choro's root license. The current bridge passes a user's locally
+            installed Claude Code executable to the SDK.
+          </p>
+          <div class="callout">
+            <strong>Private development is fine; public distribution is not cleared.</strong>
+            <p>
+              Anthropic's current guidance directs third-party Agent SDK products
+              to API-key or supported cloud-provider authentication and does not
+              permit routing Free, Pro, or Max credentials on users' behalf.
+            </p>
+          </div>
+          <h3>Before exposing this to customers</h3>
+          <ul>
+            <li>Use approved API or cloud-provider authentication, or</li>
+            <li>Get written confirmation from Anthropic for Choro's exact flow.</li>
+          </ul>
+          <p class="follow-up">
+            <a href="https://code.claude.com/docs/en/legal-and-compliance">Read Anthropic's current legal guidance</a>
+          </p>
+        </div>
+
+        <div id="panel-release" role="tabpanel" aria-labelledby="tab-release" hidden>
+          <h2>Checklist before going public</h2>
+          <ul class="checklist">
+            <li>Choose whether copyright is held personally or by a company and execute any needed written assignment.</li>
+            <li>Resolve the Claude authentication/distribution model.</li>
+            <li>Publish or archive corresponding source for the exact hosted Penpot frontend.</li>
+            <li>Expose the Open source notice from Choro Design and test the free source-request path.</li>
+            <li>Verify hosted Design deletion, backup expiry, and 30-day log retention.</li>
+            <li>Run the third-party license collector for the exact release build.</li>
+            <li>Review packages whose archives do not contain a conventional license file.</li>
+            <li>Include <code>LICENSE</code>, <code>NOTICE</code>, notices, and asset provenance.</li>
+            <li>Review product logos against current brand-usage rules.</li>
+            <li>Have counsel review the final commercial release if practical.</li>
+          </ul>
+          <div class="callout">
+            <strong>Current recommendation</strong>
+            <p>Keep the repository private while building. The foundation is ready; complete this checklist immediately before launch.</p>
+          </div>
+        </div>
+      </section>
+
+      <footer>This page is an engineering summary, not formal legal advice.</footer>
+    </main>
+
+    <script>
+      const tabs = [...document.querySelectorAll('[role="tab"]')];
+      const panels = [...document.querySelectorAll('[role="tabpanel"]')];
+
+      function activateTab(tab) {
+        for (const item of tabs) {
+          const active = item === tab;
+          item.setAttribute("aria-selected", String(active));
+          item.tabIndex = active ? 0 : -1;
+        }
+        for (const panel of panels) {
+          panel.hidden = panel.id !== tab.getAttribute("aria-controls");
+        }
+        history.replaceState(null, "", `#${tab.id.replace("tab-", "")}`);
+      }
+
+      for (const [index, tab] of tabs.entries()) {
+        tab.addEventListener("click", () => activateTab(tab));
+        tab.addEventListener("keydown", (event) => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+          event.preventDefault();
+          let next = index;
+          if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+          if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+          if (event.key === 'Home') next = 0;
+          if (event.key === 'End') next = tabs.length - 1;
+          activateTab(tabs[next]);
+          tabs[next].focus();
+        });
+      }
+
+      const requested = document.querySelector(`#tab-${location.hash.slice(1)}`);
+      if (requested) activateTab(requested);
+    </script>
+  </body>
+</html>

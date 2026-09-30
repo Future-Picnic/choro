@@ -1,0 +1,1250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choro How-to Video Library</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c0e12;
+      --panel: #12151b;
+      --panel-raised: #171b22;
+      --line: #292e38;
+      --line-soft: #20252d;
+      --text: #f0f2f5;
+      --muted: #9da5b2;
+      --faint: #929baa;
+      --accent: #9b8cff;
+      --accent-soft: rgba(155, 140, 255, 0.13);
+      --accent-line: rgba(155, 140, 255, 0.38);
+      --success: #8fc6a3;
+      --radius: 13px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0 0 auto;
+      height: 260px;
+      pointer-events: none;
+      background: radial-gradient(ellipse at 18% 0%, rgba(155, 140, 255, 0.12), transparent 66%);
+    }
+
+    main {
+      position: relative;
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 44px 0 64px;
+    }
+
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 28px;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 720px;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.04;
+      letter-spacing: -0.035em;
+      font-weight: 690;
+    }
+
+    .summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: none;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .summary strong {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    .tabs-shell {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      margin: 0 -10px 26px;
+      padding: 10px;
+      background: color-mix(in srgb, var(--bg) 90%, transparent);
+      backdrop-filter: blur(14px);
+    }
+
+    [role="tablist"] {
+      display: flex;
+      gap: 5px;
+      overflow-x: auto;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      scrollbar-width: none;
+    }
+
+    [role="tablist"]::-webkit-scrollbar { display: none; }
+
+    [role="tab"] {
+      min-height: 38px;
+      flex: none;
+      border: 0;
+      border-radius: 9px;
+      padding: 0 13px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 590;
+      cursor: pointer;
+      transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+    }
+
+    [role="tab"]:hover { color: var(--text); background: var(--panel-raised); }
+
+    [role="tab"][aria-selected="true"] {
+      color: var(--text);
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    [role="tab"]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    [role="tabpanel"] { outline: none; }
+    [role="tabpanel"][hidden] { display: none; }
+
+    .panel-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 24px;
+      margin: 0 2px 15px;
+    }
+
+    .panel-heading h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: -0.018em;
+      font-weight: 660;
+    }
+
+    .panel-heading p {
+      margin: 0;
+      max-width: 600px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+      text-align: right;
+    }
+
+    .table-wrap {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.18);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    col.video { width: 31%; }
+    col.flow { width: 38%; }
+    col.value { width: 31%; }
+
+    th {
+      height: 42px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 11px;
+      line-height: 1;
+      letter-spacing: 0.075em;
+      text-align: left;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    td {
+      padding: 17px 18px;
+      border-bottom: 1px solid var(--line-soft);
+      vertical-align: top;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    tbody tr {
+      cursor: pointer;
+      transition: background 140ms ease, box-shadow 140ms ease;
+    }
+
+    tbody tr:hover,
+    tbody tr:focus-visible {
+      background: rgba(155, 140, 255, 0.065);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    tbody tr:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .video-title {
+      display: block;
+      color: var(--text);
+      font-weight: 640;
+      line-height: 1.35;
+    }
+
+    .duration {
+      display: inline-block;
+      margin-top: 7px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.055);
+      color: var(--faint);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .flow-arrow { color: var(--accent); }
+    .value-text { color: #c3c9d2; }
+
+    .footer-note {
+      margin: 16px 2px 0;
+      color: var(--faint);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    body.modal-open { overflow: hidden; }
+
+    .modal-backdrop {
+      position: fixed;
+      z-index: 100;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(4, 5, 8, 0.78);
+    }
+
+    .modal-backdrop[hidden] { display: none; }
+
+    .recording-modal {
+      width: min(660px, 100%);
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel-raised);
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+      animation: modal-in 160ms cubic-bezier(.2, .8, .2, 1);
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 24px 24px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .modal-context {
+      margin: 0 0 6px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 720;
+      letter-spacing: 0.075em;
+      text-transform: uppercase;
+    }
+
+    .modal-header h2 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+      letter-spacing: -0.018em;
+    }
+
+    .modal-close,
+    .modal-done {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.035);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .modal-close {
+      display: grid;
+      width: 40px;
+      height: 40px;
+      flex: none;
+      place-items: center;
+      padding: 0;
+    }
+
+    .modal-close svg { width: 18px; height: 18px; }
+
+    .modal-close:hover,
+    .modal-done:hover { background: rgba(255, 255, 255, 0.075); }
+
+    .modal-close:focus-visible,
+    .modal-done:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .modal-body { padding: 22px 24px 24px; }
+
+    .modal-intro {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .recording-steps {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: recording-step;
+    }
+
+    .recording-steps li {
+      position: relative;
+      min-height: 42px;
+      padding: 11px 14px 11px 48px;
+      border: 1px solid var(--line-soft);
+      border-radius: 10px;
+      background: var(--panel);
+      color: #d7dbe2;
+      font-size: 14px;
+      line-height: 1.45;
+      counter-increment: recording-step;
+    }
+
+    .recording-steps li::before {
+      content: counter(recording-step);
+      position: absolute;
+      top: 9px;
+      left: 11px;
+      display: grid;
+      width: 25px;
+      height: 25px;
+      place-items: center;
+      border-radius: 7px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .modal-outcome {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-top: 18px;
+      padding: 14px;
+      border-left: 3px solid var(--success);
+      border-radius: 0 9px 9px 0;
+      background: rgba(143, 198, 163, 0.075);
+    }
+
+    .modal-outcome span {
+      flex: none;
+      color: var(--success);
+      font-size: 11px;
+      font-weight: 720;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .modal-outcome strong {
+      color: #dce9e0;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 590;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding-top: 20px;
+    }
+
+    .modal-done {
+      min-height: 40px;
+      padding: 0 16px;
+      font-size: 13px;
+      font-weight: 640;
+    }
+
+    @keyframes panel-in {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes modal-in {
+      from { opacity: 0; transform: translateY(8px) scale(.99); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .panel-enter { animation: panel-in 180ms cubic-bezier(.2, .8, .2, 1); }
+
+    @media (max-width: 760px) {
+      main { width: min(100% - 24px, 1180px); padding-top: 28px; }
+      header { align-items: flex-start; flex-direction: column; gap: 14px; }
+      .panel-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+      .panel-heading p { text-align: left; }
+      .table-wrap { overflow-x: auto; }
+      table { min-width: 720px; }
+      th, td { padding-left: 15px; padding-right: 15px; }
+      .modal-backdrop { padding: 12px; }
+      .recording-modal { max-height: calc(100vh - 24px); }
+      .modal-header { padding: 20px 18px 16px; }
+      .modal-body { padding: 18px; }
+      .modal-close, .modal-done { min-height: 44px; }
+      .modal-close { width: 44px; height: 44px; }
+      .modal-outcome { align-items: flex-start; flex-direction: column; gap: 5px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    THESIS: A compact, tabbed video index makes the library scannable without turning it into a long document.
+    OWN-WORLD: Choro-dark surfaces, one violet accent, quiet rules, dense tool-like tables, and native system type.
+    STORY: Pick a category, scan the complete user flows, and understand the value of each proposed recording.
+    FIRST VIEWPORT: Title and library count above a sticky category rail; the selected category table fills the page below.
+    FORM: Tabbed editorial index, assigned structure 6, seed 60c6b215.
+    FINISH: Verify the complete tab flow, table readability, contrast, and responsive behavior in Choro Preview.
+  -->
+  <main>
+    <header>
+      <h1>Choro how-to video library</h1>
+      <div class="summary" aria-label="Library summary"><strong id="playlist-count">8</strong> playlists · <strong id="video-count">39</strong> short videos</div>
+    </header>
+
+    <div class="tabs-shell">
+      <div role="tablist" aria-label="Video categories">
+        <button role="tab" id="tab-start" aria-controls="panel-start" aria-selected="true">Getting Started</button>
+        <button role="tab" id="tab-agents" aria-controls="panel-agents" aria-selected="false" tabindex="-1">Agents</button>
+        <button role="tab" id="tab-context" aria-controls="panel-context" aria-selected="false" tabindex="-1">Tasks &amp; Docs</button>
+        <button role="tab" id="tab-review" aria-controls="panel-review" aria-selected="false" tabindex="-1">Review &amp; Ship</button>
+        <button role="tab" id="tab-preview" aria-controls="panel-preview" aria-selected="false" tabindex="-1">Run &amp; Preview</button>
+        <button role="tab" id="tab-design" aria-controls="panel-design" aria-selected="false" tabindex="-1">Design</button>
+        <button role="tab" id="tab-orbit" aria-controls="panel-orbit" aria-selected="false" tabindex="-1">Orbit</button>
+        <button role="tab" id="tab-mobile" aria-controls="panel-mobile" aria-selected="false" tabindex="-1">Choro Mobile</button>
+        <button role="tab" id="tab-productivity" aria-controls="panel-productivity" aria-selected="false" tabindex="-1">Productivity &amp; Shortcuts</button>
+      </div>
+    </div>
+
+    <section role="tabpanel" id="panel-start" aria-labelledby="tab-start" data-slug="start">
+      <div class="panel-heading"><h2>Choro Getting Started Crash Course</h2><p>Beginner playlist · about 26 min. Follow one project from setup to parallel agents, context, design, review, shipping, Orbit, Solo, and mobile.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Lesson</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Meet Choro and the Core Workflow</span><span class="duration">1:30</span></td><td>Projects <span class="flow-arrow">→</span> multiple agents <span class="flow-arrow">→</span> project home <span class="flow-arrow">→</span> center workspace</td><td class="value-text">Builds the mental model for managing several projects and agents from one place.</td></tr>
+        <tr><td><span class="video-title">Projects Are More Than Repositories</span><span class="duration">1:45</span></td><td>Add Project <span class="flow-arrow">→</span> choose folder <span class="flow-arrow">→</span> explore its dedicated workspace</td><td class="value-text">Shows a project as a durable home for its work and context, not just a repository shortcut.</td></tr>
+        <tr><td><span class="video-title">Complete Your First Agent Flow</span><span class="duration">2:00</span></td><td>New Agent <span class="flow-arrow">→</span> simple request <span class="flow-arrow">→</span> result <span class="flow-arrow">→</span> Changed Files <span class="flow-arrow">→</span> What to Check</td><td class="value-text">Teaches the pure agent loop before adding advanced tools or setup.</td></tr>
+        <tr><td><span class="video-title">Work from Context: Tasks and Docs</span><span class="duration">2:15</span></td><td>Task or Doc <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> linked agent <span class="flow-arrow">→</span> Changed Files <span class="flow-arrow">→</span> Verification</td><td class="value-text">Keeps the original brief attached from implementation through a verified result.</td></tr>
+        <tr><td><span class="video-title">Plan the Work Before Building</span><span class="duration">2:15</span></td><td>Plan mode <span class="flow-arrow">→</span> questions <span class="flow-arrow">→</span> persistent plan <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> result</td><td class="value-text">Shows how uncertain work becomes a clear plan that stays visible while the agent builds.</td></tr>
+        <tr><td><span class="video-title">Go from Task to Design to Preview</span><span class="duration">2:30</span></td><td>Task <span class="flow-arrow">→</span> Design <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> Preview feedback</td><td class="value-text">Connects the brief, visual direction, implementation, and live refinement in one fast story.</td></tr>
+        <tr><td><span class="video-title">Run Scripts and Fix Backend Work</span><span class="duration">2:30</span></td><td>Saved script <span class="flow-arrow">→</span> backend request by dictation <span class="flow-arrow">→</span> Code Review <span class="flow-arrow">→</span> Fix All</td><td class="value-text">Combines repeatable commands, hands-free prompting, and review into a practical backend loop.</td></tr>
+        <tr><td><span class="video-title">Explore Code, Files, Terminal, and Database</span><span class="duration">1:30</span></td><td>Code <span class="flow-arrow">→</span> Files <span class="flow-arrow">→</span> editor <span class="flow-arrow">→</span> Terminal <span class="flow-arrow">→</span> Database</td><td class="value-text">Maps the technical workspace for the moments when users want direct control.</td></tr>
+        <tr><td><span class="video-title">Ask and Add Context Without an Agent</span><span class="duration">1:45</span></td><td>Customize project <span class="flow-arrow">→</span> add Assets <span class="flow-arrow">→</span> Quick Ask <span class="flow-arrow">→</span> tag a reference</td><td class="value-text">Uses project context for quick answers, then reuses the same context in agent work.</td></tr>
+        <tr><td><span class="video-title">Explore Orbit's Project Intelligence</span><span class="duration">2:00</span></td><td>Environment <span class="flow-arrow">→</span> integrations <span class="flow-arrow">→</span> custom Analytics view</td><td class="value-text">Shows built-in project knowledge and a custom structured view without a deep setup lesson.</td></tr>
+        <tr><td><span class="video-title">Ship the Completed Work</span><span class="duration">2:15</span></td><td>Agent result <span class="flow-arrow">→</span> Git overview <span class="flow-arrow">→</span> Ship <span class="flow-arrow">→</span> branch, push, and PR</td><td class="value-text">Turns finished work into a traceable branch and pull request through one guided flow.</td></tr>
+        <tr><td><span class="video-title">Try Parallel Work with Solo</span><span class="duration">2:00</span></td><td>Start Solo <span class="flow-arrow">→</span> separate lane <span class="flow-arrow">→</span> switch work <span class="flow-arrow">→</span> bring home</td><td class="value-text">Shows how to run isolated work in parallel without mixing branches.</td></tr>
+        <tr><td><span class="video-title">Take Choro with You on Mobile</span><span class="duration">1:15</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> respond remotely</td><td class="value-text">Ends with the simple mobile promise: the Mac does the work while the phone keeps you connected.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-agents" aria-labelledby="tab-agents" data-slug="agents" hidden>
+      <div class="panel-heading"><h2>Agents</h2><p>Start the right kind of work, follow it clearly, and coordinate parallel tasks.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Set Up an Agent for the Task</span><span class="duration">1:45</span></td><td>Choose model <span class="flow-arrow">→</span> effort <span class="flow-arrow">→</span> access <span class="flow-arrow">→</span> Build or Plan</td><td class="value-text">Helps users make the important setup decisions together.</td></tr>
+        <tr><td><span class="video-title">Plan Before You Build</span><span class="duration">2:00</span></td><td>Plan mode <span class="flow-arrow">→</span> review proposal <span class="flow-arrow">→</span> refine <span class="flow-arrow">→</span> implement</td><td class="value-text">Reduces wrong turns on larger or uncertain work.</td></tr>
+        <tr><td><span class="video-title">Follow and Manage Your Agents</span><span class="duration">1:45</span></td><td>Board <span class="flow-arrow">→</span> status <span class="flow-arrow">→</span> questions or approvals <span class="flow-arrow">→</span> completion</td><td class="value-text">Makes several active conversations easy to supervise.</td></tr>
+        <tr><td><span class="video-title">Agent Cards: What They Mean and What to Check</span><span class="duration">2:45</span></td><td>Progress <span class="flow-arrow">→</span> decisions <span class="flow-arrow">→</span> outputs <span class="flow-arrow">→</span> verification <span class="flow-arrow">→</span> delivery</td><td class="value-text">Shows which cards need attention, what evidence to inspect, and the next safe action.</td></tr>
+        <tr><td><span class="video-title">Work in Parallel with Solo</span><span class="duration">2:15</span></td><td>Start Solo <span class="flow-arrow">→</span> independent lane <span class="flow-arrow">→</span> review <span class="flow-arrow">→</span> bring home</td><td class="value-text">Lets users run parallel work without mixing branches.</td></tr>
+        <tr><td><span class="video-title">Continue a Saved Conversation</span><span class="duration">1:30</span></td><td>Open completed agent <span class="flow-arrow">→</span> Resume <span class="flow-arrow">→</span> continue with context</td><td class="value-text">Keeps previous decisions and work available when a task returns.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-context" aria-labelledby="tab-context" data-slug="context" hidden>
+      <div class="panel-heading"><h2>Tasks &amp; Docs</h2><p>Capture the brief once, then hand the complete context to an agent.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Create a Doc for a New Feature</span><span class="duration">1:45</span></td><td>Docs <span class="flow-arrow">→</span> write brief <span class="flow-arrow">→</span> organize decisions</td><td class="value-text">Creates one durable source of truth before implementation.</td></tr>
+        <tr><td><span class="video-title">Turn a Doc into Agent Work</span><span class="duration">1:45</span></td><td>Open Doc <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> review context <span class="flow-arrow">→</span> send</td><td class="value-text">Avoids rewriting the feature brief in chat.</td></tr>
+        <tr><td><span class="video-title">Turn a Task into Agent Work</span><span class="duration">1:45</span></td><td>Open task <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> linked agent <span class="flow-arrow">→</span> result</td><td class="value-text">Keeps the ticket, requirements, and agent work attached.</td></tr>
+        <tr><td><span class="video-title">Connect an External Task Board</span><span class="duration">2:15</span></td><td>Add source <span class="flow-arrow">→</span> connect board <span class="flow-arrow">→</span> filter tasks <span class="flow-arrow">→</span> implement</td><td class="value-text">Brings existing team work into the same Choro flow.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-review" aria-labelledby="tab-review" data-slug="review" hidden>
+      <div class="panel-heading"><h2>Review &amp; Ship</h2><p>Understand what changed, catch issues, and turn finished work into a pull request.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Review What the Agent Changed</span><span class="duration">2:15</span></td><td>Agent result <span class="flow-arrow">→</span> changed files <span class="flow-arrow">→</span> diff <span class="flow-arrow">→</span> verification</td><td class="value-text">Shows whether the result matches the request before shipping.</td></tr>
+        <tr><td><span class="video-title">Run Code Review</span><span class="duration">1:45</span></td><td>Review <span class="flow-arrow">→</span> findings <span class="flow-arrow">→</span> checklist <span class="flow-arrow">→</span> ask for fixes</td><td class="value-text">Adds a focused quality gate without leaving the conversation.</td></tr>
+        <tr><td><span class="video-title">Ship Completed Work</span><span class="duration">2:30</span></td><td>Ship <span class="flow-arrow">→</span> choose changes <span class="flow-arrow">→</span> generate details <span class="flow-arrow">→</span> commit, push, PR</td><td class="value-text">Turns reviewed work into a clean pull request in one guided flow.</td></tr>
+        <tr><td><span class="video-title">Track PRs and Workflows</span><span class="duration">1:45</span></td><td>Git <span class="flow-arrow">→</span> PRs <span class="flow-arrow">→</span> checks <span class="flow-arrow">→</span> merge status</td><td class="value-text">Keeps delivery status visible beside the work that created it.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-preview" aria-labelledby="tab-preview" data-slug="preview" hidden>
+      <div class="panel-heading"><h2>Run &amp; Preview</h2><p>Run the project, inspect output, and send precise visual feedback.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Run Saved Project Scripts</span><span class="duration">1:30</span></td><td>Choose script <span class="flow-arrow">→</span> run <span class="flow-arrow">→</span> inspect terminal <span class="flow-arrow">→</span> stop or rerun</td><td class="value-text">Makes repeated build, test, and server commands one click away.</td></tr>
+        <tr><td><span class="video-title">Open Your Running Project in Preview</span><span class="duration">1:45</span></td><td>Run service <span class="flow-arrow">→</span> detected URL <span class="flow-arrow">→</span> Preview <span class="flow-arrow">→</span> navigate</td><td class="value-text">Keeps the live product beside the code and agent conversation.</td></tr>
+        <tr><td><span class="video-title">Give Visual Feedback in Preview</span><span class="duration">1:45</span></td><td>Review mode <span class="flow-arrow">→</span> select element or area <span class="flow-arrow">→</span> comment <span class="flow-arrow">→</span> agent</td><td class="value-text">Sends exact visual evidence instead of a vague description.</td></tr>
+        <tr><td><span class="video-title">Inspect Code, Files, and Terminal Together</span><span class="duration">1:45</span></td><td>Code <span class="flow-arrow">→</span> Files <span class="flow-arrow">→</span> editor <span class="flow-arrow">→</span> terminal</td><td class="value-text">Keeps everyday project inspection inside one workspace.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-design" aria-labelledby="tab-design" data-slug="design" hidden>
+      <div class="panel-heading"><h2>Design</h2><p>Move from requirements to a design, implementation, and live comparison.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Create a Design from a Doc or Task</span><span class="duration">2:15</span></td><td>Open brief <span class="flow-arrow">→</span> Design <span class="flow-arrow">→</span> choose model <span class="flow-arrow">→</span> generate</td><td class="value-text">Turns written requirements into a visual direction without re-briefing.</td></tr>
+        <tr><td><span class="video-title">Refine a Design with the Assistant</span><span class="duration">2:00</span></td><td>Open design <span class="flow-arrow">→</span> request changes <span class="flow-arrow">→</span> inspect canvas <span class="flow-arrow">→</span> iterate</td><td class="value-text">Keeps design decisions and revisions in one focused conversation.</td></tr>
+        <tr><td><span class="video-title">Implement a Design with an Agent</span><span class="duration">2:15</span></td><td>Select design <span class="flow-arrow">→</span> Implement <span class="flow-arrow">→</span> agent builds <span class="flow-arrow">→</span> Preview</td><td class="value-text">Gives the coding agent the exact visual source of truth.</td></tr>
+        <tr><td><span class="video-title">Compare the Design with the Live Result</span><span class="duration">1:45</span></td><td>Open design <span class="flow-arrow">→</span> Compare <span class="flow-arrow">→</span> inspect result <span class="flow-arrow">→</span> refine</td><td class="value-text">Makes visual gaps easy to see before the feature is finished.</td></tr>
+        <tr><td><span class="video-title">Use Visual References with an Agent</span><span class="duration">1:45</span></td><td>Add image, file, or link <span class="flow-arrow">→</span> add notes <span class="flow-arrow">→</span> Use in Agent</td><td class="value-text">Keeps inspiration, brand files, and implementation context together.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-orbit" aria-labelledby="tab-orbit" data-slug="orbit" hidden>
+      <div class="panel-heading"><h2>Orbit</h2><p>See project environment and integrations, then create structured views that connect to agent work.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Meet Orbit</span><span class="duration">1:30</span></td><td>Open Orbit <span class="flow-arrow">→</span> built-ins <span class="flow-arrow">→</span> custom modules <span class="flow-arrow">→</span> project view</td><td class="value-text">Explains when structured modules are more useful than a Doc or Task.</td></tr>
+        <tr><td><span class="video-title">Manage Environment Variables in Orbit</span><span class="duration">2:00</span></td><td>Environment <span class="flow-arrow">→</span> choose env file <span class="flow-arrow">→</span> search or filter <span class="flow-arrow">→</span> edit and save</td><td class="value-text">Finds and updates project variables across app areas without hunting through files.</td></tr>
+        <tr><td><span class="video-title">See Project Services and Integrations</span><span class="duration">1:45</span></td><td>Integrations <span class="flow-arrow">→</span> choose project area <span class="flow-arrow">→</span> inspect detected services <span class="flow-arrow">→</span> open dashboard</td><td class="value-text">Creates a useful inventory of services detected from project dependencies and configuration.</td></tr>
+        <tr><td><span class="video-title">Create a Reusable Orbit Module</span><span class="duration">2:30</span></td><td>Analytics or blank <span class="flow-arrow">→</span> fields <span class="flow-arrow">→</span> grouped view <span class="flow-arrow">→</span> agent job</td><td class="value-text">Lets users shape repeatable project tools around their own workflow.</td></tr>
+        <tr><td><span class="video-title">Use an Orbit Module in a Project</span><span class="duration">2:00</span></td><td>Add module <span class="flow-arrow">→</span> create records <span class="flow-arrow">→</span> organize view <span class="flow-arrow">→</span> run agent job</td><td class="value-text">Turns structured project data into an actionable workflow.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-mobile" aria-labelledby="tab-mobile" data-slug="mobile" hidden>
+      <div class="panel-heading"><h2>Choro Mobile</h2><p>Pair an iPhone, follow agent work away from the Mac, and respond with the right level of access.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Meet Choro Remote</span><span class="duration">1:30</span></td><td>Mac runs Choro <span class="flow-arrow">→</span> iPhone follows <span class="flow-arrow">→</span> monitor and respond away from the desk</td><td class="value-text">Explains what Choro Remote is, what stays on the Mac, and when the phone is useful.</td></tr>
+        <tr><td><span class="video-title">Pair Your iPhone with Choro</span><span class="duration">2:00</span></td><td>Remote access <span class="flow-arrow">→</span> Connect &amp; pair <span class="flow-arrow">→</span> enter Mac ID and code <span class="flow-arrow">→</span> connected</td><td class="value-text">Securely connects Choro Remote to the correct Mac with a one-time code.</td></tr>
+        <tr><td><span class="video-title">Choose What Your Phone Can Do</span><span class="duration">1:45</span></td><td>Paired devices <span class="flow-arrow">→</span> View only, Control, or Full access <span class="flow-arrow">→</span> confirm</td><td class="value-text">Keeps remote actions limited to the authority the user actually wants.</td></tr>
+        <tr><td><span class="video-title">Check Agent Progress from Your Phone</span><span class="duration">1:30</span></td><td>Projects <span class="flow-arrow">→</span> active agent <span class="flow-arrow">→</span> timeline and status <span class="flow-arrow">→</span> result</td><td class="value-text">Lets users understand progress and see when an agent needs attention.</td></tr>
+        <tr><td><span class="video-title">Start or Continue Agent Work on Mobile</span><span class="duration">2:00</span></td><td>Choose project <span class="flow-arrow">→</span> new or existing agent <span class="flow-arrow">→</span> configure <span class="flow-arrow">→</span> send</td><td class="value-text">Starts useful work or adds a follow-up without returning to the desktop.</td></tr>
+        <tr><td><span class="video-title">Respond to Questions, Plans, and Approvals</span><span class="duration">2:15</span></td><td>Needs attention <span class="flow-arrow">→</span> review request <span class="flow-arrow">→</span> answer or approve <span class="flow-arrow">→</span> continue</td><td class="value-text">Unblocks agents remotely while keeping higher-risk approvals protected.</td></tr>
+        <tr><td><span class="video-title">Review Results and Ask for Fixes on Mobile</span><span class="duration">2:00</span></td><td>Completed agent <span class="flow-arrow">→</span> changed files and verification <span class="flow-arrow">→</span> Ask to fix</td><td class="value-text">Turns a phone check into a precise correction instead of simple acceptance.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section role="tabpanel" id="panel-productivity" aria-labelledby="tab-productivity" data-slug="productivity" hidden>
+      <div class="panel-heading"><h2>Productivity &amp; Shortcuts</h2><p>Small tools that make everyday work faster without changing the main workflow.</p></div>
+      <div class="table-wrap"><table><colgroup><col class="video"><col class="flow"><col class="value"></colgroup><thead><tr><th>Video</th><th>User flow</th><th>Value</th></tr></thead><tbody>
+        <tr><td><span class="video-title">Quick Ask, Project Talk, or Agent?</span><span class="duration">2:00</span></td><td>Choose intent <span class="flow-arrow">→</span> ask, discuss, or implement</td><td class="value-text">Helps users pick the lightest tool that fits the job.</td></tr>
+        <tr><td><span class="video-title">Ask Without Starting an Agent</span><span class="duration">1:30</span></td><td>Quick Ask <span class="flow-arrow">→</span> choose scope <span class="flow-arrow">→</span> ask <span class="flow-arrow">→</span> continue from history</td><td class="value-text">Answers small questions without creating another work conversation.</td></tr>
+        <tr><td><span class="video-title">Think Through a Project by Voice</span><span class="duration">1:45</span></td><td>Project Talk <span class="flow-arrow">→</span> discuss context <span class="flow-arrow">→</span> create plan if needed</td><td class="value-text">Supports hands-free thinking without giving edit authority.</td></tr>
+        <tr><td><span class="video-title">Dictate Prompts and Messages</span><span class="duration">1:30</span></td><td>Hold shortcut <span class="flow-arrow">→</span> speak <span class="flow-arrow">→</span> edit transcript <span class="flow-arrow">→</span> send</td><td class="value-text">Speeds up longer prompts while keeping the user in control.</td></tr>
+        <tr><td><span class="video-title">Find Anything in a Project</span><span class="duration">1:30</span></td><td>Search <span class="flow-arrow">→</span> filter results <span class="flow-arrow">→</span> jump to item</td><td class="value-text">Reduces time spent hunting through files, tasks, Docs, and agents.</td></tr>
+        <tr><td><span class="video-title">Customize Shortcuts and Notifications</span><span class="duration">1:45</span></td><td>Settings <span class="flow-arrow">→</span> shortcuts <span class="flow-arrow">→</span> notifications <span class="flow-arrow">→</span> preferred workflow</td><td class="value-text">Keeps Choro fast and appropriately quiet for each user.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <p class="footer-note">Tap any video to open its recording flow. Each one finishes on a visible outcome.</p>
+  </main>
+
+  <div class="modal-backdrop" id="recording-flow-modal" hidden>
+    <section class="recording-modal" role="dialog" aria-modal="true" aria-labelledby="recording-title" aria-describedby="recording-intro">
+      <div class="modal-header">
+        <div>
+          <p class="modal-context" id="recording-category"></p>
+          <h2 id="recording-title"></h2>
+        </div>
+        <button class="modal-close" type="button" aria-label="Close recording flow">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro" id="recording-intro">Record these screen actions in order. No narration script.</p>
+        <ol class="recording-steps" id="recording-steps"></ol>
+        <div class="modal-outcome"><span>Finish on</span><strong id="recording-outcome"></strong></div>
+        <div class="modal-footer"><button class="modal-done" type="button">Done</button></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const recordingFlows = {
+      "Meet Choro and the Core Workflow": {
+        steps: [
+          "Start with several projects and agent statuses visible in the shared navigation.",
+          "Move between two projects and their agents to establish the multi-project view.",
+          "Open the demo project and pause on its project home and right-side activities.",
+          "Use quick cuts to open an agent, a Task or Doc, and Preview in the center workspace.",
+          "Return to the wide view with navigation, project home, and active work visible together."
+        ],
+        outcome: "The complete Choro mental model: many projects and agents, one project home, and a center workspace where work happens."
+      },
+      "Projects Are More Than Repositories": {
+        steps: [
+          "Start on Projects and click Add Project.",
+          "Choose the prepared demo folder, set its name and group, then open it.",
+          "Briefly tour the project's Agents, Tasks, Docs, Design, Code, and Orbit areas.",
+          "Show how those areas keep the project's work and context together.",
+          "Return to the project home rather than ending on the repository files."
+        ],
+        outcome: "The new project shown as a dedicated workspace for all of its work, not merely a repository bookmark."
+      },
+      "Complete Your First Agent Flow": {
+        steps: [
+          "Start a New Agent in the demo project and enter one simple prepared change.",
+          "Keep the default setup, send the request, then cut directly to the completed result.",
+          "Read the short result summary and open Changed Files.",
+          "Inspect one representative diff.",
+          "Open What to Check and show what passed and what still deserves attention."
+        ],
+        outcome: "A complete, uncomplicated agent loop from request to result, changed files, and the checks the user should make."
+      },
+      "Work from Context: Tasks and Docs": {
+        steps: [
+          "Open the prepared Task or Doc and scan its brief.",
+          "Click Implement and show Agent 2 with the source linked automatically.",
+          "Briefly show that another reference can be tagged, but keep direct Implement as the main path.",
+          "Cut to the completed agent and open Changed Files.",
+          "Request Verification and show its met, unclear, or missed results.",
+          "Return to the source and show its linked agent status."
+        ],
+        outcome: "The original context remains attached from the prepared brief through implementation and verification."
+      },
+      "Plan the Work Before Building": {
+        steps: [
+          "Start Agent 3 in Plan mode and send the prepared feature request.",
+          "Show a prepared question modal and answer the key decision.",
+          "Cut to the ready plan and scan its main steps.",
+          "Show that the plan stays available in the agent's persistent plan area.",
+          "Click Implement, cut past the work, and finish on the result without repeating Verification."
+        ],
+        outcome: "A durable plan that resolves uncertainty first and remains available while the agent implements it."
+      },
+      "Go from Task to Design to Preview": {
+        steps: [
+          "Open the prepared Task, click Design, and cut directly to the completed design.",
+          "Briefly show the linked Task, canvas, Design Assistant, and Implement action without teaching every control.",
+          "Click Implement, show the design attached to Agent 4, and cut to the completed work.",
+          "Open the result in Preview.",
+          "Send one small visual review change, cut past the wait, and show the updated Preview."
+        ],
+        outcome: "One continuous journey from an existing Task to a design, implemented feature, and visible Preview refinement."
+      },
+      "Run Scripts and Fix Backend Work": {
+        steps: [
+          "Open Run, show several saved scripts, and start the prepared backend or test script.",
+          "Show its terminal output briefly, then open Agent 5 for a non-UI backend change.",
+          "Use dictation for one simple follow-up, correct the transcript if needed, and send it.",
+          "Cut to the completed backend change and run Code Review.",
+          "Open the prepared findings and choose Fix All, then cut to the corrected result."
+        ],
+        outcome: "Saved commands, dictation, and Code Review working together to complete and correct a backend task."
+      },
+      "Explore Code, Files, Terminal, and Database": {
+        steps: [
+          "Open Code in the same demo project.",
+          "Expand Files and open one representative source file in the editor.",
+          "Use Terminal for one short read-only command.",
+          "Open Database and show a prepared table or query surface without changing data.",
+          "Return to the combined technical workspace view."
+        ],
+        outcome: "The files, editor, terminal, and database surfaces mapped as one direct technical workspace."
+      },
+      "Ask and Add Context Without an Agent": {
+        steps: [
+          "Open Customize and enable the prepared Assets project area.",
+          "Open Quick Ask and ask a project-specific question without starting an agent.",
+          "Show the concise answer grounded in a project file or Doc.",
+          "Open New Agent and use the context picker to tag a Doc or Asset reference.",
+          "Stop before sending so this remains a context lesson rather than another agent result."
+        ],
+        outcome: "Quick Ask answers from project context without an agent, while the same context stays available for future agent work."
+      },
+      "Explore Orbit's Project Intelligence": {
+        steps: [
+          "Open Orbit and show the Environment view with sensitive demo values hidden.",
+          "Open Integrations or Services and scan the detected project inventory.",
+          "Briefly show the Add to Orbit or custom-view concept.",
+          "Open the pre-made Analytics view and show its sample records and fields.",
+          "Point out that a record can start an agent job, but do not run it."
+        ],
+        outcome: "Orbit's built-in project knowledge and a useful custom Analytics view shown at a high level."
+      },
+      "Ship the Completed Work": {
+        steps: [
+          "Open Agent 6 with a meaningful small request, then cut directly to its completed result.",
+          "Open Git and briefly move across its main tabs and surface-level options.",
+          "Return to the agent and click Ship.",
+          "Select the intended files and review the generated commit and pull-request details.",
+          "Complete the prepared flow and show the new branch, commit, push, pull request, and checks."
+        ],
+        outcome: "The completed work delivered as a traceable branch and pull request without repeating earlier review lessons."
+      },
+      "Try Parallel Work with Solo": {
+        steps: [
+          "Start on the demo project with one normal agent already active.",
+          "Start Solo for a separate prepared task.",
+          "Show its independent lane, branch, or worktree.",
+          "Switch between the normal agent and Solo to show both can progress.",
+          "Cut to the Solo result and use the bring-home or review action."
+        ],
+        outcome: "A separate piece of work completed in parallel and brought home without mixing branches."
+      },
+      "Take Choro with You on Mobile": {
+        steps: [
+          "Start with Choro running an agent on the Mac.",
+          "Show the connected iPhone in Choro Remote with projects and statuses visible.",
+          "Open the same agent and view its progress from the phone.",
+          "Briefly show how to respond when the agent needs attention.",
+          "End with the Mac doing the work while the phone monitors it."
+        ],
+        outcome: "The mobile concept in one frame: Choro runs on the Mac while the phone follows progress and responds remotely."
+      },
+      "Set Up an Agent for the Task": {
+        steps: [
+          "Open New Agent in a prepared project.",
+          "Choose the model and effort level for the example task.",
+          "Set the required access and choose Build or Plan.",
+          "Enter a one-line task and start the agent."
+        ],
+        outcome: "The agent running with the chosen setup visible in its header."
+      },
+      "Plan Before You Build": {
+        steps: [
+          "Start a New Agent and select Plan mode.",
+          "Send a prepared feature request with one open decision.",
+          "Review the proposed plan and ask for one focused revision.",
+          "Accept the revised direction and continue into Build."
+        ],
+        outcome: "Implementation starting from the agreed, revised plan."
+      },
+      "Follow and Manage Your Agents": {
+        steps: [
+          "Start on the agent board with running, waiting, and completed cards prepared.",
+          "Open a waiting agent and answer its question or approval request.",
+          "Return to the board and show its status update.",
+          "Open a completed agent and scan its final result."
+        ],
+        outcome: "The board showing clear current states across several agents."
+      },
+      "Agent Cards: What They Mean and What to Check": {
+        steps: [
+          "Open a prepared demo agent containing representative cards from a complete task.",
+          "Show progress cards such as Activity, work logs, and file activity; check their status and any failure detail.",
+          "Show decision cards such as a Plan, question, or approval; check exactly what choice or authority the agent needs.",
+          "Show output and context cards such as summaries, visualizations, memory, or Orbit updates; open the produced item and confirm it matches the request.",
+          "Open Changed Files, Verification, Review Checklist, and Code Review; check scope, missed or unclear requirements, and actionable findings.",
+          "Finish on the Ship Result and check the branch, commit, pull-request link, and delivery status."
+        ],
+        outcome: "The user can identify each core card, know what deserves attention, and choose the correct next action."
+      },
+      "Work in Parallel with Solo": {
+        steps: [
+          "Open a project with one normal agent already active.",
+          "Start Solo for a separate prepared task and confirm its independent workspace.",
+          "Switch between the original agent and the Solo lane to show both progressing.",
+          "Open the Solo result and use the bring-home action."
+        ],
+        outcome: "The Solo work brought back without disturbing the original agent's work."
+      },
+      "Continue a Saved Conversation": {
+        steps: [
+          "Open agent history and choose a completed conversation with useful context.",
+          "Scan its earlier request and final result.",
+          "Click Resume and add a short follow-up request.",
+          "Send it and show the conversation continuing in the same timeline."
+        ],
+        outcome: "The resumed agent working with its previous context intact."
+      },
+      "Create a Doc for a New Feature": {
+        steps: [
+          "Open Docs and create a new Doc from a prepared feature idea.",
+          "Add the goal, key requirements, and one acceptance check.",
+          "Organize the content into short sections.",
+          "Save and return to the Docs list."
+        ],
+        outcome: "A concise feature Doc saved as the visible source of truth."
+      },
+      "Turn a Doc into Agent Work": {
+        steps: [
+          "Open a prepared feature Doc and scan its requirements.",
+          "Click Implement or Use in Agent.",
+          "Confirm the Doc is attached and add one implementation constraint.",
+          "Start the agent."
+        ],
+        outcome: "A linked agent running with the full Doc available as context."
+      },
+      "Turn a Task into Agent Work": {
+        steps: [
+          "Open a prepared task with clear acceptance criteria.",
+          "Click Implement and review the generated agent request.",
+          "Add one relevant file or note, then start the agent.",
+          "Return to the task and show the linked agent status."
+        ],
+        outcome: "The task and its active implementation agent visibly connected."
+      },
+      "Connect an External Task Board": {
+        steps: [
+          "Open Tasks and choose Add Source.",
+          "Select the prepared external task provider and connect the board.",
+          "Filter the imported list to one project or status.",
+          "Open one imported task and start its implementation flow."
+        ],
+        outcome: "An external task open in Choro with a linked agent ready or running."
+      },
+      "Review What the Agent Changed": {
+        steps: [
+          "Open a completed agent and read its short result summary.",
+          "Open Changed Files and scan the full file list.",
+          "Inspect one important diff and compare it with the original request.",
+          "Open the reported verification result."
+        ],
+        outcome: "The key diff and successful verification visible together."
+      },
+      "Run Code Review": {
+        steps: [
+          "Open a completed agent with reviewable changes.",
+          "Start Code Review and wait on a prepared completed review.",
+          "Scan the checklist and open one finding in its file context.",
+          "Send the finding back to the agent as a fix request."
+        ],
+        outcome: "The review finding attached to a focused agent follow-up."
+      },
+      "Ship Completed Work": {
+        steps: [
+          "Open Ship from a reviewed agent.",
+          "Select only the files that belong to this feature.",
+          "Review and adjust the generated commit message and pull-request summary.",
+          "Complete the prepared commit, push, and create-pull-request actions."
+        ],
+        outcome: "The new pull request open with its summary and checks visible."
+      },
+      "Track PRs and Workflows": {
+        steps: [
+          "Open Git and switch to Pull Requests.",
+          "Open a prepared pull request linked to recent agent work.",
+          "Inspect its checks or workflow runs and open one status detail.",
+          "Return to the pull request overview and show its merge state."
+        ],
+        outcome: "The pull request overview with checks and merge readiness visible."
+      },
+      "Run Saved Project Scripts": {
+        steps: [
+          "Open a project with several saved scripts prepared.",
+          "Open Run and start one short script.",
+          "Inspect its output in the terminal panel.",
+          "Stop it, then rerun it from the same saved control."
+        ],
+        outcome: "The saved script running successfully with clean terminal output."
+      },
+      "Open Your Running Project in Preview": {
+        steps: [
+          "Start the prepared development-server script from Run.",
+          "Wait for Choro to detect the local URL.",
+          "Open that URL in Preview and navigate to a second page or state.",
+          "Resize or reload once to show the Preview controls."
+        ],
+        outcome: "The live project open and interactive inside Choro Preview."
+      },
+      "Give Visual Feedback in Preview": {
+        steps: [
+          "Open a prepared page in Preview and enter review mode.",
+          "Select the exact element or drag over the area that needs a change.",
+          "Enter a short outcome-focused comment.",
+          "Send it to the active agent and open the attached visual context."
+        ],
+        outcome: "The agent request showing the selected UI evidence and feedback."
+      },
+      "Inspect Code, Files, and Terminal Together": {
+        steps: [
+          "Open Code in a prepared project and expand one folder in Files.",
+          "Open a relevant source file and jump to a useful symbol or line.",
+          "Open the terminal panel and run a short read-only project command.",
+          "Switch back to the editor while keeping the project context visible."
+        ],
+        outcome: "The source file, project tree, and terminal available in one workspace."
+      },
+      "Create a Design from a Doc or Task": {
+        steps: [
+          "Open a prepared Doc or task with visual requirements.",
+          "Choose Design and confirm the brief is attached.",
+          "Select the prepared design model or direction.",
+          "Generate and open the resulting design."
+        ],
+        outcome: "The generated design open beside the requirements that created it."
+      },
+      "Refine a Design with the Assistant": {
+        steps: [
+          "Open a prepared design and inspect its main screen.",
+          "Request one specific layout or hierarchy change.",
+          "Review the updated canvas and compare the affected area.",
+          "Request one small polish pass and accept the result."
+        ],
+        outcome: "The refined design with the requested visual changes clearly visible."
+      },
+      "Implement a Design with an Agent": {
+        steps: [
+          "Open an approved design and click Implement.",
+          "Confirm the target project and design context.",
+          "Start the agent and show it reading the attached design.",
+          "Open the completed result in Preview."
+        ],
+        outcome: "The implemented screen running in Preview with its source design linked."
+      },
+      "Compare the Design with the Live Result": {
+        steps: [
+          "Open the approved design, then open its implemented page in Preview.",
+          "Use Compare or arrange both views for a clear side-by-side check.",
+          "Inspect one matching area and one visible difference.",
+          "Send the difference to the implementation agent as a refinement."
+        ],
+        outcome: "The design difference captured in a precise agent follow-up."
+      },
+      "Use Visual References with an Agent": {
+        steps: [
+          "Start a New Agent and add a prepared image, file, or link.",
+          "Open the reference once to confirm it is the correct asset.",
+          "Add a short note describing what to follow and what to ignore.",
+          "Send the task and show the reference in the agent context."
+        ],
+        outcome: "The active agent with the visual reference and guidance attached."
+      },
+      "Meet Orbit": {
+        steps: [
+          "Open Orbit from a prepared project.",
+          "Open the Environment and Integrations built-ins and show what each discovers.",
+          "Open one custom module and one existing record.",
+          "Show the action that can send structured data to an agent."
+        ],
+        outcome: "An Orbit module open with structured records and an agent action visible."
+      },
+      "Manage Environment Variables in Orbit": {
+        steps: [
+          "Open a prepared demo project whose env files contain only safe placeholder values.",
+          "Open Orbit → Environment and switch between two project-area or env-file tabs.",
+          "Search for one variable, then show the All, Set, and Empty filters.",
+          "Reveal the safe demo values, edit one variable, and click Save.",
+          "Hide values again and confirm the updated variable remains in the list."
+        ],
+        outcome: "The updated demo variable saved in the correct env file with values hidden again."
+      },
+      "See Project Services and Integrations": {
+        steps: [
+          "Open a prepared project with several detectable third-party services.",
+          "Open Orbit → Integrations and switch between two project-area tabs if available.",
+          "Scan the service categories and open one service row's detection evidence or facts.",
+          "Use one service's external link to open its dashboard, then return to Orbit.",
+          "Click Rescan and show the refreshed integration inventory."
+        ],
+        outcome: "The project's detected services organized by category with their source evidence visible."
+      },
+      "Create a Reusable Orbit Module": {
+        steps: [
+          "Open Orbit and create a module from Analytics or Blank.",
+          "Name it and add a few prepared fields with different field types.",
+          "Create a grouped or filtered view using those fields.",
+          "Configure one agent job for a record."
+        ],
+        outcome: "The reusable module showing its fields, organized view, and agent job."
+      },
+      "Use an Orbit Module in a Project": {
+        steps: [
+          "Add a prepared Orbit module to the current project.",
+          "Create two example records and fill their important fields.",
+          "Group or filter the records into a useful project view.",
+          "Run the prepared agent job from one record and open the linked work."
+        ],
+        outcome: "The organized Orbit view with one record connected to active agent work."
+      },
+      "Meet Choro Remote": {
+        steps: [
+          "Start with Choro open on the Mac and one prepared agent actively working.",
+          "Open Choro Remote on the iPhone and show the connected Mac, projects, and agent statuses.",
+          "Open the active agent and scan its live progress without interrupting it.",
+          "Show a Needs attention agent and the remote response actions available on the phone.",
+          "Finish with the Mac still running the work while the same agent remains visible on the iPhone."
+        ],
+        outcome: "A clear mental model: the Mac runs Choro, while the iPhone monitors and responds remotely."
+      },
+      "Pair Your iPhone with Choro": {
+        steps: [
+          "On the Mac, open Settings → Remote access and click Connect & pair.",
+          "Keep the Mac ID and one-time pairing code visible.",
+          "On the iPhone, open Choro Remote and enter the Mac ID and code.",
+          "Complete pairing, then return to Remote access on the Mac and show the phone under Paired devices."
+        ],
+        outcome: "The iPhone connected to the correct Mac and listed as a paired device."
+      },
+      "Choose What Your Phone Can Do": {
+        steps: [
+          "Open Settings → Remote access and find the prepared iPhone under Paired devices.",
+          "Open its permission menu and pause on View only, Control, and Full access.",
+          "Choose the permission level for the example workflow.",
+          "On the iPhone, open an agent and show that the available actions match the selected permission."
+        ],
+        outcome: "The phone working with only the access level selected on the Mac."
+      },
+      "Check Agent Progress from Your Phone": {
+        steps: [
+          "On the iPhone, open Choro Remote with running and completed agents prepared.",
+          "Choose a project and open an active agent that needs no response yet.",
+          "Scroll through its status, messages, and work-log activity.",
+          "Return to the agent list, then open a completed agent and its result."
+        ],
+        outcome: "The completed result visible on the phone with current agent statuses easy to scan."
+      },
+      "Start or Continue Agent Work on Mobile": {
+        steps: [
+          "On the iPhone, choose a project and start a new agent.",
+          "Enter a prepared task, briefly show its model, effort, access, and mode, then send.",
+          "Return to the project and open a saved agent conversation.",
+          "Send a short follow-up that depends on the earlier context."
+        ],
+        outcome: "New work running and a saved conversation continuing from the phone."
+      },
+      "Respond to Questions, Plans, and Approvals": {
+        steps: [
+          "Open an agent marked Needs attention on the iPhone.",
+          "Answer its prepared question and show the agent continue.",
+          "Open a prepared plan, review it, and choose the appropriate continue action.",
+          "Open an approval request and resolve it from a phone with Full access.",
+          "Return to the project and show that the attention states have cleared."
+        ],
+        outcome: "The previously blocked agents continuing after deliberate mobile decisions."
+      },
+      "Review Results and Ask for Fixes on Mobile": {
+        steps: [
+          "Open a completed agent on the iPhone and read its result summary.",
+          "Open Changed Files and inspect one representative change.",
+          "Open the verification result and select one unmet or unclear item.",
+          "Tap Ask to fix and confirm the focused follow-up starts."
+        ],
+        outcome: "The agent actively correcting the selected verification issue from the phone."
+      },
+      "Quick Ask, Project Talk, or Agent?": {
+        steps: [
+          "Start in one project and open Quick Ask for a small factual question.",
+          "Open Project Talk for a broader discussion that should not edit files.",
+          "Open New Agent for a prepared implementation request.",
+          "Pause on the three resulting histories or surfaces so their roles are distinct."
+        ],
+        outcome: "The project showing the three tools as clearly different levels of action."
+      },
+      "Ask Without Starting an Agent": {
+        steps: [
+          "Open Quick Ask from a prepared project.",
+          "Choose the relevant project scope and ask a short codebase question.",
+          "Open one cited file or source from the answer.",
+          "Return to Quick Ask history and continue with one follow-up."
+        ],
+        outcome: "A useful answer and source reached without creating an agent task."
+      },
+      "Think Through a Project by Voice": {
+        steps: [
+          "Open Project Talk in a project with enough context prepared.",
+          "Start voice input and ask for options around one product decision.",
+          "Let the response finish, then ask one short spoken follow-up.",
+          "Save or turn the useful conclusion into a plan if that action is available."
+        ],
+        outcome: "The voice discussion ending on a clear decision or next-step plan."
+      },
+      "Dictate Prompts and Messages": {
+        steps: [
+          "Focus an empty agent message field and hold the dictation shortcut.",
+          "Speak a prepared two-sentence request, then release the shortcut.",
+          "Correct one word in the transcript and add a final constraint.",
+          "Send the edited message."
+        ],
+        outcome: "The accurate dictated request sent only after the user's edit."
+      },
+      "Find Anything in a Project": {
+        steps: [
+          "Open project search with the shortcut.",
+          "Search for a prepared term that appears across files, Docs, tasks, and agents.",
+          "Filter to one result type and open a result.",
+          "Return to results and jump to a second type."
+        ],
+        outcome: "The second matched item open at the exact relevant location."
+      },
+      "Customize Shortcuts and Notifications": {
+        steps: [
+          "Open Settings and go to Shortcuts.",
+          "Change one non-critical shortcut and demonstrate the new key binding.",
+          "Open Notifications and adjust one prepared preference.",
+          "Return to the project and trigger the customized shortcut once."
+        ],
+        outcome: "The customized action working with the preferred notification setting saved."
+      }
+    };
+
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const panels = [...document.querySelectorAll('[role="tabpanel"]')];
+    const count = panels.reduce((total, panel) => total + panel.querySelectorAll('tbody tr').length, 0);
+    document.querySelector('#playlist-count').textContent = panels.length;
+    document.querySelector('#video-count').textContent = count;
+
+    const modal = document.querySelector('#recording-flow-modal');
+    const modalTitle = document.querySelector('#recording-title');
+    const modalCategory = document.querySelector('#recording-category');
+    const modalSteps = document.querySelector('#recording-steps');
+    const modalOutcome = document.querySelector('#recording-outcome');
+    const modalClose = document.querySelector('.modal-close');
+    const modalDone = document.querySelector('.modal-done');
+    let previousFocus = null;
+
+    function openRecordingFlow(row) {
+      const title = row.querySelector('.video-title').textContent.trim();
+      const flow = recordingFlows[title];
+      if (!flow) return;
+
+      const panel = row.closest('[role="tabpanel"]');
+      const category = panel.querySelector('.panel-heading h2').textContent.trim();
+      const duration = row.querySelector('.duration').textContent.trim();
+
+      previousFocus = row;
+      modalTitle.textContent = title;
+      modalCategory.textContent = `${category} · ${duration}`;
+      modalSteps.replaceChildren(...flow.steps.map((step) => {
+        const item = document.createElement('li');
+        item.textContent = step;
+        return item;
+      }));
+      modalOutcome.textContent = flow.outcome;
+      modal.hidden = false;
+      document.body.classList.add('modal-open');
+      requestAnimationFrame(() => modalClose.focus());
+    }
+
+    function closeRecordingFlow() {
+      if (modal.hidden) return;
+      modal.hidden = true;
+      document.body.classList.remove('modal-open');
+      previousFocus?.focus();
+    }
+
+    document.querySelectorAll('tbody tr').forEach((row) => {
+      const title = row.querySelector('.video-title').textContent.trim();
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-haspopup', 'dialog');
+      row.setAttribute('aria-label', `Open recording flow for ${title}`);
+      row.addEventListener('click', () => openRecordingFlow(row));
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openRecordingFlow(row);
+        }
+      });
+    });
+
+    modalClose.addEventListener('click', closeRecordingFlow);
+    modalDone.addEventListener('click', closeRecordingFlow);
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeRecordingFlow();
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (modal.hidden) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeRecordingFlow();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusable = [modalClose, modalDone];
+      const index = focusable.indexOf(document.activeElement);
+      if (event.shiftKey && index <= 0) {
+        event.preventDefault();
+        modalDone.focus();
+      } else if (!event.shiftKey && index === focusable.length - 1) {
+        event.preventDefault();
+        modalClose.focus();
+      }
+    });
+
+    function activateTab(tab, moveFocus = false) {
+      tabs.forEach((candidate) => {
+        const selected = candidate === tab;
+        candidate.setAttribute('aria-selected', String(selected));
+        candidate.tabIndex = selected ? 0 : -1;
+      });
+
+      panels.forEach((panel) => {
+        const active = panel.id === tab.getAttribute('aria-controls');
+        panel.hidden = !active;
+        panel.classList.toggle('panel-enter', active);
+      });
+
+      const panel = document.getElementById(tab.getAttribute('aria-controls'));
+      history.replaceState(null, '', `#${panel.dataset.slug}`);
+      tab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+      if (moveFocus) tab.focus();
+    }
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => activateTab(tab));
+      tab.addEventListener('keydown', (event) => {
+        let nextIndex = null;
+        if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+        if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = tabs.length - 1;
+        if (nextIndex !== null) {
+          event.preventDefault();
+          activateTab(tabs[nextIndex], true);
+        }
+      });
+    });
+
+    const requested = location.hash.slice(1);
+    const requestedPanel = panels.find((panel) => panel.dataset.slug === requested);
+    if (requestedPanel) {
+      const tab = tabs.find((candidate) => candidate.getAttribute('aria-controls') === requestedPanel.id);
+      if (tab) activateTab(tab);
+    }
+  </script>
+</body>
+</html>
