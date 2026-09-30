@@ -1,0 +1,54 @@
+/target
+/vendor/wry/target/
+/solo-build
+.DS_Store
+node_modules/
+.remotion/
+.expo/
+dist/
+/docs
+!crates/ide-app/web/doc-editor/dist/
+!crates/ide-app/web/doc-editor/dist/**
+!crates/ide-app/web/studio-canvas/dist/
+!crates/ide-app/web/studio-canvas/dist/**
+# Local Choro working documents may contain private product context.
+/choro_docs/
+# Studio designs are local workspace data, not public app source.
+/choro_designs/
+# Internal planning, drafts, and documentation are not part of the public source snapshot.
+/docs/
+# Local video redesigns, renders, source projects, and comparison assets.
+/docs/video-redesign-comparison/
+__pycache__/
+*.py[cod]
+*.tmp
+
+# Companion design sources and render intermediates stay local. Only the WebP
+# files embedded by app_assets.rs belong in version control.
+/crates/ide-app/assets/avatar/**
+!/crates/ide-app/assets/avatar/exports/
+!/crates/ide-app/assets/avatar/exports/v22/
+!/crates/ide-app/assets/avatar/exports/v22/idle/
+!/crates/ide-app/assets/avatar/exports/v22/idle/choro-companion-idle.webp
+!/crates/ide-app/assets/avatar/exports/v22/working/
+!/crates/ide-app/assets/avatar/exports/v22/working/choro-companion-working.webp
+!/crates/ide-app/assets/avatar/exports/v22/needs-attention/
+!/crates/ide-app/assets/avatar/exports/v22/needs-attention/choro-companion-needs-attention.webp
+!/crates/ide-app/assets/avatar/exports/v25/
+!/crates/ide-app/assets/avatar/exports/v25/deep-focus/
+!/crates/ide-app/assets/avatar/exports/v25/deep-focus/choro-companion-music-deep-focus.webp
+!/crates/ide-app/assets/avatar/exports/v25/lofi-flow/
+!/crates/ide-app/assets/avatar/exports/v25/lofi-flow/choro-companion-music-lofi-flow.webp
+!/crates/ide-app/assets/avatar/exports/v25/calm/
+!/crates/ide-app/assets/avatar/exports/v25/calm/choro-companion-music-calm.webp
+!/crates/ide-app/assets/avatar/exports/v25/high-energy/
+!/crates/ide-app/assets/avatar/exports/v25/high-energy/choro-companion-music-high-energy.webp
+!/crates/ide-app/assets/avatar/exports/v27/
+!/crates/ide-app/assets/avatar/exports/v27/done/
+!/crates/ide-app/assets/avatar/exports/v27/done/choro-companion-done.webp
+!/crates/ide-app/assets/avatar/exports/v28/
+!/crates/ide-app/assets/avatar/exports/v28/agent-assistant/
+!/crates/ide-app/assets/avatar/exports/v28/agent-assistant/choro-companion-agent-assistant.webp
+!/crates/ide-app/assets/avatar/exports/medium-motion/
+!/crates/ide-app/assets/avatar/exports/medium-motion/**/
+!/crates/ide-app/assets/avatar/exports/medium-motion/**/*.webp

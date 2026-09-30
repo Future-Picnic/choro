@@ -1,0 +1,130 @@
+                <div id="wysiwyg-editor" class="default-editor">
+                  <!--
+					<a id="bold-btn" href="" title="Bold">
+						<svg height="24" viewBox="0 0 256 256" width="24" xmlns="http://www.w3.org/2000/svg">
+							<path clip-rule="evenodd" d="M56 40V216H148C176.719 216 200 192.719 200 164C200 147.849 192.637 133.418 181.084 123.88C187.926 115.076 192 104.014 192 92C192 63.2812 168.719 40 140 40H56ZM88 144V184H148C159.046 184 168 175.046 168 164C168 152.954 159.046 144 148 144H88ZM88 112V72H140C151.046 72 160 80.9543 160 92C160 103.046 151.046 112 140 112H88Z" fill="#252525" fill-rule="evenodd"/>
+						</svg>	
+					</a>
+					<a id="italic-btn" href="" title="Italic">
+						<svg height="24" viewBox="0 0 256 256" width="24" xmlns="http://www.w3.org/2000/svg">
+							<path d="M202 40H84V64H126.182L89.8182 192H54V216H172V192H129.818L166.182 64H202V40Z" fill="#252525"/>
+						</svg>											
+					</a>
+					<a id="underline-btn" href="" title="Underline">
+						<svg height="24" viewBox="0 0 256 256" width="24" xmlns="http://www.w3.org/2000/svg">
+							<path clip-rule="evenodd" d="M88 40H60V108.004C60 145.56 90.4446 176.004 128 176.004C165.555 176.004 196 145.56 196 108.004V40H168V108C168 130.091 150.091 148 128 148C105.909 148 88 130.091 88 108V40ZM204 216V192H52V216H204Z" fill="#252525" fill-rule="evenodd"/>
+						</svg>
+					</a>
+					-->
+
+                  <a id="bold-btn" class="hint" href="" title="Bold" aria-label="Bold">
+                    <svg height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M6,4h8a4,4,0,0,1,4,4h0a4,4,0,0,1-4,4H6Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="3" />
+                      <path d="M6,12h9a4,4,0,0,1,4,4h0a4,4,0,0,1-4,4H6Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="3" />
+                    </svg>
+                  </a>
+                  <a id="italic-btn" class="hint" href="" title="Italic" aria-label="Italic">
+                    <svg height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+                      <line fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" x1="19" x2="10" y1="4" y2="4" />
+                      <line fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" x1="14" x2="5" y1="20" y2="20" />
+                      <line fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" x1="15" x2="9" y1="4" y2="20" />
+                    </svg>
+                  </a>
+                  <a id="underline-btn" class="hint" href="" title="Underline" aria-label="Underline">
+                    <svg height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M6,4v7a6,6,0,0,0,6,6h0a6,6,0,0,0,6-6V4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" y1="2" y2="2" />
+                      <line fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" x1="4" x2="20" y1="22" y2="22" />
+                    </svg>
+                  </a>
+
+
+                  <a id="strike-btn" class="hint" href="" title="Strikeout" aria-label="Strikeout">
+                    <del>S</del>
+                  </a>
+
+                  <div class="dropdown">
+                    <button class="btn btn-link dropdown-toggle" type="button" id="dropdownMenuButton" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                      <span class="hint" aria-label="Text align">
+                        <i class="la la-align-left"></i>
+                      </span>
+                    </button>
+
+                    <div id="justify-btn" class="dropdown-menu" aria-labelledby="dropdownMenuButton">
+                      <a class="dropdown-item" href="#" data-value="Left">
+                        <i class="la la-lg la-align-left"></i> Align Left
+                      </a>
+                      <a class="dropdown-item" href="#" data-value="Center">
+                        <i class="la la-lg la-align-center"></i> Align Center
+                      </a>
+                      <a class="dropdown-item" href="#" data-value="Right">
+                        <i class="la la-lg la-align-right"></i> Align Right
+                      </a>
+                      <a class="dropdown-item" href="#" data-value="Full">
+                        <i class="la la-lg la-align-justify"></i> Align Justify
+                      </a>
+                    </div>
+                  </div>
+
+                  <div class="separator"></div>
+
+                  <a id="link-btn" class="hint" href="" title="Create link" aria-label="Create link">
+                    <i class="la la-link">
+                    </i>
+                  </a>
+
+                  <div class="separator"></div>
+
+                  <input id="fore-color" name="color" type="color" aria-label="Text color" pattern="#[a-f0-9]{6}" class="form-control form-control-color hint">
+                  <input id="back-color" name="background-color" type="color" aria-label="Background color" pattern="#[a-f0-9]{6}" class="form-control form-control-color hint">
+
+                  <div class="separator"></div>
+
+                  <select id="font-size" class="form-select" aria-label="Font size">
+                    <option value="">- Font size -</option>
+                    <option value="8px">8 px</option>
+                    <option value="9px">9 px</option>
+                    <option value="10px">10 px</option>
+                    <option value="11px">11 px</option>
+                    <option value="12px">12 px</option>
+                    <option value="13px">13 px</option>
+                    <option value="14px">14 px</option>
+                    <option value="15px">15 px</option>
+                    <option value="16px">16 px</option>
+                    <option value="17px">17 px</option>
+                    <option value="18px">18 px</option>
+                    <option value="19px">19 px</option>
+                    <option value="20px">20 px</option>
+                    <option value="21px">21 px</option>
+                    <option value="22px">22 px</option>
+                    <option value="23px">23 px</option>
+                    <option value="24px">24 px</option>
+                    <option value="25px">25 px</option>
+                    <option value="26px">26 px</option>
+                    <option value="27px">27 px</option>
+                    <option value="28px">28 px</option>
+                  </select>
+
+                  <div class="separator"></div>
+
+                  <select id="font-family" class="form-select" title="Font family">
+                    <option value=""> - Font family - </option>
+                    <optgroup label="System default">
+                      <option value="Arial, Helvetica, sans-serif">Arial</option>
+                      <option value="'Lucida Sans Unicode', 'Lucida Grande', sans-serif">Lucida Grande
+                      </option>
+                      <option value="'Palatino Linotype', 'Book Antiqua', Palatino, serif">Palatino
+                        Linotype</option>
+                      <option value="'Times New Roman', Times, serif">Times New Roman</option>
+                      <option value="Georgia, serif">Georgia, serif</option>
+                      <option value="Tahoma, Geneva, sans-serif">Tahoma</option>
+                      <option value="'Comic Sans MS', cursive, sans-serif">Comic Sans</option>
+                      <option value="Verdana, Geneva, sans-serif">Verdana</option>
+                      <option value="Impact, Charcoal, sans-serif">Impact</option>
+                      <option value="'Arial Black', Gadget, sans-serif">Arial Black</option>
+                      <option value="'Trebuchet MS', Helvetica, sans-serif">Trebuchet</option>
+                      <option value="'Courier New', Courier, monospace">Courier New</option>
+                      <option value="'Brush Script MT', sans-serif">Brush Script</option>
+                    </optgroup>
+                  </select>
+                </div>
+

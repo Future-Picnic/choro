@@ -1,0 +1,24 @@
+[package]
+name = "smart-turn-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["jinti<shenjindi@miuda.ai>"]
+description = "A Rust library for livekit's smart turn detection v3 using ONNX Runtime."
+license = "BSD-2-Clause"
+[lib]
+name = "smart_turn_rs"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+ndarray = { version = "0.16", features = ["serde"] }
+once_cell = "1"
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "api-23"] }
+# Moonshine's macOS static library already contains ONNX Runtime. Avoid a
+# second runtime download and let the final Choro link resolve these symbols.
+ort-sys = { version = "2.0.0-rc.13", default-features = false, features = ["std", "disable-linking", "api-23"] }
+rustfft = "6"
+
+[dev-dependencies]
+hound = "3.5"
+clap = { version = "4.5", features = ["derive"] }

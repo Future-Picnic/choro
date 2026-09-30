@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "f4d27c6c-f7d9-43a7-bd0e-321462d741d0",
+  "name": "Untitled design",
+  "revision": 0,
+  "design_system": "../design-system/system.json",
+  "screens": [
+    {
+      "id": "7f606dda-d807-429f-a3a2-bea6e75b008e",
+      "name": "Home",
+      "width": 1440,
+      "height": 960,
+      "archived": false,
+      "files": {
+        "html": "index.html",
+        "css": "styles.css",
+        "js": "prototype.js"
+      }
+    }
+  ],
+  "source_doc": null,
+  "source_task": null,
+  "source_context": {}
+}

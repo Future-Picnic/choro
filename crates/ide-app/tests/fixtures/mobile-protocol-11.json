@@ -1,0 +1,139 @@
+{
+  "protocol_version": 11,
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/v1/capabilities",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/workspace/agents",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/agent?agent_id=a",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/search?query=hello",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/bandmates",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/summary?agent_id=a",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/delegation?agent_id=a",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/attachment?path=a",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/remote/diff?agent_id=a&turn_id=t&path=file",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agents/a/images/preview?path=a",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agents/a/diff?path=file",
+      "permission": "view_only"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agents/a/ship/preview",
+      "permission": "view_only"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/messages",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/configuration",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/stop",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/remote/actions",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/remote/uploads",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/verification/fix",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/ship",
+      "permission": "full_access"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/approvals/q/resolve",
+      "permission": "full_access"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/questions/q/answer",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/plan/resolve",
+      "permission": "control"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/agents/a/plan/dismiss",
+      "permission": "control"
+    }
+  ],
+  "limits": {
+    "images_per_message": 4,
+    "image_bytes": 4194304,
+    "chunk_bytes": 262144
+  },
+  "home": {
+    "groups": [
+      "Needs attention",
+      "Pinned",
+      "Favorites",
+      "Design partners",
+      "Projects"
+    ]
+  }
+}

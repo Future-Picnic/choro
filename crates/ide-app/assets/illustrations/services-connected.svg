@@ -1,0 +1,23 @@
+<svg width="160" height="110" viewBox="0 0 200 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="100" cy="116" rx="48" ry="6" fill="{{ground}}"/>
+  <g stroke="{{connector}}" stroke-width="2" stroke-linecap="round">
+    <path d="M100 62 58 40"/>
+    <path d="M100 62 150 44"/>
+    <path d="M100 62 150 92"/>
+    <path d="M100 62 56 92"/>
+  </g>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <rect x="42" y="28" width="30" height="24" rx="6" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2"/>
+    <path d="M50 40h14" stroke="{{content_line}}" stroke-width="2"/>
+    <rect x="136" y="30" width="30" height="24" rx="6" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2"/>
+    <circle cx="151" cy="42" r="3.5" fill="none" stroke="{{content_line}}" stroke-width="2"/>
+    <rect x="136" y="80" width="30" height="24" rx="6" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2"/>
+    <path d="M144 92h14" stroke="{{content_line}}" stroke-width="2"/>
+    <rect x="42" y="80" width="30" height="24" rx="6" fill="{{raised_fill}}" stroke="{{accent_stroke}}" stroke-width="2.2"/>
+    <path d="M50 88l4 4 8-8" stroke="{{spark}}" stroke-width="2.2"/>
+  </g>
+  <circle cx="100" cy="62" r="14" fill="{{raised_fill}}" stroke="{{accent_stroke}}" stroke-width="2.4"/>
+  <circle cx="100" cy="62" r="4.5" fill="{{spark}}"/>
+  <circle cx="182" cy="66" r="2.4" fill="{{ambient}}"/>
+  <circle cx="24" cy="62" r="2.2" fill="{{ambient}}"/>
+</svg>
