@@ -1,0 +1,14 @@
+{
+  "name": "choro-agent-chat-bridge",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test claude_file_attribution.test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.170",
+    "serve-sim": "0.1.45"
+  }
+}

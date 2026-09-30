@@ -1,0 +1,113 @@
+use gpui::{div, px, AnyElement, Hsla, IntoElement, ParentElement, Styled};
+
+pub fn branch_icon(color: Hsla) -> AnyElement {
+    crate::ui::design::indicator::lucide_icon(
+        lucide_icons::Icon::GitBranch,
+        color,
+        crate::ui::design::icon_ind(),
+    )
+    .into_any_element()
+}
+
+/// A git-commit node: a small ringed circle on a horizontal line, for the
+/// commit timeline.
+pub fn commit_icon(color: Hsla) -> AnyElement {
+    div()
+        .relative()
+        .size(crate::ui::design::icon_ind())
+        .flex_shrink_0()
+        .child(
+            div()
+                .absolute()
+                .left(px(1.))
+                .top(px(6.))
+                .w(px(3.))
+                .h(px(1.))
+                .bg(color.opacity(0.5)),
+        )
+        .child(
+            div()
+                .absolute()
+                .right(px(1.))
+                .top(px(6.))
+                .w(px(3.))
+                .h(px(1.))
+                .bg(color.opacity(0.5)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(4.))
+                .top(px(4.))
+                .size(px(5.))
+                .rounded_full()
+                .border_1()
+                .border_color(color.opacity(0.85)),
+        )
+        .into_any_element()
+}
+
+pub fn pr_icon(color: Hsla) -> AnyElement {
+    div()
+        .relative()
+        .size(crate::ui::design::icon_ind())
+        .flex_shrink_0()
+        .child(
+            div()
+                .absolute()
+                .left(px(3.))
+                .top(px(2.))
+                .w(px(1.))
+                .h(px(9.))
+                .bg(color.opacity(0.58)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(8.))
+                .top(px(2.))
+                .w(px(1.))
+                .h(px(5.))
+                .bg(color.opacity(0.58)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(4.))
+                .top(px(3.))
+                .w(px(5.))
+                .h(px(1.))
+                .bg(color.opacity(0.58)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(2.))
+                .top(px(1.))
+                .size(px(4.))
+                .rounded_full()
+                .border_1()
+                .border_color(color.opacity(0.76)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(7.))
+                .top(px(1.))
+                .size(px(4.))
+                .rounded_full()
+                .border_1()
+                .border_color(color.opacity(0.76)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(2.))
+                .bottom(px(1.))
+                .size(px(4.))
+                .rounded_full()
+                .border_1()
+                .border_color(color.opacity(0.76)),
+        )
+        .into_any_element()
+}

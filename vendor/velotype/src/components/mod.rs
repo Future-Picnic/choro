@@ -1,0 +1,36 @@
+// Modified by Choro contributors; see vendor/velotype/CHORO_MODIFICATIONS.md.
+//! Shared UI components and Markdown editing primitives.
+
+mod actions;
+mod block;
+pub(crate) mod latex;
+pub(crate) mod markdown;
+pub(crate) mod mermaid;
+pub(crate) mod reference;
+
+pub use crate::editor::Editor;
+#[allow(unused_imports)]
+pub(crate) use crate::editor::InfoDialogKind;
+pub use actions::*;
+pub use block::*;
+#[allow(unused_imports)]
+pub(crate) use latex::*;
+#[allow(unused_imports)]
+pub(crate) use markdown::code_highlight::*;
+#[allow(unused_imports)]
+pub(crate) use markdown::footnote::*;
+#[allow(unused_imports)]
+pub(crate) use markdown::html::*;
+#[allow(unused_imports)]
+pub(crate) use markdown::image::*;
+#[allow(unused_imports)]
+pub use markdown::inline::*;
+#[allow(unused_imports)]
+pub(crate) use markdown::link::*;
+pub use markdown::table::*;
+#[allow(unused_imports)]
+pub(crate) use mermaid::*;
+#[allow(unused_imports)]
+pub use reference::{ReferenceData, reference_fence_markdown};
+#[allow(unused_imports)]
+pub(crate) use reference::{is_reference_info_string, parse_reference_fence};

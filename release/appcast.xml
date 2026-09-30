@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Choro Updates</title>
+    <link>https://github.com/Future-Picnic/choro</link>
+    <description>Signed stable updates for Choro.</description>
+    <language>en</language>
+    <item>
+      <title>Choro 0.90</title>
+      <pubDate>Tue, 01 Sep 2026 23:16:47 +0300</pubDate>
+      <sparkle:version>90</sparkle:version>
+      <sparkle:shortVersionString>0.90</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description sparkle:format="plain-text"><![CDATA[- fix: complete silent Sparkle update checks
+- chore: publish update feed for 0.89]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/540080151" length="312925793" type="application/octet-stream" sparkle:edSignature="JkSXv8mf/C/gDtjum/lT1LYFkhIjRJbF7yhSFNlpWxwBmgHF34jKYvTNk3ln6c7PYPXSpvr5oFARPAn0TPxGCQ=="></enclosure>
+    </item>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: nScWEPcfi4WtPecc+lW/grorC43s5L1nSGL8xKDMwds2jp9LEllz0QxRvVIbNrVNDPB6UdN80BgNhzmdSC6QCg==
+length: 1389
+-->
