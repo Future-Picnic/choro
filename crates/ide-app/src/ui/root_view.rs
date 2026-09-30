@@ -1,0 +1,1888 @@
+mod chrome;
+mod left_sidebar;
+mod newsletter_card;
+mod settings;
+
+mod shutdown;
+mod update_card;
+
+use shutdown::{ShutdownPurpose, ShutdownState};
+
+use gpui::{
+    div, prelude::FluentBuilder, px, svg, AnyElement, App, AppContext, Context, DragMoveEvent,
+    Entity, FocusHandle, InteractiveElement, IntoElement, KeyUpEvent, Keystroke, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window,
+};
+use gpui_component::{
+    button::{Button, ButtonVariants},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, Disableable, Icon, IconName, PixelsExt, Selectable, Sizable, Theme, ThemeMode,
+    WindowExt,
+};
+use ide_core::config::ThemeMode as ConfigTheme;
+use ide_core::git::BranchInfo;
+
+use crate::actions::{
+    CloseTab, NavigateBack, NavigateForward, NewAgentChat, NewTerminal, NextOpenItem,
+    OpenAgentChatSearch, OpenCommands, OpenContentSearch, OpenFolder, OpenOrbitSettings,
+    OpenProjectSearch, OpenQuickAsk, OpenSettings, PreviousOpenItem, QuickAddTask, QuitApplication,
+    SaveFile, StopCurrentAgent, ToggleAgentPlanMode, ToggleFocusMode, ToggleHandsFreeDictation,
+    ToggleLeftPanel, TogglePreview, ToggleRightPanel, ToggleTerminalArea, ToggleVoiceDictation,
+    ToggleVoiceDirector, ViewAgents, ViewCode, ViewDb, ViewDesign, ViewDesigns, ViewDocs,
+    ViewFiles, ViewServices, ViewSplit, ViewTasks, ViewTerminal,
+};
+use crate::app_update::{AppUpdateController, AppUpdatePhase};
+use crate::remote::dto::RemoteEvent;
+use crate::state::{
+    AgentActivityCache, AgentCapabilityCacheFile, AgentChatState, AgentRecords, DesignsState,
+    DocAssistantState, DocsState, GitStates, OrbitState, QuickAskEvent, QuickAskPhase,
+    QuickAskState, ServicesState, TasksState, TerminalManager, Workspace,
+};
+use crate::ui::agents_panel::AgentsPanel;
+use crate::ui::branch_icon::branch_icon;
+use crate::ui::center::preset_bar::PresetBar;
+use crate::ui::center::{CenterArea, CenterMode, ProjectActivity};
+use crate::ui::command_palette::CommandPalette;
+use crate::ui::content_search::ContentSearch;
+use crate::ui::db::db_panel::DbPanel;
+use crate::ui::designs_panel::DesignsPanel;
+use crate::ui::docs_panel::DocsPanel;
+use crate::ui::files::file_tree::FileTree;
+use crate::ui::git::git_panel::GitPanel;
+use crate::ui::logo_spinner::logo_spinner;
+use crate::ui::onboarding::OnboardingTour;
+use crate::ui::project_list::ProjectList;
+use crate::ui::project_search::ProjectSearch;
+use crate::ui::project_visuals::project_icon_element;
+use crate::ui::quick_ask::{QuickAskPanel, QuickAskPanelEvent};
+use crate::ui::right_panel::RightPanel;
+use crate::ui::settings::{SettingsSection, SettingsView};
+use crate::ui::style;
+use crate::voice::{VoiceEvent, VoicePhase, VoiceState};
+
+fn apply_theme(theme: ConfigTheme, window: Option<&mut Window>, cx: &mut App) {
+    let mode = match theme {
+        ConfigTheme::Light => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    };
+    Theme::change(mode, window, cx);
+    crate::theme::apply_ui_font(cx);
+}
+
+fn apply_configured_theme(
+    theme: ConfigTheme,
+    theme_name: Option<&str>,
+    window: Option<&mut Window>,
+    cx: &mut App,
+) {
+    if theme_name
+        .filter(|name| crate::theme::apply_named(name, cx))
+        .is_some()
+    {
+        return;
+    }
+    // Saved theme is unknown (e.g. an old install naming a removed theme) —
+    // land on the signature Choro theme rather than a bare Default.
+    if crate::theme::apply_named(crate::theme::SIGNATURE_THEME, cx) {
+        return;
+    }
+    apply_theme(theme, window, cx);
+}
+
+const LEFT_PANEL_MIN: f32 = 180.0;
+const LEFT_PANEL_MAX: f32 = 420.0;
+const RIGHT_PANEL_MAX: f32 = 640.0;
+const TITLE_BRANCH_PICKER_LIMIT: usize = 10;
+
+fn branch_relative_time(unix_secs: i64) -> String {
+    if unix_secs <= 0 {
+        return String::new();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = (now - unix_secs).max(0);
+    match delta {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{}m ago", delta / 60),
+        3600..=86_399 => format!("{}h ago", delta / 3600),
+        86_400..=2_591_999 => format!("{}d ago", delta / 86_400),
+        _ => format!("{}mo ago", delta / 2_592_000),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarResizeSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone)]
+struct SidebarResizeHandle(SidebarResizeSide);
+
+impl Render for SidebarResizeHandle {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+struct SidebarResizeState {
+    side: SidebarResizeSide,
+    start_x: f32,
+    start_width: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SidebarVisibility {
+    left: bool,
+    right: bool,
+}
+
+/// Deliberately session-only: a fresh launch starts Agents with Git hidden.
+#[derive(Default)]
+struct RightSidebarState {
+    choices: std::collections::HashMap<(Option<ide_core::ProjectId>, ProjectActivity), bool>,
+}
+
+impl RightSidebarState {
+    fn visible(&self, project: Option<ide_core::ProjectId>, activity: ProjectActivity) -> bool {
+        self.choices
+            .get(&(project, activity))
+            .copied()
+            .unwrap_or(activity != ProjectActivity::Agents)
+    }
+
+    fn toggle(&mut self, project: Option<ide_core::ProjectId>, activity: ProjectActivity) {
+        let visible = self.visible(project, activity);
+        self.choices.insert((project, activity), !visible);
+    }
+}
+
+#[derive(Default)]
+struct FocusModeState {
+    restore: Option<SidebarVisibility>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum NewsletterStatus {
+    #[default]
+    Idle,
+    Sending,
+    Subscribed,
+    Error,
+}
+
+impl FocusModeState {
+    fn is_active(&self) -> bool {
+        self.restore.is_some()
+    }
+
+    fn enter(&mut self, show_left: &mut bool, show_right: &mut bool) {
+        if self.is_active() {
+            return;
+        }
+        self.restore = Some(SidebarVisibility {
+            left: *show_left,
+            right: *show_right,
+        });
+        *show_left = false;
+        *show_right = false;
+    }
+
+    fn exit(&mut self, show_left: &mut bool, show_right: &mut bool) -> bool {
+        let Some(restore) = self.restore.take() else {
+            return false;
+        };
+        *show_left = restore.left;
+        *show_right = restore.right;
+        true
+    }
+
+    fn toggle(&mut self, show_left: &mut bool, show_right: &mut bool) {
+        if !self.exit(show_left, show_right) {
+            self.enter(show_left, show_right);
+        }
+    }
+}
+
+/// The main window: title bar over a 3-pane layout (projects | center | git).
+pub struct RootView {
+    workspace: Entity<Workspace>,
+    terminals: Entity<TerminalManager>,
+    tasks: Entity<TasksState>,
+    docs: Entity<DocsState>,
+    orbit: Entity<OrbitState>,
+    git_states: Entity<GitStates>,
+    agents: Entity<AgentRecords>,
+    agent_chats: Entity<AgentChatState>,
+    voice: Entity<VoiceState>,
+    quick_ask: Entity<QuickAskState>,
+    quick_ask_panel: Entity<QuickAskPanel>,
+    quick_ask_open: bool,
+    app_update: Entity<AppUpdateController>,
+    project_list: Entity<ProjectList>,
+    center: Entity<CenterArea>,
+    title_preset_bar: Entity<PresetBar>,
+    right_panel: Entity<RightPanel>,
+    root_focus: FocusHandle,
+    show_left: bool,
+    show_right: bool,
+    right_sidebar_state: RightSidebarState,
+    focus_mode: FocusModeState,
+    sidebar_resize: Option<SidebarResizeState>,
+    title_branch_hovered: bool,
+    title_branch_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    title_branch_query: Entity<InputState>,
+    title_branch_expanded: bool,
+    voice_control_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    voice_source_popover_visible: bool,
+    voice_source_hover_generation: u64,
+    voice_push_to_talk_binding: Option<Keystroke>,
+    /// When set, Settings is shown as a dedicated full-screen route over the app.
+    settings_view: Option<Entity<SettingsView>>,
+    remote_auth: crate::remote::RemoteAuth,
+    remote_relay_identity: crate::remote::RelayIdentity,
+    remote_relay_control: crate::remote::RelayControl,
+    remote_connected_devices: usize,
+    pocketcomet_connected: bool,
+    shutdown_state: ShutdownState,
+    shutdown_purpose: ShutdownPurpose,
+    deferred_normal_quit: bool,
+    onboarding: Option<Entity<OnboardingTour>>,
+    newsletter_email: Entity<InputState>,
+    newsletter_visible: bool,
+    newsletter_status: NewsletterStatus,
+    newsletter_error: Option<String>,
+    newsletter_subscribed: bool,
+}
+
+impl RootView {
+    pub(crate) fn companion_context(
+        &self,
+    ) -> (
+        Entity<ProjectList>,
+        Entity<Workspace>,
+        Entity<AgentRecords>,
+        Entity<AgentChatState>,
+        Entity<VoiceState>,
+        Entity<CenterArea>,
+    ) {
+        (
+            self.project_list.clone(),
+            self.workspace.clone(),
+            self.agents.clone(),
+            self.agent_chats.clone(),
+            self.voice.clone(),
+            self.center.clone(),
+        )
+    }
+
+    fn open_quick_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.quick_ask_open {
+            // A fresh open follows the active project, like the old modal
+            // launch did. An in-flight or restored conversation is kept: the
+            // side chat is persistent, and New in its header starts over.
+            let start_fresh = {
+                let state = self.quick_ask.read(cx);
+                state.session().is_empty()
+                    && state.pending_question().is_none()
+                    && state.phase() == QuickAskPhase::Idle
+                    && state.error().is_none()
+            };
+            if start_fresh {
+                self.quick_ask
+                    .update(cx, |state, cx| state.begin_session(cx));
+            }
+            self.quick_ask_open = true;
+        }
+        // Focus after the panel has mounted; an originating button must not
+        // reclaim focus at the end of the same event cycle.
+        let question_focus = self.quick_ask_panel.read(cx).input_focus_handle(cx);
+        window.on_next_frame(move |window, _| {
+            question_focus.focus(window);
+        });
+        cx.notify();
+    }
+
+    fn toggle_quick_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_ask_open {
+            self.quick_ask_open = false;
+            self.root_focus.focus(window);
+            cx.notify();
+        } else {
+            self.open_quick_ask(window, cx);
+        }
+    }
+
+    pub fn view(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        let workspace = cx.new(|_| Workspace::load());
+        let startup_capability_cwd = {
+            let workspace = workspace.read(cx);
+            workspace
+                .active_project()
+                .or_else(|| workspace.projects.first())
+                .map(|project| project.path.display().to_string())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .display()
+                        .to_string()
+                })
+        };
+        cx.spawn(async move |cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    AgentCapabilityCacheFile::refresh_from_runtime(&startup_capability_cwd)
+                })
+                .await;
+            if let Err(error) = result {
+                eprintln!("failed to refresh agent capabilities on startup: {error}");
+            }
+        })
+        .detach();
+        let (theme, theme_name) = {
+            let workspace = workspace.read(cx);
+            (workspace.theme, workspace.theme_name.clone())
+        };
+        apply_configured_theme(theme, theme_name.as_deref(), Some(window), cx);
+
+        let terminals = cx.new(|_| TerminalManager::new());
+        let agents = cx.new(|_| AgentRecords::load());
+        let agent_chats = cx.new(|_| AgentChatState::new());
+        if ide_core::delegation::enabled() {
+            crate::state::delegation::DelegationCoordinator::start(
+                agents.clone(),
+                agent_chats.clone(),
+                terminals.clone(),
+                cx,
+            );
+        }
+        let agent_activity =
+            AgentActivityCache::view(agents.clone(), agent_chats.clone(), terminals.clone(), cx);
+        let doc_assistants = cx.new(|_| DocAssistantState::load());
+        let git_states = cx.new(|cx| GitStates::new(workspace.clone(), cx));
+        let docs = DocsState::view(workspace.clone(), cx);
+        let designs = DesignsState::view(workspace.clone(), cx);
+        let tasks = TasksState::view(workspace.clone(), cx);
+        let services = ServicesState::view(workspace.clone(), cx);
+        let orbit = OrbitState::view(workspace.clone(), cx);
+        let voice = VoiceState::view(workspace.clone(), agents.clone(), agent_chats.clone(), cx);
+        let quick_ask = cx.new(|cx| QuickAskState::load(workspace.clone(), cx));
+        let app_update = cx.new(|_| AppUpdateController::new());
+        let center = CenterArea::view(
+            workspace.clone(),
+            terminals.clone(),
+            agents.clone(),
+            agent_chats.clone(),
+            agent_activity.clone(),
+            git_states.clone(),
+            docs.clone(),
+            designs.clone(),
+            tasks.clone(),
+            services.clone(),
+            orbit.clone(),
+            doc_assistants,
+            voice.clone(),
+            quick_ask.clone(),
+            window,
+            cx,
+        );
+        let open_voice_chat = center.read(cx).open_voice_chat_id(cx);
+        voice.update(cx, |voice, cx| {
+            voice.set_open_chat_target(open_voice_chat, cx)
+        });
+        center.update(cx, |center, cx| center.refresh_open_code_models(false, cx));
+        let remote_server = crate::remote::start_remote_server();
+        let remote_address = remote_server.address;
+        let remote_events = remote_server.events.clone();
+        let remote_presence = remote_server.presence;
+        let remote_relay_states = remote_server.relay_states;
+        let remote_auth = remote_server.auth.clone();
+        let remote_relay_identity = remote_server.relay_identity.clone();
+        let remote_relay_control = remote_server.relay_control.clone();
+        let remote_commands = remote_server.commands;
+        let remote_center = center.downgrade();
+        cx.spawn(async move |cx| {
+            while let Ok(command) = remote_commands.recv().await {
+                if remote_center
+                    .update(cx, |center, cx| center.handle_remote_command(command, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        eprintln!("Choro Remote host API configured at http://{remote_address}");
+        let project_list = ProjectList::view(
+            workspace.clone(),
+            git_states.clone(),
+            terminals.clone(),
+            agent_chats.clone(),
+            agents.clone(),
+            agent_activity.clone(),
+            center.downgrade(),
+            cx,
+        );
+        let agents_panel = AgentsPanel::view(
+            workspace.clone(),
+            terminals.clone(),
+            agent_chats.clone(),
+            agents.clone(),
+            agent_activity.clone(),
+            center.downgrade(),
+            cx,
+        );
+        let title_preset_bar = PresetBar::view(
+            workspace.clone(),
+            terminals.clone(),
+            center.downgrade(),
+            true,
+            true,
+            cx,
+        );
+        let git_panel = GitPanel::view(
+            workspace.clone(),
+            git_states.clone(),
+            agents.clone(),
+            center.downgrade(),
+            window,
+            cx,
+        );
+        let file_tree = FileTree::view(
+            workspace.clone(),
+            git_states.clone(),
+            agents.clone(),
+            center.clone(),
+            cx,
+        );
+        let db_panel = DbPanel::view(workspace.clone(), center.downgrade(), cx);
+        let docs_panel = DocsPanel::view(workspace.clone(), docs.clone(), center.downgrade(), cx);
+        let designs_panel =
+            DesignsPanel::view(workspace.clone(), designs, center.downgrade(), window, cx);
+        let tasks_panel = crate::ui::tasks_panel::TasksPanel::view(
+            workspace.clone(),
+            tasks.clone(),
+            center.downgrade(),
+            cx,
+        );
+        let services_panel =
+            crate::ui::services_panel::ServicesPanel::view(workspace.clone(), orbit.clone(), cx);
+        let right_panel = RightPanel::view(
+            git_panel,
+            file_tree,
+            agents_panel,
+            db_panel,
+            docs_panel,
+            designs_panel,
+            tasks_panel,
+            services_panel,
+            center.clone(),
+            cx,
+        );
+        let onboarding = if crate::onboarding::enabled() {
+            let playground_root = crate::onboarding::playground_root();
+            workspace
+                .read(cx)
+                .projects
+                .iter()
+                .find(|project| project.path == playground_root)
+                .map(|project| project.id)
+                .map(|project_id| {
+                    let tour = OnboardingTour::view(
+                        workspace.clone(),
+                        project_id,
+                        center.clone(),
+                        right_panel.clone(),
+                        agent_chats.clone(),
+                        cx,
+                    );
+                    crate::ui::onboarding::install_global(tour.clone(), cx);
+                    tour
+                })
+        } else {
+            None
+        };
+        let root_focus = cx.focus_handle();
+        root_focus.focus(window);
+        let title_branch_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search branches"));
+        let newsletter_email =
+            cx.new(|cx| InputState::new(window, cx).placeholder("you@example.com"));
+        let quick_ask_panel = QuickAskPanel::view(
+            workspace.clone(),
+            quick_ask.clone(),
+            center.clone(),
+            window,
+            cx,
+        );
+
+        let view = cx.new(|cx| {
+            let workspace_remote_events = remote_events.clone();
+            cx.observe(&workspace, move |_: &mut Self, _, cx| {
+                let _ = workspace_remote_events.send(RemoteEvent::HostSnapshotChanged);
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&center, |this: &mut Self, _, cx| {
+                let open_voice_chat = this.center.read(cx).open_voice_chat_id(cx);
+                this.voice.update(cx, |voice, cx| {
+                    voice.set_open_chat_target(open_voice_chat, cx)
+                });
+                cx.notify();
+            })
+            .detach();
+            cx.observe(&voice, |_: &mut Self, _, cx| cx.notify())
+                .detach();
+            if let Some(tour) = onboarding.as_ref() {
+                cx.observe(tour, |_: &mut Self, _, cx| cx.notify())
+                    .detach();
+            }
+            cx.observe(&app_update, |this: &mut Self, updates, cx| {
+                if this.shutdown_purpose == ShutdownPurpose::InstallUpdate
+                    && matches!(
+                        this.shutdown_state,
+                        ShutdownState::Ready | ShutdownState::Failed(_)
+                    )
+                    && matches!(updates.read(cx).phase(), AppUpdatePhase::Failed { .. })
+                {
+                    // Sparkle can still reject an install after Choro has safely
+                    // stopped its processes. Return to the app so the updater's
+                    // actionable error card is visible instead of trapping the
+                    // user behind the completed shutdown overlay.
+                    this.shutdown_state = ShutdownState::Idle;
+                    this.shutdown_purpose = ShutdownPurpose::Quit;
+                }
+                if this.deferred_normal_quit
+                    && matches!(this.shutdown_state, ShutdownState::Idle)
+                    && updates.read(cx).normal_quit_can_resume()
+                {
+                    this.deferred_normal_quit = false;
+                    this.shutdown_purpose = ShutdownPurpose::Quit;
+                    this.begin_shutdown(cx);
+                }
+                cx.notify();
+            })
+            .detach();
+            cx.subscribe(
+                &voice,
+                |this: &mut Self, _, event: &VoiceEvent, cx| match event {
+                    VoiceEvent::Decision(decision) => this.center.update(cx, |center, cx| {
+                        center.apply_voice_decision(decision.clone(), cx)
+                    }),
+                    VoiceEvent::CreatePlan { project_id, prompt } => {
+                        this.center.update(cx, |center, cx| {
+                            center.queue_voice_project_plan(*project_id, prompt.clone(), cx)
+                        })
+                    }
+                    VoiceEvent::CreateAgent {
+                        project_id,
+                        prompt,
+                        send,
+                    } => this.center.update(cx, |center, cx| {
+                        center.queue_voice_agent(*project_id, prompt.clone(), *send, cx)
+                    }),
+                    VoiceEvent::Dictation {
+                        target,
+                        text,
+                        insert_at_cursor,
+                    } => this.center.update(cx, |center, cx| {
+                        center.queue_voice_dictation(*target, text.clone(), *insert_at_cursor, cx)
+                    }),
+                    VoiceEvent::SendDraft {
+                        target,
+                        fallback_text,
+                    } => this.center.update(cx, |center, cx| {
+                        center.queue_voice_draft_send(*target, fallback_text.clone(), cx)
+                    }),
+                    VoiceEvent::DiscardDraft { agent_id, text } => {
+                        this.center.update(cx, |center, cx| {
+                            center.queue_voice_draft_discard(*agent_id, text.clone(), cx)
+                        })
+                    }
+                },
+            )
+            .detach();
+            cx.observe(&git_states, |_: &mut Self, _, cx| cx.notify())
+                .detach();
+            cx.observe(&right_panel, |_: &mut Self, _, cx| cx.notify())
+                .detach();
+            let chat_remote_events = remote_events.clone();
+            cx.subscribe(&agent_chats, move |this: &mut Self, _, event, cx| {
+                let crate::state::agent_chat::AgentChatEvent::SessionChanged(change) = event else { return; };
+                let _ = chat_remote_events.send(RemoteEvent::AgentChanged { agent_id: change.agent_id.to_string() });
+                if change.categories.navigation || change.categories.identity {
+                    let _ = chat_remote_events.send(RemoteEvent::HostSnapshotChanged);
+                    this.update_dock_badge(cx);
+                    cx.notify();
+                }
+            })
+            .detach();
+            // Transcript updates and read acknowledgements also change sidebar
+            // attention, even when the provider runtime does not change.
+            let activity_remote_events = remote_events.clone();
+            cx.observe(&agent_activity, move |_: &mut Self, _, _| {
+                let _ = activity_remote_events.send(RemoteEvent::HostSnapshotChanged);
+            }).detach();
+            let attention_remote_events = remote_events.clone();
+            cx.observe(&terminals, move |_: &mut Self, _, _| {
+                let _ = attention_remote_events.send(RemoteEvent::HostSnapshotChanged);
+            }).detach();
+            let agent_remote_events = remote_events.clone();
+            cx.observe(&agents, move |_: &mut Self, _, cx| {
+                let _ = agent_remote_events.send(RemoteEvent::HostSnapshotChanged);
+                cx.notify();
+            })
+            .detach();
+            cx.subscribe(&title_branch_query, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+            cx.subscribe(&newsletter_email, |this: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    if this.newsletter_status == NewsletterStatus::Error {
+                        this.newsletter_status = NewsletterStatus::Idle;
+                    }
+                    cx.notify();
+                }
+            })
+            .detach();
+            // The docked Quick Ask panel cannot close itself; the root layout
+            // owns its visibility and returns keyboard focus to the workspace.
+            cx.subscribe_in(
+                &quick_ask_panel,
+                window,
+                |this: &mut Self, _, _: &QuickAskPanelEvent, window, cx| {
+                    this.quick_ask_open = false;
+                    this.root_focus.focus(window);
+                    cx.notify();
+                },
+            )
+            .detach();
+            // Views that cannot reach the panel directly (Ask History in the
+            // center) request it through the shared Quick Ask state.
+            cx.subscribe_in(
+                &quick_ask,
+                window,
+                |this: &mut Self, _, event: &QuickAskEvent, window, cx| {
+                    if matches!(event, QuickAskEvent::PanelOpenRequested) {
+                        this.open_quick_ask(window, cx);
+                    }
+                },
+            )
+            .detach();
+            Self {
+                workspace,
+                terminals,
+                tasks,
+                docs,
+                orbit,
+                git_states,
+                agents,
+                agent_chats,
+                voice,
+                quick_ask,
+                quick_ask_panel,
+                quick_ask_open: false,
+                app_update: app_update.clone(),
+                project_list,
+                center,
+                title_preset_bar,
+                right_panel,
+                root_focus,
+                show_left: true,
+                show_right: false,
+                right_sidebar_state: RightSidebarState::default(),
+                focus_mode: FocusModeState::default(),
+                sidebar_resize: None,
+                title_branch_hovered: false,
+                title_branch_bounds: None,
+                title_branch_query,
+                title_branch_expanded: false,
+                voice_control_bounds: None,
+                voice_source_popover_visible: false,
+                voice_source_hover_generation: 0,
+                voice_push_to_talk_binding: None,
+                settings_view: None,
+                remote_auth,
+                remote_relay_identity,
+                remote_relay_control,
+                remote_connected_devices: 0,
+                pocketcomet_connected: false,
+                shutdown_state: ShutdownState::Idle,
+                shutdown_purpose: ShutdownPurpose::Quit,
+                deferred_normal_quit: false,
+                onboarding,
+                newsletter_email,
+                newsletter_visible: crate::newsletter::should_offer(),
+                newsletter_status: NewsletterStatus::Idle,
+                newsletter_error: None,
+                newsletter_subscribed: crate::newsletter::is_subscribed(),
+            }
+        });
+        app_update.update(cx, |updates, cx| updates.start(cx));
+        view.update(cx, |this, cx| this.update_dock_badge(cx));
+
+        let pocketcomet_root = view.downgrade();
+        cx.spawn(async move |cx| loop {
+            if pocketcomet_root
+                .update(cx, |this, cx| {
+                    let connected = this.remote_auth.pocketcomet_connected()
+                        && chrome::pocketcomet_is_running();
+                    if this.pocketcomet_connected != connected {
+                        this.pocketcomet_connected = connected;
+                        cx.notify();
+                    }
+                })
+                .is_err()
+            {
+                break;
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+        })
+        .detach();
+
+        let remote_presence_root = view.downgrade();
+        cx.spawn(async move |cx| {
+            while let Ok(connected_devices) = remote_presence.recv().await {
+                if remote_presence_root
+                    .update(cx, |this, cx| {
+                        this.remote_connected_devices = connected_devices;
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        let remote_state_root = view.downgrade();
+        cx.spawn(async move |cx| {
+            while remote_relay_states.recv().await.is_ok() {
+                if remote_state_root
+                    .update(cx, |this, cx| {
+                        if let Some(settings) = this.settings_view.clone() {
+                            settings.update(cx, |_, cx| cx.notify());
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        let root = view.downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            root.update(cx, |this, cx| this.handle_close_request(cx))
+                .unwrap_or(true)
+        });
+
+        // Catch up on external changes (commits, checkouts) when the app regains focus.
+        view.update(cx, |_, cx| {
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                if window.is_window_active() {
+                    this.git_states
+                        .update(cx, |states, cx| states.refresh_all(cx));
+                    this.center
+                        .update(cx, |center, cx| center.refresh_open_code_models(false, cx));
+                    if window.focused(cx).is_none() {
+                        this.root_focus.focus(window);
+                    }
+                }
+            })
+            .detach();
+        });
+
+        // Headless debug: verify the dialog layer after the window is fully
+        // set up (root view installed), without needing a click.
+        if std::env::var("CHORO_DEBUG_DIALOG").is_ok()
+            || std::env::var("MYIDE_DEBUG_DIALOG").is_ok()
+        {
+            let handle = window.window_handle();
+            let workspace = view.read(cx).workspace.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                handle
+                    .update(cx, |_, window, cx| {
+                        crate::ui::preset_editor::PresetEditor::open(workspace, window, cx);
+                        eprintln!("debug: dialog active = {}", window.has_active_dialog(cx));
+                    })
+                    .ok();
+            })
+            .detach();
+        }
+
+        view
+    }
+}
+
+impl RootView {
+    fn configured_push_to_talk_binding(&self, cx: &App) -> Option<Keystroke> {
+        let binding = {
+            let workspace = self.workspace.read(cx);
+            crate::keymap::shortcuts()
+                .into_iter()
+                .find(|shortcut| shortcut.id == "toggle_voice_dictation")
+                .and_then(|shortcut| shortcut.keystroke(&workspace.keymap).map(str::to_string))
+        }?;
+        Keystroke::parse(&binding).ok()
+    }
+
+    fn reset_voice_shortcut_gesture(&mut self) {
+        self.voice_push_to_talk_binding = None;
+    }
+
+    fn begin_voice_shortcut(&mut self, cx: &mut Context<Self>) {
+        if self.voice.read(cx).push_to_talk_held() {
+            return;
+        }
+        let Some(target) = self.center.read(cx).selected_voice_dictation_target(cx) else {
+            self.reset_voice_shortcut_gesture();
+            self.voice
+                .update(cx, |voice, cx| voice.report_missing_dictation_target(cx));
+            return;
+        };
+
+        self.voice_push_to_talk_binding = self.configured_push_to_talk_binding(cx);
+        self.voice
+            .update(cx, |voice, cx| voice.begin_push_to_talk_for(target, cx));
+    }
+
+    fn toggle_hands_free_dictation(&mut self, cx: &mut Context<Self>) {
+        self.reset_voice_shortcut_gesture();
+        if self.voice.read(cx).continuous_dictation_active() {
+            self.voice.update(cx, |voice, cx| voice.stop(cx));
+            return;
+        }
+        let Some(target) = self.center.read(cx).selected_voice_dictation_target(cx) else {
+            self.voice
+                .update(cx, |voice, cx| voice.report_missing_dictation_target(cx));
+            return;
+        };
+        self.voice.update(cx, |voice, cx| {
+            voice.begin_continuous_dictation_for(target, cx)
+        });
+    }
+
+    fn finish_voice_push_to_talk(&mut self, cx: &mut Context<Self>) {
+        self.voice_push_to_talk_binding = None;
+        self.voice
+            .update(cx, |voice, cx| voice.finish_push_to_talk(cx));
+        // CenterArea intentionally does not observe every microphone-level
+        // update. Refresh it once at release so the target composer can show
+        // the comparatively slow transcription phase without repainting the
+        // full conversation for every live meter sample.
+        self.center.update(cx, |_, cx| cx.notify());
+    }
+
+    fn push_to_talk_key_released(&self, event: &KeyUpEvent, cx: &App) -> bool {
+        self.voice.read(cx).push_to_talk_held()
+            && self
+                .voice_push_to_talk_binding
+                .as_ref()
+                .is_some_and(|binding| binding.key.eq_ignore_ascii_case(&event.keystroke.key))
+    }
+
+    fn voice_shortcut_modifier_released(&self, event: &ModifiersChangedEvent) -> bool {
+        self.voice_push_to_talk_binding
+            .as_ref()
+            .is_some_and(|binding| !modifiers_include(event.modifiers, binding.modifiers))
+    }
+
+    fn set_voice_source_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        self.voice_source_hover_generation = self.voice_source_hover_generation.wrapping_add(1);
+        let generation = self.voice_source_hover_generation;
+        if hovered {
+            if self.voice.read(cx).control_active() {
+                self.voice_source_popover_visible = true;
+                cx.notify();
+            }
+            return;
+        }
+
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(180))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.voice_source_hover_generation == generation {
+                    this.voice_source_popover_visible = false;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_voice_source_popover(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.voice_source_popover_visible {
+            return None;
+        }
+
+        let voice = self.voice.read(cx);
+        if !voice.control_active() {
+            return None;
+        }
+        let anchor = self.voice_control_bounds?;
+        let input_devices = voice.input_devices().to_vec();
+        let selected_input_device = voice.selected_input_device().map(str::to_string);
+        let default_input_device = input_devices
+            .iter()
+            .find(|device| device.is_default)
+            .map(|device| device.name.clone());
+        let default_label = default_input_device
+            .as_ref()
+            .map(|name| format!("System Default — {name}"))
+            .unwrap_or_else(|| "System Default".to_string());
+        let voice_for_default = self.voice.clone();
+        let voice_for_refresh = self.voice.clone();
+        let panel_width = px(304.);
+        let preferred_left = anchor.origin.x + anchor.size.width - panel_width;
+        let left = if preferred_left < px(8.) {
+            px(8.)
+        } else {
+            preferred_left
+        };
+
+        Some(
+            v_flex()
+                .id("voice-source-popover")
+                .absolute()
+                .left(left)
+                .top(anchor.origin.y + anchor.size.height + px(3.))
+                .w(panel_width)
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .p_2()
+                .gap_1()
+                .rounded(crate::ui::design::r_md())
+                .border_1()
+                .border_color(crate::ui::design::line(cx).opacity(0.42))
+                .bg(crate::ui::design::focus(cx))
+                .shadow(crate::ui::design::menu_shadow())
+                .occlude()
+                .on_hover(cx.listener(|this, hovered, _, cx| {
+                    this.set_voice_source_hovered(*hovered, cx);
+                }))
+                .child(
+                    h_flex()
+                        .h(px(28.))
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .child(
+                            svg()
+                                .path("icons/microphone.svg")
+                                .size(px(14.))
+                                .text_color(crate::ui::design::accent(cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(crate::ui::design::text_body())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(crate::ui::design::t1(cx))
+                                .child("Microphone source"),
+                        )
+                        .child(
+                            style::refresh_icon_button("refresh-voice-sources", cx)
+                                .tooltip("Refresh microphones")
+                                .on_click(move |_, _, cx| {
+                                    voice_for_refresh
+                                        .update(cx, |voice, cx| voice.refresh_input_devices(cx));
+                                }),
+                        ),
+                )
+                .child(
+                    style::popover_selection_button(
+                        "voice-source-system-default",
+                        default_label,
+                        selected_input_device.is_none(),
+                        cx,
+                    )
+                    .on_click(move |_, _, cx| {
+                        voice_for_default
+                            .update(cx, |voice, cx| voice.select_input_device(None, cx));
+                    }),
+                )
+                .when(input_devices.is_empty(), |panel| {
+                    panel.child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child("No other microphones detected"),
+                    )
+                })
+                .children(
+                    input_devices
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, device)| {
+                            let selected =
+                                selected_input_device.as_deref() == Some(device.name.as_str());
+                            let option_label = if device.is_default {
+                                format!("{} (current default)", device.name)
+                            } else {
+                                device.name.clone()
+                            };
+                            let selected_name = device.name;
+                            let voice = self.voice.clone();
+                            style::popover_selection_button(
+                                ("voice-source-device", index),
+                                option_label,
+                                selected,
+                                cx,
+                            )
+                            .on_click(move |_, _, cx| {
+                                voice.update(cx, |voice, cx| {
+                                    voice.select_input_device(Some(selected_name.clone()), cx)
+                                });
+                            })
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+fn modifiers_include(actual: Modifiers, required: Modifiers) -> bool {
+    (!required.control || actual.control)
+        && (!required.alt || actual.alt)
+        && (!required.shift || actual.shift)
+        && (!required.platform || actual.platform)
+        && (!required.function || actual.function)
+}
+
+impl Render for RootView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.project_list.update(cx, |list, cx| list.set_visible(self.show_left, cx));
+        let sidebar_style = self.workspace.read(cx).sidebar_style;
+        let separator_style = self.workspace.read(cx).separator_style;
+        let (left_size, right_size) = {
+            let panels = &self.workspace.read(cx).panels;
+            (
+                px(panels.left),
+                px(panels.right.max(crate::ui::design::RIGHT_SIDEBAR_MIN_W)),
+            )
+        };
+        let (
+            voice_active,
+            voice_dictation_active,
+            continuous_dictation_active,
+            voice_phase,
+            voice_level,
+        ) = {
+            let voice = self.voice.read(cx);
+            (
+                voice.control_active(),
+                voice.dictation_active(),
+                voice.continuous_dictation_active(),
+                voice.phase().clone(),
+                voice.level(),
+            )
+        };
+        if !voice_active {
+            self.voice_source_popover_visible = false;
+        }
+        let voice_shortcut = crate::keymap::shortcut_display(
+            "toggle_voice_dictation",
+            &self.workspace.read(cx).keymap,
+        )
+        .unwrap_or_else(|| "Unassigned".to_string());
+        let hands_off_shortcut = crate::keymap::shortcut_display(
+            "toggle_hands_free_dictation",
+            &self.workspace.read(cx).keymap,
+        )
+        .unwrap_or_else(|| "Unassigned".to_string());
+        let assistant_shortcut = crate::keymap::shortcut_display(
+            "toggle_voice_director",
+            &self.workspace.read(cx).keymap,
+        )
+        .unwrap_or_else(|| "Unassigned".to_string());
+        let voice_tooltip = format!(
+            "Hold {voice_shortcut} to dictate · {hands_off_shortcut} hands off · {assistant_shortcut} Assistant"
+        );
+        let voice_capsule_assistant = voice_active && !voice_dictation_active;
+        let voice_transcribing =
+            voice_dictation_active && matches!(&voice_phase, VoicePhase::Transcribing);
+        let voice_capsule_mode_chip = if voice_transcribing {
+            Some("Transcribing")
+        } else if voice_capsule_assistant {
+            Some("Assistant")
+        } else if continuous_dictation_active {
+            Some("Hands off")
+        } else {
+            None
+        };
+        let voice_meter_level = if matches!(&voice_phase, VoicePhase::Listening) {
+            voice_level.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let voice_root = cx.entity().downgrade();
+
+        // Overlay layers (dialogs, sheets, notifications) are NOT rendered by
+        // gpui_component::Root automatically — the app root must include them.
+        let sheet_layer = gpui_component::Root::render_sheet_layer(window, cx);
+        let dialog_layer = gpui_component::Root::render_dialog_layer(window, cx);
+        let notification_layer = gpui_component::Root::render_notification_layer(window, cx);
+        let settings_screen = self
+            .settings_view
+            .clone()
+            .map(|view| self.render_settings_screen(view, cx));
+        let activity = self.center.read(cx).activity();
+        let quick_ask_history_open = self.center.read(cx).is_quick_ask_history_view();
+        self.show_right = !self.focus_mode.is_active()
+            && self
+                .right_sidebar_state
+                .visible(self.workspace.read(cx).active, activity);
+        let has_context_panel = !quick_ask_history_open
+            && activity != ProjectActivity::Design
+            && activity != ProjectActivity::PocketComet;
+        let show_context_panel = self.show_right && has_context_panel;
+
+        // Project activity navigation is a single product treatment: a
+        // full-height rail to the right of the Git panel. Keeping it fixed
+        // makes the workspace predictable and leaves the title bar for project
+        // identity, scripts, and Run.
+        let focus_mode_active = self.focus_mode.is_active();
+        let nav_rail_right = (!focus_mode_active).then(|| {
+            self.nav_rail(true, !show_context_panel, cx)
+                .into_any_element()
+        });
+        let scripts_center = false;
+        let remote_connected = self.remote_connected_devices > 0;
+
+        // The right-side pieces (resize handle + panel + rail). In Right-rail
+        // mode they lift out of the body into a full-height column beside the
+        // header (`right_column`); in every other layout they stay inside the
+        // body (`body_right`).
+        let is_rail_right = true;
+        let right_group = h_flex()
+            .relative()
+            .flex_none()
+            .h_full()
+            .child(
+                div()
+                    .relative()
+                    .when(show_context_panel, |layout| {
+                        layout
+                            .w(right_size)
+                            .h_full()
+                            .flex_none()
+                            // Same surface treatment as the left sidebar so
+                            // both panels share one lighting story.
+                            .bg(crate::ui::design::sidebar_background(sidebar_style, cx))
+                            .child(
+                                v_flex()
+                                    .size_full()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .child(self.right_panel.clone()),
+                                    )
+                                    // In right-rail mode Settings lives at the bottom
+                                    // of the rail; other layouts keep it here.
+                                    .when(!is_rail_right, |col| {
+                                        col.child(self.settings_footer(cx))
+                                    }),
+                            )
+                            .child(self.resize_handle(SidebarResizeSide::Right, cx))
+                    })
+                    .child(crate::ui::onboarding::target_marker(
+                        crate::ui::onboarding::SpotlightTarget::GitPanel,
+                        cx,
+                    ))
+                    .when(!show_context_panel, |layout| layout.hidden()),
+            )
+            .children(nav_rail_right)
+            .child(crate::ui::onboarding::target_marker(
+                crate::ui::onboarding::SpotlightTarget::ProjectTools,
+                cx,
+            ))
+            .into_any_element();
+        let (body_right, right_column) = if is_rail_right {
+            (None, Some(right_group))
+        } else {
+            (Some(right_group), None)
+        };
+
+        // Quick Ask floats as an anchored card over the workspace
+        // (Intercom-style): it never reflows the layout or competes with the
+        // contextual side panels, and clears the right nav rail when visible.
+        let quick_ask_overlay = self.quick_ask_open.then(|| {
+            let rail_clearance = if focus_mode_active { 16. } else { 66. + 12. };
+            div()
+                .absolute()
+                .right(px(rail_clearance))
+                .bottom(px(16.))
+                .w(px(400.))
+                .h(px(600.))
+                .max_h(gpui::relative(0.85))
+                .child(self.quick_ask_panel.clone())
+                .into_any_element()
+        });
+
+        // The header spans only the center column now — the sidebar runs
+        // full-height beside it. When the sidebar is open the macOS traffic
+        // lights sit over the sidebar's top zone, so the header drops its
+        // window-control padding; when it's collapsed the header reaches the
+        // window edge, keeps that padding, and shows a reopen toggle.
+        // A plain, full-width header (not gpui-component's TitleBar) so it fills
+        // the center edge-to-edge and we fully control the traffic-light padding.
+        // It's still a window drag region.
+        let show_left = self.show_left;
+        let header_bar = h_flex()
+            .id("center-header")
+            .w_full()
+            .h(crate::ui::design::header_h())
+            .flex_none()
+            .items_center()
+            .px(crate::ui::design::header_edge_inset_x())
+            // Same fill as the middle/center screen (not the sidebars). The
+            // divider underneath honors the user's separator preference.
+            .bg(crate::ui::design::base(cx))
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .left(px(0.))
+                    .right(px(0.))
+                    .bottom(px(0.))
+                    .h(px(1.))
+                    .child(style::separator_hline(separator_style, cx)),
+            )
+            .window_control_area(gpui::WindowControlArea::Drag)
+            .when(!show_left, |bar| bar.pl(px(76.)))
+            .when(!show_left && !focus_mode_active, |bar| {
+                bar.child(style::left_sidebar_toggle(false, cx))
+            })
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .pl_1()
+                    .pr_2()
+                    .gap_1p5()
+                    .items_center()
+                    .child(self.project_branch_label(cx)),
+            )
+            .child(
+                div()
+                    .id("project-script-toolbar-scroll")
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .overflow_x_scroll()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .h_full()
+                            .items_center()
+                            .when(scripts_center, |row| row.justify_center())
+                            .when(!scripts_center, |row| row.justify_end())
+                            .child(
+                                h_flex()
+                                    .h_full()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(self.title_preset_bar.clone())
+                                    .child(
+                                        div()
+                                            .id("voice-control-anchor")
+                                            .flex_none()
+                                            .relative()
+                                            .on_hover(cx.listener(move |this, hovered, _, cx| {
+                                                if voice_active {
+                                                    this.set_voice_source_hovered(*hovered, cx);
+                                                }
+                                            }))
+                                            .child(
+                                                style::header_voice_capsule_button(
+                                                    "toggle-hands-free-dictation",
+                                                    voice_active,
+                                                    voice_capsule_mode_chip.is_some(),
+                                                    h_flex()
+                                                        .size_full()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .gap_1p5()
+                                                        .child(
+                                                            svg()
+                                                                .path("icons/microphone.svg")
+                                                                .size(px(15.))
+                                                                .text_color(if voice_active {
+                                                                    crate::ui::design::accent(cx)
+                                                                } else {
+                                                                    crate::ui::design::t3(cx)
+                                                                }),
+                                                        )
+                                                        .when(
+                                                            voice_active && !voice_transcribing,
+                                                            |content| {
+                                                            const BAR_WEIGHTS: [f32; 7] = [
+                                                                0.48, 0.78, 1.0, 0.66, 0.9, 0.72,
+                                                                0.44,
+                                                            ];
+                                                            content.child(
+                                                                h_flex()
+                                                                    .h(px(16.))
+                                                                    .items_center()
+                                                                    .gap_0p5()
+                                                                    .children(BAR_WEIGHTS.into_iter().map(
+                                                                        |weight| {
+                                                                            let amplitude =
+                                                                                voice_meter_level
+                                                                                    * weight;
+                                                                            div()
+                                                                                .w(px(2.))
+                                                                                .h(px(
+                                                                                    3.0 + amplitude
+                                                                                        * 11.0,
+                                                                                ))
+                                                                                .rounded_full()
+                                                                                .bg(
+                                                                                    crate::ui::design::accent(cx)
+                                                                                        .opacity(
+                                                                                            0.34
+                                                                                                + amplitude
+                                                                                                    * 0.66,
+                                                                                        ),
+                                                                                )
+                                                                        },
+                                                                    )),
+                                                            )
+                                                            },
+                                                        )
+                                                        .when(voice_transcribing, |content| {
+                                                            content.child(
+                                                                gpui_component::spinner::Spinner::new()
+                                                                    .xsmall(),
+                                                            )
+                                                        })
+                                                        .when_some(
+                                                            voice_capsule_mode_chip,
+                                                            |content, mode| {
+                                                                content.child(
+                                                                    style::voice_mode_chip(mode, cx),
+                                                                )
+                                                            },
+                                                        ),
+                                                    cx,
+                                                )
+                                                .when(!voice_active, |button| {
+                                                    button.tooltip(voice_tooltip.clone())
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.voice_source_hover_generation = this
+                                                        .voice_source_hover_generation
+                                                        .wrapping_add(1);
+                                                    this.voice_source_popover_visible = false;
+                                                    this.toggle_hands_free_dictation(cx);
+                                                })),
+                                            )
+                                            .child(
+                                                gpui::canvas(
+                                                    move |bounds, _, cx| {
+                                                        voice_root
+                                                            .update(cx, |this, _| {
+                                                                this.voice_control_bounds =
+                                                                    Some(bounds);
+                                                            })
+                                                            .ok();
+                                                    },
+                                                    |_, _, _, _| {},
+                                                )
+                                                .absolute()
+                                                .size_full(),
+                                            ),
+                                    )
+                                    .when(remote_connected, |row| {
+                                        row.child(
+                                            div()
+                                                .id("header-remote-status")
+                                                .size(px(28.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(crate::ui::design::r_xs())
+                                                .cursor_pointer()
+                                                .hover(|chip| {
+                                                    chip.bg(crate::ui::design::surface_2(cx)
+                                                        .opacity(0.84))
+                                                })
+                                                .child(
+                                                    Icon::empty()
+                                                        .path("icons/phone.svg")
+                                                        .size(px(16.))
+                                                        .text_color(crate::ui::design::sage(cx)),
+                                                )
+                                                .tooltip(move |window, cx| {
+                                                    gpui_component::tooltip::Tooltip::new(
+                                                        "iPhone connected — open Remote settings",
+                                                    )
+                                                    .build(window, cx)
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_remote_settings(window, cx);
+                                                })),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
+            .when(!show_context_panel && has_context_panel && !focus_mode_active, |bar| {
+                bar.pr(px(14.))
+                    .child(
+                        div().flex_none().mx(px(12.)).w(px(1.)).h(px(16.))
+                            .bg(crate::ui::design::line(cx)),
+                    )
+                    .child(if activity == ProjectActivity::Agents {
+                        style::git_sidebar_open_button(
+                            self.right_panel.read(cx).git_change_count(cx), cx,
+                        )
+                    } else {
+                        style::right_sidebar_toggle(false, false, cx)
+                    })
+            })
+            .when(focus_mode_active, |bar| {
+                bar.child(
+                    style::header_icon_button("toggle-focus-mode", IconName::WindowMaximize, cx)
+                        .selected(true)
+                        .tooltip("Exit Focus Mode (⌘I)")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.focus_mode
+                                .toggle(&mut this.show_left, &mut this.show_right);
+                            cx.notify();
+                        })),
+                )
+            })
+            .into_any_element();
+
+        div()
+            .relative()
+            .size_full()
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, cx| {
+                if this.push_to_talk_key_released(event, cx) {
+                    this.finish_voice_push_to_talk(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &ModifiersChangedEvent, _, cx| {
+                    if this.voice_shortcut_modifier_released(event) {
+                        if this.voice.read(cx).push_to_talk_held() {
+                            this.finish_voice_push_to_talk(cx);
+                        }
+                    }
+                },
+            ))
+            // WKWebView is a native AppKit child and keeps first-responder
+            // ownership after interaction. Any click that reaches GPUI is a
+            // click back into Choro, so return keyboard ownership before the
+            // target control applies its own FocusHandle.
+            .capture_any_mouse_down(|event, window, _| {
+                if event.button == MouseButton::Left {
+                    crate::ui::center::restore_native_web_preview_focus(window);
+                }
+            })
+            .child(
+                v_flex()
+                    .size_full()
+                    .bg(crate::ui::design::base(cx))
+                    .track_focus(&self.root_focus)
+                    .when(
+                        self.center.read(cx).visible_agent_chat_search_target(cx).is_some(),
+                        |workspace| workspace.key_context(crate::ui::center::agent_chat_search::WORKSPACE_CONTEXT),
+                    )
+                    .on_action(cx.listener(|this, _: &NewTerminal, window, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.spawn_shell(window, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.close_selected(window, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &SaveFile, window, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.save_active(window, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &QuitApplication, _, cx| {
+                        this.handle_close_request(cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenFolder, _, cx| {
+                        this.workspace
+                            .update(cx, |workspace, cx| workspace.open_folder_dialog(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenProjectSearch, window, cx| {
+                        ProjectSearch::open(
+                            this.workspace.clone(),
+                            this.center.clone(),
+                            this.agents.clone(),
+                            this.docs.clone(),
+                            this.tasks.clone(),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenCommands, window, cx| {
+                        CommandPalette::open(this.root_focus.clone(), window, cx);
+                    }))
+                    // The command palette restores root_focus before dispatch,
+                    // so the chat body's listener is not on that action path.
+                    .on_action(cx.listener(|this, _: &OpenAgentChatSearch, window, cx| {
+                        if !this.center.update(cx, |center, cx| {
+                            center.open_selected_agent_chat_search(window, cx)
+                        }) {
+                            cx.propagate();
+                        }
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenContentSearch, window, cx| {
+                        ContentSearch::open(this.workspace.clone(), this.center.clone(), window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &QuickAddTask, window, cx| {
+                        crate::ui::quick_task::QuickTaskModal::open(
+                            this.workspace.clone(),
+                            this.tasks.clone(),
+                            window,
+                            cx,
+                        );
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenQuickAsk, window, cx| {
+                        this.toggle_quick_ask(window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleLeftPanel, _, cx| {
+                        this.focus_mode
+                            .exit(&mut this.show_left, &mut this.show_right);
+                        this.show_left = !this.show_left;
+                        cx.notify();
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleRightPanel, _, cx| {
+                        this.focus_mode
+                            .exit(&mut this.show_left, &mut this.show_right);
+                        let project = this.workspace.read(cx).active;
+                        let activity = this.center.read(cx).activity();
+                        let opening = !this.right_sidebar_state.visible(project, activity);
+                        this.right_sidebar_state.toggle(project, activity);
+                        if opening && activity == ProjectActivity::Agents {
+                            this.right_panel.update(cx, |panel, cx| panel.show_git(cx));
+                        }
+                        cx.notify();
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleFocusMode, _, cx| {
+                        this.focus_mode
+                            .toggle(&mut this.show_left, &mut this.show_right);
+                        cx.notify();
+                    }))
+                    .on_action(cx.listener(|this, _: &NavigateBack, _, cx| {
+                        this.center.update(cx, |center, cx| center.go_back(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &NavigateForward, _, cx| {
+                        this.center.update(cx, |center, cx| center.go_forward(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &TogglePreview, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.toggle_project_preview(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleTerminalArea, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.toggle_terminal_area(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &NextOpenItem, window, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.cycle_open_item(1, window, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &PreviousOpenItem, window, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.cycle_open_item(-1, window, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &StopCurrentAgent, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.stop_selected_agent(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleVoiceDirector, _, cx| {
+                        this.voice_source_hover_generation =
+                            this.voice_source_hover_generation.wrapping_add(1);
+                        this.voice_source_popover_visible = false;
+                        this.reset_voice_shortcut_gesture();
+                        this.voice
+                            .update(cx, |voice, cx| voice.toggle_director(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleHandsFreeDictation, _, cx| {
+                        this.toggle_hands_free_dictation(cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleVoiceDictation, _, cx| {
+                        this.begin_voice_shortcut(cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                        this.toggle_settings(window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &OpenOrbitSettings, window, cx| {
+                        this.open_orbit_settings(window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewCode, _, cx| {
+                        this.center.update(cx, |center, cx| center.show_code(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewSplit, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.set_view_mode(CenterMode::Split, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewFiles, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.set_view_mode(CenterMode::Files, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewTerminal, _, cx| {
+                        this.center.update(cx, |center, cx| {
+                            center.set_view_mode(CenterMode::Terminal, cx)
+                        });
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewAgents, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.show_agents(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewTasks, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.show_tasks(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewDb, _, cx| {
+                        this.center.update(cx, |center, cx| center.show_db(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewDocs, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.show_docs(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewDesigns, _, cx| {
+                        this.center.update(cx, |center, cx| {
+                            center.set_context_mode(crate::ui::center::ContextMode::Designs, cx)
+                        });
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewDesign, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.show_design(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ViewServices, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.show_services(cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &NewAgentChat, window, cx| {
+                        this.right_panel
+                            .update(cx, |panel, cx| panel.open_new_agent(window, cx));
+                    }))
+                    .on_action(cx.listener(|this, _: &ToggleAgentPlanMode, _, cx| {
+                        this.center
+                            .update(cx, |center, cx| center.toggle_selected_agent_plan_mode(cx));
+                    }))
+                    .child(
+                        h_flex()
+                            .size_full()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .w_full()
+                            .child(
+                                div()
+                                    .relative()
+                                    .when(self.show_left, |layout| {
+                                        layout
+                                            .w(left_size)
+                                            .h_full()
+                                            .flex_none()
+                                            // Surface honoring the user's
+                                            // sidebar-style preference: flat,
+                                            // a colorless lift, or the theme
+                                            // cast (see design::sidebar_background).
+                                            .bg(crate::ui::design::sidebar_background(
+                                                sidebar_style,
+                                                cx,
+                                            ))
+                                            .child(
+                                                v_flex()
+                                                    .size_full()
+                                                    // Top zone: clears the macOS traffic lights
+                                                    // (window top-left) and carries the center's
+                                                    // back/forward, since the header no longer sits
+                                                    // above the sidebar.
+                                                    .child(
+                                                        h_flex()
+                                                            .h(px(36.))
+                                                            .w_full()
+                                                            .px_2()
+                                                            .items_center()
+                                                            .justify_end()
+                                                            .child(self.nav_history_buttons(cx))
+                                                            .child(style::left_sidebar_toggle(true, cx)),
+                                                    )
+                                                    .child(self.left_sidebar_header(cx))
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_h(px(0.))
+                                                            .relative()
+                                                            // An inexpensive shell, cached keyed rows,
+                                                            // and a sibling animation layer.
+                                                            .child(self.project_list.clone())
+                                                            .child(self.project_list.read(cx).activity_layer.clone()),
+                                                    )
+                                                    .child(self.left_sidebar_footer(cx)),
+                                            )
+                                    })
+                                    .child(crate::ui::onboarding::target_marker(
+                                        crate::ui::onboarding::SpotlightTarget::ProjectSidebar,
+                                        cx,
+                                    ))
+                                    .when(self.show_left, |layout| {
+                                        layout.child(
+                                            self.resize_handle(SidebarResizeSide::Left, cx),
+                                        )
+                                    })
+                                    .when(!self.show_left, |layout| layout.hidden()),
+                            )
+                            .child(
+                                v_flex()
+                                    .relative()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .child(header_bar)
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h(px(0.))
+                                            .w_full()
+                                            .child(self.center.clone()),
+                                    )
+                                    .child(crate::ui::onboarding::target_marker(
+                                        crate::ui::onboarding::SpotlightTarget::WorkArea,
+                                        cx,
+                                    )),
+                            )
+                            .children(body_right)
+                            )
+                            )
+                            .children(right_column)
+                    ),
+            )
+            .children(quick_ask_overlay)
+            .when_some(self.render_title_branch_overlay(cx), |root, overlay| {
+                root.child(overlay)
+            })
+            .when_some(self.render_voice_source_popover(cx), |root, popover| {
+                root.child(popover)
+            })
+            .when_some(self.render_update_card(cx), |root, card| root.child(card))
+            .when_some(settings_screen, |root, screen| root.child(screen))
+            .children(sheet_layer)
+            .children(dialog_layer)
+            .children(notification_layer)
+            .when_some(self.render_newsletter_card(cx), |root, card| root.child(card))
+            .when_some(self.onboarding.clone(), |root, onboarding| {
+                root.child(onboarding)
+            })
+            .when_some(self.render_shutdown_overlay(cx), |root, overlay| {
+                root.child(overlay)
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_choices_are_independent_per_project_and_activity_and_reset_on_launch() {
+        let a = Some(ide_core::ProjectId::new());
+        let b = Some(ide_core::ProjectId::new());
+        let mut state = RightSidebarState::default();
+        assert!(!state.visible(a, ProjectActivity::Agents));
+        for activity in [
+            ProjectActivity::Code,
+            ProjectActivity::Tasks,
+            ProjectActivity::Docs,
+            ProjectActivity::Db,
+            ProjectActivity::Designs,
+            ProjectActivity::Services,
+        ] {
+            assert!(state.visible(a, activity));
+        }
+
+        state.toggle(a, ProjectActivity::Agents);
+        state.toggle(b, ProjectActivity::Code);
+        assert!(state.visible(a, ProjectActivity::Agents));
+        assert!(!state.visible(b, ProjectActivity::Agents));
+        assert!(state.visible(a, ProjectActivity::Code));
+        assert!(!state.visible(b, ProjectActivity::Code));
+        assert!(state.visible(b, ProjectActivity::Tasks));
+
+        state.toggle(a, ProjectActivity::Agents);
+        assert!(!state.visible(a, ProjectActivity::Agents));
+        state.toggle(a, ProjectActivity::Agents);
+        assert!(!RightSidebarState::default().visible(a, ProjectActivity::Agents));
+        assert!(RightSidebarState::default().visible(b, ProjectActivity::Code));
+    }
+
+    #[test]
+    fn focus_mode_hides_both_sidebars_and_restores_the_exact_layout() {
+        let mut focus = FocusModeState::default();
+        let mut show_left = false;
+        let mut show_right = true;
+
+        focus.toggle(&mut show_left, &mut show_right);
+        assert!(focus.is_active());
+        assert!(!show_left);
+        assert!(!show_right);
+
+        focus.toggle(&mut show_left, &mut show_right);
+        assert!(!focus.is_active());
+        assert!(!show_left);
+        assert!(show_right);
+    }
+
+    #[test]
+    fn exiting_inactive_focus_mode_does_not_change_sidebars() {
+        let mut focus = FocusModeState::default();
+        let mut show_left = true;
+        let mut show_right = false;
+
+        assert!(!focus.exit(&mut show_left, &mut show_right));
+        assert!(show_left);
+        assert!(!show_right);
+    }
+
+    #[test]
+    fn push_to_talk_finishes_when_a_required_modifier_is_released() {
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        assert!(modifiers_include(command, command));
+        assert!(!modifiers_include(Modifiers::default(), command));
+    }
+}

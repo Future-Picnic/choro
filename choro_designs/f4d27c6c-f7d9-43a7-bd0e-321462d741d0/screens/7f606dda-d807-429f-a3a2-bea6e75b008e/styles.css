@@ -1,0 +1,1 @@
+body{margin:0;background:var(--color-background);color:var(--color-text);font-family:var(--font-body);font-size:var(--font-size-body)}main{padding:var(--space-large);max-width:960px;margin:auto}p{color:var(--color-muted);line-height:1.6}button{border:0;padding:var(--space-small) var(--space-medium);font:inherit;cursor:pointer}

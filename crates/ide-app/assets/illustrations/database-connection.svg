@@ -1,0 +1,26 @@
+<svg width="160" height="110" viewBox="0 0 200 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="118" cy="112" rx="44" ry="6" fill="{{ground}}"/>
+  <g stroke="{{connector}}" stroke-width="2" stroke-linecap="round" stroke-dasharray="1.5 6">
+    <path d="M54 51 C82 53 84 60 92 62"/>
+    <path d="M58 91 C82 89 84 82 92 80"/>
+  </g>
+  <g transform="rotate(-4 40 51)">
+    <rect x="20" y="40" width="32" height="21" rx="4.5" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2"/>
+    <circle cx="28" cy="50" r="2.2" fill="{{chip_glyph}}"/>
+    <path d="M34 47h11M34 54h8" stroke="{{content_line}}" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(3 42 92)">
+    <rect x="22" y="82" width="32" height="21" rx="4.5" fill="{{card_fill}}" stroke="{{card_stroke}}" stroke-width="2"/>
+    <circle cx="30" cy="92" r="2.2" fill="{{chip_glyph}}"/>
+    <path d="M36 89h11M36 96h8" stroke="{{content_line}}" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <g stroke="{{accent_stroke}}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M93 50c0-4.6 11-8 25-8s25 3.4 25 8-11 8-25 8-25-3.4-25-8z" fill="{{raised_fill}}"/>
+    <path d="M93 50v22c0 4.6 11 8 25 8s25-3.4 25-8V50" fill="{{card_fill}}"/>
+    <path d="M93 72v22c0 4.6 11 8 25 8s25-3.4 25-8V72" fill="{{card_fill}}"/>
+  </g>
+  <ellipse cx="118" cy="50" rx="25" ry="8" fill="{{cap_highlight}}"/>
+  <path d="M93 50c0-4.6 11-8 25-8s25 3.4 25 8-11 8-25 8-25-3.4-25-8z" fill="none" stroke="{{accent_stroke}}" stroke-width="2.4"/>
+  <circle cx="118" cy="50" r="2.6" fill="{{spark}}"/>
+  <circle cx="170" cy="44" r="2.2" fill="{{ambient}}"/>
+</svg>

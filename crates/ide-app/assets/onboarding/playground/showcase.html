@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Choro Field Guide — finished design</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<!-- The finished Field Guide, designed and shipped with the Playground.
+     The tour's second agent copies this page's <main> into index.html and keeps
+     the hero words the first agent wrote. Nothing here is generated. -->
+
+
+<!-- FIELD-GUIDE:TOP — agent 1 copies this block (the hero, with your tools lit) -->
+<header class="hero"><div class="wrap">
+  <div class="hub">
+    <svg viewBox="0 0 576 224" aria-hidden="true">
+      <defs><linearGradient id="m" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#CFC0FB"/><stop offset="1" stop-color="#8F74E5"/></linearGradient></defs>
+      <path class="sb" pathLength="100" d="M108,32 C180,32 196,112 252,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2050ms"/><path class="sb" pathLength="100" d="M108,88 C180,88 196,112 252,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2250ms"/><path class="sb" pathLength="100" d="M108,144 C180,144 196,112 252,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2450ms"/><path class="sb" pathLength="100" d="M108,196 C180,196 196,112 252,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2650ms"/><path class="sb" pathLength="100" d="M470,32 C398,32 382,112 326,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2150ms"/><path class="sb" pathLength="100" d="M470,88 C398,88 382,112 326,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2350ms"/><path class="sb" pathLength="100" d="M470,144 C398,144 382,112 326,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2550ms"/><path class="sb" pathLength="100" d="M470,196 C398,196 382,112 326,112" fill="none" stroke="#4A4550" stroke-width="1.5" style="animation-delay:2750ms"/><path class="st" pathLength="100" d="M108,32 C180,32 196,112 252,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2150ms,2150ms"/><path class="st" pathLength="100" d="M108,88 C180,88 196,112 252,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2350ms,2350ms"/><path class="st" pathLength="100" d="M108,144 C180,144 196,112 252,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2550ms,2550ms"/><path class="st" pathLength="100" d="M108,196 C180,196 196,112 252,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2750ms,2750ms"/><path class="st" pathLength="100" d="M470,32 C398,32 382,112 326,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2250ms,2250ms"/><path class="st" pathLength="100" d="M470,88 C398,88 382,112 326,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2450ms,2450ms"/><path class="st" pathLength="100" d="M470,144 C398,144 382,112 326,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2650ms,2650ms"/><path class="st" pathLength="100" d="M470,196 C398,196 382,112 326,112" fill="none" stroke="#CFC0FB" stroke-width="2.6" stroke-linecap="round" style="animation-delay:2850ms,2850ms"/>
+      <g transform="translate(244,68) scale(0.786)">
+        <path class="arc" d="M75.6,31.5 A34,34 0 1,0 75.6,80.5" fill="none" stroke="url(#m)" stroke-width="12" stroke-linecap="round"/>
+        <path class="str" style="animation-delay:.52s" d="M25,45 C48,45 50,56 64,56" fill="none" stroke="#A08CDC" stroke-width="3.2" stroke-linecap="round"/>
+        <path class="str" style="animation-delay:.61s" d="M25,51 C48,51 50,56 64,56" fill="none" stroke="#A08CDC" stroke-width="3.2" stroke-linecap="round"/>
+        <path class="str" style="animation-delay:.7s" d="M25,61 C48,61 50,56 64,56" fill="none" stroke="#A08CDC" stroke-width="3.2" stroke-linecap="round"/>
+        <path class="str" style="animation-delay:.79s" d="M25,67 C48,67 50,56 64,56" fill="none" stroke="#A08CDC" stroke-width="3.2" stroke-linecap="round"/>
+        <g class="nd"><circle cx="69" cy="56" r="13" fill="#6EC6F5" opacity=".18"/><circle cx="69" cy="56" r="5.2" fill="#6EC6F5"/><rect x="77.8" y="52.2" width="7.5" height="7.5" rx="2.2" fill="#A08CDC"/></g>
+      </g>
+    </svg>
+    <span class="hchip" style="left:64px;top:32px;animation-delay:2000ms"><span class="g" style="color:var(--primary)">◆</span> agents</span><span class="hchip" style="left:64px;top:88px;animation-delay:2200ms"><span class="g" style="color:var(--primary)">▤</span> docs</span><span class="hchip" style="left:64px;top:144px;animation-delay:2400ms"><span class="g" style="color:var(--amber)">☑</span> tasks</span><span class="hchip" style="left:64px;top:196px;animation-delay:2600ms"><span class="g" style="color:var(--info)">⌘</span> code</span><span class="hchip" style="left:512px;top:32px;animation-delay:2100ms"><span class="g" style="color:var(--amber)">⎇</span> git</span><span class="hchip" style="left:512px;top:88px;animation-delay:2300ms"><span class="g" style="color:var(--success)">▶</span> scripts</span><span class="hchip" style="left:512px;top:144px;animation-delay:2500ms"><span class="g" style="color:var(--teal)">⛁</span> database</span><span class="hchip" style="left:512px;top:196px;animation-delay:2700ms"><span class="g" style="color:var(--danger)">▦</span> designs</span>
+  </div>
+  <h1>The hard part isn’t the code.<br />It’s the <span class="grad">context</span>.</h1>
+  <p class="lead">Agents write the code now. Every tool in one window — and everything connected.</p>
+</div></header>
+<script>
+  // Light the tools they use — read straight from the page's own stack.json.
+  (async () => {
+    const SLOTS = ['agents','docs','issues','editor','github','scripts','database','designs'];
+    let picks = [];
+    try { picks = (await (await fetch('stack.json')).json()).tools || []; } catch (_) {}
+    if (!picks.length) return;
+    const uses = (slug) => slug === 'agents' || picks.includes(slug);
+    document.querySelectorAll('.hub .hchip').forEach((el, i) => {
+      if (uses(SLOTS[i])) el.classList.add('lit');
+    });
+  })();
+</script>
+<!-- /FIELD-GUIDE:TOP -->
+
+
+<!-- FIELD-GUIDE:BOTTOM — agent 2 copies this block (everything under the hero) -->
+<div class="livestrip"><div class="wrap">
+  <p class="live-kicker">ONE THREAD · STILL LIVE</p>
+  <div class="live-row">
+    <span class="lc"><span class="dot run"></span> TASK-1 <b class="ok">done</b></span>
+    <span class="lc-link"></span>
+    <span class="lc"><span class="g">✦</span> agent <b class="ok">shipped</b></span>
+    <span class="lc-link"></span>
+    <span class="lc"><span class="g">⎇</span> branch <b class="amber">checked out</b></span>
+    <span class="lc-link"></span>
+    <span class="lc"><span class="g">◆</span> PR #1 <b class="ok">open</b></span>
+    <span class="lc-link"></span>
+    <span class="lc"><span class="dot run"></span> preview <b class="ok">running</b></span>
+  </div>
+  <p class="live-cap">The task, the branch, the PR, the running app — <b>all connected, all in one place.</b></p>
+</div></div>
+
+
+
+
+<section class="band"><div class="wrap">
+  <div class="sec-head reveal">
+    <h2 class="sec-h">A whole product workspace, <span class="grad">not just an agent window</span></h2>
+    <p class="sec-lead">Design it, run it, point at what is wrong, and hand it back with the full context attached.</p>
+  </div>
+  <div class="feat-grid reveal">
+    <div class="feat-opts">
+      <button class="fopt on" data-feat="designer">
+        <span class="fchip"><span class="g">✦</span> design studio</span><span class="ft"><span class="ftx"><b>A real design studio—with an AI designer inside</b>Canvas, components, auto layout, prototypes, and tokens. Design the product for real, then let the AI designer create and revise the live frames.</span></span>
+      </button>
+      <button class="fopt" data-feat="preview">
+        <span class="fchip"><span class="g">▶</span> preview</span><span class="ft"><span class="ftx"><b>Web and mobile, live</b>Run websites or iPhone apps inside Choro. Point at anything that looks wrong and send that exact spot to an agent to fix.</span></span>
+      </button>
+      <button class="fopt" data-feat="memory">
+        <span class="fchip"><span class="g">◉</span> memory</span><span class="ft"><span class="ftx"><b>Memory that compounds</b>Agents remember project decisions. Every memory is visible, editable, and one click away from undo.</span></span>
+      </button>
+      <button class="fopt" data-feat="riffs">
+        <span class="fchip"><span class="g">◆</span> riffs</span><span class="ft"><span class="ftx"><b>Prebuilt expert agents</b>Reusable Choro playbooks for recurring work, available to every agent provider and across all your projects.</span></span>
+      </button>
+    </div>
+    <div class="feat-vis">
+      <div class="fvis on" data-feat="designer">
+        <div class="vwin">
+          <div class="vwin-top"><span class="lights"><span class="r"></span><span class="y"></span><span class="g"></span></span> design studio · AI designer <span class="vw-status pri"><span class="d"></span> editing canvas</span></div>
+          <div class="vwin-b design-demo">
+            <div class="design-tools"><span>↖</span><span>□</span><span>T</span><span>◇</span></div>
+            <div class="design-canvas">
+              <span class="design-label">Checkout · Mobile</span>
+              <div class="design-frame"><div class="design-nav"><span></span><span></span></div><div class="design-copy"><b>Ready to ship?</b><span></span><span></span></div><div class="design-card"><i></i><div><b>Pro plan</b><small>$24 / month</small></div></div><div class="design-cta">Continue</div></div>
+              <div class="assistant-note"><b><span>✦</span> AI designer</b><p>Make the plan choice clearer and tighten the spacing.</p><small>Updating 3 live frames with project tokens…</small></div>
+            </div>
+            <div class="design-props"><b>FRAME</b><span>Auto layout</span><span>12px gap</span><span>Token · surface</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="fvis" data-feat="preview">
+        <div class="vwin">
+          <div class="vwin-top"><span class="lights"><span class="r"></span><span class="y"></span><span class="g"></span></span> preview · web + mobile <span class="vw-status ok"><span class="d"></span> live</span></div>
+          <div class="vwin-b preview-demo">
+            <div class="preview-tabs"><span class="on">Web :5173</span><span>iPhone</span><span class="live-dot">hot reload</span></div>
+            <div class="preview-stage"><div class="web-page"><div class="web-nav"></div><b>Ship work your users can feel.</b><p>The running app stays beside the agent building it.</p><div class="annotated-action"><button>Start building</button><span class="issue-ring"></span><div class="fix-note"><span class="pointer">↖</span><div><b>This button is too large</b><small>Preview selection attached</small></div><span class="send-fix">Send to agent</span></div></div></div><div class="phone-page"><div class="phone-notch"></div><b>Choro</b><span></span><span></span><button>Continue</button></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="fvis" data-feat="memory">
+        <div class="vwin">
+          <div class="vwin-top"><span class="lights"><span class="r"></span><span class="y"></span><span class="g"></span></span> memory · Choro Playground <span class="vw-status ok"><span class="d"></span> 4 remembered</span></div>
+          <div class="vwin-b memory-demo"><p class="mini-label">WHAT EVERY AGENT KNOWS</p><div class="memory-row"><span>◉</span><div><b>Use project tokens—never raw colors.</b><small>Learned from your correction</small></div><em>Undo</em></div><div class="memory-row"><span>◉</span><div><b>Keep the mobile checkout to one screen.</b><small>Decision from project-story.choro</small></div><em>Edit</em></div><div class="memory-row"><span>◉</span><div><b>Run focused tests before shipping.</b><small>Confirmed across 3 agents</small></div><em>Undo</em></div><div class="memory-compose"><span>＋</span> Add a project memory</div></div>
+        </div>
+      </div>
+      <div class="fvis" data-feat="riffs">
+        <div class="vwin">
+          <div class="vwin-top"><span class="lights"><span class="r"></span><span class="y"></span><span class="g"></span></span> riffs · shared library <span class="vw-status pri"><span class="d"></span> every agent</span></div>
+          <div class="vwin-b riffs-demo"><p class="mini-label">PICK AN EXPERT MODE</p><div class="riff-grid"><div class="riff-card on"><span>✦</span><b>UI Polish</b><small>Visual QA, spacing, states, accessibility</small></div><div class="riff-card"><span>⌕</span><b>Bug Hunt</b><small>Reproduce, isolate, fix, verify</small></div><div class="riff-card"><span>⎇</span><b>Ship Review</b><small>Diff, tests, risk, release notes</small></div><div class="riff-card"><span>▤</span><b>Spec Writer</b><small>Questions, decisions, implementation brief</small></div></div><div class="riff-foot"><span>Claude Code</span><span>Codex</span><span>OpenCode</span><b>One Riff · any agent</b></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foundation reveal">
+    <p class="mini-label">THE REST IS BUILT IN</p>
+    <div class="grid">
+      <div class="tool"><span class="k">@</span><div><b>References</b><span>Point an agent at any file, Doc, task, design, or asset.</span></div></div>
+      <div class="tool"><span class="k">⎇</span><div><b>Git + Ship</b><span>Diffs, branches, commits, pull requests, and review.</span></div></div>
+      <div class="tool"><span class="k">⌘</span><div><b>Code + Terminal</b><span>A real editor and full terminals whenever you take the wheel.</span></div></div>
+      <div class="tool"><span class="k">⛁</span><div><b>Data</b><span>Browse and edit Postgres, MongoDB, Supabase, and more.</span></div></div>
+      <div class="tool"><span class="k">◈</span><div><b>Services</b><span>Your app’s services, environments, dashboards, and docs.</span></div></div>
+      <div class="tool"><span class="k">▦</span><div><b>Assets</b><span>Designs, screenshots, and references kept with the project.</span></div></div>
+    </div>
+  </div>
+</div></section>
+
+<footer class="foot"><div class="wrap foot-in">
+  <span>Built with Choro</span><span class="mono">localhost:4173</span>
+</div></footer>
+
+<script>
+  const io = new IntersectionObserver((es) => es.forEach((e, i) => {
+    if (!e.isIntersecting) return;
+    e.target.style.transitionDelay = (i * 70) + 'ms';
+    e.target.classList.add('in');
+    io.unobserve(e.target);
+  }), { threshold: 0.15 });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+
+  document.querySelectorAll('.feat-grid').forEach((grid) => {
+    const opts = [...grid.querySelectorAll('.fopt')];
+    const viss = [...grid.querySelectorAll('.fvis')];
+    if (!opts.length) return;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let timer = null, i = 0, touched = false;
+    const show = (feat) => {
+      opts.forEach((o) => o.classList.toggle('on', o.dataset.feat === feat));
+      viss.forEach((v) => v.classList.toggle('on', v.dataset.feat === feat));
+      const on = grid.querySelector('.fopt.on');
+      if (on) { on.style.animation = 'none'; void on.offsetWidth; on.style.animation = ''; }
+    };
+    const wrap = grid.querySelector('.feat-opts');
+    opts.forEach((o, idx) => o.addEventListener('click', () => {
+      touched = true; if (timer) { clearInterval(timer); timer = null; }
+      if (wrap) wrap.classList.add('manual');
+      i = idx; show(o.dataset.feat);
+    }));
+    if (reduce) return;
+    const fio = new IntersectionObserver((es) => es.forEach((e) => {
+      if (!e.isIntersecting || timer || touched) return;
+      grid.classList.add('in');
+      timer = setInterval(() => {
+        if (touched) return clearInterval(timer);
+        i = (i + 1) % opts.length; show(opts[i].dataset.feat);
+      }, 2600);
+    }), { threshold: 0.35 });
+    fio.observe(grid);
+  });
+</script>
+<!-- /FIELD-GUIDE:BOTTOM -->
+</body>
+</html>
