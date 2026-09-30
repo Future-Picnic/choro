@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Choro Updates</title>
+    <link>https://github.com/Future-Picnic/choro</link>
+    <description>Signed stable updates for Choro.</description>
+    <language>en</language>
+    <item>
+      <title>Choro 0.91</title>
+      <pubDate>Wed, 02 Sep 2026 00:26:34 +0300</pubDate>
+      <sparkle:version>91</sparkle:version>
+      <sparkle:shortVersionString>0.91</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #27 from Future-Picnic/feat-add-prepared-teammate-handoffs-and-result-synthesis
+- chore: publish update feed for 0.90]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/540162329" length="312967523" type="application/octet-stream" sparkle:edSignature="mYJq/camBvUf/CP+3PBmu7PG6BFzMq2V2cDrvyoq+VrehW/I4hc6NnOtIM8yJ2GU9FQDyJ6YLkfYThLrk6XSAA=="></enclosure>
+    </item>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: p4lQO2iSJ/b7B1x0SvvdFzLNXv7Pf1DgMf/s9rgUQ+SWpM0LRBRk8VFI+EvUIQydCacDV6CG+0XEqrvGcCAGDg==
+length: 1445
+-->
