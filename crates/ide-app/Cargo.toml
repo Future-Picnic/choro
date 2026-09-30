@@ -1,0 +1,91 @@
+[package]
+name = "ide-app"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[lints.rust]
+unexpected_cfgs = "allow"
+
+[features]
+# Native layout fixtures use an in-memory test window, never the live app.
+ui-layout-tests = ["gpui/test-support"]
+
+[[bin]]
+name = "choro"
+path = "src/main.rs"
+
+[[bin]]
+name = "choro-cef-helper"
+path = "src/bin/choro_cef_helper.rs"
+
+[dependencies]
+ide-core = { workspace = true, features = ["app-update-bridge"] }
+anyhow = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smol = { workspace = true }
+uuid = { workspace = true }
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+gpui-component-assets = "0.5.1"
+lucide-icons = "1.24.0"
+gpui-terminal = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+velotype = { workspace = true }
+portable-pty = { workspace = true }
+parking_lot = { workspace = true }
+agent-client-protocol = { workspace = true }
+libc = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
+axum = { workspace = true }
+async-channel = { workspace = true }
+crossbeam-channel = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+futures-util = "0.3"
+rand = "0.8"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+tempfile = "3"
+image = { workspace = true }
+regex = { workspace = true }
+roxmltree = "0.20"
+pulldown-cmark = "0.13"
+unicase = "2.9"
+cpal = "0.16"
+moonshine-rs = { version = "0.1.3", default-features = false }
+smart-turn-rs = "0.1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Chromium Embedded Framework powers the Design/Penpot surface. Keep the
+# version exact because the Rust bindings and bundled CEF framework must match.
+# CEF 151.3.18 repeatedly crashes in its macOS browser-process message loop;
+# use the previous stable branch until that upstream regression is resolved.
+cef = { version = "=150.2.1", default-features = false, features = ["sandbox"] }
+security-framework = "3.7"
+block2 = "0.6"
+objc = "0.2"
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSWorkspace", "NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSSound", "NSSpeechSynthesizer", "NSView", "NSWindow"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSRunLoop", "NSString", "NSThread", "NSTimer", "NSURL", "NSValue"] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKNavigation", "WKWebView", "WKSnapshotConfiguration", "WKContentWorld", "WKFrameInfo", "WKScriptMessage", "WKScriptMessageHandler", "WKUserContentController", "WKUserScript"] }
+# System WebKit remains the lightweight engine for docs, previews, and
+# visualizations, and is the automatic fallback if the bundled Chromium runtime
+# cannot start.
+wry = "0.52"
+# Shared with gpui/wry (0.6.x); used to read the window's NSView for the
+# keyboard focus handback when the webview is torn down.
+raw-window-handle = "0.6"
+url = { workspace = true }
+
+[dev-dependencies]
+ttf-parser = "0.25.1"

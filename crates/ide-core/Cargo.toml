@@ -1,0 +1,38 @@
+[package]
+name = "ide-core"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[features]
+app-update-bridge = []
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+json5 = "1"
+dirs = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+turso = { workspace = true }
+zip = { workspace = true }
+sha2 = { workspace = true }
+git2 = { workspace = true }
+notify = { workspace = true }
+mongodb = { workspace = true }
+postgres = { workspace = true }
+postgres-native-tls = { workspace = true }
+native-tls = { workspace = true }
+mysql = { workspace = true }
+rusqlite = { workspace = true }
+url = { workspace = true }
+aho-corasick = { workspace = true }
+ignore = { workspace = true }
+regex = { workspace = true }
+image = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
