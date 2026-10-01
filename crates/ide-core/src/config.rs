@@ -476,6 +476,12 @@ impl Default for GenerationAgent {
 impl GenerationAgent {
     pub fn for_provider(provider: AgentKind) -> Self {
         match provider {
+            AgentKind::Gemini => Self {
+                provider,
+                model: AgentModel::Gemini38FlashMedium,
+                external_model_id: None,
+                external_model_label: None,
+            },
             AgentKind::Codex => Self {
                 provider,
                 model: AgentModel::CodexGpt56Luna,

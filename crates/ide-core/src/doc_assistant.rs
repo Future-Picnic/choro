@@ -296,6 +296,11 @@ pub fn quick_action_prompt(relative_doc_path: &Path, action: &str) -> String {
 
 pub fn start_command(record: &DocAssistantRecord, prompt: &str) -> String {
     match record.provider {
+        AgentKind::Gemini => format!(
+            "agy --model {} --mode plan --prompt-interactive {}",
+            shell_quote(record.model.cli_value().unwrap_or("gemini-3.8-flash-medium")),
+            shell_quote(prompt),
+        ),
         AgentKind::Claude => format!(
             "claude --permission-mode {} --disallowedTools {} --name {} --model {} --effort {} {}",
             record.access_mode.claude_permission_mode(),
@@ -348,6 +353,7 @@ pub fn start_command(record: &DocAssistantRecord, prompt: &str) -> String {
 
 pub fn resume_command(kind: AgentKind, access_mode: AgentAccessMode, session_id: &str) -> String {
     match kind {
+        AgentKind::Gemini => format!("agy --mode plan --conversation {}", shell_quote(session_id)),
         AgentKind::Claude => format!(
             "claude --permission-mode {} --disallowedTools {} --resume {}",
             access_mode.claude_permission_mode(),

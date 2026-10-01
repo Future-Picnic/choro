@@ -13,10 +13,17 @@ use gpui_component::{
     spinner::Spinner,
     v_flex, Disableable, Icon, IconName, Sizable,
 };
-use ide_core::{DbProvider, MongoHandle};
+use ide_core::MongoHandle;
 use serde_json::Value;
 
 const PAGE_SIZE: u64 = 20;
+
+#[path = "collection_pane/browser.rs"]
+mod browser;
+#[path = "collection_pane/requests.rs"]
+mod requests;
+
+use requests::DocRequest;
 
 /// One rendered document: clipped preview for fast layout, full JSON and
 /// `_id` kept aside for the edit dialog.
@@ -513,9 +520,19 @@ pub struct CollectionPane {
     docs: Vec<DocCard>,
     expanded_tree_nodes: HashSet<String>,
     total: u64,
+    /// The page on screen. Changes only when a request for it succeeds.
     page: u64,
+    /// The filter the page on screen was fetched with. The input holds a
+    /// draft that only Apply, Enter, field filters or Clear submit.
+    filter: String,
+    /// The request in flight or, after a failure, the one Retry repeats.
+    pending_request: Option<DocRequest>,
     loading: bool,
     error: Option<SharedString>,
+    /// The document shown in the detail pane.
+    selected_doc: Option<usize>,
+    /// Round-trip time of the page on screen.
+    fetch_ms: Option<u128>,
     /// Generation counter so stale background loads are dropped.
     load_seq: u64,
 }
@@ -538,8 +555,7 @@ impl CollectionPane {
             &filter_input,
             |this: &mut Self, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.page = 0;
-                    this.load(cx);
+                    this.submit_filter(cx);
                 }
             },
         )
@@ -555,8 +571,12 @@ impl CollectionPane {
             expanded_tree_nodes: HashSet::new(),
             total: 0,
             page: 0,
+            filter: String::new(),
+            pending_request: None,
             loading: false,
             error: None,
+            selected_doc: None,
+            fetch_ms: None,
             load_seq: 0,
         };
         pane.load(cx);
@@ -622,8 +642,7 @@ impl CollectionPane {
         let next_filter = quick_filter_json(&current_filter, &filters);
         self.filter_input
             .update(cx, |input, cx| input.set_value(next_filter, window, cx));
-        self.page = 0;
-        self.load(cx);
+        self.submit_filter(cx);
     }
 
     fn field_picker_button(
@@ -670,58 +689,6 @@ impl CollectionPane {
             }
             menu
         })
-    }
-
-    fn load(&mut self, cx: &mut Context<Self>) {
-        self.loading = true;
-        self.error = None;
-        self.load_seq += 1;
-        let seq = self.load_seq;
-        let handle = self.handle.clone();
-        let db = self.db.clone();
-        let collection = self.collection.clone();
-        let filter = self.filter_input.read(cx).value().to_string();
-        let skip = self.page * PAGE_SIZE;
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    handle.find_docs(&db, &collection, &filter, skip, PAGE_SIZE as i64)
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.load_seq != seq {
-                    return;
-                }
-                this.loading = false;
-                match result {
-                    Ok(page) => {
-                        this.expanded_tree_nodes.clear();
-                        this.docs = page
-                            .docs
-                            .into_iter()
-                            .map(|entry| {
-                                let (display, clipped) = clip_for_display(&entry.json);
-                                let tree = serde_json::from_str::<Value>(&entry.json).ok();
-                                DocCard {
-                                    display: display.into(),
-                                    clipped,
-                                    full: entry.json.into(),
-                                    tree,
-                                    id: entry.id,
-                                }
-                            })
-                            .collect();
-                        this.total = page.total;
-                    }
-                    Err(error) => this.error = Some(format!("{error:#}").into()),
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-        cx.notify();
     }
 
     /// Opens the full document in a JSON editor dialog. Save writes back via
@@ -1086,285 +1053,5 @@ impl Render for DocEditorView {
                             .child(Input::new(&self.input).h_full()),
                     ),
             )
-    }
-}
-
-impl Render for CollectionPane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let red = crate::ui::design::rose(cx);
-        let fields = self.available_filter_fields();
-        let pane = cx.entity().clone();
-        let controls = h_flex()
-            .w_full()
-            .px_4()
-            .py_2()
-            .gap_2()
-            .items_center()
-            .bg(crate::ui::design::base(cx))
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .child(super::provider_brand_mark(DbProvider::MongoDb, 22.))
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_body())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(SharedString::from(format!(
-                                "{}.{}",
-                                self.db, self.collection
-                            ))),
-                    )
-                    .when(self.prod, |bar| {
-                        bar.child(
-                            div()
-                                .px_1p5()
-                                .rounded(crate::ui::design::r_xs())
-                                .text_size(crate::ui::design::text_ui())
-                                .font_weight(FontWeight::BOLD)
-                                .bg(red.opacity(0.85))
-                                .text_color(crate::ui::design::on_accent(cx))
-                                .child("PROD"),
-                        )
-                    })
-                    .when(self.handle.is_read_only(), |bar| {
-                        bar.child(
-                            div()
-                                .px_1p5()
-                                .rounded(crate::ui::design::r_xs())
-                                .text_size(crate::ui::design::text_ui())
-                                .bg(crate::ui::design::nav(cx))
-                                .text_color(crate::ui::design::t3(cx))
-                                .child("READ ONLY"),
-                        )
-                    }),
-            )
-            .child(div().flex_1().child(Input::new(&self.filter_input).small()))
-            .child(Self::field_picker_button(
-                "db-add-filter",
-                "Add filter".into(),
-                Some(IconName::Plus),
-                fields.clone(),
-                None,
-                pane.clone(),
-                FieldPickerTarget::Add,
-                self.quick_filter_rows.len() >= MAX_QUICK_FILTER_ROWS,
-            ))
-            .child(
-                crate::ui::style::header_icon_button("db-apply-filter", IconName::Search, cx)
-                    .tooltip("Apply filter (Enter)")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page = 0;
-                        this.load(cx);
-                    })),
-            )
-            .child(
-                crate::ui::style::refresh_icon_button("db-refresh", cx)
-                    .tooltip("Reload")
-                    .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
-            )
-            .child(
-                crate::ui::style::header_icon_button("db-prev-page", IconName::ChevronLeft, cx)
-                    .tooltip("Previous page")
-                    .disabled(self.page == 0 || self.loading)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page = this.page.saturating_sub(1);
-                        this.load(cx);
-                    })),
-            )
-            .child(
-                div()
-                    .text_size(crate::ui::design::text_ui())
-                    .text_color(crate::ui::design::t3(cx))
-                    .child(SharedString::from(self.page_label())),
-            )
-            .child(
-                crate::ui::style::header_icon_button("db-next-page", IconName::ChevronRight, cx)
-                    .tooltip("Next page")
-                    .disabled(self.page >= self.last_page() || self.loading)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.page += 1;
-                        this.load(cx);
-                    })),
-            );
-        let mut quick_filters = v_flex().w_full().px_3().pb_2().gap_1p5();
-        for (index, row) in self.quick_filter_rows.iter().enumerate() {
-            quick_filters = quick_filters.child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .w(px(42.))
-                            .text_size(crate::ui::design::text_ui())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t3(cx))
-                            .child("Filter"),
-                    )
-                    .child(Self::field_picker_button(
-                        ElementId::named_usize("db-quick-filter-field", index),
-                        row.field.clone().into(),
-                        None,
-                        fields.clone(),
-                        Some(row.field.clone()),
-                        pane.clone(),
-                        FieldPickerTarget::Row(index),
-                        false,
-                    ))
-                    .child(
-                        div()
-                            .w(px(260.))
-                            .child(Input::new(&row.value_input).small()),
-                    )
-                    .child(
-                        crate::ui::style::header_icon_button(
-                            ElementId::named_usize("db-quick-filter-remove", index),
-                            IconName::Close,
-                            cx,
-                        )
-                        .tooltip("Remove filter")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_quick_filter(index, cx);
-                        })),
-                    ),
-            );
-        }
-        quick_filters = quick_filters.child(
-            h_flex().w_full().justify_end().child(
-                crate::ui::style::accent_button_compact(
-                    "db-quick-filter-apply",
-                    "Apply filters",
-                    cx,
-                )
-                .disabled(self.quick_filter_rows.is_empty())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.apply_quick_filters(window, cx);
-                })),
-            ),
-        );
-        let header = v_flex()
-            .w_full()
-            .border_b_1()
-            .border_color(crate::ui::design::line(cx).opacity(0.18))
-            .child(controls)
-            .when(!self.quick_filter_rows.is_empty(), |header| {
-                header.child(quick_filters)
-            });
-
-        let body: gpui::AnyElement = if self.loading {
-            v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(Spinner::new())
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_body())
-                        .text_color(crate::ui::design::t3(cx))
-                        .child("Querying…"),
-                )
-                .into_any_element()
-        } else if let Some(error) = &self.error {
-            v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .px_8()
-                .child(
-                    gpui_component::Icon::new(IconName::TriangleAlert)
-                        .size(crate::ui::design::icon_xl())
-                        .text_color(red),
-                )
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_body())
-                        .text_color(crate::ui::design::t3(cx))
-                        .child(error.clone()),
-                )
-                .child(
-                    crate::ui::style::refresh_button("db-retry", "Retry", cx)
-                        .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
-                )
-                .into_any_element()
-        } else if self.docs.is_empty() {
-            v_flex()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .text_size(crate::ui::design::text_body())
-                .text_color(crate::ui::design::t3(cx))
-                .child("No documents match")
-                .into_any_element()
-        } else {
-            v_flex()
-                .id("db-doc-list")
-                .flex_1()
-                .min_h(px(0.))
-                .overflow_y_scroll()
-                .p_2()
-                .gap_2()
-                .children(self.docs.iter().enumerate().map(|(ix, card)| {
-                    let doc_key = doc_tree_key(self.page, ix, card);
-                    let editable = !self.handle.is_read_only() && card.id.is_some();
-                    let edit_id = card.id.clone();
-                    let edit_full = card.full.clone();
-                    div()
-                        .id(("db-doc", ix))
-                        .w_full()
-                        .p_2()
-                        .rounded(crate::ui::design::r_sm())
-                        .border_1()
-                        .border_color(crate::ui::design::line(cx).opacity(0.6))
-                        .bg(crate::ui::design::nav(cx).opacity(0.4))
-                        .font_family(crate::ui::design::FONT_MONO)
-                        .text_size(crate::ui::design::text_ui())
-                        .whitespace_normal()
-                        .when(editable, |c| {
-                            c.hover(|style| {
-                                style
-                                    .border_color(crate::ui::design::line(cx))
-                                    .bg(crate::ui::design::hover(cx).opacity(0.6))
-                            })
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    if let Some(id) = edit_id.clone() {
-                                        this.open_doc_editor(id, edit_full.clone(), window, cx);
-                                    }
-                                },
-                            ))
-                        })
-                        .child(if let Some(tree) = &card.tree {
-                            render_json_tree(
-                                &self.expanded_tree_nodes,
-                                &doc_key,
-                                tree,
-                                cx,
-                                Self::expanded_nodes,
-                            )
-                            .into_any_element()
-                        } else {
-                            div()
-                                .font_family(crate::ui::design::FONT_MONO)
-                                .text_size(crate::ui::design::text_ui())
-                                .whitespace_normal()
-                                .child(card.display.clone())
-                                .into_any_element()
-                        })
-                        .when(card.tree.is_none() && card.clipped, |c| {
-                            c.child(
-                                div()
-                                    .pt_1()
-                                    .text_color(crate::ui::design::t3(cx))
-                                    .child("… clipped — click to view & edit the full document"),
-                            )
-                        })
-                }))
-                .into_any_element()
-        };
-
-        v_flex().size_full().child(header).child(body)
     }
 }

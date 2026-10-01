@@ -194,6 +194,7 @@ fn generation_cli_path(provider: AgentKind) -> anyhow::Result<PathBuf> {
     }
     let (env_name, executable) = match provider {
         AgentKind::Claude => ("CLAUDE_CLI", "claude"),
+        AgentKind::Gemini => ("ANTIGRAVITY_CLI", "agy"),
         AgentKind::OpenCode => ("OPENCODE_CLI", "opencode"),
         AgentKind::Codex => unreachable!(),
     };
@@ -357,6 +358,9 @@ fn run_streamed_generation_with_images(
     }
 
     match generation_agent.provider {
+        AgentKind::Gemini => run_gemini_generation(
+            working_directory, model, prompt, &images, timeout, GenerationAccess::ToolFree,
+        ),
         AgentKind::Claude => run_claude_generation(
             working_directory,
             model,
@@ -424,6 +428,9 @@ pub(crate) fn run_quick_ask_generation_with_images(
     let images = validate_generation_images(images)?;
 
     match generation_agent.provider {
+        AgentKind::Gemini => run_gemini_generation(
+            working_directory, model, prompt, &images, timeout, GenerationAccess::QuickAsk,
+        ),
         AgentKind::Codex => run_codex_generation(
             working_directory,
             model,
@@ -1803,4 +1810,21 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|data| !data.is_empty()));
     }
+}
+fn run_gemini_generation(
+    working_directory: &Path,
+    model_id: &str,
+    prompt: String,
+    images: &[PathBuf],
+    timeout: Duration,
+    access: GenerationAccess,
+) -> anyhow::Result<String> {
+    let model = ide_core::AgentModel::models_for(AgentKind::Gemini)
+        .iter()
+        .copied()
+        .find(|model| model.cli_value() == Some(model_id))
+        .ok_or_else(|| anyhow::anyhow!("Unknown Gemini model: {model_id}"))?;
+    crate::state::agent_chat::protocol::gemini::one_shot_generation(
+        working_directory, model, prompt, images, timeout, access == GenerationAccess::ToolFree,
+    )
 }

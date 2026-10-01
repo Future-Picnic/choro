@@ -27,14 +27,17 @@ pub enum AgentKind {
     Claude,
     Codex,
     OpenCode,
+    Gemini,
 }
 
 impl AgentKind {
+    pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::OpenCode, Self::Gemini];
     pub fn label(&self) -> &'static str {
         match self {
             AgentKind::Claude => "Claude",
             AgentKind::Codex => "Codex",
             AgentKind::OpenCode => "OpenCode",
+            AgentKind::Gemini => "Gemini",
         }
     }
 
@@ -44,6 +47,7 @@ impl AgentKind {
             AgentKind::Claude => "claude",
             AgentKind::Codex => "codex",
             AgentKind::OpenCode => "opencode",
+            AgentKind::Gemini => "agy",
         }
     }
 
@@ -53,6 +57,7 @@ impl AgentKind {
             AgentKind::Claude => format!("claude --resume {}", shell_quote(session_id)),
             AgentKind::Codex => format!("codex resume {}", shell_quote(session_id)),
             AgentKind::OpenCode => format!("opencode --session {}", shell_quote(session_id)),
+            AgentKind::Gemini => format!("agy --conversation {}", shell_quote(session_id)),
         }
     }
 }
@@ -231,6 +236,15 @@ impl AgentAccessMode {
             (AgentKind::Codex, Self::FullAccess) => {
                 "Unrestricted access to the internet and files."
             }
+            (AgentKind::Gemini, Self::AskForApproval) => {
+                "Ask before Gemini runs commands or changes files."
+            }
+            (AgentKind::Gemini, Self::AutoAcceptEdits) => {
+                "Auto-approve edits, ask before other actions."
+            }
+            (AgentKind::Gemini, Self::FullAccess) => {
+                "Allow Gemini commands and edits without prompts."
+            }
             (AgentKind::OpenCode, Self::AskForApproval) => {
                 "Ask before OpenCode runs tools or changes files."
             }
@@ -240,6 +254,14 @@ impl AgentAccessMode {
             (AgentKind::OpenCode, Self::FullAccess) => {
                 "Approve OpenCode tool and file requests automatically."
             }
+        }
+    }
+
+    pub fn gemini_access_args(&self) -> &'static str {
+        match self {
+            Self::AskForApproval => "",
+            Self::AutoAcceptEdits => "--mode accept-edits",
+            Self::FullAccess => "--dangerously-skip-permissions",
         }
     }
 
@@ -280,6 +302,9 @@ impl AgentAccessMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentModel {
+    Gemini38FlashMedium,
+    Gemini31ProHigh,
+    Gemini38FlashHigh,
     ClaudeOpus55,
     ClaudeFable51,
     ClaudeFable5,
@@ -310,6 +335,9 @@ pub enum AgentModel {
 impl AgentModel {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Gemini38FlashMedium => "Gemini 3.8 Flash (Medium)",
+            Self::Gemini31ProHigh => "Gemini 3.1 Pro (High)",
+            Self::Gemini38FlashHigh => "Gemini 3.8 Flash (High)",
             Self::ClaudeOpus55 => "Opus 5.5",
             Self::ClaudeFable51 => "Fable 5.1",
             Self::ClaudeFable5 => "Fable 5",
@@ -354,6 +382,9 @@ impl AgentModel {
 
     pub fn cli_value(&self) -> Option<&'static str> {
         match self {
+            Self::Gemini38FlashMedium => Some("gemini-3.8-flash-medium"),
+            Self::Gemini31ProHigh => Some("gemini-3.1-pro-high"),
+            Self::Gemini38FlashHigh => Some("gemini-3.8-flash-high"),
             Self::ClaudeOpus55 => Some("claude-opus-5-5"),
             Self::ClaudeFable51 => Some("claude-fable-5-1"),
             Self::ClaudeFable5 => Some("claude-fable-5"),
@@ -383,6 +414,7 @@ impl AgentModel {
             AgentKind::Claude => Self::ClaudeOpus55,
             AgentKind::Codex => Self::CodexGpt6Sol,
             AgentKind::OpenCode => Self::OpenCode,
+            AgentKind::Gemini => Self::Gemini38FlashMedium,
         }
     }
 
@@ -427,6 +459,11 @@ impl AgentModel {
                 Self::CodexGpt55,
             ],
             AgentKind::OpenCode => &[Self::OpenCode],
+            AgentKind::Gemini => &[
+                Self::Gemini38FlashMedium,
+                Self::Gemini31ProHigh,
+                Self::Gemini38FlashHigh,
+            ],
         }
     }
 
@@ -459,6 +496,10 @@ impl AgentModel {
                     | Self::CodexGpt54Nano
             ),
             AgentKind::OpenCode => matches!(self, Self::OpenCode),
+            AgentKind::Gemini => matches!(
+                self,
+                Self::Gemini38FlashMedium | Self::Gemini31ProHigh | Self::Gemini38FlashHigh
+            ),
         }
     }
 
@@ -487,7 +528,10 @@ impl AgentModel {
             }
             // OpenCode capabilities belong to the selected external model and
             // live on AgentRecord::external_model_variants.
-            Self::OpenCode => Vec::new(),
+            Self::OpenCode
+            | Self::Gemini38FlashMedium
+            | Self::Gemini31ProHigh
+            | Self::Gemini38FlashHigh => Vec::new(),
             _ => AgentEffort::ALL.to_vec(),
         }
     }
@@ -1117,6 +1161,12 @@ pub fn shell_quote(value: &str) -> String {
 
 pub fn start_command(agent: &AgentRecord, prompt: &str) -> String {
     match agent.provider {
+        AgentKind::Gemini => format!(
+            "agy --model {} {} --prompt-interactive {}",
+            shell_quote(agent.model.cli_value().unwrap_or("gemini-3.8-flash-medium")),
+            agent.access_mode.gemini_access_args(),
+            shell_quote(prompt),
+        ),
         AgentKind::Claude => format!(
             "claude --permission-mode {} --name {} --model {} --effort {} {}",
             shell_quote(agent.access_mode.claude_permission_mode()),
@@ -1161,6 +1211,12 @@ pub fn start_command(agent: &AgentRecord, prompt: &str) -> String {
 
 pub fn resume_command_with_settings(agent: &AgentRecord, session_id: &str) -> String {
     match agent.provider {
+        AgentKind::Gemini => format!(
+            "agy --conversation {} --model {} {}",
+            shell_quote(session_id),
+            shell_quote(agent.model.cli_value().unwrap_or("gemini-3.8-flash-medium")),
+            agent.access_mode.gemini_access_args(),
+        ),
         AgentKind::Claude => format!(
             "claude --resume {} --model {} --effort {} --permission-mode {}",
             shell_quote(session_id),
@@ -1422,7 +1478,7 @@ pub fn chat_updated_at_batch(
             AgentKind::Claude => claude_project_dir(cwd)
                 .map(|directory| directory.join(format!("{session_id}.jsonl"))),
             AgentKind::Codex => cached_codex_rollout_path(session_id),
-            AgentKind::OpenCode => None,
+            AgentKind::OpenCode | AgentKind::Gemini => None,
         };
         if let Some(modified) = path
             .and_then(|path| fs::metadata(path).ok())
@@ -1462,9 +1518,9 @@ pub fn chat_transcript_path(kind: AgentKind, cwd: &Path, session_id: &str) -> Op
                 .find(|p| path_contains_id(p, session_id))
                 .inspect(|path| remember_codex_rollout_path(session_id, path))
         }),
-        // Choro-owned OpenCode chats stream over ACP and are persisted in the
-        // app timeline rather than inferred from OpenCode's internal storage.
-        AgentKind::OpenCode => None,
+        // Choro-owned OpenCode and Gemini chats stream over ACP and are
+        // persisted in the app timeline rather than inferred from CLI storage.
+        AgentKind::OpenCode | AgentKind::Gemini => None,
     }
 }
 
@@ -1717,6 +1773,39 @@ fn list_codex_chats(cwd: &Path) -> Vec<AgentChat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_catalog_and_saved_settings_round_trip() {
+        for &model in AgentModel::models_for(AgentKind::Gemini) {
+            assert!(model.belongs_to(AgentKind::Gemini));
+            assert!(!model.belongs_to(AgentKind::Codex));
+            assert!(model.efforts().is_empty());
+            let agent = sample_agent(AgentKind::Gemini, model);
+            let restored: AgentRecord =
+                serde_json::from_str(&serde_json::to_string(&agent).unwrap()).unwrap();
+            assert_eq!(restored.provider, AgentKind::Gemini);
+            assert_eq!(restored.model, model);
+        }
+        assert_eq!(
+            AgentModel::default_for(AgentKind::Gemini),
+            AgentModel::Gemini38FlashMedium,
+        );
+    }
+
+    #[test]
+    fn gemini_terminal_commands_keep_model_permissions_and_shell_quoting() {
+        let mut agent = sample_agent(AgentKind::Gemini, AgentModel::Gemini31ProHigh);
+        agent.access_mode = AgentAccessMode::AutoAcceptEdits;
+        assert_eq!(
+            start_command(&agent, "Bob's app"),
+            r#"agy --model 'gemini-3.1-pro-high' --mode accept-edits --prompt-interactive 'Bob'\''s app'"#,
+        );
+        assert_eq!(
+            resume_command_with_settings(&agent, "session-1"),
+            "agy --conversation 'session-1' --model 'gemini-3.1-pro-high' --mode accept-edits",
+        );
+    }
+
     use crate::Project;
 
     #[test]

@@ -5,6 +5,7 @@ pub enum OnboardingProviderChoice {
     Claude,
     Codex,
     OpenCode,
+    Gemini,
 }
 impl OnboardingTour {
     pub(super) fn render_provider_card(
@@ -23,6 +24,7 @@ impl OnboardingTour {
         {
             ProviderConnectionStatus::Checking => ("Checking…", crate::ui::design::sky(cx)),
             ProviderConnectionStatus::Connected => ("Connected", crate::ui::design::sage(cx)),
+            ProviderConnectionStatus::Ready => ("Ready", crate::ui::design::sage(cx)),
             ProviderConnectionStatus::NeedsSignIn => {
                 ("Sign in needed", crate::ui::design::amber(cx))
             }
@@ -126,14 +128,15 @@ impl OnboardingTour {
 }
 
 impl OnboardingProviderChoice {
-    pub(super) const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::OpenCode];
-    const DEFAULT_PRIORITY: [Self; 3] = [Self::Codex, Self::Claude, Self::OpenCode];
+    pub(super) const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::OpenCode, Self::Gemini];
+    const DEFAULT_PRIORITY: [Self; 4] = [Self::Codex, Self::Claude, Self::OpenCode, Self::Gemini];
 
     pub(super) fn key(self) -> String {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
+            Self::Gemini => "gemini",
         }
         .to_string()
     }
@@ -143,6 +146,7 @@ impl OnboardingProviderChoice {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
             "opencode" => Some(Self::OpenCode),
+            "gemini" => Some(Self::Gemini),
             _ => None,
         }
     }
@@ -160,6 +164,7 @@ pub(super) fn default_provider_choice(
 pub(super) enum ProviderConnectionStatus {
     Checking,
     Connected,
+    Ready,
     NeedsSignIn,
     NotInstalled,
     Unavailable,
@@ -170,6 +175,7 @@ pub(super) struct ProviderConnectionStatuses {
     claude: ProviderConnectionStatus,
     codex: ProviderConnectionStatus,
     opencode: ProviderConnectionStatus,
+    gemini: ProviderConnectionStatus,
 }
 
 impl Default for ProviderConnectionStatuses {
@@ -178,6 +184,7 @@ impl Default for ProviderConnectionStatuses {
             claude: ProviderConnectionStatus::Checking,
             codex: ProviderConnectionStatus::Checking,
             opencode: ProviderConnectionStatus::Checking,
+            gemini: ProviderConnectionStatus::Checking,
         }
     }
 }
@@ -191,6 +198,7 @@ impl ProviderConnectionStatuses {
             OnboardingProviderChoice::Claude => self.claude,
             OnboardingProviderChoice::Codex => self.codex,
             OnboardingProviderChoice::OpenCode => self.opencode,
+            OnboardingProviderChoice::Gemini => self.gemini,
         }
     }
 }
@@ -298,7 +306,15 @@ pub(super) fn detect_provider_connection_statuses() -> ProviderConnectionStatuse
         })
         .unwrap_or(ProviderConnectionStatus::NotInstalled);
 
+    let gemini = if crate::state::agent_chat::protocol::gemini::provider_available() {
+        ProviderConnectionStatus::Ready
+    } else {
+        // Choro prepares the official Google provider on first use, then
+        // displays a sign-in approval inside the conversation.
+        ProviderConnectionStatus::NeedsSignIn
+    };
     ProviderConnectionStatuses {
+        gemini,
         claude,
         codex,
         opencode,

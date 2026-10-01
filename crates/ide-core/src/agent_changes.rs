@@ -89,7 +89,9 @@ impl<T> PendingEvidence<T> {
         self.values.clear();
     }
 }
-pub const AGENT_CHANGE_INSTRUCTIONS: &str = "Before reverting, overwriting, or shipping existing dirty files, consult Choro get_agent_changes. Its confirmed own edits, other agents' contributions, and unattributed workspace changes are separate. A shared file can contain edits from several writers. Missing or stale evidence does not prove authorship or a clean workspace. Preserve unrelated changes.";
+pub const AGENT_CHANGE_INSTRUCTIONS: &str = r#"When the task permits repository changes, use your dedicated file-editing tools (such as Edit, Write, or apply_patch) to create or modify file contents so Choro can attribute the edits to this conversation and include them in Files and code review. Do not use shell commands, Python scripts, sed, or output redirection to rewrite file contents just for convenience or batching. Use shell-based content editing only when the dedicated tools cannot perform the required change or the user explicitly requests that method; briefly tell the user which files were affected and that these edits may not appear in Choro's Files or review. Shell commands for reading, builds, tests, and copying files without changing their contents (such as cp) remain allowed within the task's permissions; plain copies do not need to appear in the conversation's changed-files list.
+
+Before reverting, overwriting, or shipping existing dirty files, consult Choro get_agent_changes. Its confirmed own edits, other agents' contributions, and unattributed workspace changes are separate. A shared file can contain edits from several writers. Missing or stale evidence does not prove authorship or a clean workspace. Preserve unrelated changes."#;
 
 /// Resolve directory aliases, never file paths (which may have been deleted).
 pub fn working_directory(root: &Path) -> PathBuf {

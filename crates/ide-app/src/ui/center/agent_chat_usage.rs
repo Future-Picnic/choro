@@ -73,6 +73,7 @@ fn render_usage_panel(
         AgentKind::Claude => "Claude Code",
         AgentKind::Codex => "Codex",
         AgentKind::OpenCode => "OpenCode",
+        AgentKind::Gemini => "Gemini",
     };
     let summary = match provider {
         AgentKind::Codex if totals.cache_read_tokens > 0 => {

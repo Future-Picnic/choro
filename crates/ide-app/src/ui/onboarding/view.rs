@@ -301,7 +301,7 @@ impl OnboardingTour {
                             .child(
                                 div()
                                     .grid()
-                                    .grid_cols(3)
+                                    .grid_cols(4)
                                     .w_full()
                                     .gap_2p5()
                                     .child(self.render_provider_card(
@@ -316,6 +316,13 @@ impl OnboardingTour {
                                         OnboardingProviderChoice::Codex,
                                         ide_core::AgentKind::Codex,
                                         "Codex",
+                                        cx,
+                                    ))
+                                    .child(self.render_provider_card(
+                                        "onboarding-provider-gemini",
+                                        OnboardingProviderChoice::Gemini,
+                                        ide_core::AgentKind::Gemini,
+                                        "Gemini",
                                         cx,
                                     ))
                                     .child(self.render_provider_card(

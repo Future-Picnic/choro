@@ -4943,6 +4943,7 @@ dependencies = [
  "velotype",
  "wry",
  "x25519-dalek",
+ "zip",
 ]
 
 [[package]]

@@ -942,6 +942,6 @@ pub(super) fn step_plate(icon: lucide_icons::Icon, cx: &App) -> Div {
 pub(super) fn provider_tint(provider: ide_core::AgentKind, cx: &App) -> gpui::Hsla {
     match provider {
         ide_core::AgentKind::Claude => crate::ui::design::palette::claude_brand(),
-        ide_core::AgentKind::Codex | ide_core::AgentKind::OpenCode => crate::ui::design::t1(cx),
+        ide_core::AgentKind::Codex | ide_core::AgentKind::OpenCode | ide_core::AgentKind::Gemini => crate::ui::design::t1(cx),
     }
 }

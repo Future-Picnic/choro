@@ -3,6 +3,9 @@ mod left_sidebar;
 mod newsletter_card;
 mod settings;
 
+#[cfg(all(test, feature = "ui-layout-tests"))]
+mod focus_tests;
+
 mod shutdown;
 mod update_card;
 
@@ -95,6 +98,18 @@ const LEFT_PANEL_MIN: f32 = 180.0;
 const LEFT_PANEL_MAX: f32 = 420.0;
 const RIGHT_PANEL_MAX: f32 = 640.0;
 const TITLE_BRANCH_PICKER_LIMIT: usize = 10;
+
+fn restore_workspace_focus_on_loss<T: 'static>(
+    root_focus: FocusHandle,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    // A cached input can keep its FocusHandle after its panel/composer is
+    // unmounted. With no focus path, dispatch_action (including toolbar
+    // clicks) falls back to GPUI's outer root, outside our action handlers.
+    cx.on_focus_lost(window, move |_, window, _| root_focus.focus(window))
+        .detach();
+}
 
 fn branch_relative_time(unix_secs: i64) -> String {
     if unix_secs <= 0 {
@@ -462,6 +477,9 @@ impl RootView {
             cx,
         );
         let db_panel = DbPanel::view(workspace.clone(), center.downgrade(), cx);
+        center.update(cx, |center, cx| {
+            center.attach_db_explorer(db_panel.clone(), cx);
+        });
         let docs_panel = DocsPanel::view(workspace.clone(), docs.clone(), center.downgrade(), cx);
         let designs_panel =
             DesignsPanel::view(workspace.clone(), designs, center.downgrade(), window, cx);
@@ -523,6 +541,7 @@ impl RootView {
         );
 
         let view = cx.new(|cx| {
+            restore_workspace_focus_on_loss(root_focus.clone(), window, cx);
             let workspace_remote_events = remote_events.clone();
             cx.observe(&workspace, move |_: &mut Self, _, cx| {
                 let _ = workspace_remote_events.send(RemoteEvent::HostSnapshotChanged);

@@ -3,8 +3,7 @@ use ide_core::model_favorites::{favorites_first, ModelFavorite};
 
 /// Every provider the composer can start an agent with. Ordered as the rail
 /// lists them.
-const COMPOSER_PROVIDERS: [AgentKind; 3] =
-    [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode];
+const COMPOSER_PROVIDERS: [AgentKind; 4] = AgentKind::ALL;
 
 /// Keeps provider filtering from resizing the popover. The viewport is tuned
 /// to reveal three complete model rows plus half of the next one, making the

@@ -941,13 +941,28 @@ impl CenterArea {
                                             .flex_none()
                                             .anchor(gpui::Corner::BottomLeft)
                                             .appearance(false)
-                                            .open(self.composer_model_expanded)
+                                            .open(
+                                                self.composer_model_expanded
+                                                    && self.composer_model_picker_agent
+                                                        == Some(agent.id),
+                                            )
                                             .on_open_change({
                                                 let model_view = chat_view.clone();
+                                                let picker_agent_id = agent.id;
                                                 move |open, window, cx| {
                                                     model_view.update(cx, |this, cx| {
-                                                        this.composer_model_expanded = *open;
-                                                        if *open {
+                                                        // Closing another pane's picker must not
+                                                        // dismiss the one that just opened.
+                                                        if !*open {
+                                                            if this.composer_model_picker_agent
+                                                                == Some(picker_agent_id)
+                                                            {
+                                                                this.composer_model_expanded = false;
+                                                            }
+                                                        } else {
+                                                            this.composer_model_expanded = true;
+                                                            this.composer_model_picker_agent =
+                                                                Some(picker_agent_id);
                                                             this.composer_model_provider = None;
                                                             this.composer_model_query.update(cx, |query, cx| {
                                                                 query.set_value("", window, cx)

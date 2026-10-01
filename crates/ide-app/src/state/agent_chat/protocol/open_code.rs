@@ -1005,7 +1005,7 @@ impl OpenCodeRuntime {
     }
 }
 
-fn open_code_confirmed_diffs(update: &Value, root: &Path) -> Vec<FileChangeStat> {
+pub(super) fn open_code_confirmed_diffs(update: &Value, root: &Path) -> Vec<FileChangeStat> {
     if update.get("status").and_then(Value::as_str) != Some("completed") {
         return vec![];
     }
@@ -1497,6 +1497,10 @@ fn open_code_should_emit_plan(is_plan: bool, stop_reason: &str) -> bool {
 }
 
 fn open_code_tool_entry(update: &Value) -> WorkLogEntry {
+    acp_tool_entry(update, "OpenCode tool")
+}
+
+pub(super) fn acp_tool_entry(update: &Value, fallback_title: &str) -> WorkLogEntry {
     let id = update
         .get("toolCallId")
         .and_then(Value::as_str)
@@ -1511,7 +1515,7 @@ fn open_code_tool_entry(update: &Value) -> WorkLogEntry {
     let title = update
         .get("title")
         .and_then(Value::as_str)
-        .unwrap_or("OpenCode tool")
+        .unwrap_or(fallback_title)
         .to_string();
     let detail = update
         .get("rawInput")

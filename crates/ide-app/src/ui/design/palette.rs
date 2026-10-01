@@ -77,6 +77,11 @@ pub fn claude_brand() -> Hsla {
     rgb(0xD97757)
 }
 
+/// The Gemini agent brand colour (fixed identity), Google's Gemini blue.
+pub fn gemini_brand() -> Hsla {
+    rgb(0x3186FF)
+}
+
 /// Tumble's yellow brand mark in the workspace rail.
 pub fn tumble_brand() -> Hsla {
     rgb(0xFFDE32)
