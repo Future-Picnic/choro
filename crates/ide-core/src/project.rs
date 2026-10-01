@@ -277,9 +277,45 @@ pub enum DbProvider {
     SQLite,
     MySql,
     MariaDb,
+    Turso,
+    #[serde(rename = "clickhouse", alias = "click_house")]
+    ClickHouse,
+}
+
+/// Declares working browser capabilities, rather than inferring them in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbCapabilities {
+    pub relational: bool,
+    pub row_editing: bool,
+    pub local_file: bool,
+    pub default_read_only: bool,
 }
 
 impl DbProvider {
+    pub const ALL: [Self; 8] = [
+        Self::MongoDb,
+        Self::PostgreSql,
+        Self::Supabase,
+        Self::SQLite,
+        Self::MySql,
+        Self::MariaDb,
+        Self::Turso,
+        Self::ClickHouse,
+    ];
+
+    pub fn capabilities(self) -> DbCapabilities {
+        DbCapabilities {
+            relational: self != Self::MongoDb,
+            row_editing: !self.is_http(),
+            local_file: self == Self::SQLite,
+            default_read_only: self.is_postgres() || self.is_mysql() || self.is_http(),
+        }
+    }
+
+    pub fn is_http(self) -> bool {
+        matches!(self, Self::Turso | Self::ClickHouse)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MongoDb => "mongodb",
@@ -288,6 +324,8 @@ impl DbProvider {
             Self::SQLite => "sqlite",
             Self::MySql => "mysql",
             Self::MariaDb => "mariadb",
+            Self::Turso => "turso",
+            Self::ClickHouse => "clickhouse",
         }
     }
 
@@ -299,6 +337,8 @@ impl DbProvider {
             Self::SQLite => "SQLite",
             Self::MySql => "MySQL",
             Self::MariaDb => "MariaDB",
+            Self::Turso => "Turso / libSQL",
+            Self::ClickHouse => "ClickHouse",
         }
     }
 
@@ -322,6 +362,8 @@ impl std::str::FromStr for DbProvider {
             "sqlite" => Ok(Self::SQLite),
             "mysql" => Ok(Self::MySql),
             "mariadb" => Ok(Self::MariaDb),
+            "turso" | "libsql" => Ok(Self::Turso),
+            "clickhouse" => Ok(Self::ClickHouse),
             _ => anyhow::bail!("unsupported database provider: {value}"),
         }
     }
@@ -369,7 +411,7 @@ impl DbConnection {
         Self {
             id: Uuid::new_v4(),
             provider,
-            read_only: provider.is_postgres() || provider.is_mysql(),
+            read_only: provider.capabilities().default_read_only,
             name: name.into(),
             uri: uri.into(),
         }
@@ -672,6 +714,32 @@ mod tests {
         let connection: DbConnection = serde_json::from_str(&json).unwrap();
         assert_eq!(connection.provider, DbProvider::MongoDb);
         assert!(!connection.read_only);
+    }
+
+    #[test]
+    fn remote_database_connections_round_trip_without_exposing_tokens() {
+        for (provider, uri) in [
+            (
+                DbProvider::Turso,
+                "libsql://database.turso.io?authToken=literal-secret-token",
+            ),
+            (
+                DbProvider::ClickHouse,
+                "https://reader:literal-secret-password@host.example:8443/app",
+            ),
+        ] {
+            let connection = DbConnection::new_for(provider, "remote", uri);
+            assert!(connection.read_only);
+            let encoded = serde_json::to_string(&connection).unwrap();
+            assert_eq!(
+                serde_json::from_str::<DbConnection>(&encoded).unwrap(),
+                connection
+            );
+            assert_eq!(provider.as_str().parse::<DbProvider>().unwrap(), provider);
+            let debug = format!("{connection:?}");
+            assert!(!debug.contains("literal-secret"));
+            assert!(debug.contains("[REDACTED]"));
+        }
     }
 
     #[test]

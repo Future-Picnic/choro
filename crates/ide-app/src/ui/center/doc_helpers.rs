@@ -369,8 +369,9 @@ pub(super) struct AgentDiffDrawer {
 pub(super) struct DbItem {
     pub(super) project: ProjectId,
     pub(super) key: String,
-    pub(super) title: SharedString,
+    pub(super) meta: crate::ui::db::workspace::DbTabMeta,
     pub(super) view: Entity<DatabasePane>,
+    pub(super) connection: ide_core::DatabaseHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

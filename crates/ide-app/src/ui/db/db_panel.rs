@@ -1,33 +1,38 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    div, prelude::FluentBuilder, px, App, AppContext, Context, Entity, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, Window,
+    div, px, App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Window,
 };
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
-    scroll::ScrollableElement,
     spinner::Spinner,
-    v_flex, Disableable, Icon, IconName, Selectable, Sizable, WindowExt,
+    v_flex, Icon, IconName, Sizable,
 };
-use ide_core::{DatabaseHandle, DbConnection, DbObject, DbObjectKind, DbProvider};
+use ide_core::{DatabaseHandle, DbConnection, DbObject, DbProvider};
 use uuid::Uuid;
 
+pub use super::connection_editor::DbConnectionsEditor;
+use super::providers::effective_read_only;
 use crate::state::Workspace;
 use crate::ui::center::CenterArea;
 use crate::ui::style;
 
-/// Async-loaded tree level: not asked yet / in flight / done / failed.
-enum Loaded<T> {
+pub(crate) mod tree_rows;
+
+/// Async-loaded tree level: in flight / done / failed.
+pub(crate) enum Loaded<T> {
     Loading,
     Ready(T),
     Failed(String),
 }
 
 /// Right panel tab: saved database connections for the active project,
-/// expanding to namespaces and database objects.
+/// expanding lazily to namespaces and database objects. Each level loads only
+/// when opened (DBFlux's shallow schema fetch), and every async result is
+/// checked against the connection's epoch so a reconnect or edit can never be
+/// overwritten by a slower, older response.
 pub struct DbPanel {
     workspace: Entity<Workspace>,
     center: gpui::WeakEntity<CenterArea>,
@@ -35,8 +40,12 @@ pub struct DbPanel {
     expanded_dbs: HashSet<(Uuid, String)>,
     connection_specs: HashMap<Uuid, (DbProvider, String, bool)>,
     handles: HashMap<Uuid, DatabaseHandle>,
+    epochs: HashMap<Uuid, u64>,
     databases: HashMap<Uuid, Loaded<Vec<String>>>,
     collections: HashMap<(Uuid, String), Loaded<Vec<DbObject>>>,
+    /// The namespace each connection shows on the workspace home.
+    home_focus: HashMap<Uuid, String>,
+    filter: Option<Entity<InputState>>,
 }
 
 impl DbPanel {
@@ -46,27 +55,159 @@ impl DbPanel {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
-            Self {
+            // Saved connections drive cached sessions whether or not the
+            // explorer is mounted: the workspace home uses this state too,
+            // and the side panel can be hidden.
+            cx.observe(&workspace, |this: &mut Self, _, cx| {
+                this.sync_from_workspace(cx);
+                cx.notify();
+            })
+            .detach();
+            let mut panel = Self {
                 workspace,
                 center,
                 expanded_conns: HashSet::new(),
                 expanded_dbs: HashSet::new(),
                 connection_specs: HashMap::new(),
                 handles: HashMap::new(),
+                epochs: HashMap::new(),
                 databases: HashMap::new(),
                 collections: HashMap::new(),
-            }
+                home_focus: HashMap::new(),
+                filter: None,
+            };
+            panel.sync_from_workspace(cx);
+            panel
         })
     }
 
-    /// A pooled client per connection, created lazily off the UI thread by
-    /// the load functions (connect itself is cheap; queries do the blocking).
+    /// Reconciles cached sessions with every saved connection in every
+    /// project. Using all projects (not just the active one) means switching
+    /// projects never retires sessions that open tabs still use.
+    fn sync_from_workspace(&mut self, cx: &mut Context<Self>) {
+        let connections = self
+            .workspace
+            .read(cx)
+            .projects
+            .iter()
+            .flat_map(|project| project.db_connections.iter().cloned())
+            .collect::<Vec<_>>();
+        self.sync_connection_specs(&connections, cx);
+    }
+
+    /// The access a connection's sessions must have now, from the saved
+    /// settings rather than a possibly stale copy captured by a click.
+    fn current_read_only(&self, conn: &DbConnection) -> bool {
+        self.connection_specs
+            .get(&conn.id)
+            .map(|spec| spec.2)
+            .unwrap_or_else(|| effective_read_only(conn.provider, conn.read_only))
+    }
+
+    /// Namespace level of a saved connection; `None` until it is opened.
+    pub(crate) fn namespaces(&self, id: Uuid) -> Option<&Loaded<Vec<String>>> {
+        self.databases.get(&id)
+    }
+
+    /// Object level of one namespace; `None` until it is opened.
+    pub(crate) fn objects(&self, id: Uuid, namespace: &str) -> Option<&Loaded<Vec<DbObject>>> {
+        self.collections.get(&(id, namespace.to_string()))
+    }
+
+    pub(crate) fn focused_namespace(&self, id: Uuid) -> Option<&str> {
+        self.home_focus.get(&id).map(String::as_str)
+    }
+
+    /// Places loaded levels directly, for headless layout tests that must
+    /// not contact a database.
+    #[cfg(test)]
+    pub(crate) fn seed_for_test(
+        &mut self,
+        id: Uuid,
+        namespaces: Loaded<Vec<String>>,
+        focus: Option<(String, Loaded<Vec<DbObject>>)>,
+    ) {
+        self.expanded_conns.insert(id);
+        self.databases.insert(id, namespaces);
+        if let Some((namespace, objects)) = focus {
+            self.expanded_dbs.insert((id, namespace.clone()));
+            self.collections.insert((id, namespace.clone()), objects);
+            self.home_focus.insert(id, namespace);
+        }
+    }
+
+    /// Opens a connection from outside the tree (the workspace home): expands
+    /// it in the explorer and loads its namespaces once.
+    pub(crate) fn connect(&mut self, conn: DbConnection, cx: &mut Context<Self>) {
+        self.expanded_conns.insert(conn.id);
+        if !matches!(
+            self.databases.get(&conn.id),
+            Some(Loaded::Ready(_) | Loaded::Loading)
+        ) {
+            self.load_databases(conn, cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows one namespace's objects on the home and in the explorer.
+    pub(crate) fn focus_namespace(
+        &mut self,
+        conn: DbConnection,
+        namespace: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (conn.id, namespace.clone());
+        self.expanded_conns.insert(conn.id);
+        self.expanded_dbs.insert(key.clone());
+        self.home_focus.insert(conn.id, namespace.clone());
+        if !matches!(
+            self.collections.get(&key),
+            Some(Loaded::Ready(_) | Loaded::Loading)
+        ) {
+            self.load_collections(conn, namespace, cx);
+        }
+        cx.notify();
+    }
+
+    fn epoch(&self, id: Uuid) -> u64 {
+        self.epochs.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Forgets everything derived from a connection's endpoint and invalidates
+    /// any in-flight loads for it.
+    fn reset_connection(&mut self, id: Uuid) {
+        *self.epochs.entry(id).or_default() += 1;
+        if let Some(retired) = self.handles.remove(&id) {
+            // Tabs can outlive the cached connection. Never permit writes to a
+            // former endpoint after reconnecting or editing the connection.
+            retired.set_read_only(true);
+        }
+        self.databases.remove(&id);
+        self.collections.retain(|(conn, _), _| *conn != id);
+    }
+
+    /// A pooled client per connection. Construction is cheap and lazy; the
+    /// first query does the blocking work on a background executor.
     fn handle_for(&mut self, conn: &DbConnection) -> anyhow::Result<DatabaseHandle> {
+        match self.connection_specs.get(&conn.id) {
+            // A click captured before the connection was edited must not
+            // open a session to the former endpoint.
+            Some(spec) if spec.0 != conn.provider || spec.1 != conn.uri => {
+                anyhow::bail!("This connection's settings changed. Open it again.");
+            }
+            Some(_) => {}
+            None => {
+                // Specs are reconciled from saved settings at construction
+                // and on workspace changes. An old click must not recreate
+                // a connection that the user has since removed.
+                anyhow::bail!("This connection was removed. Choose a saved connection.");
+            }
+        }
         if let Some(handle) = self.handles.get(&conn.id) {
             return Ok(handle.clone());
         }
         let handle = DatabaseHandle::connect(conn)?;
+        handle.set_read_only(self.current_read_only(conn));
         self.handles.insert(conn.id, handle.clone());
         Ok(handle)
     }
@@ -77,7 +218,10 @@ impl DbPanel {
             cx.notify();
             return;
         }
-        if !matches!(self.databases.get(&conn.id), Some(Loaded::Ready(_))) {
+        if !matches!(
+            self.databases.get(&conn.id),
+            Some(Loaded::Ready(_) | Loaded::Loading)
+        ) {
             self.load_databases(conn, cx);
         }
         cx.notify();
@@ -85,6 +229,7 @@ impl DbPanel {
 
     fn load_databases(&mut self, conn: DbConnection, cx: &mut Context<Self>) {
         let conn_id = conn.id;
+        let epoch = self.epoch(conn_id);
         self.databases.insert(conn_id, Loaded::Loading);
         let handle = match self.handle_for(&conn) {
             Ok(handle) => handle,
@@ -100,6 +245,17 @@ impl DbPanel {
                 .spawn(async move { handle.list_namespaces() })
                 .await;
             this.update(cx, |this, cx| {
+                if this.epoch(conn_id) != epoch {
+                    return;
+                }
+                // A lone namespace (SQLite's `main`, a single Mongo database)
+                // needs no choice: open it so its objects are one click away.
+                let lone = match &result {
+                    Ok(dbs) if dbs.len() == 1 && !this.home_focus.contains_key(&conn_id) => {
+                        Some(dbs[0].clone())
+                    }
+                    _ => None,
+                };
                 this.databases.insert(
                     conn_id,
                     match result {
@@ -107,6 +263,9 @@ impl DbPanel {
                         Err(error) => Loaded::Failed(format!("{error:#}")),
                     },
                 );
+                if let Some(namespace) = lone {
+                    this.focus_namespace(conn.clone(), namespace, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -121,7 +280,10 @@ impl DbPanel {
             cx.notify();
             return;
         }
-        if !matches!(self.collections.get(&key), Some(Loaded::Ready(_))) {
+        if !matches!(
+            self.collections.get(&key),
+            Some(Loaded::Ready(_) | Loaded::Loading)
+        ) {
             self.load_collections(conn, db, cx);
         }
         cx.notify();
@@ -129,6 +291,7 @@ impl DbPanel {
 
     fn load_collections(&mut self, conn: DbConnection, db: String, cx: &mut Context<Self>) {
         let key = (conn.id, db.clone());
+        let epoch = self.epoch(conn.id);
         self.collections.insert(key.clone(), Loaded::Loading);
         let handle = match self.handle_for(&conn) {
             Ok(handle) => handle,
@@ -144,6 +307,9 @@ impl DbPanel {
                 .spawn(async move { handle.list_objects(&db) })
                 .await;
             this.update(cx, |this, cx| {
+                if this.epoch(key.0) != epoch {
+                    return;
+                }
                 this.collections.insert(
                     key,
                     match result {
@@ -156,9 +322,10 @@ impl DbPanel {
             .ok();
         })
         .detach();
+        cx.notify();
     }
 
-    fn open_object(
+    pub(crate) fn open_object(
         &mut self,
         conn: DbConnection,
         db: String,
@@ -169,24 +336,39 @@ impl DbPanel {
         let handle = match self.handle_for(&conn) {
             Ok(handle) => handle,
             Err(error) => {
-                eprintln!("db: connect failed: {error:#}");
+                self.databases
+                    .insert(conn.id, Loaded::Failed(format!("{error:#}")));
+                cx.notify();
                 return;
             }
         };
+        // Opening a pane applies this access to the shared session, so it
+        // must come from the saved settings, never from a stale copy.
+        let conn = DbConnection {
+            read_only: self.current_read_only(&conn),
+            ..conn
+        };
         if let Some(center) = self.center.upgrade() {
             center.update(cx, |center, cx| {
-                center.open_db_object(handle, conn.clone(), db, object, window, cx);
+                center.open_db_object(handle, conn, db, object, window, cx);
             });
         }
     }
 
-    /// Drops cached state for a connection so the next expand reloads.
-    fn refresh_connection(&mut self, conn: DbConnection, cx: &mut Context<Self>) {
-        self.handles.remove(&conn.id);
-        self.databases.remove(&conn.id);
-        self.collections.retain(|(id, _), _| *id != conn.id);
-        if self.expanded_conns.contains(&conn.id) {
-            self.load_databases(conn, cx);
+    /// Reconnects: drops the cached client and every loaded level for the
+    /// connection, then reloads its namespaces and any open namespaces.
+    pub(crate) fn refresh_connection(&mut self, conn: DbConnection, cx: &mut Context<Self>) {
+        self.reset_connection(conn.id);
+        self.expanded_conns.insert(conn.id);
+        let reopen = self
+            .expanded_dbs
+            .iter()
+            .filter(|(id, _)| *id == conn.id)
+            .map(|(_, db)| db.clone())
+            .collect::<Vec<_>>();
+        self.load_databases(conn.clone(), cx);
+        for db in reopen {
+            self.load_collections(conn.clone(), db, cx);
         }
         cx.notify();
     }
@@ -202,26 +384,22 @@ impl DbPanel {
         let mut reload = Vec::new();
 
         for connection in connections {
-            let next = (
-                connection.provider,
-                connection.uri.clone(),
-                connection.read_only,
-            );
+            let read_only = effective_read_only(connection.provider, connection.read_only);
+            let next = (connection.provider, connection.uri.clone(), read_only);
             let previous = self.connection_specs.get(&connection.id);
             let endpoint_changed =
                 previous.is_some_and(|current| current.0 != next.0 || current.1 != next.1);
             let access_changed = previous.is_some_and(|current| current.2 != next.2);
             if access_changed && !endpoint_changed {
                 if let Some(handle) = self.handles.get(&connection.id) {
-                    handle.set_read_only(connection.read_only);
+                    handle.set_read_only(read_only);
                 }
             }
             self.connection_specs.insert(connection.id, next);
             if endpoint_changed {
-                self.handles.remove(&connection.id);
-                self.databases.remove(&connection.id);
-                self.collections.retain(|(id, _), _| *id != connection.id);
+                self.reset_connection(connection.id);
                 self.expanded_dbs.retain(|(id, _)| *id != connection.id);
+                self.home_focus.remove(&connection.id);
                 if self.expanded_conns.contains(&connection.id) {
                     reload.push(connection.clone());
                 }
@@ -230,24 +408,47 @@ impl DbPanel {
 
         self.connection_specs
             .retain(|id, _| current_ids.contains(id));
-        self.handles.retain(|id, _| current_ids.contains(id));
+        self.handles.retain(|id, handle| {
+            let keep = current_ids.contains(id);
+            if !keep {
+                handle.set_read_only(true);
+            }
+            keep
+        });
+        self.epochs.retain(|id, _| current_ids.contains(id));
         self.databases.retain(|id, _| current_ids.contains(id));
         self.collections
             .retain(|(id, _), _| current_ids.contains(id));
         self.expanded_conns.retain(|id| current_ids.contains(id));
         self.expanded_dbs.retain(|(id, _)| current_ids.contains(id));
+        self.home_focus.retain(|id, _| current_ids.contains(id));
 
         for connection in reload {
             self.load_databases(connection, cx);
         }
     }
 
+    fn ensure_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(filter) = &self.filter {
+            return filter.clone();
+        }
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter tables"));
+        cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        self.filter = Some(filter.clone());
+        filter
+    }
+
     fn tree_row(&self, indent: usize, content: impl IntoElement, cx: &Context<Self>) -> gpui::Div {
         h_flex()
             .w_full()
-            .pl(px(10. + indent as f32 * 16.))
-            .pr_2()
-            .py_1()
+            .min_h(px(26.))
+            .pl(px(8. + indent as f32 * 16.))
+            .pr_1()
             .gap_1p5()
             .items_center()
             .rounded(crate::ui::design::r_sm())
@@ -255,18 +456,111 @@ impl DbPanel {
             .hover(|style| style.bg(crate::ui::design::hover(cx)))
             .child(content)
     }
+
+    /// A non-interactive status line inside the tree (loading, empty, failed).
+    fn tree_note(&self, indent: usize, content: impl IntoElement, cx: &Context<Self>) -> gpui::Div {
+        h_flex()
+            .w_full()
+            .pl(px(8. + indent as f32 * 16. + 18.))
+            .pr_2()
+            .py_1()
+            .gap_1p5()
+            .items_start()
+            .text_size(crate::ui::design::text_ui())
+            .text_color(crate::ui::design::t3(cx))
+            .child(content)
+    }
+
+    fn render_failure(
+        &self,
+        indent: usize,
+        id: impl Into<gpui::ElementId>,
+        error: &str,
+        on_retry: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        self.tree_note(
+            indent,
+            v_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .gap_1p5()
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_start()
+                        .child(
+                            div()
+                                .pt(px(2.))
+                                .child(crate::ui::design::indicator::lucide_icon(
+                                    lucide_icons::Icon::CircleX,
+                                    crate::ui::design::rose(cx),
+                                    crate::ui::design::icon_sm(),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_color(crate::ui::design::t2(cx))
+                                .line_height(gpui::relative(1.4))
+                                .whitespace_normal()
+                                .child(SharedString::from(error.to_string())),
+                        ),
+                )
+                .child(
+                    h_flex().child(
+                        style::refresh_button(id, "Retry", cx)
+                            .on_click(cx.listener(move |this, _, _, cx| on_retry(this, cx))),
+                    ),
+                ),
+            cx,
+        )
+    }
 }
 
-/// "2h ago"-style label.
+fn matches_filter(name: &str, query: &str) -> bool {
+    query.is_empty() || name.to_lowercase().contains(query)
+}
+
+/// The center's identity for an open object tab; the explorer uses it to
+/// mark the object that is currently on screen.
+pub(crate) fn object_key(conn: Uuid, namespace: &str, object: &str) -> String {
+    format!("{conn}/{namespace}/{object}")
+}
+
+/// Splits a namespace's objects into explorer groups (tables, views,
+/// collections), preserving the backend's order within each group.
+fn group_by_kind(objects: &[DbObject]) -> Vec<(ide_core::DbObjectKind, Vec<&DbObject>)> {
+    use ide_core::DbObjectKind;
+    [
+        DbObjectKind::Table,
+        DbObjectKind::View,
+        DbObjectKind::Collection,
+    ]
+    .into_iter()
+    .map(|kind| {
+        (
+            kind,
+            objects
+                .iter()
+                .filter(|object| object.kind == kind)
+                .collect::<Vec<_>>(),
+        )
+    })
+    .filter(|(_, objects)| !objects.is_empty())
+    .collect()
+}
+
 impl Render for DbPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(project) = self.workspace.read(cx).active_project() else {
             return style::empty_context_panel("DB", "Open a project to browse databases", cx)
                 .into_any_element();
         };
-        let project_id = project.id;
+        // Sessions are reconciled by the workspace observer, not here, so
+        // they stay correct while this panel is hidden.
         let connections = project.db_connections.clone();
-        self.sync_connection_specs(&connections, cx);
 
         let header = crate::ui::design::header::panel_bar(cx)
             .child(crate::ui::design::header::panel_identity(
@@ -292,227 +586,158 @@ impl Render for DbPanel {
             return v_flex()
                 .size_full()
                 .child(header)
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .text_color(crate::ui::design::t3(cx))
-                        .child(Icon::new(IconName::Database).size_8())
-                        .child(
-                            div()
-                                .text_size(crate::ui::design::text_body())
-                                .child("No database connections"),
-                        ),
-                )
+                .child(self.render_empty(cx))
                 .into_any_element();
         }
 
-        let danger = crate::ui::design::rose(cx);
+        let filter = self.ensure_filter(window, cx);
+        let query = filter.read(cx).value().trim().to_lowercase();
+        let active_object = self
+            .center
+            .upgrade()
+            .and_then(|center| center.read(cx).active_db_object_key(cx));
+
         let mut list = v_flex()
             .id("db-tree")
             .flex_1()
             .min_h(px(0.))
             .px_1()
+            .pb_2()
             .overflow_y_scroll();
 
         for (cix, conn) in connections.iter().enumerate() {
-            let expanded = self.expanded_conns.contains(&conn.id);
-            let prod = conn.looks_like_prod();
-            let toggle_conn = conn.clone();
-            let refresh_conn = conn.clone();
-            list = list.child(
-                self.tree_row(
-                    0,
-                    h_flex()
-                        .w_full()
-                        .gap_1p5()
-                        .items_center()
-                        .child(
-                            Icon::new(if expanded {
-                                IconName::ChevronDown
-                            } else {
-                                IconName::ChevronRight
-                            })
-                            .size(crate::ui::design::icon_sm())
-                            .text_color(crate::ui::design::t3(cx)),
-                        )
-                        .child(super::provider_brand_mark(
-                            conn.provider,
-                            crate::ui::design::ICON_MD,
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .truncate()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(SharedString::from(conn.name.clone())),
-                        )
-                        .when(prod, |row| {
-                            row.child(
-                                div()
-                                    .px_1()
-                                    .rounded(crate::ui::design::r_xs())
-                                    .text_size(crate::ui::design::text_ui())
-                                    .font_weight(FontWeight::BOLD)
-                                    .bg(danger)
-                                    .text_color(crate::ui::design::on_rose(cx))
-                                    .child("PROD"),
-                            )
-                        })
-                        .child(
-                            style::icon_button(("db-refresh-conn", cix), IconName::Redo2, cx)
-                                .tooltip("Reconnect & reload")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.refresh_connection(refresh_conn.clone(), cx);
-                                })),
-                        ),
-                    cx,
-                )
-                .id(("db-conn-row", cix))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_connection(toggle_conn.clone(), cx);
-                })),
-            );
-
-            if !expanded {
+            list = list.child(self.render_connection_row(cix, conn, cx));
+            if !self.expanded_conns.contains(&conn.id) {
                 continue;
             }
             match self.databases.get(&conn.id) {
                 None | Some(Loaded::Loading) => {
-                    list = list.child(self.tree_row(
-                        1,
-                        h_flex().gap_2().child(Spinner::new().small()),
-                        cx,
-                    ));
-                }
-                Some(Loaded::Failed(error)) => {
                     list = list.child(
-                        self.tree_row(
+                        self.tree_note(
                             1,
-                            div()
-                                .text_size(crate::ui::design::text_ui())
-                                .text_color(danger)
-                                .whitespace_normal()
-                                .child(SharedString::from(error.clone())),
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(Spinner::new().xsmall())
+                                .child("Connecting"),
                             cx,
                         ),
                     );
                 }
+                Some(Loaded::Failed(error)) => {
+                    let retry_conn = conn.clone();
+                    let error = error.clone();
+                    list = list.child(self.render_failure(
+                        1,
+                        ("db-retry-conn", cix),
+                        &error,
+                        move |this, cx| this.refresh_connection(retry_conn.clone(), cx),
+                        cx,
+                    ));
+                }
+                Some(Loaded::Ready(dbs)) if dbs.is_empty() => {
+                    list = list.child(self.tree_note(
+                        1,
+                        div().child("No schemas are visible to this user."),
+                        cx,
+                    ));
+                }
                 Some(Loaded::Ready(dbs)) => {
                     for (dix, db) in dbs.clone().iter().enumerate() {
                         let key = (conn.id, db.clone());
-                        let db_expanded = self.expanded_dbs.contains(&key);
-                        let toggle_conn = conn.clone();
-                        let toggle_db = db.clone();
-                        list = list.child(
-                            self.tree_row(
-                                1,
-                                h_flex()
-                                    .w_full()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .child(
-                                        Icon::new(if db_expanded {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        })
-                                        .size(crate::ui::design::icon_sm())
-                                        .text_color(crate::ui::design::t3(cx)),
-                                    )
-                                    .child(
-                                        Icon::new(IconName::FolderClosed)
-                                            .size(crate::ui::design::icon_md())
-                                            .text_color(crate::ui::design::t3(cx)),
-                                    )
-                                    .child(SharedString::from(db.clone())),
-                                cx,
-                            )
-                            .id(("db-db-row", cix * 1000 + dix))
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.toggle_database(
-                                        toggle_conn.clone(),
-                                        toggle_db.clone(),
-                                        cx,
-                                    );
-                                },
-                            )),
-                        );
-
-                        if !db_expanded {
+                        let namespace_matches = matches_filter(db, &query);
+                        let visible_objects = match self.collections.get(&key) {
+                            Some(Loaded::Ready(objects)) => Some(
+                                objects
+                                    .iter()
+                                    .filter(|object| {
+                                        namespace_matches || matches_filter(&object.name, &query)
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                            ),
+                            _ => None,
+                        };
+                        if !namespace_matches
+                            && visible_objects
+                                .as_ref()
+                                .is_some_and(|objects| objects.is_empty())
+                        {
+                            continue;
+                        }
+                        list = list.child(self.render_database_row(cix * 1000 + dix, conn, db, cx));
+                        if !self.expanded_dbs.contains(&key) {
                             continue;
                         }
                         match self.collections.get(&key) {
                             None | Some(Loaded::Loading) => {
-                                list = list.child(self.tree_row(
-                                    2,
-                                    h_flex().gap_2().child(Spinner::new().small()),
-                                    cx,
-                                ));
-                            }
-                            Some(Loaded::Failed(error)) => {
                                 list = list.child(
-                                    self.tree_row(
+                                    self.tree_note(
                                         2,
-                                        div()
-                                            .text_size(crate::ui::design::text_ui())
-                                            .text_color(danger)
-                                            .whitespace_normal()
-                                            .child(SharedString::from(error.clone())),
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(Spinner::new().xsmall())
+                                            .child("Loading tables"),
                                         cx,
                                     ),
                                 );
                             }
-                            Some(Loaded::Ready(colls)) => {
-                                for (tix, object) in colls.clone().iter().enumerate() {
-                                    let open_conn = conn.clone();
-                                    let open_db = db.clone();
-                                    let open_object = object.clone();
-                                    let icon = match object.kind {
-                                        DbObjectKind::Collection => IconName::File,
-                                        DbObjectKind::Table => IconName::Database,
-                                        DbObjectKind::View => IconName::Eye,
-                                    };
-                                    list = list.child(
-                                        self.tree_row(
-                                            2,
-                                            h_flex()
-                                                .w_full()
-                                                .gap_1p5()
-                                                .items_center()
-                                                .child(
-                                                    Icon::new(icon)
-                                                        .size(crate::ui::design::icon_md())
-                                                        .text_color(crate::ui::design::t3(cx)),
-                                                )
-                                                .child(SharedString::from(object.name.clone()))
-                                                .when(object.kind == DbObjectKind::View, |row| {
-                                                    row.child(
-                                                        div()
-                                                            .text_size(crate::ui::design::text_ui())
-                                                            .text_color(crate::ui::design::t3(cx))
-                                                            .child("view"),
-                                                    )
-                                                }),
+                            Some(Loaded::Failed(error)) => {
+                                let retry_conn = conn.clone();
+                                let retry_db = db.clone();
+                                let error = error.clone();
+                                list = list.child(self.render_failure(
+                                    2,
+                                    ("db-retry-db", cix * 1000 + dix),
+                                    &error,
+                                    move |this, cx| {
+                                        this.load_collections(
+                                            retry_conn.clone(),
+                                            retry_db.clone(),
                                             cx,
                                         )
-                                        .id(("db-coll-row", cix * 100_000 + dix * 1000 + tix))
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                this.open_object(
-                                                    open_conn.clone(),
-                                                    open_db.clone(),
-                                                    open_object.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }),
-                                        ),
-                                    );
+                                    },
+                                    cx,
+                                ));
+                            }
+                            Some(Loaded::Ready(_)) => {
+                                let visible = visible_objects.unwrap_or_default();
+                                if visible.is_empty() {
+                                    list = list.child(self.tree_note(
+                                        2,
+                                        div().child(if query.is_empty() {
+                                            "No tables or views"
+                                        } else {
+                                            "No matching tables"
+                                        }),
+                                        cx,
+                                    ));
+                                }
+                                let groups = group_by_kind(&visible);
+                                let labelled = groups.len() > 1;
+                                let mut tix = 0;
+                                for (kind, objects) in groups {
+                                    if labelled {
+                                        list = list.child(self.render_kind_group_row(
+                                            kind,
+                                            objects.len(),
+                                            cx,
+                                        ));
+                                    }
+                                    for object in objects {
+                                        let open = active_object.as_deref()
+                                            == Some(object_key(conn.id, db, &object.name).as_str());
+                                        list = list.child(self.render_object_row(
+                                            cix * 100_000 + dix * 1000 + tix,
+                                            conn,
+                                            db,
+                                            object,
+                                            open,
+                                            cx,
+                                        ));
+                                        tix += 1;
+                                    }
                                 }
                             }
                         }
@@ -521,1072 +746,20 @@ impl Render for DbPanel {
             }
         }
 
-        // Keep project id alive for the editor (avoids unused warning churn).
-        let _ = project_id;
-
         v_flex()
             .size_full()
             .child(header)
-            .child(list)
-            .into_any_element()
-    }
-}
-
-// ----- connections editor dialog -----
-
-struct ConnectionRow {
-    id: Uuid,
-    provider: DbProvider,
-    read_only: bool,
-    show_help: bool,
-    name: Entity<InputState>,
-    uri: Entity<InputState>,
-}
-
-const DB_CONNECTION_EDITOR_CONTENT_WIDTH: f32 = 576.;
-
-/// Dialog for editing a project's database connections, mirroring the task
-/// connection list/detail workflow.
-pub struct DbConnectionsEditor {
-    rows: Vec<ConnectionRow>,
-    connection_tests: HashMap<Uuid, Loaded<()>>,
-    active_row: Option<usize>,
-    choosing_provider: bool,
-    validation_error: Option<SharedString>,
-}
-
-impl DbConnectionsEditor {
-    pub fn open(workspace: Entity<Workspace>, window: &mut Window, cx: &mut App) {
-        let Some(project) = workspace.read(cx).active_project() else {
-            return;
-        };
-        let project_id = project.id;
-        let project_name = project.name.clone();
-        let connections = project.db_connections.clone();
-
-        let editor = cx.new(|cx| {
-            let rows = connections
-                .iter()
-                .map(|conn| Self::row_from(conn, window, cx))
-                .collect::<Vec<_>>();
-            for row in &rows {
-                Self::clear_status_on_change(row, cx);
-            }
-            Self {
-                rows,
-                connection_tests: HashMap::new(),
-                active_row: None,
-                choosing_provider: false,
-                validation_error: None,
-            }
-        });
-
-        let footer_editor = editor.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let save_editor = footer_editor.clone();
-            let save_workspace = workspace.clone();
-            dialog
-                .w(px(624.))
-                .title(SharedString::from(format!(
-                    "Database Connections — {project_name}"
-                )))
-                .child(footer_editor.clone())
-                .footer(move |_, _, _, cx| {
-                    let editor = save_editor.clone();
-                    let workspace = save_workspace.clone();
-                    vec![
-                        crate::ui::style::primary_button_compact("save-db-connections", "Save", cx)
-                            .icon(IconName::Check)
-                            .on_click(move |_, window, cx| match editor.read(cx).collect(cx) {
-                                Ok(connections) => {
-                                    workspace.update(cx, |workspace, cx| {
-                                        workspace.update_db_connections(
-                                            project_id,
-                                            connections,
-                                            cx,
-                                        );
-                                    });
-                                    window.close_dialog(cx);
-                                }
-                                Err((index, error)) => {
-                                    editor.update(cx, |editor, cx| {
-                                        editor.active_row = Some(index);
-                                        editor.choosing_provider = false;
-                                        editor.validation_error = Some(error.into());
-                                        cx.notify();
-                                    });
-                                }
-                            }),
-                        crate::ui::style::dialog_neutral_button(
-                            "cancel-db-connections",
-                            "Cancel",
-                            cx,
-                        )
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
-                    ]
-                })
-        });
-    }
-
-    fn row_from(conn: &DbConnection, window: &mut Window, cx: &mut App) -> ConnectionRow {
-        ConnectionRow {
-            id: conn.id,
-            provider: conn.provider,
-            read_only: conn.read_only,
-            show_help: false,
-            name: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(provider_name_placeholder(conn.provider))
-                    .default_value(conn.name.clone())
-            }),
-            uri: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(provider_placeholder(conn.provider))
-                    .default_value(conn.uri.clone())
-                    .masked(conn.provider != DbProvider::SQLite)
-            }),
-        }
-    }
-
-    fn new_row(provider: DbProvider, window: &mut Window, cx: &mut App) -> ConnectionRow {
-        ConnectionRow {
-            id: Uuid::new_v4(),
-            provider,
-            read_only: provider.is_postgres() || provider.is_mysql(),
-            show_help: false,
-            name: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(provider_name_placeholder(provider))
-                    .default_value(provider.display_name())
-            }),
-            uri: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(provider_placeholder(provider))
-                    .masked(provider != DbProvider::SQLite)
-            }),
-        }
-    }
-
-    fn clear_status_on_change(row: &ConnectionRow, cx: &mut Context<Self>) {
-        let row_id = row.id;
-        for input in [&row.name, &row.uri] {
-            cx.subscribe(input, move |this: &mut Self, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.connection_tests.remove(&row_id);
-                    this.validation_error = None;
-                    cx.notify();
-                }
-            })
-            .detach();
-        }
-    }
-
-    fn add_connection(
-        &mut self,
-        provider: DbProvider,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let row = Self::new_row(provider, window, cx);
-        Self::clear_status_on_change(&row, cx);
-        self.rows.push(row);
-        self.active_row = Some(self.rows.len() - 1);
-        self.choosing_provider = false;
-        self.validation_error = None;
-        cx.notify();
-    }
-
-    fn set_read_only(&mut self, index: usize, read_only: bool, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get_mut(index) {
-            row.read_only = read_only;
-            self.connection_tests.remove(&row.id);
-            self.validation_error = None;
-        }
-        cx.notify();
-    }
-
-    fn remove_connection(&mut self, id: Uuid, cx: &mut Context<Self>) {
-        let Some(index) = self.rows.iter().position(|row| row.id == id) else {
-            return;
-        };
-        let removed = self.rows.remove(index);
-        self.connection_tests.remove(&removed.id);
-        self.active_row = match self.active_row {
-            Some(active) if active == index => None,
-            Some(active) if active > index => Some(active - 1),
-            active => active,
-        };
-        cx.notify();
-    }
-
-    fn toggle_help(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get_mut(index) {
-            row.show_help = !row.show_help;
-        }
-        cx.notify();
-    }
-
-    fn test_connection(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(connection) = self.connection_from_row(index, cx) else {
-            return;
-        };
-        if connection.uri.is_empty() {
-            self.connection_tests.insert(
-                connection.id,
-                Loaded::Failed("Enter a connection string or file path first".into()),
-            );
-            cx.notify();
-            return;
-        }
-        let id = connection.id;
-        let request = connection.clone();
-        self.connection_tests.insert(id, Loaded::Loading);
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let handle = DatabaseHandle::connect(&connection)?;
-                    handle.list_namespaces()?;
-                    Ok::<_, anyhow::Error>(())
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.connection_from_row(index, cx).as_ref() != Some(&request) {
-                    return;
-                }
-                this.connection_tests.insert(
-                    id,
-                    match result {
-                        Ok(()) => Loaded::Ready(()),
-                        Err(error) => Loaded::Failed(format!("{error:#}")),
-                    },
-                );
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn choose_sqlite_file(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Choose SQLite Database".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let path = match receiver.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                _ => None,
-            };
-            let Some(path) = path else {
-                return;
-            };
-            cx.update(|window, cx| {
-                this.update(cx, |this, cx| {
-                    if let Some(row) = this.rows.get(index) {
-                        row.uri.update(cx, |input, cx| {
-                            input.set_value(path.display().to_string(), window, cx);
-                        });
-                    }
-                    cx.notify();
-                })
-                .ok();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn connection_from_row(&self, index: usize, cx: &App) -> Option<DbConnection> {
-        let row = self.rows.get(index)?;
-        let name = row.name.read(cx).value().trim().to_string();
-        Some(DbConnection {
-            id: row.id,
-            provider: row.provider,
-            read_only: row.read_only,
-            name: if name.is_empty() {
-                row.provider.display_name().to_string()
-            } else {
-                name
-            },
-            uri: row.uri.read(cx).value().trim().to_string(),
-        })
-    }
-
-    fn collect(&self, cx: &App) -> Result<Vec<DbConnection>, (usize, String)> {
-        self.rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let name = row.name.read(cx).value().trim().to_string();
-                if name.is_empty() {
-                    return Err((index, "Enter a connection name.".into()));
-                }
-                let uri = row.uri.read(cx).value().trim().to_string();
-                if uri.is_empty() {
-                    return Err((
-                        index,
-                        format!("Enter {}.", provider_connection_label(row.provider)),
-                    ));
-                }
-                Ok(DbConnection {
-                    id: row.id,
-                    provider: row.provider,
-                    read_only: row.read_only,
-                    name,
-                    uri,
-                })
-            })
-            .collect()
-    }
-
-    fn render_connection_list(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        v_flex()
-            .w(px(DB_CONNECTION_EDITOR_CONTENT_WIDTH))
-            .gap_3()
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_body())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(crate::ui::design::t1(cx))
-                            .child("Connections"),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_ui())
-                            .text_color(crate::ui::design::t3(cx))
-                            .child("Each provider has its own setup form and connection guidance."),
+                div().px_2().pb_1p5().child(
+                    Input::new(&filter).small().cleanable(true).prefix(
+                        Icon::new(IconName::Search)
+                            .size(crate::ui::design::icon_sm())
+                            .text_color(crate::ui::design::t3(cx)),
                     ),
-            )
-            .when(self.rows.is_empty(), |list| {
-                list.child(
-                    v_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_2()
-                        .rounded(crate::ui::design::r_sm())
-                        .border_1()
-                        .border_color(crate::ui::design::line(cx).opacity(0.36))
-                        .bg(crate::ui::design::base(cx).opacity(0.35))
-                        .px_3()
-                        .py_5()
-                        .child(
-                            div()
-                                .w(px(124.))
-                                .h(px(84.))
-                                .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    crate::ui::illustrations::illustration(
-                                        crate::ui::illustrations::Illustration::Database,
-                                        cx,
-                                    )
-                                    .size_full()
-                                    .object_fit(gpui::ObjectFit::Contain),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_size(crate::ui::design::text_body())
-                                .text_color(crate::ui::design::t3(cx))
-                                .child("No database connections yet."),
-                        ),
-                )
-            })
-            .children(self.rows.iter().enumerate().map(|(index, row)| {
-                let name = row.name.read(cx).value().trim().to_string();
-                let title = if name.is_empty() {
-                    row.provider.display_name().to_string()
-                } else {
-                    name
-                };
-                let connection_id = row.id;
-                let removal_detail = title.clone();
-                let configured = !row.uri.read(cx).value().trim().is_empty();
-                let detail = connection_summary(row.provider, row.read_only, configured);
-                let test_status = self.connection_tests.get(&row.id);
-                h_flex()
-                    .id(("db-connection-summary", index))
-                    .w_full()
-                    .gap_2p5()
-                    .items_center()
-                    .rounded(crate::ui::design::r_sm())
-                    .border_1()
-                    .border_color(crate::ui::design::line(cx).opacity(0.36))
-                    .bg(crate::ui::design::base(cx).opacity(0.35))
-                    .px_3()
-                    .py_2p5()
-                    .child(super::provider_brand_mark(row.provider, 30.))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .gap_0p5()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(crate::ui::design::text_body())
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(crate::ui::design::t1(cx))
-                                    .child(SharedString::from(title)),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .text_color(crate::ui::design::t3(cx))
-                                    .child(SharedString::from(detail)),
-                            ),
-                    )
-                    .when_some(test_status_label(test_status), |card, (icon, label, ok)| {
-                        card.child(
-                            h_flex()
-                                .gap_1()
-                                .text_size(crate::ui::design::text_ui())
-                                .text_color(if ok {
-                                    crate::ui::design::accent(cx)
-                                } else {
-                                    crate::ui::design::rose(cx)
-                                })
-                                .child(Icon::new(icon).size(crate::ui::design::icon_sm()))
-                                .child(label),
-                        )
-                    })
-                    .child(
-                        crate::ui::style::dialog_neutral_button(
-                            ("edit-db-connection", index),
-                            "Edit",
-                            cx,
-                        )
-                        .flex_none()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.active_row = Some(index);
-                            this.choosing_provider = false;
-                            this.validation_error = None;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        crate::ui::style::destructive_icon_button(
-                            ("remove-db-connection", index),
-                            cx,
-                        )
-                        .flex_none()
-                        .tooltip("Remove connection")
-                        .on_click(cx.listener(move |_, _, window, cx| {
-                            let editor = cx.entity();
-                            let removal_detail = removal_detail.clone();
-                            crate::ui::confirm::ConfirmDialog::new(
-                                "Remove database connection?",
-                                "This removes the connection from this list. The change is applied only when you save the database connections.",
-                            )
-                            .detail(removal_detail)
-                            .confirm_label("Remove")
-                            .confirm_id("confirm-remove-db-connection")
-                            .on_confirm(move |_, cx| {
-                                editor.update(cx, |editor, cx| {
-                                    editor.remove_connection(connection_id, cx);
-                                });
-                            })
-                            .open(window, cx);
-                        })),
-                    )
-            }))
-            .when(self.choosing_provider, |list| {
-                list.child(self.render_provider_picker(cx))
-            })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        crate::ui::style::dialog_neutral_button(
-                            "add-db-connection",
-                            "Add connection",
-                            cx,
-                        )
-                        .icon(IconName::Plus)
-                        .disabled(self.choosing_provider)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.choosing_provider = true;
-                            cx.notify();
-                        })),
-                    )
-                    .when(self.choosing_provider, |actions| {
-                        actions.child(
-                            crate::ui::style::dialog_neutral_button(
-                                "cancel-db-provider-picker",
-                                "Cancel",
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.choosing_provider = false;
-                                cx.notify();
-                            })),
-                        )
-                    }),
-            )
-            .into_any_element()
-    }
-
-    fn render_provider_picker(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        v_flex()
-            .w_full()
-            .gap_2()
-            .pt_1()
-            .child(
-                div()
-                    .text_size(crate::ui::design::text_ui())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(crate::ui::design::t3(cx))
-                    .child("Choose a database provider"),
-            )
-            .child(
-                h_flex().w_full().gap_2().flex_wrap().children(
-                    DB_PROVIDERS
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .map(|(provider_index, provider)| {
-                            v_flex()
-                                .id(("add-db-provider", provider_index))
-                                .w(px(176.))
-                                .h(px(82.))
-                                .gap_1p5()
-                                .rounded(crate::ui::design::r_sm())
-                                .border_1()
-                                .border_color(crate::ui::design::line(cx).opacity(0.5))
-                                .bg(crate::ui::design::base(cx).opacity(0.35))
-                                .px_2p5()
-                                .py_2()
-                                .cursor_pointer()
-                                .hover(|choice| choice.bg(crate::ui::design::hover(cx)))
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .child(super::provider_brand_mark(provider, 26.))
-                                        .child(
-                                            div()
-                                                .text_size(crate::ui::design::text_body())
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(crate::ui::design::t1(cx))
-                                                .child(provider.display_name()),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(crate::ui::design::text_ui())
-                                        .text_color(crate::ui::design::t3(cx))
-                                        .child(provider_picker_description(provider)),
-                                )
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.add_connection(provider, window, cx);
-                                }))
-                        }),
                 ),
             )
+            .child(list)
             .into_any_element()
-    }
-}
-
-impl Render for DbConnectionsEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor = v_flex()
-            .gap_3()
-            .w(px(DB_CONNECTION_EDITOR_CONTENT_WIDTH))
-            .max_h(px(620.))
-            .overflow_y_scrollbar();
-
-        let Some(index) = self.active_row else {
-            return editor
-                .child(self.render_connection_list(cx))
-                .into_any_element();
-        };
-        let Some(row) = self.rows.get(index) else {
-            self.active_row = None;
-            return editor
-                .child(self.render_connection_list(cx))
-                .into_any_element();
-        };
-        let provider = row.provider;
-        let read_only = row.read_only;
-        let show_help = row.show_help;
-        let test_status = self.connection_tests.get(&row.id);
-        let test_loading = matches!(test_status, Some(Loaded::Loading));
-        let connection_input = if provider == DbProvider::SQLite {
-            Input::new(&row.uri)
-                .w_full()
-                .min_w(px(320.))
-                .into_any_element()
-        } else {
-            Input::new(&row.uri)
-                .w_full()
-                .min_w(px(440.))
-                .mask_toggle()
-                .into_any_element()
-        };
-
-        editor
-            .child(
-                v_flex()
-                    .id(("database-connection-form", index))
-                    .w_full()
-                    .gap_3()
-                    .child(
-                        crate::ui::style::dialog_neutral_button(
-                            "back-to-db-connections",
-                            "All connections",
-                            cx,
-                        )
-                        .flex_none()
-                        .icon(IconName::ChevronLeft)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.active_row = None;
-                            this.validation_error = None;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .gap_2p5()
-                            .items_center()
-                            .child(super::provider_brand_mark(provider, 32.))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .gap_0p5()
-                                    .child(
-                                        div()
-                                            .text_size(crate::ui::design::text_body())
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(crate::ui::design::t1(cx))
-                                            .child(format!(
-                                                "{} connection",
-                                                provider.display_name()
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(crate::ui::design::text_ui())
-                                            .text_color(crate::ui::design::t3(cx))
-                                            .child(provider_form_description(provider)),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(db_form_field_label("Connection name", cx))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .min_w(px(440.))
-                                    .child(Input::new(&row.name).w_full()),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(db_form_field_label(provider_connection_label(provider), cx))
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(if provider == DbProvider::SQLite {
-                                                px(320.)
-                                            } else {
-                                                px(440.)
-                                            })
-                                            .child(connection_input),
-                                    )
-                                    .when(provider == DbProvider::SQLite, |field| {
-                                        field.child(
-                                            crate::ui::style::dialog_neutral_button(
-                                                "choose-sqlite-file",
-                                                "Choose file",
-                                                cx,
-                                            )
-                                            .icon(IconName::FolderOpen)
-                                            .on_click(
-                                                cx.listener(move |this, _, window, cx| {
-                                                    this.choose_sqlite_file(index, window, cx);
-                                                }),
-                                            ),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .line_height(gpui::relative(1.45))
-                                    .text_color(crate::ui::design::t3(cx))
-                                    .child(provider_connection_help(provider)),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1p5()
-                            .child(db_form_field_label("Access", cx))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(
-                                        crate::ui::style::secondary_button_compact(
-                                            "db-access-read-only",
-                                            "Read only",
-                                        )
-                                        .icon(IconName::Eye)
-                                        .selected(read_only)
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.set_read_only(index, true, cx);
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        crate::ui::style::secondary_button_compact(
-                                            "db-access-writes",
-                                            "Allow edits",
-                                        )
-                                        .icon(IconName::Inspector)
-                                        .selected(!read_only)
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.set_read_only(index, false, cx);
-                                            }),
-                                        ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(crate::ui::design::text_ui())
-                                    .text_color(crate::ui::design::t3(cx))
-                                    .child(access_help(provider, read_only)),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .rounded(crate::ui::design::r_sm())
-                            .border_1()
-                            .border_color(crate::ui::design::line(cx).opacity(0.36))
-                            .bg(crate::ui::design::base(cx).opacity(0.5))
-                            .px_3()
-                            .py_2()
-                            .gap_1p5()
-                            .child(
-                                h_flex()
-                                    .id(("db-provider-help", index))
-                                    .w_full()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_help(index, cx);
-                                    }))
-                                    .child(
-                                        Icon::new(if show_help {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        })
-                                        .size(crate::ui::design::icon_sm())
-                                        .text_color(crate::ui::design::t3(cx)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(crate::ui::design::text_ui())
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(crate::ui::design::t1(cx))
-                                            .child(provider_help_title(provider)),
-                                    ),
-                            )
-                            .when(show_help, |help| {
-                                help.children(provider_help_steps(provider).iter().enumerate().map(
-                                    |(step_index, step)| {
-                                        div()
-                                            .text_size(crate::ui::design::text_ui())
-                                            .line_height(gpui::relative(1.4))
-                                            .text_color(crate::ui::design::t3(cx))
-                                            .child(SharedString::from(format!(
-                                                "{}. {}",
-                                                step_index + 1,
-                                                step
-                                            )))
-                                    },
-                                ))
-                            }),
-                    )
-                    .when_some(self.validation_error.clone(), |form, error| {
-                        form.child(
-                            div()
-                                .w_full()
-                                .text_size(crate::ui::design::text_ui())
-                                .line_height(gpui::relative(1.4))
-                                .text_color(crate::ui::design::rose(cx))
-                                .whitespace_normal()
-                                .child(error),
-                        )
-                    })
-                    .when_some(test_result_message(test_status), |form, (message, ok)| {
-                        form.child(
-                            h_flex()
-                                .w_full()
-                                .gap_1p5()
-                                .items_start()
-                                .text_size(crate::ui::design::text_ui())
-                                .text_color(if ok {
-                                    crate::ui::design::accent(cx)
-                                } else {
-                                    crate::ui::design::rose(cx)
-                                })
-                                .child(
-                                    Icon::new(if ok {
-                                        IconName::CircleCheck
-                                    } else {
-                                        IconName::CircleX
-                                    })
-                                    .size(crate::ui::design::icon_sm()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w(px(0.))
-                                        .line_height(gpui::relative(1.4))
-                                        .whitespace_normal()
-                                        .child(SharedString::from(message)),
-                                ),
-                        )
-                    })
-                    .child(
-                        h_flex().child(
-                            crate::ui::style::dialog_neutral_button(
-                                "test-db-connection",
-                                if test_loading {
-                                    "Testing connection"
-                                } else {
-                                    "Test connection"
-                                },
-                                cx,
-                            )
-                            .icon(IconName::Redo2)
-                            .loading(test_loading)
-                            .disabled(test_loading)
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.test_connection(index, cx);
-                                },
-                            )),
-                        ),
-                    ),
-            )
-            .into_any_element()
-    }
-}
-
-const DB_PROVIDERS: [DbProvider; 6] = [
-    DbProvider::MongoDb,
-    DbProvider::PostgreSql,
-    DbProvider::Supabase,
-    DbProvider::SQLite,
-    DbProvider::MySql,
-    DbProvider::MariaDb,
-];
-
-fn provider_placeholder(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => "mongodb://localhost:27017 or mongodb+srv://… (${VAR} ok)",
-        DbProvider::PostgreSql => "postgresql://user:${PASSWORD}@host:5432/database",
-        DbProvider::Supabase => {
-            "Paste Supabase Connect → Direct connection URL (port 5432; ${VAR} ok)"
-        }
-        DbProvider::SQLite => "/absolute/path/to/database.sqlite",
-        DbProvider::MySql | DbProvider::MariaDb => "mysql://user:${PASSWORD}@host:3306/database",
-    }
-}
-
-fn provider_name_placeholder(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => "e.g. Production MongoDB",
-        DbProvider::PostgreSql => "e.g. Staging PostgreSQL",
-        DbProvider::Supabase => "e.g. Product Supabase",
-        DbProvider::SQLite => "e.g. Local app database",
-        DbProvider::MySql => "e.g. Analytics MySQL",
-        DbProvider::MariaDb => "e.g. Production MariaDB",
-    }
-}
-
-fn provider_connection_label(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => "MongoDB connection string",
-        DbProvider::PostgreSql => "PostgreSQL connection string",
-        DbProvider::Supabase => "Supabase Direct connection URL",
-        DbProvider::SQLite => "SQLite database file",
-        DbProvider::MySql => "MySQL connection string",
-        DbProvider::MariaDb => "MariaDB connection string",
-    }
-}
-
-fn provider_picker_description(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => "Document database URI",
-        DbProvider::PostgreSql => "Postgres server URL",
-        DbProvider::Supabase => "Direct Postgres URL",
-        DbProvider::SQLite => "Local database file",
-        DbProvider::MySql => "MySQL server URL",
-        DbProvider::MariaDb => "MariaDB server URL",
-    }
-}
-
-fn provider_form_description(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => "Browse databases and edit JSON documents by _id.",
-        DbProvider::PostgreSql => "Browse schemas, tables, and views on any PostgreSQL server.",
-        DbProvider::Supabase => {
-            "Connect a Supabase project using its copy-paste Direct connection URL."
-        }
-        DbProvider::SQLite => "Open an existing SQLite file directly from this Mac.",
-        DbProvider::MySql => "Browse MySQL databases, tables, and views.",
-        DbProvider::MariaDb => "Browse MariaDB databases, tables, and views.",
-    }
-}
-
-fn provider_connection_help(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => {
-            "Paste a mongodb:// or mongodb+srv:// URI. Passwords may use env vars such as ${MONGO_PASSWORD}."
-        }
-        DbProvider::PostgreSql => {
-            "Use a postgres:// or postgresql:// URL. You can reference secrets with ${POSTGRES_PASSWORD}."
-        }
-        DbProvider::Supabase => {
-            "In Supabase, open Connect, select Direct connection, and paste its port 5432 URL. The port 6543 transaction pooler is not supported."
-        }
-        DbProvider::SQLite => {
-            "Choose an existing .sqlite, .sqlite3, or .db file. Choro will not create a missing file."
-        }
-        DbProvider::MySql => {
-            "Use a mysql:// URL. You can reference secrets with ${MYSQL_PASSWORD}."
-        }
-        DbProvider::MariaDb => {
-            "Use a mysql:// URL for MariaDB. You can reference secrets with ${MARIADB_PASSWORD}."
-        }
-    }
-}
-
-fn provider_help_title(provider: DbProvider) -> &'static str {
-    match provider {
-        DbProvider::MongoDb => "Connect MongoDB",
-        DbProvider::PostgreSql => "Connect PostgreSQL",
-        DbProvider::Supabase => "Connect Supabase",
-        DbProvider::SQLite => "Open SQLite",
-        DbProvider::MySql => "Connect MySQL",
-        DbProvider::MariaDb => "Connect MariaDB",
-    }
-}
-
-fn provider_help_steps(provider: DbProvider) -> &'static [&'static str] {
-    match provider {
-        DbProvider::MongoDb => &[
-            "Copy the connection string from MongoDB Atlas or your MongoDB server.",
-            "Paste it above, choose the access mode, then test the connection.",
-        ],
-        DbProvider::PostgreSql => &[
-            "Copy a PostgreSQL connection URL that includes the host, port, user, and database.",
-            "Keep Read only enabled until you intentionally want primary-key row editing.",
-        ],
-        DbProvider::Supabase => &[
-            "Open the Supabase project dashboard and choose Connect.",
-            "In the Connect dialog, select Direct connection.",
-            "Copy the URI on port 5432, replace [YOUR-PASSWORD], paste it above, and test it.",
-        ],
-        DbProvider::SQLite => &[
-            "Choose a database file already present on this Mac.",
-            "Allow edits only when Choro should write directly to that local file.",
-        ],
-        DbProvider::MySql => &[
-            "Copy a MySQL URL containing the host, port, user, password, and database.",
-            "Keep Read only enabled until you intentionally want primary-key row editing.",
-        ],
-        DbProvider::MariaDb => &[
-            "Copy a MariaDB connection as a mysql:// URL with its host, credentials, and database.",
-            "Keep Read only enabled until you intentionally want primary-key row editing.",
-        ],
-    }
-}
-
-fn access_help(provider: DbProvider, read_only: bool) -> &'static str {
-    if read_only {
-        return "Browsing and filtering are allowed; Choro will not expose edit actions.";
-    }
-    if provider == DbProvider::MongoDb {
-        "Documents with an _id can be edited. Production connections require confirmation."
-    } else {
-        "Tables with a primary key can be edited. Views and keyless tables remain read-only."
-    }
-}
-
-fn connection_summary(provider: DbProvider, read_only: bool, configured: bool) -> String {
-    let configuration = if configured {
-        if provider == DbProvider::SQLite {
-            "File selected"
-        } else {
-            "Connection string set"
-        }
-    } else {
-        "Not configured"
-    };
-    format!(
-        "{} · {} · {configuration}",
-        provider.display_name(),
-        if read_only {
-            "Read only"
-        } else {
-            "Edits allowed"
-        }
-    )
-}
-
-fn db_form_field_label(text: impl Into<SharedString>, cx: &App) -> gpui::AnyElement {
-    div()
-        .text_size(crate::ui::design::text_ui())
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(crate::ui::design::t3(cx))
-        .child(text.into())
-        .into_any_element()
-}
-
-fn test_status_label(status: Option<&Loaded<()>>) -> Option<(IconName, &'static str, bool)> {
-    match status {
-        Some(Loaded::Loading) => Some((IconName::LoaderCircle, "Testing", true)),
-        Some(Loaded::Ready(())) => Some((IconName::CircleCheck, "Connected", true)),
-        Some(Loaded::Failed(_)) => Some((IconName::CircleX, "Failed", false)),
-        None => None,
-    }
-}
-
-fn test_result_message(status: Option<&Loaded<()>>) -> Option<(String, bool)> {
-    match status {
-        Some(Loaded::Ready(())) => Some(("Connection successful.".into(), true)),
-        Some(Loaded::Failed(error)) => Some((format!("Connection failed: {error}"), false)),
-        _ => None,
     }
 }
 
@@ -1594,28 +767,181 @@ fn test_result_message(status: Option<&Loaded<()>>) -> Option<(String, bool)> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "ui-layout-tests")]
+    mod session_sync {
+        use super::*;
+        use crate::ui::db::chrome::handle_read_only;
+
+        fn saved(name: &str, uri: &str) -> DbConnection {
+            DbConnection {
+                id: Uuid::new_v4(),
+                provider: DbProvider::PostgreSql,
+                read_only: false,
+                name: name.into(),
+                uri: uri.into(),
+            }
+        }
+
+        fn edit_connection(
+            workspace: &Entity<Workspace>,
+            id: Uuid,
+            cx: &mut gpui::TestAppContext,
+            edit: impl FnOnce(&mut Vec<DbConnection>),
+        ) {
+            workspace.update(cx, |workspace, cx| {
+                let project = workspace
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.db_connections.iter().any(|conn| conn.id == id))
+                    .expect("connection is saved");
+                edit(&mut project.db_connections);
+                cx.notify();
+            });
+            cx.run_until_parked();
+        }
+
+        /// The explorer is never mounted or rendered here: the workspace home can
+        /// drive DbPanel while the side panel is hidden. PostgreSQL handles are
+        /// lazy, so no server is contacted.
+        #[gpui::test]
+        fn saved_connection_edits_reconcile_sessions_without_a_tree_render(
+            cx: &mut gpui::TestAppContext,
+        ) {
+            let primary = saved("Primary", "postgres://reader@db.invalid:5432/app");
+            let other = saved("Other project", "postgres://db.invalid:5432/other");
+            let mut first = ide_core::Project::from_path("/in-memory/db-sync-a".into());
+            first.db_connections = vec![primary.clone()];
+            let mut second = ide_core::Project::from_path("/in-memory/db-sync-b".into());
+            second.db_connections = vec![other.clone()];
+            let config = ide_core::AppConfig {
+                active_project: Some(first.id),
+                projects: vec![first, second],
+                ..Default::default()
+            };
+            let workspace = cx.new(|_| Workspace::in_memory(config));
+            let panel = cx
+                .update(|cx| DbPanel::view(workspace.clone(), gpui::WeakEntity::new_invalid(), cx));
+
+            // Specs exist from construction, for every project's connections.
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(panel.connection_specs.len(), 2);
+                assert_eq!(panel.connection_specs[&primary.id].1, primary.uri);
+            });
+
+            // A session opened through the real contract, plus a clone standing
+            // in for an open tab.
+            let (tab, other_tab) = panel.update(cx, |panel, cx| {
+                let tab = panel.handle_for(&primary).unwrap();
+                let other_tab = panel.handle_for(&other).unwrap();
+                panel
+                    .databases
+                    .insert(primary.id, Loaded::Ready(vec!["public".into()]));
+                panel.expanded_dbs.insert((primary.id, "public".into()));
+                panel.home_focus.insert(primary.id, "public".into());
+                cx.notify();
+                (tab, other_tab)
+            });
+            assert!(!handle_read_only(&tab));
+
+            // Access revoked: the same live session (and the tab) turns read-only.
+            edit_connection(&workspace, primary.id, cx, |connections| {
+                connections[0].read_only = true;
+            });
+            panel.update(cx, |panel, _| {
+                assert!(handle_read_only(&tab));
+                let cached = panel.handles.get(&primary.id).expect("session kept");
+                assert!(cached.shares_connection(&tab));
+                assert!(panel.connection_specs[&primary.id].2);
+                // A stale copy of the old settings cannot re-enable writes.
+                assert!(panel.current_read_only(&primary));
+            });
+
+            // Endpoint changed: the old session is retired and every cache for it
+            // is invalidated; the next session is a different connection.
+            let epoch_before = panel.read_with(cx, |panel, _| panel.epoch(primary.id));
+            let moved_uri = "postgres://reader@replica.invalid:5432/app";
+            edit_connection(&workspace, primary.id, cx, |connections| {
+                connections[0].read_only = false;
+                connections[0].uri = moved_uri.into();
+            });
+            let moved = DbConnection {
+                uri: moved_uri.into(),
+                read_only: false,
+                ..primary.clone()
+            };
+            let replacement = panel.update(cx, |panel, _| {
+                assert!(
+                    handle_read_only(&tab),
+                    "retired session must stay read-only"
+                );
+                assert!(!panel.handles.contains_key(&primary.id));
+                assert!(panel.epoch(primary.id) > epoch_before);
+                assert!(panel.databases.get(&primary.id).is_none());
+                assert!(panel.focused_namespace(primary.id).is_none());
+                assert!(!panel.expanded_dbs.contains(&(primary.id, "public".into())));
+                assert_eq!(panel.connection_specs[&primary.id].1, moved_uri);
+                // A click captured before the edit cannot reopen the old endpoint.
+                assert!(panel.handle_for(&primary).is_err());
+                panel.handle_for(&moved).unwrap()
+            });
+            assert!(!replacement.shares_connection(&tab));
+            assert!(!handle_read_only(&replacement));
+
+            // Removed: its session is revoked and forgotten. The other project's
+            // session is untouched even though that project is not active.
+            edit_connection(&workspace, primary.id, cx, |connections| {
+                connections.clear()
+            });
+            panel.read_with(cx, |panel, _| {
+                assert!(handle_read_only(&replacement));
+                assert!(!panel.handles.contains_key(&primary.id));
+                assert!(!panel.connection_specs.contains_key(&primary.id));
+                assert!(!panel.epochs.contains_key(&primary.id));
+                assert!(panel.handles.contains_key(&other.id));
+            });
+            panel.update(cx, |panel, _| {
+                assert!(panel.handle_for(&moved).is_err());
+                assert!(!panel.handles.contains_key(&primary.id));
+                assert!(!panel.connection_specs.contains_key(&primary.id));
+            });
+            assert!(!handle_read_only(&other_tab));
+        }
+    }
+
     #[test]
-    fn database_providers_have_specific_form_copy() {
-        let labels = DB_PROVIDERS
-            .iter()
-            .copied()
-            .map(provider_connection_label)
-            .collect::<HashSet<_>>();
-        assert_eq!(labels.len(), DB_PROVIDERS.len());
-        assert!(provider_connection_help(DbProvider::Supabase).contains("port 5432"));
-        assert!(provider_connection_help(DbProvider::Supabase).contains("6543"));
-        assert!(provider_connection_help(DbProvider::Supabase).contains("Direct connection"));
+    fn filter_matching_is_case_insensitive_substring() {
+        assert!(matches_filter("Orders", ""));
+        assert!(matches_filter("customer_orders", "order"));
+        assert!(!matches_filter("invoices", "order"));
+    }
+
+    #[test]
+    fn explorer_groups_objects_by_kind_in_a_stable_order() {
+        use ide_core::DbObjectKind;
+        let object = |name: &str, kind| DbObject {
+            name: name.into(),
+            kind,
+        };
+        let objects = [
+            object("active_users", DbObjectKind::View),
+            object("users", DbObjectKind::Table),
+            object("orders", DbObjectKind::Table),
+        ];
+        let groups = group_by_kind(&objects);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, DbObjectKind::Table);
+        assert_eq!(groups[0].1[0].name, "users");
+        assert_eq!(groups[0].1[1].name, "orders");
+        assert_eq!(groups[1].0, DbObjectKind::View);
+        assert!(group_by_kind(&[]).is_empty());
+    }
+
+    #[test]
+    fn object_keys_match_the_center_tab_identity() {
+        let id = Uuid::nil();
         assert_eq!(
-            provider_help_steps(DbProvider::Supabase)[1],
-            "In the Connect dialog, select Direct connection."
-        );
-        assert_eq!(
-            provider_connection_label(DbProvider::SQLite),
-            "SQLite database file"
-        );
-        assert_eq!(
-            provider_connection_label(DbProvider::MongoDb),
-            "MongoDB connection string"
+            object_key(id, "public", "users"),
+            format!("{id}/public/users")
         );
     }
 }

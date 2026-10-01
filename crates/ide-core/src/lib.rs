@@ -1,10 +1,11 @@
-pub mod agents;
 pub mod agent_changes;
 pub mod agent_navigation;
+pub mod agents;
 pub mod blocking_guard;
 pub mod branding;
 pub mod config;
 pub mod db;
+mod db_http;
 mod db_sql;
 pub mod delegation;
 pub mod doc_assistant;
@@ -48,7 +49,7 @@ pub use doc_assistant::{
     DocAssistantTranscriptMessage,
 };
 pub use project::{
-    validate_repository_relative_path, DbConnection, DbProvider, GitWorkflow,
+    validate_repository_relative_path, DbCapabilities, DbConnection, DbProvider, GitWorkflow,
     GitWorkflowCompletionPolicy, GitWorkflowRun, GitWorkflowRunState, Project, ProjectId,
     ProjectReference, ProjectReferenceKind, ProjectSection, ProjectSectionId, ScriptPreset,
     CUSTOM_PROJECT_SVG_ICON,

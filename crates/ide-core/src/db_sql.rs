@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex, MutexGuard,
 };
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -23,6 +23,26 @@ pub struct SqlHandle {
     provider: DbProvider,
     uri: String,
     read_only: Arc<AtomicBool>,
+    postgres: Arc<Mutex<Option<postgres::Client>>>,
+    mysql: Arc<Mutex<Option<mysql::Pool>>>,
+    remote: Option<Arc<crate::db_http::HttpSqlHandle>>,
+}
+
+/// Keeps the session exclusively checked out for an entire operation, including
+/// its transaction. Cloned browser handles share this same session.
+struct PostgresSession<'a>(MutexGuard<'a, Option<postgres::Client>>);
+
+impl std::ops::Deref for PostgresSession<'_> {
+    type Target = postgres::Client;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("checked-out PostgreSQL session")
+    }
+}
+
+impl std::ops::DerefMut for PostgresSession<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("checked-out PostgreSQL session")
+    }
 }
 
 impl SqlHandle {
@@ -62,11 +82,22 @@ impl SqlHandle {
                 }
             }
             DbProvider::MongoDb => bail!("MongoDB is not a relational backend"),
+            DbProvider::Turso | DbProvider::ClickHouse => {}
         }
+        let remote = if provider.is_http() {
+            Some(Arc::new(crate::db_http::HttpSqlHandle::new(
+                provider, &uri,
+            )?))
+        } else {
+            None
+        };
         Ok(Self {
             provider,
             uri,
             read_only: Arc::new(AtomicBool::new(read_only)),
+            postgres: Arc::new(Mutex::new(None)),
+            mysql: Arc::new(Mutex::new(None)),
+            remote,
         })
     }
 
@@ -74,15 +105,36 @@ impl SqlHandle {
         self.provider
     }
 
+    pub(crate) fn shares_connection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.read_only, &other.read_only)
+    }
+
     pub fn is_read_only(&self) -> bool {
-        self.read_only.load(Ordering::Relaxed)
+        !self.provider.capabilities().row_editing || self.read_only.load(Ordering::Relaxed)
     }
 
     pub fn set_read_only(&self, read_only: bool) {
         self.read_only.store(read_only, Ordering::Relaxed);
     }
 
+    /// Validate authentication and transport without requiring catalog access.
+    pub fn ping(&self) -> Result<()> {
+        if let Some(remote) = &self.remote {
+            return remote.ping();
+        } else if self.provider.is_postgres() {
+            self.postgres_client()?.simple_query("SELECT 1")?;
+        } else if self.provider.is_mysql() {
+            self.mysql_conn()?.query_drop("SELECT 1")?;
+        } else {
+            self.sqlite_conn()?.query_row("SELECT 1", [], |_| Ok(()))?;
+        }
+        Ok(())
+    }
+
     pub fn list_namespaces(&self) -> Result<Vec<String>> {
+        if let Some(remote) = &self.remote {
+            return remote.list_namespaces();
+        }
         if self.provider.is_postgres() {
             let mut client = self.postgres_client()?;
             let rows = client.query(
@@ -114,6 +166,9 @@ impl SqlHandle {
     }
 
     pub fn list_objects(&self, namespace: &str) -> Result<Vec<DbObject>> {
+        if let Some(remote) = &self.remote {
+            return remote.list_objects(namespace);
+        }
         if self.provider.is_postgres() {
             let mut client = self.postgres_client()?;
             let rows = client.query(
@@ -175,6 +230,9 @@ impl SqlHandle {
         offset: u64,
         limit: u64,
     ) -> Result<TablePage> {
+        if let Some(remote) = &self.remote {
+            return remote.fetch_rows(namespace, table, filters, offset, limit);
+        }
         if self.provider.is_postgres() {
             return self.postgres_fetch(namespace, table, filters, offset, limit);
         }
@@ -205,12 +263,28 @@ impl SqlHandle {
         self.sqlite_update(namespace, table, original, edited)
     }
 
-    fn postgres_client(&self) -> Result<postgres::Client> {
+    fn postgres_client(&self) -> Result<PostgresSession<'_>> {
+        let mut session = self
+            .postgres
+            .lock()
+            .map_err(|_| anyhow!("PostgreSQL session lock failed"))?;
+        // Reconnect only before a new operation. Never replay an operation that
+        // may already have committed when its response was lost.
+        if session.as_ref().is_none_or(postgres::Client::is_closed) {
+            *session = Some(self.open_postgres_client()?);
+        }
+        Ok(PostgresSession(session))
+    }
+
+    fn open_postgres_client(&self) -> Result<postgres::Client> {
         let mut config: postgres::Config = self
             .uri
             .parse()
             .map_err(|error| anyhow!("invalid PostgreSQL connection string: {error}"))?;
         config.connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS));
+        if config.get_application_name().is_none() {
+            config.application_name("Choro");
+        }
         if self.provider == DbProvider::Supabase {
             config.ssl_mode(SslMode::Require);
         }
@@ -235,12 +309,34 @@ impl SqlHandle {
     }
 
     fn mysql_conn(&self) -> Result<mysql::PooledConn> {
-        let opts = mysql::Opts::from_url(&self.uri)
-            .map_err(|error| anyhow!("invalid MySQL connection string: {error}"))?;
-        let opts = mysql::OptsBuilder::from_opts(opts)
-            .tcp_connect_timeout(Some(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS)));
-        let pool = mysql::Pool::new(opts).context("failed to create MySQL connection pool")?;
-        pool.get_conn()
+        let pool = {
+            let mut cached = self
+                .mysql
+                .lock()
+                .map_err(|_| anyhow!("MySQL pool lock failed"))?;
+            if cached.is_none() {
+                let opts = mysql::Opts::from_url(&self.uri).map_err(|error| {
+                    anyhow!("invalid MySQL connection string: {}", redact(&error))
+                })?;
+                let read_timeout = opts
+                    .get_read_timeout()
+                    .copied()
+                    .unwrap_or(std::time::Duration::from_secs(30));
+                let write_timeout = opts
+                    .get_write_timeout()
+                    .copied()
+                    .unwrap_or(std::time::Duration::from_secs(30));
+                let opts = mysql::OptsBuilder::from_opts(opts)
+                    .tcp_connect_timeout(Some(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS)))
+                    .read_timeout(Some(read_timeout))
+                    .write_timeout(Some(write_timeout));
+                *cached = Some(mysql::Pool::new(opts).map_err(|error| {
+                    anyhow!("failed to create MySQL connection pool: {}", redact(&error))
+                })?);
+            }
+            cached.as_ref().expect("initialized MySQL pool").clone()
+        };
+        pool.try_get_conn(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .map_err(|error| anyhow!("MySQL connection failed: {}", redact(&error)))
     }
 
@@ -248,7 +344,11 @@ impl SqlHandle {
         let path = sqlite_path(&self.uri)?;
         rusqlite::Connection::open_with_flags(
             &path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            (if self.is_read_only() {
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            } else {
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            }) | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .with_context(|| format!("failed to open SQLite database at {}", path.display()))
     }
@@ -293,12 +393,12 @@ impl SqlHandle {
                 primary_key: row.get(4),
             })
             .collect();
-        let object_kind = self
-            .list_objects(namespace)?
-            .into_iter()
-            .find(|object| object.name == table)
-            .map(|object| object.kind)
-            .unwrap_or(DbObjectKind::Table);
+        // Use the checked-out session rather than recursively checking it out.
+        let kind = client.query_one(
+            "SELECT table_type FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
+            &[&namespace, &table],
+        )?;
+        let object_kind = object_kind(&kind.get::<_, String>(0));
         Ok((columns, object_kind))
     }
 
@@ -386,12 +486,12 @@ impl SqlHandle {
                 primary_key: key == "PRI",
             })
             .collect();
-        let object_kind = self
-            .list_objects(namespace)?
-            .into_iter()
-            .find(|object| object.name == table)
-            .map(|object| object.kind)
-            .unwrap_or(DbObjectKind::Table);
+        let kind: Option<String> = conn.exec_first(
+            "SELECT table_type FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
+            (namespace, table),
+        )?;
+        let object_kind =
+            object_kind(&kind.ok_or_else(|| anyhow!("table or view no longer exists"))?);
         Ok((columns, object_kind))
     }
 
@@ -560,6 +660,9 @@ impl SqlHandle {
         edited: Map<String, Value>,
     ) -> Result<()> {
         let mut client = self.postgres_client()?;
+        if self.is_read_only() {
+            bail!("connection is read-only");
+        }
         let (columns, kind) = self.postgres_columns(&mut client, namespace, table)?;
         let changed = validate_edit(&columns, kind, &original, &edited)?;
         if changed.is_empty() {
@@ -619,6 +722,9 @@ impl SqlHandle {
         edited: Map<String, Value>,
     ) -> Result<()> {
         let mut conn = self.mysql_conn()?;
+        if self.is_read_only() {
+            bail!("connection is read-only");
+        }
         let (columns, kind) = self.mysql_columns(&mut conn, namespace, table)?;
         let changed = validate_edit(&columns, kind, &original, &edited)?;
         if changed.is_empty() {
@@ -1051,6 +1157,78 @@ fn redact(error: &(dyn std::error::Error + 'static)) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn postgres_health_checks_reuse_one_session_across_cloned_handles() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut length = [0; 4];
+            socket.read_exact(&mut length).unwrap();
+            let mut startup = vec![0; u32::from_be_bytes(length) as usize - 4];
+            socket.read_exact(&mut startup).unwrap();
+            assert_eq!(&startup[..4], &196608_u32.to_be_bytes());
+            assert!(startup.windows(5).any(|chunk| chunk == b"Choro"));
+            // AuthenticationOk, BackendKeyData, ReadyForQuery.
+            socket
+                .write_all(&[
+                    b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'K', 0, 0, 0, 12, 0, 0, 0, 1, 0, 0, 0, 2, b'Z',
+                    0, 0, 0, 5, b'I',
+                ])
+                .unwrap();
+            for _ in 0..3 {
+                let mut header = [0; 5];
+                socket.read_exact(&mut header).unwrap();
+                assert_eq!(header[0], b'Q');
+                let mut query =
+                    vec![0; u32::from_be_bytes(header[1..].try_into().unwrap()) as usize - 4];
+                socket.read_exact(&mut query).unwrap();
+                assert_eq!(query, b"SELECT 1\0");
+                socket
+                    .write_all(&[
+                        b'C', 0, 0, 0, 13, b'S', b'E', b'L', b'E', b'C', b'T', b' ', b'1', 0, b'Z',
+                        0, 0, 0, 5, b'I',
+                    ])
+                    .unwrap();
+            }
+            // Keep the stream alive until the client drops it. Closing directly
+            // after ReadyForQuery can race the driver's response delivery.
+            let mut termination = [0; 5];
+            socket.read_exact(&mut termination).unwrap();
+            assert_eq!(termination, [b'X', 0, 0, 0, 4]);
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "health checks opened more than one connection"
+            );
+        });
+        let handle = SqlHandle::new(
+            DbProvider::PostgreSql,
+            format!("postgresql://fixture@{address}/fixture?sslmode=disable"),
+        )
+        .unwrap();
+        handle.ping().unwrap();
+        handle.clone().ping().unwrap();
+        handle.ping().unwrap();
+        drop(handle);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn sqlite_health_check_never_creates_a_missing_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing.sqlite");
+        let handle =
+            SqlHandle::new_with_access(DbProvider::SQLite, path.display().to_string(), true)
+                .unwrap();
+        assert!(handle.ping().is_err());
+        assert!(!path.exists());
+    }
+
     #[derive(Debug)]
     struct TestError {
         message: &'static str,
@@ -1221,6 +1399,8 @@ mod tests {
             ))
             .unwrap();
 
+        drop(client);
+
         let result = (|| {
             assert!(handle.list_namespaces()?.contains(&schema));
             assert_eq!(handle.list_objects(&schema)?[0].name, "people");
@@ -1248,7 +1428,9 @@ mod tests {
             Ok::<_, anyhow::Error>(())
         })();
 
-        client
+        handle
+            .postgres_client()
+            .unwrap()
             .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
             .unwrap();
         result.unwrap();

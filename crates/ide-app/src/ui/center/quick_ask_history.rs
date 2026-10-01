@@ -955,6 +955,7 @@ fn quick_ask_provider(label: &str) -> AgentKind {
     match label {
         "Claude" => AgentKind::Claude,
         "OpenCode" => AgentKind::OpenCode,
+        "Gemini" => AgentKind::Gemini,
         _ => AgentKind::Codex,
     }
 }

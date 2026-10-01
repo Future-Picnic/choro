@@ -41,6 +41,7 @@ mod center_render;
 mod center_terminals;
 mod center_view;
 mod code_panel;
+mod db_workspace;
 mod designs;
 mod doc_helpers;
 mod docs;
@@ -114,7 +115,6 @@ use gpui_component::{
     notification::Notification,
     resizable::{resizable_panel, v_resizable},
     scroll::{ScrollableElement, Scrollbar, ScrollbarAxis},
-    tab::{Tab, TabBar},
     text::{TextView, TextViewStyle},
     tooltip::Tooltip,
     v_flex, ActiveTheme, Disableable, Icon, IconName, PixelsExt, Selectable, Sizable, WindowExt,
@@ -221,13 +221,14 @@ fn agent_has_backend_resume_id(agent: &AgentRecord) -> bool {
     match agent.provider {
         AgentKind::Claude => agent.cli_session_id.is_some(),
         AgentKind::Codex => agent.chat_session_id.is_some() || agent.cli_session_id.is_some(),
-        AgentKind::OpenCode => agent.cli_session_id.is_some(),
+        AgentKind::OpenCode | AgentKind::Gemini => agent.cli_session_id.is_some(),
     }
 }
 
 /// Brand glyph for an agent provider, suitable for a control-button `.icon(..)`.
-/// Claude keeps its signature orange; Codex/OpenAI inherits the surrounding
-/// foreground color, matching the agent chat header logos.
+/// Claude keeps its signature orange and Gemini its blue; Codex/OpenAI
+/// inherits the surrounding foreground color, matching the agent chat header
+/// logos.
 pub(crate) fn provider_brand_icon(provider: AgentKind) -> gpui_component::Icon {
     let (path, color) = match provider {
         AgentKind::Claude => (
@@ -236,6 +237,10 @@ pub(crate) fn provider_brand_icon(provider: AgentKind) -> gpui_component::Icon {
         ),
         AgentKind::Codex => ("agent-icons/openai.svg", None),
         AgentKind::OpenCode => ("agent-icons/opencode.svg", None),
+        AgentKind::Gemini => (
+            "agent-icons/gemini.svg",
+            Some(crate::ui::design::palette::gemini_brand()),
+        ),
     };
     gpui_component::Icon::empty()
         .path(path)
@@ -1935,6 +1940,8 @@ pub struct CenterArea {
     editors: Vec<EditorItem>,
     diffs: Vec<DiffItem>,
     db_views: Vec<DbItem>,
+    /// The side-panel database explorer, shared by the workspace home.
+    db_explorer: Option<Entity<crate::ui::db::db_panel::DbPanel>>,
     agent_notes_inputs: HashMap<Uuid, Entity<InputState>>,
     agent_chat_inputs: HashMap<Uuid, Entity<InputState>>,
     agent_chat_attached_files: HashMap<Uuid, Vec<PathBuf>>,
@@ -2229,6 +2236,9 @@ pub struct CenterArea {
     composer_model_query: Entity<InputState>,
     composer_branch_expanded: bool,
     composer_model_expanded: bool,
+    /// Agent chat whose model picker is open; `None` is the new-agent composer.
+    /// Split panes each render a picker, so only the owner may show it.
+    composer_model_picker_agent: Option<Uuid>,
     /// Provider rail filter inside the model picker; `None` lists every provider.
     composer_model_provider: Option<AgentKind>,
     composer_model_favorites_only: bool,

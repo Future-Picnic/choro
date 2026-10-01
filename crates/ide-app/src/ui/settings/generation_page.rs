@@ -83,7 +83,7 @@ impl SettingsView {
                 }))
             })
             .collect::<Vec<_>>();
-            let provider_buttons = [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
+            let provider_buttons = AgentKind::ALL
                 .into_iter()
                 .enumerate()
                 .map(|(index, provider)| {
@@ -151,7 +151,7 @@ impl SettingsView {
                 })
                 .collect::<Vec<_>>();
             let quick_ask_provider_buttons =
-                [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
+                AgentKind::ALL
                     .into_iter()
                     .enumerate()
                     .map(|(index, provider)| {
@@ -219,7 +219,7 @@ impl SettingsView {
                 })
                 .collect::<Vec<_>>();
             let default_provider_buttons =
-                [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode]
+                AgentKind::ALL
                     .into_iter()
                     .enumerate()
                     .map(|(index, provider)| {

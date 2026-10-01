@@ -3,13 +3,13 @@
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use mongodb::bson::{Bson, Document};
-use mongodb::options::{ClientOptions, FindOptions};
+use mongodb::options::{ClientOptions, ConnectionString, FindOptions};
 use mongodb::sync::Client;
 
 use crate::{DbConnection, DbProvider, SqlHandle};
@@ -20,7 +20,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Cheap to clone — the underlying client is a pooled handle.
 #[derive(Clone)]
 pub struct MongoHandle {
-    client: Client,
+    client: Arc<Mutex<Option<Client>>>,
+    uri: String,
     read_only: Arc<AtomicBool>,
 }
 
@@ -88,6 +89,17 @@ pub enum DatabaseHandle {
 }
 
 impl DatabaseHandle {
+    /// Identity of the live connection, independent of its editable access flag.
+    /// Reopening a tab after reconnecting must bind it to the replacement session.
+    pub fn shares_connection(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Mongo(left), Self::Mongo(right)) => {
+                Arc::ptr_eq(&left.read_only, &right.read_only)
+            }
+            (Self::Relational(left), Self::Relational(right)) => left.shares_connection(right),
+            _ => false,
+        }
+    }
     pub fn connect(connection: &DbConnection) -> Result<Self> {
         let uri = connection.expanded_uri()?;
         match connection.provider {
@@ -114,6 +126,14 @@ impl DatabaseHandle {
         match self {
             Self::Mongo(handle) => handle.set_read_only(read_only),
             Self::Relational(handle) => handle.set_read_only(read_only),
+        }
+    }
+
+    /// A health probe that does not require schema discovery permissions.
+    pub fn ping(&self) -> Result<()> {
+        match self {
+            Self::Mongo(handle) => handle.ping(),
+            Self::Relational(handle) => handle.ping(),
         }
     }
 
@@ -145,19 +165,39 @@ impl MongoHandle {
     }
 
     fn connect_with_access(uri: &str, read_only: bool) -> Result<Self> {
-        let mut options = ClientOptions::parse(uri).run().map_err(|error| {
+        // Validate syntax without resolving SRV records on the UI thread.
+        ConnectionString::parse(uri).map_err(|error| {
             anyhow::anyhow!(
                 "invalid MongoDB connection string: {}",
+                crate::redaction::redact_sensitive_text(&error.to_string())
+            )
+        })?;
+        Ok(Self {
+            client: Arc::new(Mutex::new(None)),
+            uri: uri.to_owned(),
+            read_only: Arc::new(AtomicBool::new(read_only)),
+        })
+    }
+
+    fn client(&self) -> Result<Client> {
+        let mut cached = self
+            .client
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MongoDB client lock failed"))?;
+        if let Some(client) = cached.as_ref() {
+            return Ok(client.clone());
+        }
+        let mut options = ClientOptions::parse(&self.uri).run().map_err(|error| {
+            anyhow::anyhow!(
+                "MongoDB connection failed: {}",
                 crate::redaction::redact_sensitive_text(&error.to_string())
             )
         })?;
         options.server_selection_timeout = Some(CONNECT_TIMEOUT);
         options.connect_timeout = Some(CONNECT_TIMEOUT);
         let client = Client::with_options(options).context("failed to create MongoDB client")?;
-        Ok(Self {
-            client,
-            read_only: Arc::new(AtomicBool::new(read_only)),
-        })
+        *cached = Some(client.clone());
+        Ok(client)
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -168,9 +208,23 @@ impl MongoHandle {
         self.read_only.store(read_only, Ordering::Relaxed);
     }
 
+    pub fn ping(&self) -> Result<()> {
+        self.client()?
+            .database("admin")
+            .run_command(mongodb::bson::doc! { "ping": 1 })
+            .run()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "MongoDB connection failed: {}",
+                    crate::redaction::redact_sensitive_text(&error.to_string())
+                )
+            })?;
+        Ok(())
+    }
+
     pub fn list_databases(&self) -> Result<Vec<String>> {
         let mut names = self
-            .client
+            .client()?
             .list_database_names()
             .run()
             .context("failed to list databases")?;
@@ -181,7 +235,7 @@ impl MongoHandle {
 
     pub fn list_collections(&self, db: &str) -> Result<Vec<String>> {
         let mut names = self
-            .client
+            .client()?
             .database(db)
             .list_collection_names()
             .run()
@@ -200,7 +254,10 @@ impl MongoHandle {
         skip: u64,
         limit: i64,
     ) -> Result<DocPage> {
-        let coll = self.client.database(db).collection::<Document>(collection);
+        let coll = self
+            .client()?
+            .database(db)
+            .collection::<Document>(collection);
         let filter = parse_filter(filter_json)?;
 
         let total = if filter.is_empty() {
@@ -259,8 +316,13 @@ impl MongoHandle {
         };
         new_doc.remove("_id");
 
-        let result = self
-            .client
+        let client = self.client()?;
+        // Client initialization can block on SRV discovery. Recheck access
+        // after that wait so a retired connection cannot begin a new write.
+        if self.is_read_only() {
+            anyhow::bail!("connection is read-only");
+        }
+        let result = client
             .database(db)
             .collection::<Document>(collection)
             .replace_one(mongodb::bson::doc! { "_id": id }, new_doc)
@@ -282,8 +344,11 @@ impl MongoHandle {
             serde_json::from_str(id_canonical_json).context("bad document id")?;
         let id: Bson = id_value.try_into().context("bad document id")?;
 
-        let result = self
-            .client
+        let client = self.client()?;
+        if self.is_read_only() {
+            anyhow::bail!("connection is read-only");
+        }
+        let result = client
             .database(db)
             .collection::<Document>(collection)
             .delete_one(mongodb::bson::doc! { "_id": id })
@@ -326,6 +391,39 @@ fn pretty_doc(doc: Document) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mongo_srv_construction_is_lazy_and_validates_syntax_without_dns() {
+        let handle =
+            MongoHandle::connect("mongodb+srv://reader:password@does-not-exist.invalid/app")
+                .unwrap();
+        assert!(handle.client.lock().unwrap().is_none());
+        assert!(MongoHandle::connect("not a database URL").is_err());
+    }
+
+    #[test]
+    fn replacement_connections_have_new_identity_and_old_clones_can_be_revoked() {
+        let connection = DbConnection::new_for(DbProvider::SQLite, "fixture", "existing.sqlite");
+        let old = DatabaseHandle::connect(&connection).unwrap();
+        let open_tab = old.clone();
+        let replacement = DatabaseHandle::connect(&connection).unwrap();
+        assert!(old.shares_connection(&open_tab));
+        assert!(!old.shares_connection(&replacement));
+        old.set_read_only(true);
+        let DatabaseHandle::Relational(tab) = open_tab else {
+            panic!("expected SQL")
+        };
+        assert!(tab.is_read_only());
+        assert!(tab
+            .update_row("main", "people", "{}", "{}")
+            .unwrap_err()
+            .to_string()
+            .contains("read-only"));
+        let DatabaseHandle::Relational(new) = replacement else {
+            panic!("expected SQL")
+        };
+        assert!(!new.is_read_only());
+    }
 
     #[test]
     fn empty_filter_matches_all() {

@@ -175,13 +175,22 @@ impl CenterArea {
                 gpui_component::popover::Popover::new("composer-model-popover")
                     .anchor(gpui::Corner::TopLeft)
                     .appearance(false)
-                    .open(self.composer_model_expanded)
+                    .open(
+                        self.composer_model_expanded
+                            && self.composer_model_picker_agent.is_none(),
+                    )
                     .on_open_change({
                         let composer_view = composer_view.clone();
                         move |open, window, cx| {
                             composer_view.update(cx, |this, cx| {
-                                this.composer_model_expanded = *open;
-                                if *open {
+                                if !*open {
+                                    // Another pane's picker may own the open state.
+                                    if this.composer_model_picker_agent.is_none() {
+                                        this.composer_model_expanded = false;
+                                    }
+                                } else {
+                                    this.composer_model_expanded = true;
+                                    this.composer_model_picker_agent = None;
                                     this.composer_model_provider = None;
                                     this.composer_model_query
                                         .update(cx, |query, cx| query.set_value("", window, cx));
@@ -203,15 +212,20 @@ impl CenterArea {
                             ),
                             cx,
                         )
-                        .tooltip(model_label),
+                        // The open picker sits directly under the chip, where
+                        // the hover tooltip would otherwise cover its top edge.
+                        .when(!self.composer_model_expanded, |chip| {
+                            chip.tooltip(model_label)
+                        }),
                     )
                     .content({
                         let composer_view = composer_view.clone();
                         move |_, _, cx| {
                             composer_view.update(cx, |this, cx| {
-                                v_flex()
-                                    .pt(crate::ui::design::control_h_sm())
-                                    .child(this.render_composer_model_picker(model, cx))
+                                // The popover already places its content just
+                                // below the chip; extra padding here pushed the
+                                // picker a full row further down.
+                                this.render_composer_model_picker(model, cx)
                                     .into_any_element()
                             })
                         }

@@ -2,6 +2,7 @@ mod change_tracking;
 mod claude;
 mod codex;
 mod events;
+pub(crate) mod gemini;
 pub(crate) mod managed;
 mod open_code;
 mod process;
@@ -446,6 +447,9 @@ pub(super) fn spawn_chat_backend_after_stop(
     let shutdown = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     match agent.provider {
+        AgentKind::Gemini => gemini::spawn_gemini_acp(
+            agent, initial_mode, command_rx, event_tx, shutdown.clone(), stopped.clone(), previous_stop,
+        )?,
         AgentKind::Codex => spawn_codex_app_server(
             agent,
             initial_mode,

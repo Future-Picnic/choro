@@ -451,6 +451,13 @@ pub fn agent_defaults(project: ProjectId, cx: &App) -> Option<OnboardingAgentDef
         return None;
     }
     match default_provider_choice(&tour.provider_choices)? {
+        OnboardingProviderChoice::Gemini => Some(OnboardingAgentDefaults {
+            provider: ide_core::AgentKind::Gemini,
+            model: ide_core::AgentModel::Gemini38FlashMedium,
+            effort: ide_core::AgentEffort::Medium,
+            external_model_id: None,
+            external_model_label: None,
+        }),
         OnboardingProviderChoice::Claude => Some(OnboardingAgentDefaults {
             provider: ide_core::AgentKind::Claude,
             model: ide_core::AgentModel::ClaudeHaiku45,
@@ -757,6 +764,7 @@ impl OnboardingTour {
             OnboardingProviderChoice::Claude => ide_core::AgentKind::Claude,
             OnboardingProviderChoice::Codex => ide_core::AgentKind::Codex,
             OnboardingProviderChoice::OpenCode => ide_core::AgentKind::OpenCode,
+            OnboardingProviderChoice::Gemini => ide_core::AgentKind::Gemini,
         };
         self.workspace.update(cx, |workspace, cx| {
             workspace.set_generation_agent(

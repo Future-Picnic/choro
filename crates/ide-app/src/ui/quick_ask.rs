@@ -506,7 +506,7 @@ impl QuickAskPanel {
         .dropdown_menu(move |mut menu, window, cx| {
             let workspace = view.read(cx).workspace.clone();
             let mut choices = Vec::new();
-            for provider in [AgentKind::Codex, AgentKind::Claude, AgentKind::OpenCode] {
+            for provider in AgentKind::ALL {
                 for model in AgentModel::models_for(provider) {
                     choices.push(if provider == AgentKind::OpenCode {
                         GenerationAgent::for_provider(provider)

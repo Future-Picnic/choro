@@ -1856,7 +1856,7 @@ impl CenterArea {
 
     pub(super) fn remote_configuration_catalog(&self, cx: &App) -> ConfigurationCatalogDto {
         let defaults = self.workspace.read(cx).new_agent_defaults();
-        let mut providers = [AgentKind::Codex, AgentKind::Claude]
+        let mut providers = [AgentKind::Codex, AgentKind::Claude, AgentKind::Gemini]
             .into_iter()
             .map(|provider| ProviderConfigurationDto {
                 id: wire_value(provider),

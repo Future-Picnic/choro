@@ -297,14 +297,23 @@ impl CenterArea {
         let Some((project, _)) = self.active_project(cx) else {
             return;
         };
-        let key = format!("{}/{namespace}/{}", conn.id, object.name);
-        if !self
+        let key = crate::ui::db::db_panel::object_key(conn.id, &namespace, &object.name);
+        let existing = self
             .db_views
             .iter()
-            .any(|v| v.project == project && v.key == key)
+            .position(|v| v.project == project && v.key == key);
+        if existing.is_none_or(|index| !self.db_views[index].connection.shares_connection(&handle))
         {
-            let title: SharedString = format!("{} · {namespace}.{}", conn.name, object.name).into();
+            let connection = handle.clone();
             let prod = conn.looks_like_prod();
+            let meta = crate::ui::db::workspace::DbTabMeta {
+                connection_name: conn.name.clone().into(),
+                provider: conn.provider,
+                namespace: namespace.clone().into(),
+                object: object.name.clone().into(),
+                kind: object.kind,
+                prod,
+            };
             let view = match handle {
                 ide_core::DatabaseHandle::Mongo(handle) => {
                     let collection = object.name.clone();
@@ -327,7 +336,10 @@ impl CenterArea {
                         TablePane::new(
                             handle,
                             namespace.clone(),
-                            table,
+                            ide_core::DbObject {
+                                name: table,
+                                kind: object.kind,
+                            },
                             prod,
                             conn.read_only,
                             window,
@@ -337,33 +349,33 @@ impl CenterArea {
                     cx.new(|_| DatabasePane::table(child))
                 }
             };
-            self.db_views.push(DbItem {
+            let item = DbItem {
                 project,
                 key: key.clone(),
-                title,
+                meta,
                 view,
-            });
+                connection,
+            };
+            if let Some(index) = existing {
+                self.db_views[index] = item;
+            } else {
+                self.db_views.push(item);
+            }
         }
         self.selected_db.insert(project, key);
         self.set_view_mode(CenterMode::Db, cx);
+        self.notify_db_explorer(cx);
         cx.notify();
     }
 
-    /// The selected DB tab for a project (validated, with fallback).
+    /// The selected DB tab for a project (validated, with fallback). `None`
+    /// while the Connections home is showing.
     pub(super) fn active_db_key(&self, project: ProjectId) -> Option<String> {
-        if let Some(key) = self.selected_db.get(&project) {
-            if self
-                .db_views
-                .iter()
-                .any(|v| v.project == project && &v.key == key)
-            {
-                return Some(key.clone());
-            }
-        }
-        self.db_views
-            .iter()
-            .find(|v| v.project == project)
-            .map(|v| v.key.clone())
+        let keys = self.db_tab_keys(project);
+        db_workspace::resolve_db_selection(
+            &keys,
+            self.selected_db.get(&project).map(String::as_str),
+        )
     }
 
     /// The selected file-section tab for a project (validated, with fallback).
@@ -662,9 +674,19 @@ impl CenterArea {
     }
 
     pub(super) fn close_db_view(&mut self, project: ProjectId, key: &str, cx: &mut Context<Self>) {
+        let keys = self.db_tab_keys(project);
+        let next = db_workspace::db_selection_after_close(
+            &keys,
+            self.selected_db.get(&project).map(String::as_str),
+            key,
+        );
         self.db_views
             .retain(|v| !(v.project == project && v.key == key));
-        self.selected_db.remove(&project);
+        match next {
+            Some(next) => self.selected_db.insert(project, next),
+            None => self.selected_db.remove(&project),
+        };
+        self.notify_db_explorer(cx);
         cx.notify();
     }
 
@@ -1282,157 +1304,5 @@ impl CenterArea {
                             })),
                     ),
             )
-    }
-
-    pub(super) fn render_db_section(
-        &mut self,
-        project: ProjectId,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let tabs: Vec<(String, SharedString)> = self
-            .db_views
-            .iter()
-            .filter(|v| v.project == project)
-            .map(|v| (v.key.clone(), v.title.clone()))
-            .collect();
-
-        if tabs.is_empty() {
-            let has_connections = self
-                .workspace
-                .read(cx)
-                .projects
-                .iter()
-                .find(|item| item.id == project)
-                .is_some_and(|item| !item.db_connections.is_empty());
-            let workspace = self.workspace.clone();
-
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_4()
-                .child(
-                    div()
-                        .w(px(160.))
-                        .h(px(110.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            crate::ui::illustrations::illustration(
-                                crate::ui::illustrations::Illustration::Database,
-                                cx,
-                            )
-                            .size_full()
-                            .object_fit(ObjectFit::Contain),
-                        ),
-                )
-                .child(
-                    v_flex()
-                        .items_center()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(crate::ui::design::text_title())
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(crate::ui::design::t1(cx))
-                                .child(if has_connections {
-                                    "Choose a database object"
-                                } else {
-                                    "No database connections"
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_size(crate::ui::design::text_body())
-                                .text_color(crate::ui::design::t3(cx))
-                                .child(if has_connections {
-                                    "Select a table, view, or collection from the Database sidebar."
-                                } else {
-                                    "Add a database connection to start exploring your data."
-                                }),
-                        ),
-                )
-                .when(!has_connections, |empty| {
-                    empty.child(
-                        style::secondary_button(
-                            "database-empty-add-connection",
-                            "Add DB connection",
-                        )
-                        .icon(IconName::Plus)
-                        .on_click(move |_, window, cx| {
-                            crate::ui::db::db_panel::DbConnectionsEditor::open(
-                                workspace.clone(),
-                                window,
-                                cx,
-                            );
-                        }),
-                    )
-                })
-                .into_any_element();
-        }
-
-        let active_key = self.active_db_key(project);
-        let selected_ix = tabs
-            .iter()
-            .position(|(key, _)| Some(key) == active_key.as_ref())
-            .unwrap_or(0);
-        let view = active_key.as_ref().and_then(|key| {
-            self.db_views
-                .iter()
-                .find(|v| v.project == project && &v.key == key)
-                .map(|v| v.view.clone())
-        });
-        let keys: Vec<String> = tabs.iter().map(|(key, _)| key.clone()).collect();
-        let close_key = active_key.clone();
-
-        v_flex()
-            .size_full()
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_2()
-                    .gap_1()
-                    .items_center()
-                    .bg(crate::ui::design::nav(cx))
-                    .child(
-                        div().flex_1().min_w(px(0.)).child(
-                            TabBar::new("db-tabs")
-                                .menu(true)
-                                .w_full()
-                                .selected_index(selected_ix)
-                                .on_click(cx.listener(move |this, ix: &usize, _, cx| {
-                                    if let Some(key) = keys.get(*ix).cloned() {
-                                        this.selected_db.insert(project, key);
-                                        cx.notify();
-                                    }
-                                }))
-                                .children(
-                                    tabs.iter()
-                                        .map(|(_, title)| Tab::new().label(title.clone())),
-                                ),
-                        ),
-                    )
-                    .when_some(close_key, |bar, key| {
-                        bar.child(
-                            Button::new("close-db-view")
-                                .ghost()
-                                .small()
-                                .icon(IconName::Close)
-                                .tooltip("Close collection")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.close_db_view(project, &key, cx);
-                                })),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .when_some(view, |area, view| area.child(view)),
-            )
-            .into_any_element()
     }
 }
