@@ -7,19 +7,19 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
     <item>
-      <title>Choro 0.96</title>
-      <pubDate>Sun, 27 Sep 2026 14:04:54 +0300</pubDate>
-      <sparkle:version>96</sparkle:version>
-      <sparkle:shortVersionString>0.96</sparkle:shortVersionString>
+      <title>Choro 0.97</title>
+      <pubDate>Fri, 02 Oct 2026 14:46:48 +0300</pubDate>
+      <sparkle:version>97</sparkle:version>
+      <sparkle:shortVersionString>0.97</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text"><![CDATA[- docs: reorder Getting Started tutorial library and add regression coverage
-- Merge pull request #37 from Future-Picnic/feat-harden-agent-change-attribution-and-workspace-workflows
-- chore: publish update feed for 0.95]]></description>
-      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/592748291" length="118747414" type="application/octet-stream" sparkle:edSignature="+iI4Wxn2jO47HkanAzP29exHXGWV4VK3Y8QPpLmbamOpxS40u9u0Yih6FZSIhlLxCa18re8dU+r9cvf2z9kTCA=="></enclosure>
+      <description sparkle:format="plain-text"><![CDATA[First signed and notarized Choro release with in-app updates.
+
+Source: fdfb03a]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/605493956" length="119842925" type="application/octet-stream" sparkle:edSignature="jqFBjIGLsBvSUfzOUdDVaG8+5Xs1glCN/7BxcN+XCoGgl1zqlRJv3D5ZHJC022wlZymSUWqa8NIUznm58NMgDQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: uddgPtsrONQLZQtERJXMcQXOsAAE5ZXEq0xmk75X/HHUsky2OaofYCrL7OULPs3JSDo2LDq+vbEyudl5g4exCg==
-length: 1526
+edSignature: 5L+HvBjTtzO65mRAVPbMpXb3WMB+qgphohDhnCKhRi6V/i07t49X0pQeiGQQfkm0Kx8auZbMZ/+zy9u0nLcuAw==
+length: 1385
 -->
