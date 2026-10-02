@@ -542,8 +542,9 @@ pub(crate) struct MergePullRequestOutcome {
     pub(crate) branch: String,
     pub(crate) base_branch: String,
     head_sha: String,
-    archived: bool,
-    archive_error: Option<String>,
+    repository: String,
+    github_branch_deleted: bool,
+    branch_cleanup_error: Option<String>,
 }
 
 impl MergePullRequestOutcome {
@@ -552,17 +553,20 @@ impl MergePullRequestOutcome {
             "Merged pull request #{} into {}",
             self.number, self.base_branch
         );
-        if let Some(error) = &self.archive_error {
-            format!("{merged}, but the branch could not be archived: {error}")
-        } else if self.archived {
-            format!("{merged} and archived {}", self.branch)
+        if let Some(error) = &self.branch_cleanup_error {
+            format!("{merged}, but the GitHub branch could not be deleted: {error}. Your local branch is kept.")
+        } else if self.github_branch_deleted {
+            format!(
+                "{merged} and deleted {} on GitHub. Your local branch is kept.",
+                self.branch
+            )
         } else {
             merged
         }
     }
 
     pub(crate) fn notification(&self) -> Notification {
-        if self.archive_error.is_some() {
+        if self.branch_cleanup_error.is_some() {
             Notification::warning(self.message())
         } else {
             Notification::success(self.message())
@@ -570,24 +574,123 @@ impl MergePullRequestOutcome {
     }
 }
 
-/// Archiving is independent of merge success: its failure must never report
+/// Branch cleanup is independent of merge success: its failure must never report
 /// an already merged PR as failed or invite the user to merge it again.
-pub(crate) fn merge_pull_request_with_archive(
+pub(crate) fn merge_pull_request_with_branch_cleanup(
     repo: &Path,
     branch: &str,
     expected_base_branch: Option<&str>,
     expected_head_sha: Option<&str>,
-    archive: bool,
+    delete_branch: bool,
 ) -> anyhow::Result<MergePullRequestOutcome> {
-    let mut outcome =
-        merge_pull_request_with_gh(repo, branch, expected_base_branch, expected_head_sha)?;
-    if archive {
-        match ide_core::git::archive_merged_branch(repo, &outcome.branch, &outcome.head_sha) {
-            Ok(()) => outcome.archived = true,
-            Err(error) => outcome.archive_error = Some(format!("{error:#}")),
+    finish_merge_with_branch_cleanup(
+        merge_pull_request_with_gh(repo, branch, expected_base_branch, expected_head_sha),
+        delete_branch,
+        |outcome| {
+            delete_merged_github_branch(outcome, |method, endpoint| {
+                github_branch_cleanup_api(repo, method, endpoint)
+            })
+        },
+    )
+}
+
+fn finish_merge_with_branch_cleanup(
+    result: anyhow::Result<MergePullRequestOutcome>,
+    delete_branch: bool,
+    cleanup: impl FnOnce(&MergePullRequestOutcome) -> anyhow::Result<()>,
+) -> anyhow::Result<MergePullRequestOutcome> {
+    let mut outcome = result?;
+    if delete_branch {
+        match cleanup(&outcome) {
+            Ok(()) => outcome.github_branch_deleted = true,
+            Err(error) => outcome.branch_cleanup_error = Some(format!("{error:#}")),
         }
     }
     Ok(outcome)
+}
+
+/// API-only cleanup: no Git checkout, branch deletion, pruning, or config edits.
+fn github_branch_cleanup_api(
+    repo: &Path,
+    method: &str,
+    endpoint: &str,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let output = gh_output(
+        gh_command_for_repo(repo)?
+            .args(["api", "--include", "--method", method, endpoint])
+            .current_dir(repo)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )?;
+    parse_github_branch_cleanup_response(&output)
+}
+
+fn parse_github_branch_cleanup_response(
+    output: &std::process::Output,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let status = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok());
+    if status == Some(404) {
+        return Ok(None);
+    }
+    if !output.status.success() || !status.is_some_and(|status| (200..300).contains(&status)) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("GitHub branch cleanup failed: {}", stderr.trim());
+    }
+    let body = stdout
+        .split_once("\r\n\r\n")
+        .or_else(|| stdout.split_once("\n\n"))
+        .map(|(_, body)| body.trim())
+        .ok_or_else(|| anyhow::anyhow!("GitHub did not return a valid API response"))?;
+    Ok(Some(if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(body)?
+    }))
+}
+
+fn delete_merged_github_branch(
+    outcome: &MergePullRequestOutcome,
+    mut api: impl FnMut(&str, &str) -> anyhow::Result<Option<serde_json::Value>>,
+) -> anyhow::Result<()> {
+    let pr_endpoint = format!("repos/{}/pulls/{}", outcome.repository, outcome.number);
+    let pr = api("GET", &pr_endpoint)?
+        .ok_or_else(|| anyhow::anyhow!("The merged pull request is unavailable"))?;
+    let head = &pr["head"];
+    if pr["merged"].as_bool() != Some(true)
+        || head["ref"].as_str() != Some(outcome.branch.as_str())
+        || head["sha"].as_str() != Some(outcome.head_sha.as_str())
+    {
+        anyhow::bail!("The pull request source changed; its GitHub branch was kept");
+    }
+    // A fork PR must target its head repository, not a same-named base branch.
+    let source_repo = head["repo"]["full_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("The source repository is unavailable"))?;
+    let repo_endpoint = format!("repos/{source_repo}");
+    let repository = api("GET", &repo_endpoint)?
+        .ok_or_else(|| anyhow::anyhow!("The source repository is inaccessible"))?;
+    if repository["default_branch"].as_str() == Some(outcome.branch.as_str()) {
+        anyhow::bail!("The source is the repository's default branch; it was kept");
+    }
+    let encoded_branch = url_encode(&outcome.branch);
+    let ref_endpoint = format!("repos/{source_repo}/git/ref/heads/{encoded_branch}");
+    let Some(reference) = api("GET", &ref_endpoint)? else {
+        // GitHub's automatic branch deletion may already have removed it.
+        return Ok(());
+    };
+    if reference["ref"].as_str() != Some(format!("refs/heads/{}", outcome.branch).as_str())
+        || reference["object"]["sha"].as_str() != Some(outcome.head_sha.as_str())
+    {
+        anyhow::bail!("The GitHub branch has new commits since the merge; it was kept");
+    }
+    let delete_endpoint = format!("repos/{source_repo}/git/refs/heads/{encoded_branch}");
+    api("DELETE", &delete_endpoint)?;
+    Ok(())
 }
 
 /// Immediately merges an open PR using the repository's preferred allowed
@@ -697,8 +800,9 @@ pub(crate) fn merge_pull_request_with_gh(
 
     Ok(MergePullRequestOutcome {
         head_sha: head_oid.to_string(),
-        archived: false,
-        archive_error: None,
+        repository: name_with_owner,
+        github_branch_deleted: false,
+        branch_cleanup_error: None,
         number: pr.number,
         branch: pr.branch,
         base_branch: pr.base_branch,
@@ -724,12 +828,12 @@ impl GitPanel {
         .icon(IconName::GitHub)
         .branch_route(pr.branch.clone(), pr.base_branch.clone())
         .checkbox(
-            "Archive branch after merge",
-            "Hide it from Choro's branch picker. Search for it to restore it; files and GitHub branches are kept.",
+            "Delete GitHub branch after merge",
+            "Delete the source branch on GitHub only. Your local branch, files, and history are kept.",
         )
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-branch-pr")
-        .on_confirm_with_checkbox(move |archive, window, cx| {
+        .on_confirm_with_checkbox(move |delete_branch, window, cx| {
             let window_handle = window.window_handle();
             let repo = git.read(cx).repo_path.clone();
             let branch = pr.branch.clone();
@@ -758,12 +862,12 @@ impl GitPanel {
                     let result = cx
                         .background_executor()
                         .spawn(async move {
-                            merge_pull_request_with_archive(
+                            merge_pull_request_with_branch_cleanup(
                                 &repo,
                                 &branch,
                                 Some(&base_branch),
                                 expected_head_sha.as_deref(),
-                                archive,
+                                delete_branch,
                             )
                         })
                         .await;
@@ -854,6 +958,181 @@ pub(crate) fn pull_request_url_with_text(url: &str, pull_request: &GeneratedPull
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    fn merged_outcome() -> MergePullRequestOutcome {
+        MergePullRequestOutcome {
+            number: 42,
+            branch: "feature/old-data".into(),
+            base_branch: "main".into(),
+            head_sha: "abc123".into(),
+            repository: "owner/app".into(),
+            github_branch_deleted: false,
+            branch_cleanup_error: None,
+        }
+    }
+
+    fn merged_pr() -> serde_json::Value {
+        serde_json::json!({
+            "merged": true,
+            "head": {
+                "ref": "feature/old-data", "sha": "abc123",
+                "repo": { "full_name": "contributor/fork" }
+            }
+        })
+    }
+
+    #[test]
+    fn github_cleanup_targets_only_the_exact_fork_ref() {
+        let mut calls = Vec::new();
+        delete_merged_github_branch(&merged_outcome(), |method, endpoint| {
+            calls.push((method.to_string(), endpoint.to_string()));
+            Ok(Some(match calls.len() {
+                1 => merged_pr(),
+                2 => serde_json::json!({ "default_branch": "main" }),
+                3 => serde_json::json!({
+                    "ref": "refs/heads/feature/old-data", "object": { "sha": "abc123" }
+                }),
+                4 => serde_json::Value::Null,
+                _ => panic!("unexpected API request"),
+            }))
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![
+                ("GET".into(), "repos/owner/app/pulls/42".into()),
+                ("GET".into(), "repos/contributor/fork".into()),
+                (
+                    "GET".into(),
+                    "repos/contributor/fork/git/ref/heads/feature%2Fold-data".into()
+                ),
+                (
+                    "DELETE".into(),
+                    "repos/contributor/fork/git/refs/heads/feature%2Fold-data".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn github_cleanup_keeps_a_branch_with_new_commits() {
+        let mut calls = 0;
+        let result = delete_merged_github_branch(&merged_outcome(), |method, _| {
+            assert_eq!(method, "GET", "a changed branch must never be deleted");
+            calls += 1;
+            Ok(Some(match calls {
+                1 => merged_pr(),
+                2 => serde_json::json!({ "default_branch": "main" }),
+                _ => serde_json::json!({
+                    "ref": "refs/heads/feature/old-data", "object": { "sha": "new-work" }
+                }),
+            }))
+        });
+        assert!(result.unwrap_err().to_string().contains("new commits"));
+    }
+
+    #[test]
+    fn github_cleanup_accepts_already_deleted_branches() {
+        let mut calls = 0;
+        delete_merged_github_branch(&merged_outcome(), |method, _| {
+            assert_eq!(method, "GET");
+            calls += 1;
+            Ok(match calls {
+                1 => Some(merged_pr()),
+                2 => Some(serde_json::json!({ "default_branch": "main" })),
+                _ => None,
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn github_cleanup_refuses_an_unmerged_pr_or_a_default_branch() {
+        let mut pr = merged_pr();
+        pr["merged"] = false.into();
+        assert!(delete_merged_github_branch(&merged_outcome(), |method, _| {
+            assert_eq!(method, "GET");
+            Ok(Some(pr.clone()))
+        })
+        .is_err());
+        let mut calls = 0;
+        assert!(delete_merged_github_branch(&merged_outcome(), |method, _| {
+            assert_eq!(method, "GET");
+            calls += 1;
+            Ok(Some(if calls == 1 {
+                merged_pr()
+            } else {
+                serde_json::json!({ "default_branch": "feature/old-data" })
+            }))
+        })
+        .is_err());
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn unchecked_or_failed_merges_never_run_branch_cleanup() {
+        let outcome = finish_merge_with_branch_cleanup(Ok(merged_outcome()), false, |_| {
+            panic!("unchecked cleanup must not run")
+        })
+        .unwrap();
+        assert!(!outcome.github_branch_deleted);
+        assert!(
+            finish_merge_with_branch_cleanup(Err(anyhow::anyhow!("blocked")), true, |_| {
+                panic!("failed merges must not run cleanup")
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn deletion_failure_preserves_merge_success_and_explains_local_retention() {
+        let outcome = finish_merge_with_branch_cleanup(Ok(merged_outcome()), true, |_| {
+            anyhow::bail!("permission denied")
+        })
+        .unwrap();
+        assert!(!outcome.github_branch_deleted);
+        assert_eq!(
+            outcome.branch_cleanup_error.as_deref(),
+            Some("permission denied")
+        );
+        assert!(outcome.message().contains("Merged pull request #42"));
+        assert!(outcome.message().contains("Your local branch is kept"));
+    }
+
+    #[test]
+    fn cleanup_parses_github_headers_json_empty_delete_and_not_found() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let output = |code, stdout: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: b"GitHub API request failed".to_vec(),
+        };
+        let response = output(
+            0,
+            "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"merged\":true}\n",
+        );
+        assert_eq!(
+            parse_github_branch_cleanup_response(&response).unwrap(),
+            Some(serde_json::json!({"merged": true}))
+        );
+        let response = output(0, "HTTP/2.0 204 No Content\r\nX-Github: test\r\n\r\n");
+        assert_eq!(
+            parse_github_branch_cleanup_response(&response).unwrap(),
+            Some(serde_json::Value::Null)
+        );
+        let response = output(
+            1,
+            "HTTP/2.0 404 Not Found\r\n\r\n{\"message\":\"Not Found\"}",
+        );
+        assert_eq!(
+            parse_github_branch_cleanup_response(&response).unwrap(),
+            None
+        );
+        let response = output(1, "HTTP/2.0 403 Forbidden\r\n\r\n{}");
+        assert!(parse_github_branch_cleanup_response(&response).is_err());
+    }
 
     #[test]
     fn recognizes_only_pocketcomet_deep_links_for_app_targeting() {

@@ -159,7 +159,6 @@ fn head_info(repo: &Repository) -> Result<HeadInfo> {
 
 fn branches(repo: &Repository) -> Result<Vec<BranchInfo>> {
     let mut branches = Vec::new();
-    let archive_config = repo.config()?.open_level(git2::ConfigLevel::Local)?;
     for entry in repo.branches(Some(BranchType::Local))? {
         let (branch, _) = entry?;
         let Some(name) = branch.name()?.map(str::to_owned) else {
@@ -194,7 +193,6 @@ fn branches(repo: &Repository) -> Result<Vec<BranchInfo>> {
             })
             .unwrap_or_default();
         branches.push(BranchInfo {
-            is_archived: super::archive::is_archived(&archive_config, &name, branch.get().target()),
             name,
             is_remote: false,
             is_head,
@@ -228,9 +226,6 @@ fn branches(repo: &Repository) -> Result<Vec<BranchInfo>> {
             })
             .unwrap_or_default();
         branches.push(BranchInfo {
-            is_archived: name.split_once('/').is_some_and(|(_, local_name)| {
-                super::archive::is_archived(&archive_config, local_name, branch.get().target())
-            }),
             name,
             is_remote: true,
             is_head: false,

@@ -28,8 +28,6 @@ pub struct BranchInfo {
     pub name: String,
     pub is_remote: bool,
     pub is_head: bool,
-    /// Hidden from the active picker until restored or its tip changes.
-    pub is_archived: bool,
     pub upstream: Option<String>,
     pub ahead: usize,
     pub behind: usize,

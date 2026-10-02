@@ -1,6 +1,6 @@
 mod accounts;
+#[cfg(test)]
 mod archive;
-pub use archive::archive_merged_branch;
 mod background;
 pub use background::BackgroundGitPermit;
 pub mod diff;

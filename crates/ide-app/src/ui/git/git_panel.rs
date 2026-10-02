@@ -69,7 +69,8 @@ use pull_request_support::{
 };
 pub(crate) use pull_request_support::{
     branch_pull_request, create_pull_request_with_gh, github_pull_request_url,
-    merge_pull_request_with_archive, open_url, pull_request_status_style, pull_request_url_with_text,
+    merge_pull_request_with_branch_cleanup, open_url, pull_request_status_style,
+    pull_request_url_with_text,
 };
 use repository_setup::open_publish_repository_dialog;
 

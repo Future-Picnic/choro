@@ -442,12 +442,12 @@ impl CenterArea {
             .icon(IconName::GitHub)
             .branch_route(branch.clone(), base_branch.clone())
             .checkbox(
-                "Archive branch after merge",
-                "Hide it from Choro's branch picker. Search for it to restore it; files and GitHub branches are kept.",
+                "Delete GitHub branch after merge",
+                "Delete the source branch on GitHub only. Your local branch, files, and history are kept.",
             )
             .confirm_label("Merge PR")
             .confirm_id("confirm-merge-agent-ship-pr")
-            .on_confirm_with_checkbox(move |archive, window, cx| {
+            .on_confirm_with_checkbox(move |delete_branch, window, cx| {
                 let window_handle = window.window_handle();
                 let merge_git = git.clone();
                 let repo_path = repo_path.clone();
@@ -473,12 +473,12 @@ impl CenterArea {
                         let result = cx
                             .background_executor()
                             .spawn(async move {
-                                crate::ui::git::git_panel::merge_pull_request_with_archive(
+                                crate::ui::git::git_panel::merge_pull_request_with_branch_cleanup(
                                     &repo_path,
                                     &branch,
                                     Some(&base_branch),
                                     None,
-                                    archive,
+                                    delete_branch,
                                 )
                             })
                             .await;

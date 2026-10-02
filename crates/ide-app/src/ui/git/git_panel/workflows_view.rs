@@ -115,12 +115,12 @@ impl GitPanel {
         .icon(IconName::GitHub)
         .branch_route(run.source_branch.clone(), run.destination_branch.clone())
         .checkbox(
-            "Archive branch after merge",
-            "Hide it from Choro's branch picker. Search for it to restore it; files and GitHub branches are kept.",
+            "Delete GitHub branch after merge",
+            "Delete the source branch on GitHub only. Your local branch, files, and history are kept.",
         )
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-git-workflow")
-        .on_confirm_with_checkbox(move |archive, window, cx| {
+        .on_confirm_with_checkbox(move |delete_branch, window, cx| {
             let repo_path = repo_path.clone();
             let mut pending_run = run.clone();
             let pull_request_selector = number.to_string();
@@ -133,12 +133,12 @@ impl GitPanel {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        merge_pull_request_with_archive(
+                        merge_pull_request_with_branch_cleanup(
                             &repo_path,
                             &pull_request_selector,
                             Some(&destination),
                             expected_head.as_deref(),
-                            archive,
+                            delete_branch,
                         )
                     })
                     .await;

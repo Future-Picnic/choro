@@ -24,9 +24,6 @@ impl GitPanel {
             .filter(|name| !all_branches.iter().any(|branch| branch.name == *name));
         let normalized_query = slug_branch_name(&query);
         let mut branches = all_branches;
-        if query.is_empty() {
-            branches.retain(|branch| !branch.is_archived);
-        }
         if !query.is_empty() {
             let needle = query.to_lowercase();
             branches.retain(|branch| {
@@ -140,7 +137,7 @@ impl GitPanel {
                             })
                             .hover(|row| row.bg(crate::ui::design::surface_2(cx)))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if !branch.is_head || branch.is_archived {
+                                if !branch.is_head {
                                     checkout_git.update(cx, |git, cx| {
                                         git.checkout(checkout_name.clone(), cx)
                                     });
@@ -189,14 +186,6 @@ impl GitPanel {
                                         )
                                     }),
                             )
-                            .when(branch.is_archived, |row| {
-                                row.child(
-                                    div()
-                                        .text_size(crate::ui::design::text_label())
-                                        .text_color(crate::ui::design::t3(cx))
-                                        .child("Archived · restore"),
-                                )
-                            })
                             .when_some(ahead_behind, |row, label| {
                                 row.child(
                                     div()
