@@ -9,7 +9,7 @@ async fn beta_features_async(conn: &Connection) -> Result<crate::config::BetaFea
     get_meta(conn, "beta_features")
         .await?
         .map(|value| serde_json::from_str(&value).map_err(Into::into))
-        .unwrap_or_else(|| Ok(crate::config::BetaFeatures::default()))
+        .unwrap_or(Ok(crate::config::BetaFeatures::UNSET))
 }
 
 pub(super) async fn ensure_delegation_schema_inner(conn: &Connection) -> Result<()> {
@@ -702,11 +702,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn delegation_beta_defaults_off_and_persists_independently_of_workspace_saves() {
+    fn delegation_defaults_on_and_persists_independently_of_workspace_saves() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
         let observer = LocalStore::open(dir.path().to_path_buf()).unwrap();
-        assert!(!store.beta_features().unwrap().delegation);
+        assert!(store.beta_features().unwrap().delegation);
         let old: crate::config::BetaFeatures = serde_json::from_str("{}").unwrap();
         assert!(!old.delegation);
         let legacy: crate::config::BetaFeatures = serde_json::from_str(r#"{"delegation":true,"penpot":true}"#).unwrap();
@@ -740,7 +740,7 @@ mod tests {
             .begin_delegation(parent.id, source)
             .unwrap_err()
             .to_string()
-            .contains("Beta features"));
+            .contains("Settings → Band"));
         assert!(store.load_delegations().unwrap().is_empty());
         store
             .save_beta_features(crate::config::BetaFeatures { delegation: true, ..Default::default() })
@@ -771,7 +771,7 @@ mod tests {
             .begin_delegation(parent.id, next)
             .unwrap_err()
             .to_string()
-            .contains("Beta features"));
+            .contains("Settings → Band"));
         assert_eq!(store.load_delegations().unwrap().len(), 1);
     }
 

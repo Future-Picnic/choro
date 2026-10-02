@@ -105,6 +105,7 @@ impl GitPanel {
         let Some(number) = run.pull_request_number else {
             return;
         };
+        let git = self.active_git(cx);
         let workspace = self.workspace.clone();
         ConfirmDialog::new(
             format!("Merge pull request #{number}?"),
@@ -113,25 +114,31 @@ impl GitPanel {
         .tone(crate::ui::confirm::ConfirmTone::Primary)
         .icon(IconName::GitHub)
         .branch_route(run.source_branch.clone(), run.destination_branch.clone())
+        .checkbox(
+            "Archive branch after merge",
+            "Hide it from Choro's branch picker. Search for it to restore it; files and GitHub branches are kept.",
+        )
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-git-workflow")
-        .on_confirm(move |window, cx| {
+        .on_confirm_with_checkbox(move |archive, window, cx| {
             let repo_path = repo_path.clone();
             let mut pending_run = run.clone();
             let pull_request_selector = number.to_string();
             let destination = run.destination_branch.clone();
             let expected_head = run.expected_head_sha.clone();
+            let git = git.clone();
             let workspace = workspace.clone();
             let window_handle = window.window_handle();
             cx.spawn(async move |cx| {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        merge_pull_request_with_gh(
+                        merge_pull_request_with_archive(
                             &repo_path,
                             &pull_request_selector,
                             Some(&destination),
                             expected_head.as_deref(),
+                            archive,
                         )
                     })
                     .await;
@@ -156,11 +163,11 @@ impl GitPanel {
                             .ok();
                     })
                     .ok();
+                if let Some(git) = git {
+                    git.update(cx, |git, cx| git.refresh(cx)).ok();
+                }
                 let notification = match result {
-                    Ok(outcome) => Notification::success(format!(
-                        "Merged pull request #{} into {}",
-                        outcome.number, outcome.base_branch
-                    )),
+                    Ok(outcome) => outcome.notification(),
                     Err(error) => Notification::error(format!("{error:#}")),
                 };
                 window_handle

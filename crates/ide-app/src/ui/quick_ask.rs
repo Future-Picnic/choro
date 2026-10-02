@@ -507,6 +507,9 @@ impl QuickAskPanel {
             let workspace = view.read(cx).workspace.clone();
             let mut choices = Vec::new();
             for provider in AgentKind::ALL {
+                if !provider.is_visible_in_picker() {
+                    continue;
+                }
                 for model in AgentModel::models_for(provider) {
                     choices.push(if provider == AgentKind::OpenCode {
                         GenerationAgent::for_provider(provider)

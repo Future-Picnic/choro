@@ -14,6 +14,7 @@ mod proposed_plan;
 pub(crate) mod protocol;
 mod review_checklist;
 mod search;
+mod studio_request;
 mod timeline;
 mod usage;
 mod verification;
@@ -48,6 +49,7 @@ pub(crate) use search::{
     searchable_message_text, TIMELINE_SEARCH_TEXT_VERSION,
 };
 pub use usage::{ConversationUsage, ModelUsage, UsageTotals};
+pub use studio_request::StudioChatRequest;
 pub use verification::{split_verification, Verification, VerificationItem, VerificationStatus};
 pub use work_log::{WorkLogEntry, WorkLogEntryKind, WorkLogStatus};
 
@@ -151,6 +153,7 @@ pub struct QueuedChatTurn {
     pub mode: AgentInteractionMode,
     pub created_at: u64,
     pub handoff: Option<QueuedAgentHandoff>,
+    pub studio_request: Option<StudioChatRequest>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -889,14 +892,25 @@ impl AgentChatState {
         mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) {
+        self.send_turn_with_studio_request(agent_id, text, mode, None, String::new(), cx);
+    }
+
+    pub fn send_turn_with_studio_request(
+        &mut self,
+        agent_id: Uuid,
+        text: String,
+        mode: AgentInteractionMode,
+        studio_request: Option<StudioChatRequest>,
+        title: String,
+        cx: &mut Context<Self>,
+    ) {
         let turn_id = self.anchor_change_turn(agent_id, cx);
         if let Some(controller) = self.controllers.get(&agent_id) {
-            let _ = controller.send(ChatBackendCommand::SendTurn {
-                turn_id,
-                text,
-                mode,
-                read_only: false,
-            });
+            let command = match studio_request {
+                Some(request) => ChatBackendCommand::SendStudioTurn { text, mode, turn_id, title, request },
+                None => ChatBackendCommand::SendTurn { turn_id, text, mode, read_only: false },
+            };
+            let _ = controller.send(command);
         }
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             self.cancellation_requested.remove(&agent_id);
@@ -1017,6 +1031,19 @@ impl AgentChatState {
         mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) -> Uuid {
+        self.queue_turn_with_studio(agent_id, text, display_text, tags, mode, None, cx)
+    }
+
+    pub fn queue_turn_with_studio(
+        &mut self,
+        agent_id: Uuid,
+        text: String,
+        display_text: Option<String>,
+        tags: Vec<AgentChatMessageTag>,
+        mode: AgentInteractionMode,
+        studio_request: Option<StudioChatRequest>,
+        cx: &mut Context<Self>,
+    ) -> Uuid {
         let id = Uuid::new_v4();
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             session.queued_turns.push(QueuedChatTurn {
@@ -1027,6 +1054,7 @@ impl AgentChatState {
                 mode,
                 created_at: unix_now(),
                 handoff: None,
+                studio_request,
             });
             if session.status == AgentChatStatus::Idle {
                 self.schedule_next_queued_turn(agent_id, cx);
@@ -1079,6 +1107,9 @@ impl AgentChatState {
         {
             return;
         }
+        if !self.validate_queued_studio_request(agent_id, turn_id, cx) {
+            return;
+        }
         let Some(turn) = self.take_queued_turn(agent_id, turn_id) else {
             return;
         };
@@ -1092,12 +1123,19 @@ impl AgentChatState {
             turn.display_text,
             turn.tags,
             turn.mode,
+            turn.studio_request,
             cx,
         );
     }
 
     fn drain_next_queued_turn(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         if !self.can_drain_queue(agent_id) {
+            return;
+        }
+        let Some(id) = self.sessions.get(&agent_id).and_then(|s| s.queued_turns.first()).map(|t| t.id) else {
+            return;
+        };
+        if !self.validate_queued_studio_request(agent_id, id, cx) {
             return;
         }
         let Some(turn) = self.take_next_queued_turn(agent_id) else {
@@ -1113,6 +1151,7 @@ impl AgentChatState {
             turn.display_text,
             turn.tags,
             turn.mode,
+            turn.studio_request,
             cx,
         );
     }
@@ -1136,6 +1175,25 @@ impl AgentChatState {
         .detach();
     }
 
+    fn validate_queued_studio_request(&mut self, agent_id: Uuid, turn_id: Uuid, cx: &mut Context<Self>) -> bool {
+        let Some(turn) = self.sessions.get(&agent_id).and_then(|s| s.queued_turns.iter().find(|t| t.id == turn_id)) else {
+            return false;
+        };
+        let Some(request) = &turn.studio_request else { return true; };
+        // Studio cannot steer a new scope into a running or cancelling turn.
+        if self.sessions.get(&agent_id).is_none_or(|s| s.status != AgentChatStatus::Idle) {
+            return false;
+        }
+        if let Err(error) = request.validate() {
+            self.paused_queues.insert(agent_id);
+            let entry = WorkLogEntry::new(next_local_id(), "studio-queue-error", WorkLogEntryKind::System,
+                format!("Could not start queued design request: {error:#}"), WorkLogStatus::Failed);
+            self.upsert_work_log(agent_id, entry, cx);
+            return false;
+        }
+        true
+    }
+
     fn take_next_queued_turn(&mut self, agent_id: Uuid) -> Option<QueuedChatTurn> {
         let session = self.sessions.get_mut(&agent_id)?;
         (!session.queued_turns.is_empty()).then(|| session.queued_turns.remove(0))
@@ -1157,8 +1215,10 @@ impl AgentChatState {
         display_text: Option<String>,
         tags: Vec<AgentChatMessageTag>,
         mode: AgentInteractionMode,
+        studio_request: Option<StudioChatRequest>,
         cx: &mut Context<Self>,
     ) {
+        let title = display_text.as_deref().unwrap_or(&text).to_owned();
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             let message = AgentChatMessage::User {
                 text: text.clone(),
@@ -1170,7 +1230,7 @@ impl AgentChatState {
             append_or_extend_timeline_message(&mut session.timeline, message.clone());
             persist_chat_message(agent_id, message, cx);
         }
-        self.send_turn(agent_id, text, mode, cx);
+        self.send_turn_with_studio_request(agent_id, text, mode, studio_request, title, cx);
     }
 
     pub fn stop_backend(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
@@ -2153,6 +2213,34 @@ mod retirement_tests {
         assert!(session_safe_to_retire(&codex));
     }
 
+    #[cfg(feature = "ui-layout-tests")]
+    #[gpui::test]
+    fn studio_queue_preserves_active_scope_and_fifo(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext;
+        let (store, design, agent_id, request) = studio_request::tests::fixture();
+        let active = ide_core::studio::scope_for_request(&design, None, None);
+        store.save_scope(agent_id, &active).unwrap();
+        let chats = cx.new(|_| AgentChatState::new());
+        chats.update(cx, |state, cx| {
+            state.ensure_session(agent_id, "Designer", cx).set_status(AgentChatStatus::Running);
+            let first = state.queue_turn_with_studio(agent_id, "First".into(), None, vec![],
+                AgentInteractionMode::Default, Some(request.clone()), cx);
+            let second = state.queue_turn_with_studio(agent_id, "Second".into(), None, vec![],
+                AgentInteractionMode::Default, Some(request), cx);
+            for status in [AgentChatStatus::Running, AgentChatStatus::Cancelling] {
+                state.sessions.get_mut(&agent_id).unwrap().set_status(status);
+                assert!(!state.validate_queued_studio_request(agent_id, first, cx));
+                assert_eq!(store.scope(agent_id).unwrap().id, active.id);
+                assert_eq!(state.sessions[&agent_id].queued_turns.len(), 2);
+            }
+            state.sessions.get_mut(&agent_id).unwrap().set_status(AgentChatStatus::Idle);
+            assert!(state.validate_queued_studio_request(agent_id, first, cx));
+            assert_eq!(store.scope(agent_id).unwrap().id, active.id);
+            assert_eq!(state.take_next_queued_turn(agent_id).unwrap().id, first);
+            assert_eq!(state.take_next_queued_turn(agent_id).unwrap().id, second);
+        });
+    }
+
     fn queued_handoff_fixture(kind: &str) -> QueuedChatTurn {
         QueuedChatTurn {
             id: Uuid::new_v4(),
@@ -2168,6 +2256,7 @@ mod retirement_tests {
                 original_text: "Check the SDK".to_string(),
                 references: "File: sdk.rs".to_string(),
             }),
+            studio_request: None,
         }
     }
 
@@ -2289,6 +2378,7 @@ mod retirement_tests {
             mode: AgentInteractionMode::Default,
             created_at: 0,
             handoff: None,
+            studio_request: None,
         });
         assert!(!session_safe_to_retire(&queued));
 

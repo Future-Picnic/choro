@@ -352,26 +352,49 @@ async function ensureRuntime(command) {
   }
 }
 
-export async function preflightStudioRuntime(candidate, expectedServers) {
-  const repair = "Studio cannot verify Claude restrictions. Update Claude Code and repair Choro's bundled bridge, then reconnect.";
-  if (typeof candidate?.initializationResult !== "function" || typeof candidate?.mcpServerStatus !== "function"
-      || !expectedServers.length || expectedServers.some(name => !["choro", "ide"].includes(name))) throw new Error(repair);
+export async function preflightStudioRuntime(candidate, expectedServers, { timeoutMs = 30000, pollIntervalMs = 100 } = {}) {
+  const failure = detail => new Error(`Claude could not connect to Choro's design tools. ${detail}`);
+  if (typeof candidate?.initializationResult !== "function" || typeof candidate?.mcpServerStatus !== "function") {
+    throw failure("The bundled Claude bridge lacks startup verification. Update Choro, then reconnect.");
+  }
+  if (!expectedServers.length || expectedServers.some(name => !["choro", "ide"].includes(name))) {
+    throw failure("Choro's scoped tool server was not configured correctly. Reconnect and try again.");
+  }
   let timer;
+  let finished = false;
   try {
     await Promise.race([ (async () => {
       await candidate.initializationResult();
-      const servers = await candidate.mcpServerStatus();
-      if (servers.length !== expectedServers.length || servers.some(server => !expectedServers.includes(server.name) || server.status !== "connected")) throw new Error(repair);
-      for (const server of servers) {
-        const names = (server.tools || []).map(tool => tool.name);
-        for (const required of ["studio_context", "studio_apply", "studio_snapshot", "studio_review"]) {
-          if (!names.includes(required)) throw new Error(`${repair} Missing ${required}.`);
+      while (!finished) {
+        const servers = await candidate.mcpServerStatus();
+        if (!Array.isArray(servers) || servers.length > expectedServers.length
+            || servers.some(server => !expectedServers.includes(server.name))
+            || new Set(servers.map(server => server.name)).size !== servers.length) {
+          throw failure("Claude reported an unexpected tool server. Reconnect to restore the Studio restrictions.");
         }
-        const unexpected = names.filter(name => toolPolicyDenial(`mcp__${server.name}__${name}`, {studio:true}));
-        if (unexpected.length) throw new Error(`${repair} Unexpected MCP tool: ${server.name}: ${unexpected.join(", ")}.`);
+        for (const server of servers) {
+          if (!["connected", "pending"].includes(server.status)) {
+            throw failure(`The ${server.name} tool server is ${server.status}. Reconnect and try again.`);
+          }
+        }
+        // SDK initialization starts MCP connections; it does not await them.
+        // Do not send the prompt until every expected server has connected and
+        // its complete tool list has passed the same restriction checks.
+        if (servers.length === expectedServers.length && servers.every(server => server.status === "connected")) {
+          for (const server of servers) {
+            const names = (server.tools || []).map(tool => tool.name);
+            for (const required of ["studio_context", "studio_apply", "studio_snapshot", "studio_review"]) {
+              if (!names.includes(required)) throw failure(`Missing ${required}. Update Choro, then reconnect.`);
+            }
+            const unexpected = names.filter(name => toolPolicyDenial(`mcp__${server.name}__${name}`, {studio:true}));
+            if (unexpected.length) throw failure(`Unexpected MCP tool: ${server.name}: ${unexpected.join(", ")}. Reconnect to restore the Studio restrictions.`);
+          }
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
       }
-    })(), new Promise((_, reject) => { timer=setTimeout(() => reject(new Error(`${repair} Initialization timed out.`)), 30000); }) ]);
-  } finally { clearTimeout(timer); }
+    })(), new Promise((_, reject) => { timer=setTimeout(() => reject(failure("The tool server did not finish connecting. Reconnect and try again.")), timeoutMs); }) ]);
+  } finally { finished = true; clearTimeout(timer); }
 }
 
 function resumeSessionIdForCommand(requestedSessionId, activeSessionId) {

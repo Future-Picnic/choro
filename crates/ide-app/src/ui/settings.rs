@@ -26,9 +26,8 @@ use crate::state::{
 };
 use ide_core::{
     config::{
-        CompletionNotifications, ConversationLayout, GenerationAgent, NewAgentDefaults,
-        ReviewChecklistMode, SeparatorStyle, SidebarStyle, ThemeMode as ConfigTheme,
-        VerificationMode, DEFAULT_CODE_REVIEW_PROMPT,
+        CompletionNotifications, GenerationAgent, NewAgentDefaults, ReviewChecklistMode,
+        ThemeMode as ConfigTheme, VerificationMode, DEFAULT_CODE_REVIEW_PROMPT,
     },
     local_store::{
         analytics_orbit_template, blank_orbit_module, normalize_orbit_field_key,
@@ -40,7 +39,6 @@ use ide_core::{
 use uuid::Uuid;
 
 mod appearance_page;
-mod beta_features;
 mod brain;
 mod companion;
 mod data_page;
@@ -72,7 +70,6 @@ pub(crate) enum SettingsSection {
     Process,
     AgentSkills,
     Experts,
-    BetaFeatures,
     Orbit,
     Brain,
     Memory,
@@ -93,7 +90,6 @@ impl SettingsSection {
             Self::Process => "Process monitor",
             Self::AgentSkills => "Skills",
             Self::Experts => "Band",
-            Self::BetaFeatures => "Beta features",
             Self::Orbit => "Orbit",
             Self::Brain => "Knowledge",
             Self::Memory => "Memories",
@@ -121,8 +117,7 @@ impl SettingsSection {
             Self::AgentSkills => {
                 "Create Choro Riffs for every project and review skills discovered from your coding agents."
             }
-            Self::Experts => "Your bandmates are AI specialists. Start a chat with one or ask your lead to bring them into a task.",
-            Self::BetaFeatures => "Try optional features, including delegation.",
+            Self::Experts => "Your bandmates are AI specialists. Start a chat with one, or let your lead bring them into a task through delegation.",
             Self::Orbit => {
                 "Create reusable project modules with structured views and an agent job."
             }
@@ -133,7 +128,7 @@ impl SettingsSection {
             Self::Remote => "Pair iPhones directly with this Mac and revoke old devices.",
             Self::Data => "Create a portable workspace archive or restore one from disk.",
             Self::Shortcuts => "Shape the keyboard workflow around the way you work.",
-            Self::Appearance => "Personalize Choro's theme and conversation layout.",
+            Self::Appearance => "Personalize Choro's theme.",
         }
     }
 
@@ -205,7 +200,7 @@ pub struct SettingsView {
     expert_editor: Option<experts_page::ExpertEditor>,
     experts_status: Option<experts_page::ExpertsNotice>,
     experts_search: Entity<InputState>,
-    beta_features_error: Option<String>,
+    delegation_error: Option<String>,
     workspace: Entity<Workspace>,
     quick_ask: Entity<QuickAskState>,
     voice: Entity<crate::voice::VoiceState>,
@@ -522,7 +517,7 @@ impl SettingsView {
                 expert_editor: None,
                 experts_status: None,
                 experts_search,
-                beta_features_error: None,
+                delegation_error: None,
                 workspace: workspace.clone(),
                 quick_ask: quick_ask.clone(),
                 voice: voice.clone(),
@@ -655,30 +650,6 @@ impl SettingsView {
             });
             cx.notify();
         }
-    }
-
-    fn select_conversation_layout(&mut self, layout: ConversationLayout, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            workspace.set_conversation_layout(layout, cx);
-            workspace.save_now();
-        });
-        cx.notify();
-    }
-
-    fn select_sidebar_style(&mut self, style: SidebarStyle, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            workspace.set_sidebar_style(style, cx);
-            workspace.save_now();
-        });
-        cx.notify();
-    }
-
-    fn select_separator_style(&mut self, style: SeparatorStyle, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            workspace.set_separator_style(style, cx);
-            workspace.save_now();
-        });
-        cx.notify();
     }
 
     fn select_default_agent_provider(&mut self, provider: AgentKind, cx: &mut Context<Self>) {

@@ -33,8 +33,12 @@ checks = r'''
  };
  const narrowHost=async(width,label)=>{document.body.style.width=width?width+'px':'';await wait(()=>Math.abs(document.getElementById('studio-toolbar').getBoundingClientRect().width-(width||innerWidth))<1,label);};
  const layoutMode=()=>getComputedStyle(frame().contentDocument.body).getPropertyValue('--fixture-layout').trim();
- let prototypeResult;
- window.addEventListener('message',e=>{if(e.source===frame().contentWindow&&e.data?.type==='prototype-result')prototypeResult=e.data;});
+ let prototypeResult, prototypeScroll;
+ window.addEventListener('message',e=>{
+   if(e.source!==frame().contentWindow)return;
+   if(e.data?.type==='prototype-result')prototypeResult=e.data;
+   if(e.data?.type==='prototype-scroll-result')prototypeScroll=e.data;
+ });
  const title=()=>Vvveb.Builder.iframe===frame()?frame().contentDocument?.querySelector('h1'):null;
  const click=()=>title().dispatchEvent(new MouseEvent('click',{bubbles:true}));
  if(window.__CHORO_STUDIO__.prototype){
@@ -45,6 +49,58 @@ checks = r'''
    // Navigation rebuilds the player per screen. If a saved camera were restored
    // here, every screen of a flow would land somewhere different.
    assert(document.getElementById('zoom').value==='fit','The player opens fitted, ignoring a camera saved for this screen');
+   if(window.__CHORO_STUDIO__.testMobilePrototype){
+     const player=frame(), original=player.getBoundingClientRect();
+     assert(prototypeResult.viewportWidth===390&&prototypeResult.viewportHeight===844,'The player starts with a phone viewport, not the long artboard');
+     assertFrameBounds(390,844,'Phone player');
+     assert(original.width>250,'A long page remains readable instead of shrinking to fit its entire height');
+     const wheel=async(command)=>{
+       prototypeScroll=undefined;player.contentWindow.postMessage(command,'*');
+       await wait(()=>prototypeScroll?.command===command,command);
+       return prototypeScroll;
+     };
+     let result=await wheel('test-prototype-wheel-down');
+     assert(result.prevented&&close(result.y,180),'Pixel wheel deltas scroll the phone page');
+     result=await wheel('test-prototype-wheel-up');
+     assert(result.prevented&&close(result.y,116),'Magic Mouse reverse deltas scroll back up');
+     result=await wheel('test-prototype-wheel-lines');
+     assert(close(result.y,164),'Line wheel deltas use CSS units');
+     result=await wheel('test-prototype-wheel-nested');
+     assert(close(result.nestedY,100)&&close(result.y,164),'A wheel over an inner list scrolls the list first');
+     result=await wheel('test-prototype-wheel-nested-end');
+     assert(result.nestedY>100&&result.y>164,'An exhausted inner list passes remaining movement to the page');
+     const pageBeforeContainment=result.y;
+     result=await wheel('test-prototype-wheel-contained');
+     assert(close(result.y,pageBeforeContainment),'An inner list with overscroll containment keeps its own wheel boundary');
+     result=await wheel('test-prototype-wheel-end');
+     assert(result.prevented&&close(result.y,result.height-result.viewport),'The page contains wheel movement at its bottom');
+     result=await wheel('test-prototype-wheel-sideways');
+     assert(result.prevented,'Sideways drift is contained inside the phone');
+     const wheeled=player.getBoundingClientRect();
+     assert(close(original.left,wheeled.left)&&close(original.top,wheeled.top)&&close(original.width,wheeled.width),'Wheel scrolling, including boundaries, never moves or zooms the stage');
+     player.contentWindow.postMessage('test-prototype-scroll','*');
+     await wait(()=>prototypeScroll?.y>1000,'scroll inside phone');
+     assert(prototypeScroll.height>=2300&&prototypeScroll.viewport===844,'Full content remains scrollable inside the device viewport');
+     assert(close(prototypeScroll.stickyTop,0)&&close(prototypeScroll.fixedBottom,844),'Sticky headers and fixed navigation use the device viewport');
+     const scrolled=player.getBoundingClientRect();
+     assert(close(original.left,scrolled.left)&&close(original.top,scrolled.top)&&close(original.width,scrolled.width),'Scrolling the page never moves or zooms the stage');
+     await wait(()=>messages.some(m=>m.type==='navigate'&&m.screen_id==='next-screen'),'prototype link after scroll');
+     prototypeScroll=undefined;
+     window.choroStudioReply({session:'test',type:'viewport',width:1440,height:960});
+     assert(frame()===player,'Changing devices preserves the running prototype');
+     assertFrameBounds(1440,960,'Desktop player');
+     player.contentWindow.postMessage('test-prototype-measure','*');
+     await wait(()=>prototypeScroll?.viewport===960,'desktop viewport');
+     window.choroStudioReply({session:'test',type:'viewport',width:390,height:844});
+     prototypeScroll=undefined;
+     player.contentWindow.postMessage('test-prototype-reset','*');
+     await wait(()=>prototypeScroll?.y===0&&prototypeScroll.viewport===844,'return to phone');
+     const beforeZoom=player.getBoundingClientRect().width;
+     player.contentWindow.postMessage('test-camera-gesture','*');
+     await wait(()=>player.getBoundingClientRect().width>beforeZoom,'modified wheel inside phone still zooms');
+     window.choroStudioReply({session:'test',type:'camera-command',command:'fit'});
+     assert(!messages.some(m=>m.type==='save'||m.type==='dirty'),'Playing and scrolling never change screen documents');
+   }
    const fitted=frame().getBoundingClientRect();
    const area=document.getElementById('canvas').getBoundingClientRect();
    assert(close((fitted.left+fitted.right)/2,(area.left+area.right)/2),'A fitted screen is centred, so every screen of a flow lands in the same place');
@@ -53,6 +109,9 @@ checks = r'''
    // Zooming still works; it just never outlives the screen you did it on.
    window.dispatchEvent(new Event('pagehide'));
    assert(localStorage.getItem(KEY)===SEEDED,'The player never writes a per-screen camera');
+   if(window.__CHORO_STUDIO__.testMobilePrototype){
+     window.choroStudioReply({session:'test',type:'camera-command',command:'fit'});
+   }
    assert(window.testErrors.length===0,'Unexpected errors: '+JSON.stringify(window.testErrors));
    originalSend(JSON.stringify({type:'thumbnail-ready'}));
    return;
@@ -456,7 +515,32 @@ checks = r'''
 boot={'session':'test','screen_id':'test-screen','document':{'html':'<!doctype html><html><head></head><body onload="window.bad=true"><h1 data-studio-id="title">Original</h1><p>Unchanged neighbor</p><script>window.originalScript=true</script></body></html>','css':'body{font:24px system-ui;padding:32px;background:white;color:#202124;--fixture-layout:desktop}@media(max-width:600px){body{--fixture-layout:mobile}}','js':"const initialViewportWidth=innerWidth,desktopLayout=matchMedia('(min-width: 601px)').matches;let parentBlocked=false;try{parent.document.body}catch(e){parentBlocked=true};const node=document.createElement('div');node.dataset.runtime='true';document.body.append(node);let networkBlocked=false;document.addEventListener('securitypolicyviolation',e=>{if(e.effectiveDirective==='connect-src')networkBlocked=true});fetch('https://example.invalid/studio-isolation-test').catch(()=>{});setTimeout(()=>parent.postMessage({type:'prototype-result',parentBlocked,networkBlocked,bridgeBlocked:!window.ipc,viewportWidth:initialViewportWidth,desktopLayout},'*'),50);"},'revision':0,'fingerprint':'initial','tokens':{'color-primary':'#335cff'},'tokens_css':':root{--color-primary:#335cff}','screens':[],'width':800,'height':600,'assets':{},'thumbnail':False}
 boot['document']['js'] += ";window.addEventListener('message',event=>{if(event.source===parent&&event.data==='test-camera-gesture')document.body.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,clientX:200,clientY:100,deltaY:-20}));});"
 boot['testCameraState']='--camera-state' in sys.argv or '--camera-native-state' in sys.argv
-boot['prototype']='--prototype' in sys.argv
+boot['testMobilePrototype']='--prototype-mobile' in sys.argv
+boot['prototype']='--prototype' in sys.argv or boot['testMobilePrototype']
+if boot['testMobilePrototype']:
+    boot.update(width=390, height=844, native_toolbar=True, screens=[{'id':'next-screen'}])
+    boot['document']['html']=boot['document']['html'].replace('<h1', '<header id="sticky">Mobile workflow</header><h1').replace('</body>','<div id="nested" style="height:100px;overflow-y:auto"><div style="height:400px">Scrollable list</div></div><a data-studio-screen="next-screen" id="next">Next screen</a><nav id="fixed">Device navigation</nav></body>')
+    boot['document']['css']+='html{overflow:hidden;scroll-behavior:smooth}body{margin:0;min-height:2300px;overflow:hidden;box-sizing:border-box}#sticky{position:sticky;top:0;background:white}#fixed{position:fixed;bottom:0;left:0;right:0;background:white;padding:16px}#next{position:absolute;top:2200px}'
+    boot['document']['js']+=''';window.addEventListener('message',event=>{
+      if(event.source!==parent||typeof event.data!=='string'||!event.data.startsWith('test-prototype-'))return;
+      let prevented=false;
+      if(event.data.startsWith('test-prototype-wheel-')){
+        const kind=event.data.slice('test-prototype-wheel-'.length),nested=document.getElementById('nested');
+        const options={down:{deltaY:180},up:{deltaY:-64},lines:{deltaY:3,deltaMode:1},nested:{deltaY:100},'nested-end':{deltaY:500},contained:{deltaY:500},end:{deltaY:10000},sideways:{deltaX:100}}[kind];
+        if(!options)return;
+        if(kind==='contained')nested.style.overscrollBehaviorY='contain';
+        const wheel=new WheelEvent('wheel',{bubbles:true,cancelable:true,...options});
+        (kind.startsWith('nested')||kind==='contained'?nested.firstElementChild:document.body).dispatchEvent(wheel);
+        prevented=wheel.defaultPrevented;
+      }
+      if(event.data==='test-prototype-scroll')scrollTo({top:document.documentElement.scrollHeight,behavior:'instant'});
+      if(event.data==='test-prototype-reset')scrollTo({top:0,behavior:'instant'});
+      queueMicrotask(()=>{
+        parent.postMessage({type:'prototype-scroll-result',command:event.data,prevented,nestedY:document.getElementById('nested').scrollTop,y:scrollY,height:document.documentElement.scrollHeight,viewport:innerHeight,stickyTop:document.getElementById('sticky').getBoundingClientRect().top,fixedBottom:document.getElementById('fixed').getBoundingClientRect().bottom},'*');
+        if(event.data==='test-prototype-scroll')document.getElementById('next').click();
+      });
+    });'''
+    boot['document']['js']=boot['document']['js'].replace('viewportWidth:initialViewportWidth,desktopLayout','viewportWidth:initialViewportWidth,viewportHeight:innerHeight,desktopLayout')
 boot['system_specimen']='--system' in sys.argv
 boot['testAssets']='--assets' in sys.argv
 if boot['testAssets']:
@@ -485,7 +569,7 @@ def bundle(boot):
     stub="Object.defineProperty(window,'localStorage',{value:{data:new Map(),getItem(key){return this.data.get(key)||null},setItem(key,value){this.data.set(key,String(value))}}});"
     # The player must ignore a stored camera, so seed one it would otherwise use.
     seed=stub+"localStorage.setItem('choro.studio.camera.v1:test-screen:800x600','{\"mode\":\"free\",\"zoom\":2,\"x\":10,\"y\":10}');"
-    storage=seed if '--prototype' in sys.argv else stub if '--camera-state' in sys.argv else ''
+    storage=seed if boot.get('prototype',False) else stub if '--camera-state' in sys.argv else ''
     vendor=storage+'window.__CHORO_STUDIO__='+encoded+';\n'+'\n'.join((root/'vendor'/name).read_text() for name in names)
     css='\n'.join((root/'vendor'/name).read_text() for name in ['upstream/editor.css','fonts.css','upstream/coloris.min.css'])
     return (root/'editor.html').read_text().replace('/*STUDIO_VENDOR_CSS*/',css).replace('<!--STUDIO_RIGHT_PANEL-->',(root/'vendor/upstream/right-panel.html').read_text()).replace('<!--STUDIO_INLINE_TOOLBAR-->',(root/'vendor/upstream/inline-toolbar.html').read_text()).replace('/*STUDIO_VENDOR*/',vendor.replace('</script','<\\/script')).replace('/*STUDIO_EDITOR*/',(root/'editor.js').read_text())

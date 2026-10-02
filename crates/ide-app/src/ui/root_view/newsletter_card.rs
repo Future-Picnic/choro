@@ -1,13 +1,179 @@
 use super::*;
 
 use crate::ui::design;
-use gpui::{Animation, AnimationExt};
+use gpui::{Animation, AnimationExt, Div};
 use std::time::Duration;
 
+const DISCORD_URL: &str = "https://discord.gg/pgj9UwmXt";
+const REDDIT_URL: &str = "https://www.reddit.com/r/chorodev/";
+
+const COMMUNITY_CARD_W: f32 = 340.;
+const COMMUNITY_CARD_H: f32 = 160.;
+/// How far the back sheet peeks out above and to the right of the front card.
+const COMMUNITY_CARD_PEEK: f32 = 16.;
+
+/// The community is an invitation after signup, never an alternative to email
+/// or a follow-up to Not now. The artwork is a small Choro community card, not
+/// the networks' own branding: the buttons below already name Discord and
+/// Reddit. Everything is drawn locally; links open only on an explicit click.
+fn community_artwork(cx: &App) -> impl IntoElement {
+    #[cfg(target_os = "macos")]
+    let reduce_motion =
+        objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+    #[cfg(not(target_os = "macos"))]
+    let reduce_motion = false;
+
+    let front = community_card(cx).absolute().left(px(0.)).top(px(COMMUNITY_CARD_PEEK));
+    let front: AnyElement = if reduce_motion {
+        front.into_any_element()
+    } else {
+        front
+            .with_animation(
+                "newsletter-community-arrival",
+                Animation::new(Duration::from_millis(440)).with_easing(gpui::ease_out_quint()),
+                move |card, progress| {
+                    card.top(px(COMMUNITY_CARD_PEEK + (1.0 - progress) * 10.0))
+                        .opacity(0.55 + progress * 0.45)
+                },
+            )
+            .into_any_element()
+    };
+
+    div().w_full().flex().justify_center().child(
+        div()
+            .relative()
+            .flex_none()
+            .w(px(COMMUNITY_CARD_W + COMMUNITY_CARD_PEEK * 1.25))
+            .h(px(COMMUNITY_CARD_H + COMMUNITY_CARD_PEEK + 2.))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .right(px(0.))
+                    .w(px(COMMUNITY_CARD_W))
+                    .h(px(COMMUNITY_CARD_H))
+                    .rounded(design::r_lg())
+                    .border_1()
+                    .border_color(design::accent_line(cx))
+                    .bg(design::accent_soft(cx)),
+            )
+            .child(front),
+    )
+}
+
+/// The front sheet: the Choro mark, "Community", a few members, and what
+/// people share there. Flat fills only; no gradients.
+fn community_card(cx: &App) -> Div {
+    let members = [
+        (design::sage(cx), design::on_sage(cx), "AL"),
+        (design::sky(cx), design::on_sky(cx), "JR"),
+        (design::amber(cx), design::on_amber(cx), "NO"),
+        (design::accent(cx), design::on_accent(cx), "SK"),
+        (design::rose(cx), design::on_rose(cx), "TM"),
+    ];
+    let plane = design::surface(cx);
+    let pile = h_flex().flex_none().children(members.into_iter().enumerate().map(
+        |(index, (fill, ink, initials))| {
+            div()
+                .flex_none()
+                .size(px(26.))
+                .when(index > 0, |member| member.ml(px(-4.)))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border_2()
+                .border_color(plane)
+                .bg(fill)
+                .text_size(px(9.))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(ink)
+                .child(initials)
+        },
+    ));
+    let topic = |label: &'static str| {
+        div()
+            .flex_none()
+            .px_2()
+            .py(px(3.))
+            .rounded_full()
+            .border_1()
+            .border_color(design::line_2(cx))
+            .bg(design::surface_2(cx))
+            .text_size(design::text_label())
+            .text_color(design::t2(cx))
+            .child(label)
+    };
+
+    h_flex()
+        .w(px(COMMUNITY_CARD_W))
+        .h(px(COMMUNITY_CARD_H))
+        .overflow_hidden()
+        .rounded(design::r_lg())
+        .border_1()
+        .border_color(design::line_2(cx))
+        .bg(plane)
+        .shadow(design::shadow())
+        .child(div().flex_none().w(px(6.)).h_full().bg(design::accent(cx)))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .h_full()
+                .px_4()
+                .py_3p5()
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            svg()
+                                .path("brand/choro-riff.svg")
+                                .size(px(18.))
+                                .text_color(design::accent(cx)),
+                        )
+                        .child(
+                            div()
+                                .text_size(design::text_label())
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .text_color(design::t2(cx))
+                                .child("CHORO"),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt_3()
+                        .text_size(px(22.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(design::t1(cx))
+                        .child("Community"),
+                )
+                .child(
+                    div()
+                        .mt_0p5()
+                        .text_size(design::text_ui())
+                        .text_color(design::t3(cx))
+                        .child("Builders sharing what they make."),
+                )
+                .child(div().flex_1())
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap_2()
+                        .child(pile)
+                        .child(div().flex_1())
+                        .child(topic("show & tell"))
+                        .child(topic("help"))
+                        .child(topic("ideas")),
+                ),
+        )
+}
+
 /// A product-update note, not a second appearance of the onboarding artwork.
-/// The front sheet arrives once; after signup the same space resolves into a
-/// subscribed note. All content stays visible when Reduce Motion is enabled.
-fn newsletter_artwork(complete: bool, cx: &App) -> impl IntoElement {
+/// The front sheet arrives once. After signup, community artwork replaces it.
+/// All content stays visible when Reduce Motion is enabled.
+fn newsletter_artwork(cx: &App) -> impl IntoElement {
     #[cfg(target_os = "macos")]
     let reduce_motion =
         objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
@@ -15,80 +181,68 @@ fn newsletter_artwork(complete: bool, cx: &App) -> impl IntoElement {
     let reduce_motion = false;
 
     let accent = design::accent(cx);
-    let sage = design::sage(cx);
     let ink = design::t1(cx);
     let muted = design::t3(cx);
-    let front =
-        v_flex()
-            .relative()
-            .w(px(310.))
-            .h(px(128.))
-            .gap_3()
-            .p_4()
-            .rounded(design::r_md())
-            .border_1()
-            .border_color(design::line_2(cx))
-            .bg(design::surface(cx))
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(design::indicator::lucide_icon(
-                        if complete {
-                            lucide_icons::Icon::Check
-                        } else {
-                            lucide_icons::Icon::Mail
-                        },
-                        if complete { sage } else { accent },
-                        design::icon_md(),
-                    ))
-                    .child(
-                        div()
-                            .text_size(design::text_head())
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(ink)
-                            .child("Choro notes"),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(design::text_label())
-                            .text_color(muted)
-                            .child(if complete { "SUBSCRIBED" } else { "YOUR INBOX" }),
-                    ),
-            )
-            .child(div().h(px(1.)).w_full().bg(design::line_2(cx)))
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(design::text_body())
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(ink)
-                            .child(if complete {
-                                "You’ll hear from us when there’s news."
-                            } else {
-                                "What’s new in Choro"
-                            }),
-                    )
-                    .child(div().text_size(design::text_ui()).text_color(muted).child(
-                        if complete {
-                            "No account needed. Unsubscribe anytime."
-                        } else {
-                            "A short note when something useful ships."
-                        },
-                    )),
-            );
+    let front = v_flex()
+        .relative()
+        .w(px(310.))
+        .h(px(128.))
+        .gap_3()
+        .p_4()
+        .rounded(design::r_md())
+        .border_1()
+        .border_color(design::line_2(cx))
+        .bg(design::surface(cx))
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .child(design::indicator::lucide_icon(
+                    lucide_icons::Icon::Mail,
+                    accent,
+                    design::icon_md(),
+                ))
+                .child(
+                    div()
+                        .text_size(design::text_head())
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(ink)
+                        .child("Choro notes"),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_size(design::text_label())
+                        .text_color(muted)
+                        .child("YOUR INBOX"),
+                ),
+        )
+        .child(div().h(px(1.)).w_full().bg(design::line_2(cx)))
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(design::text_body())
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(ink)
+                        .child("What’s new in Choro"),
+                )
+                .child(
+                    div()
+                        .text_size(design::text_ui())
+                        .text_color(muted)
+                        .child("A short note when something useful ships."),
+                ),
+        );
 
     let front: AnyElement = if reduce_motion {
         front.into_any_element()
     } else {
         front
             .with_animation(
-                ("newsletter-note-arrival", u32::from(complete)),
-                Animation::new(Duration::from_millis(if complete { 320 } else { 440 }))
-                    .with_easing(gpui::ease_out_quint()),
+                "newsletter-note-arrival",
+                Animation::new(Duration::from_millis(440)).with_easing(gpui::ease_out_quint()),
                 move |note, progress| {
                     note.top(px((1.0 - progress) * 14.0))
                         .opacity(0.55 + progress * 0.45)
@@ -189,7 +343,11 @@ impl RootView {
         let mut body = v_flex()
             .gap_5()
             .p_8()
-            .child(newsletter_artwork(complete, cx))
+            .child(if complete {
+                community_artwork(cx).into_any_element()
+            } else {
+                newsletter_artwork(cx).into_any_element()
+            })
             .child(
                 v_flex()
                     .gap_3()
@@ -200,7 +358,7 @@ impl RootView {
                             .line_height(gpui::relative(1.18))
                             .text_color(design::t1(cx))
                             .child(if complete {
-                                "You’re on the list."
+                                "You’re in. Come say hello."
                             } else {
                                 "Stay close to what’s next."
                             }),
@@ -211,14 +369,74 @@ impl RootView {
                             .line_height(gpui::relative(1.55))
                             .text_color(design::t2(cx))
                             .child(if complete {
-                                "Thanks for joining us. We’ll send occasional Choro updates, and you can unsubscribe from any email."
+                                "You’re signed up for Choro updates. Meet other builders, share what you’re working on, and help shape what comes next."
                             } else {
                                 "Get occasional Choro feature updates and release notes by email. No account or extra setup—just what’s new when it’s ready."
                             }),
                     ),
             );
 
-        if !complete {
+        if complete {
+            body = body.child(
+                v_flex()
+                    .gap_3()
+                    .child(
+                        style::primary_button_compact("newsletter-discord", "", cx)
+                            .w_full()
+                            .h(px(48.))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .text_size(design::text_body())
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(
+                                        svg()
+                                            .path("community/discord.svg")
+                                            .w(px(22.))
+                                            .h(px(17.))
+                                            .text_color(design::on_accent(cx)),
+                                    )
+                                    .child("Join the Discord")
+                                    .child(design::indicator::lucide_icon(
+                                        lucide_icons::Icon::ArrowUpRight,
+                                        design::on_accent(cx),
+                                        design::icon_sm(),
+                                    )),
+                            )
+                            .on_click(|_, _, _| {
+                                crate::ui::git::git_panel::open_url(DISCORD_URL);
+                            }),
+                    )
+                    .child(
+                        style::dialog_neutral_button("newsletter-reddit", "", cx)
+                            .w_full()
+                            .h(px(48.))
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .text_size(design::text_body())
+                                    .child(gpui::img("community/reddit.svg").size(px(22.)))
+                                    .child("Explore r/chorodev")
+                                    .child(design::indicator::lucide_icon(
+                                        lucide_icons::Icon::ArrowUpRight,
+                                        design::t2(cx),
+                                        design::icon_sm(),
+                                    )),
+                            )
+                            .on_click(|_, _, _| {
+                                crate::ui::git::git_panel::open_url(REDDIT_URL);
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(design::text_ui())
+                            .text_color(design::t3(cx))
+                            .child("Both open in your browser. Joining is entirely up to you."),
+                    ),
+            );
+        } else {
             body = body
                 .child(
                     v_flex()

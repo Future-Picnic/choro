@@ -530,6 +530,7 @@ fn editing_a_queued_turn_restores_its_image_attachment() {
         id: Uuid::new_v4(),
         text: prompt_with_attached_files("Describe this image", std::slice::from_ref(&image)),
         handoff: None,
+        studio_request: None,
         display_text: Some("Describe this image".to_string()),
         tags: Vec::new(),
         mode: AgentInteractionMode::Default,
@@ -549,6 +550,7 @@ fn editing_a_legacy_queued_turn_keeps_attachment_metadata_out_of_the_input() {
         id: Uuid::new_v4(),
         text: prompt_with_attached_files("Review", std::slice::from_ref(&image)),
         handoff: None,
+        studio_request: None,
         display_text: None,
         tags: Vec::new(),
         mode: AgentInteractionMode::Default,
@@ -577,6 +579,7 @@ fn editing_a_queued_handoff_restores_the_note_and_explicit_references() {
             original_text: "Check this".to_string(),
             references: "- Attached file: /tmp/sdk.png".to_string(),
         }),
+        studio_request: None,
     };
     let (text, _) = queued_turn_composer_draft(&turn);
     assert_eq!(

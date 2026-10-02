@@ -9,7 +9,8 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use crate::ui::onboarding::{self, OnboardingEvent, SpotlightTarget};
 
 /// Height of the footer bar; matches the right sidebar's Help/Settings footer.
-const FOOTER_H: f32 = 44.;
+/// The onboarding tour's sidebar panel sits just above it.
+pub(crate) const FOOTER_H: f32 = 44.;
 
 impl RootView {
     /// Top of the left sidebar. The search pill only launches Quick Open, so
@@ -80,6 +81,7 @@ impl RootView {
             .flex_none()
             .px_2()
             .items_center()
+            .child(self.subscription_usage_control(cx))
             .child(
                 style::sidebar_footer_icon_button(
                     "left-sidebar-my-tasks",
@@ -103,29 +105,21 @@ impl RootView {
                 }),
             )
             .child(
-                Button::new("left-sidebar-add-section")
-                    .ghost()
-                    .xsmall()
-                    .compact()
-                    .h(px(style::SIDEBAR_FOOTER_CONTROL_H))
-                    .w(px(style::SIDEBAR_FOOTER_CONTROL_H))
-                    // Same Lucide set as its two neighbours, so the stroke
-                    // weight matches; the custom add-row asset is drawn heavier.
-                    .child(crate::ui::design::indicator::lucide_icon(
-                        lucide_icons::Icon::ListPlus,
-                        crate::ui::design::t3(cx),
-                        crate::ui::design::icon(),
-                    ))
-                    .tooltip("Add section")
-                    .on_click(move |_, window, cx| {
-                        crate::ui::project_list::ProjectList::open_section_name_dialog(
-                            section_workspace.clone(),
-                            None,
-                            "".into(),
-                            window,
-                            cx,
-                        );
-                    }),
+                style::sidebar_footer_glyph_button(
+                    "left-sidebar-add-section",
+                    lucide_icons::Icon::ListPlus,
+                    cx,
+                )
+                .tooltip("Add section")
+                .on_click(move |_, window, cx| {
+                    crate::ui::project_list::ProjectList::open_section_name_dialog(
+                        section_workspace.clone(),
+                        None,
+                        "".into(),
+                        window,
+                        cx,
+                    );
+                }),
             )
             .child(div().flex_1())
             .child(self.sidebar_view_menu(cx))
@@ -137,12 +131,9 @@ impl RootView {
     /// hides agents. Needs attention and Pinned are not affected by it.
     fn sidebar_view_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active_work = self.workspace.read(cx).sidebar_active_work;
+        let compact = self.workspace.read(cx).panels.left < 240.;
         let workspace = self.workspace.clone();
-        Button::new("left-sidebar-view")
-            .ghost()
-            .xsmall()
-            .compact()
-            .h(px(style::SIDEBAR_FOOTER_CONTROL_H))
+        style::sidebar_footer_menu_button("left-sidebar-view")
             .tooltip("Which agents the project list shows")
             .child(
                 h_flex()
@@ -153,20 +144,24 @@ impl RootView {
                         crate::ui::design::t3(cx),
                         crate::ui::design::icon(),
                     ))
-                    .child(
-                        // Sized to the 16px filter glyph beside it, not to the
-                        // footer buttons: this is a value, not an action.
-                        div()
-                            .text_size(crate::ui::design::text_ui())
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(crate::ui::design::t2(cx))
-                            .child(if active_work { "Active" } else { "All" }),
-                    )
-                    .child(
-                        Icon::new(IconName::ChevronDown)
-                            .size(crate::ui::design::icon_md())
-                            .text_color(crate::ui::design::t3(cx)),
-                    ),
+                    .when(!compact, |row| {
+                        row.child(
+                            // Sized to the 16px filter glyph beside it, not to the
+                            // footer buttons: this is a value, not an action.
+                            div()
+                                .text_size(crate::ui::design::text_ui())
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(crate::ui::design::t2(cx))
+                                .child(if active_work { "Active" } else { "All" }),
+                        )
+                    })
+                    .when(!compact, |row| {
+                        row.child(
+                            Icon::new(IconName::ChevronDown)
+                                .size(crate::ui::design::icon_md())
+                                .text_color(crate::ui::design::t3(cx)),
+                        )
+                    }),
             )
             .dropdown_menu_with_anchor(gpui::Corner::BottomRight, move |menu, _, _| {
                 let workspace_all = workspace.clone();

@@ -48,12 +48,28 @@ pub struct DocAssistantRecord {
 impl DocAssistantRecord {
     pub fn new(project_id: ProjectId, relative_doc_path: PathBuf) -> Self {
         let now = agents::unix_now();
+        let provider =
+            if crate::studio::context_from_path(&relative_doc_path).is_some_and(|context| {
+                matches!(
+                    context.target,
+                    crate::studio::StudioAgentTarget::DesignSystem
+                        | crate::studio::StudioAgentTarget::DesignSystemImport
+                )
+            }) {
+                AgentKind::Claude
+            } else {
+                AgentKind::Codex
+            };
         Self {
             chat_agent_id: uuid::Uuid::new_v4(),
             project_id,
             relative_doc_path,
-            provider: AgentKind::Codex,
-            model: AgentModel::default_for(AgentKind::Codex),
+            provider,
+            model: if provider == AgentKind::Claude {
+                AgentModel::ClaudeOpus55
+            } else {
+                AgentModel::default_for(provider)
+            },
             external_model_id: None,
             external_model_label: None,
             external_model_variants: Vec::new(),
@@ -630,6 +646,35 @@ mod tests {
         record.provider = kind;
         record.model = AgentModel::default_for(kind);
         record
+    }
+
+    #[test]
+    fn design_system_assistants_default_to_opus_55_without_changing_other_surfaces() {
+        let project = ProjectId(Uuid::new_v4());
+        for surface in ["studio-systems", "studio-imports"] {
+            let record = DocAssistantRecord::new(
+                project,
+                PathBuf::from(format!(
+                    ".choro/assistants/{surface}/{}/{}",
+                    Uuid::new_v4(),
+                    Uuid::new_v4()
+                )),
+            );
+            assert_eq!(record.provider, AgentKind::Claude);
+            assert_eq!(record.model, AgentModel::ClaudeOpus55);
+        }
+        for path in [
+            PathBuf::from("choro_docs/spec.md"),
+            PathBuf::from(format!(
+                ".choro/assistants/studio/{}/{}",
+                Uuid::new_v4(),
+                Uuid::new_v4()
+            )),
+        ] {
+            let record = DocAssistantRecord::new(project, path);
+            assert_eq!(record.provider, AgentKind::Codex);
+            assert_eq!(record.model, AgentModel::default_for(AgentKind::Codex));
+        }
     }
 
     #[test]

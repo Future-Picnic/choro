@@ -47,8 +47,8 @@ impl CodexRuntime {
                 self.assistant_stream.flush(&self.events);
                 break;
             }
-            if let Some((text, mode, read_only, turn_id)) = self.deferred_turns.pop_front() {
-                self.send_turn(text, mode, read_only, turn_id)?;
+            if let Some(command) = self.deferred_turns.pop_front() {
+                self.handle_command(command)?;
                 continue;
             }
             match next_backend_inbound(
@@ -262,6 +262,10 @@ impl CodexRuntime {
                 read_only,
                 turn_id,
             } => self.send_turn(text, mode, read_only, turn_id)?,
+            ChatBackendCommand::SendStudioTurn { text, mode, turn_id, title, request } => {
+                request.activate(self.agent.id, &title)?;
+                self.send_turn(text, mode, false, turn_id)?;
+            }
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
@@ -308,13 +312,8 @@ impl CodexRuntime {
                     request_id,
                     approved,
                 }) => self.resolve_approval(request_id, approved)?,
-                Ok(ChatBackendCommand::SendTurn {
-                    text,
-                    mode,
-                    read_only,
-                    turn_id,
-                }) => {
-                    self.deferred_turns.push_back((text, mode, read_only, turn_id));
+                Ok(command @ (ChatBackendCommand::SendTurn { .. } | ChatBackendCommand::SendStudioTurn { .. })) => {
+                    self.deferred_turns.push_back(command);
                     self.events
                         .send_blocking(ChatBackendEvent::WorkLog(
                             WorkLogEntry::new(
@@ -957,6 +956,33 @@ mod interruption_tests {
             visualization_dir: None,
         };
         (runtime, event_rx)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn studio_startup_defers_frozen_target_without_replacing_scope() {
+        let (mut runtime, _events) = echo_runtime();
+        let (store, design, agent, request) = crate::state::agent_chat::studio_request::tests::fixture();
+        let active = ide_core::studio::scope_for_request(&design, None, None);
+        store.save_scope(agent, &active).unwrap();
+        let (commands, receiver) = crossbeam_channel::unbounded();
+        runtime.commands = receiver;
+        commands.send(ChatBackendCommand::SendStudioTurn {
+            text: "Transport prompt".into(), mode: AgentInteractionMode::Default,
+            turn_id: "queued-studio".into(), title: "Visible user message".into(), request: request.clone(),
+        }).unwrap();
+        runtime.handle_commands_while_blocked().unwrap();
+        assert_eq!(store.scope(agent).unwrap().id, active.id);
+        match runtime.deferred_turns.pop_front().unwrap() {
+            ChatBackendCommand::SendStudioTurn { request: frozen, title, turn_id, .. } => {
+                assert_eq!(frozen, request);
+                assert_eq!(title, "Visible user message");
+                assert_eq!(turn_id, "queued-studio");
+            }
+            _ => panic!("Studio startup lost the frozen target"),
+        }
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
     }
 
     #[test]

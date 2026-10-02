@@ -62,6 +62,56 @@ that screen before continuing; all writes in this turn remain one undo step.
 If the user edits a screen while you work, preserve those edits and reconcile
 only overlapping changes. Independent screen saves are merged by Studio.
 
+## Sections (flows)
+
+Sections are optional named groups such as "Add post", "Add images" or
+"Mobile app". Each screen belongs to at most one section; unsectioned screens
+are normal. Studio lays sections out automatically: never position screens by
+hand. studio_context lists `sections` in canvas order with ordered
+`screen_ids`, and `section_layout` (stacked or side_by_side).
+
+When the user selected a section, the request context carries the frozen
+`current_section` (id, name, settings, ordered screens). Treat that flow as
+the default target for "this flow", "these screens" or "add a step", instead
+of a screen or element. It is not a restriction: follow explicit requests for
+other sections or screens. Selecting something else later does not change it.
+
+- Read a whole flow with studio_read {section_id}: ordered metadata (with
+  archived status) and documents. Pass exactly one of screen_id, section_id or
+  asset_path; ambiguous selectors are rejected.
+- create_screen without section_id lands in the frozen current section (or
+  stays unsectioned when none was selected). Pass `"section_id": null` to keep
+  a new screen unsectioned, or a section UUID to place it elsewhere.
+- Organizing is metadata only: creating, renaming, moving and ordering never
+  changes screen content and needs no new screen review.
+- studio_snapshot {section_id, revision, fingerprint, page?} returns ordered
+  overview images of up to 12 active screens per page. It supplements, but
+  never replaces, per-screen snapshots and reviews of screens you edited.
+
+Examples (one operation list per studio_apply transaction):
+
+Create a flow from existing screens:
+`[{"operation":"create_section","section":{"id":"<new uuid>","name":"Add post","screen_ids":["<feed>","<composer>"]}}]`
+
+Add a step after the composer inside the current flow, then style it:
+`[{"operation":"create_screen","screen":{...},"document":{...}},
+  {"operation":"reorder_section_screens","section_id":"<add post>","screen_ids":["<feed>","<composer>","<new step>"]}]`
+
+Move a screen into another flow before a given step, or out of every flow:
+`[{"operation":"move_screen_to_section","screen_id":"<crop>","section_id":"<add images>","before_screen_id":"<filters>"}]`
+`[{"operation":"move_screen_to_section","screen_id":"<crop>","section_id":null}]`
+
+Order flows and arrange the board side by side, with vertical columns and
+full-width centered headers:
+`[{"operation":"reorder_sections","section_ids":["<mobile app>","<add post>","<add images>"]},
+  {"operation":"set_section_layout","direction":"side_by_side"},
+  {"operation":"update_section","section_id":"<add post>","direction":"vertical","title_style":"full_width_header","header_alignment":"center"}]`
+
+Design a whole new flow: publish the section and its empty screens in one
+transaction (create_section, then create_screen with that section_id for each
+step in order), then build and review each screen as usual. ungroup_section
+removes only the grouping and keeps every screen.
+
 Make each studio_apply transaction a small coherent step. Supply the
 scope ID, expected revision and fingerprint from studio_context and a fresh
 transaction UUID. Reuse the transaction UUID only to retry the exact same edit.

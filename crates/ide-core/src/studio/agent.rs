@@ -61,6 +61,14 @@ pub fn scope_for_request(
         ..StudioTurnScope::whole_design(design)
     }
 }
+/// A selected section replaces the screen/element default for this request;
+/// permissions remain whole-design.
+pub fn scope_for_section_request(design: &StudioDesign, section: Uuid) -> StudioTurnScope {
+    StudioTurnScope {
+        current_section_id: design.manifest.section(section).map(|s| s.id),
+        ..scope_for_request(design, None, None)
+    }
+}
 
 /// Called on Stop, completion, failure, and backend teardown.
 pub fn revoke_agent_scope(agent: &crate::AgentRecord) {

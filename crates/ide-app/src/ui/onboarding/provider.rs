@@ -131,6 +131,10 @@ impl OnboardingProviderChoice {
     pub(super) const ALL: [Self; 4] = [Self::Claude, Self::Codex, Self::OpenCode, Self::Gemini];
     const DEFAULT_PRIORITY: [Self; 4] = [Self::Codex, Self::Claude, Self::OpenCode, Self::Gemini];
 
+    pub(super) fn is_visible_in_picker(self) -> bool {
+        self != Self::Gemini || ide_core::AgentKind::Gemini.is_visible_in_picker()
+    }
+
     pub(super) fn key(self) -> String {
         match self {
             Self::Claude => "claude",
@@ -157,7 +161,7 @@ pub(super) fn default_provider_choice(
 ) -> Option<OnboardingProviderChoice> {
     OnboardingProviderChoice::DEFAULT_PRIORITY
         .into_iter()
-        .find(|provider| choices.contains(provider))
+        .find(|provider| provider.is_visible_in_picker() && choices.contains(provider))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

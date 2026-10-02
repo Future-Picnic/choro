@@ -54,6 +54,10 @@ impl ClaudeBridgeRuntime {
                 read_only,
                 turn_id,
             } => self.send_turn(text, mode, read_only, turn_id)?,
+            ChatBackendCommand::SendStudioTurn { text, mode, turn_id, title, request } => {
+                request.activate(self.agent.id, &title)?;
+                self.send_turn(text, mode, false, turn_id)?;
+            }
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }

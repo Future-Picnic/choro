@@ -1355,32 +1355,6 @@ impl CenterArea {
         if self.agent_handoff_busy(agent.id) {
             return;
         }
-        if agent.studio_context.is_some() {
-            let running = self
-                .agent_chats
-                .read(cx)
-                .session(agent.id)
-                .is_some_and(|s| {
-                    matches!(
-                        s.status,
-                        AgentChatStatus::Running | AgentChatStatus::Cancelling
-                    )
-                });
-            if running {
-                if let Some(studio) = self.studio.as_mut() {
-                    studio.error = Some(
-                        "Wait for this Studio edit to finish before sending another request."
-                            .into(),
-                    );
-                }
-                cx.notify();
-                return;
-            }
-            let request = input.read(cx).value().to_string();
-            if request.trim().is_empty() || !self.prepare_studio_turn(agent, &request, cx) {
-                return;
-            }
-        }
 
         if self
             .agent_chat_attachment_pastes_pending
@@ -1746,7 +1720,7 @@ impl CenterArea {
             }
         }
 
-        if steer_running {
+        if steer_running && agent.studio_context.is_none() {
             let is_running = self
                 .agent_chats
                 .read(cx)
@@ -2255,12 +2229,40 @@ impl CenterArea {
     pub(super) fn dispatch_agent_chat_submission_inner(
         &mut self,
         agent_id: Uuid,
+        submission_text: String,
+        display_text: Option<String>,
+        tags: Vec<AgentChatMessageTag>,
+        fallback_mode: AgentInteractionMode,
+        fallback_agent: Option<AgentRecord>,
+        read_only: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let agent = self.agents.read(cx).agent(agent_id).cloned().or_else(|| fallback_agent.clone());
+        let request = if read_only { Ok(None) } else {
+            agent.as_ref().map(|agent| self.capture_studio_chat_request(agent, cx)).unwrap_or(Ok(None))
+        };
+        let studio_request = match request {
+            Ok(request) => request,
+            Err(error) => {
+                self.agent_start_errors.insert(agent_id, format!("{error:#}"));
+                cx.notify();
+                return false;
+            }
+        };
+        self.dispatch_agent_chat_submission_with_studio_request(agent_id, submission_text, display_text, tags,
+            fallback_mode, fallback_agent, read_only, studio_request, cx)
+    }
+
+    pub(super) fn dispatch_agent_chat_submission_with_studio_request(
+        &mut self,
+        agent_id: Uuid,
         mut submission_text: String,
         display_text: Option<String>,
         tags: Vec<AgentChatMessageTag>,
         fallback_mode: AgentInteractionMode,
         fallback_agent: Option<AgentRecord>,
         read_only: bool,
+        studio_request: Option<crate::state::agent_chat::StudioChatRequest>,
         cx: &mut Context<Self>,
     ) -> bool {
         let has_backend = self.agent_chats.read(cx).has_backend(agent_id);
@@ -2313,6 +2315,7 @@ impl CenterArea {
                         tags,
                         mode,
                         read_only,
+                        studio_request,
                     });
                 cx.notify();
                 return true;
@@ -2392,12 +2395,14 @@ impl CenterArea {
                         tags,
                         mode,
                         read_only,
+                        studio_request,
                     });
                 self.schedule_agent_chat_hydration(agent, cx);
                 return true;
             }
         }
-        self.agent_chats.update(cx, |chats, cx| {
+        let studio_design_id = studio_request.as_ref().map(|request| request.context.design_id);
+        let result = self.agent_chats.update(cx, |chats, cx| {
             crate::state::chat_dispatch::dispatch_loaded(
                 chats,
                 agent_id,
@@ -2407,9 +2412,20 @@ impl CenterArea {
                 mode,
                 should_queue,
                 read_only,
+                studio_request,
                 cx,
-            );
+            )
         });
+        if let Err(error) = result {
+            self.agent_start_errors.insert(agent_id, format!("Could not start design request: {error:#}"));
+            cx.notify();
+            return false;
+        }
+        if let Some(studio) = self.studio.as_mut().filter(|s| Some(s.design.manifest.id) == studio_design_id) {
+            if let Ok(history) = studio.store.conversations(studio.design.manifest.id) {
+                studio.conversations = history;
+            }
+        }
         cx.notify();
         true
     }
@@ -2570,6 +2586,14 @@ impl CenterArea {
             .session(agent_id)
             .and_then(|session| session.queued_turns.iter().find(|turn| turn.id == turn_id))
             .and_then(|turn| turn.handoff.clone());
+        let studio_request = self.agent_chats.read(cx).session(agent_id)
+            .and_then(|s| s.queued_turns.iter().find(|t| t.id == turn_id))
+            .and_then(|t| t.studio_request.clone());
+        if studio_request.is_some() && self.studio.as_ref().is_some_and(|s| s.dirty || s.saving) {
+            self.agent_start_errors.insert(agent_id, "Wait for the current screen to save before editing a queued request.".into());
+            cx.notify();
+            return;
+        }
         let Some((text, attached_files)) = self
             .agent_chats
             .read(cx)
@@ -2582,6 +2606,17 @@ impl CenterArea {
         self.agent_chats.update(cx, |chats, cx| {
             chats.remove_queued_turn(agent_id, turn_id, cx)
         });
+        if let Some(request) = studio_request {
+            if self.studio.as_ref().is_some_and(|s| s.design.manifest.id == request.context.design_id) {
+                self.studio_select_screen(request.current_screen_id, cx);
+                if let Some(section) = request.current_section_id {
+                    self.studio_select_section(Some(section), cx);
+                }
+                if let Some(s) = self.studio.as_mut() {
+                    s.selected_element = request.selected_element;
+                }
+            }
+        }
         if let Some(handoff) = handoff {
             self.agent_chat_selected_agent_targets
                 .insert(agent_id, handoff.target_agent_id);

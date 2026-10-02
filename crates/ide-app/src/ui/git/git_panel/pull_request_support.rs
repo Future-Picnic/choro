@@ -541,6 +541,53 @@ pub(crate) struct MergePullRequestOutcome {
     pub(crate) number: u64,
     pub(crate) branch: String,
     pub(crate) base_branch: String,
+    head_sha: String,
+    archived: bool,
+    archive_error: Option<String>,
+}
+
+impl MergePullRequestOutcome {
+    pub(crate) fn message(&self) -> String {
+        let merged = format!(
+            "Merged pull request #{} into {}",
+            self.number, self.base_branch
+        );
+        if let Some(error) = &self.archive_error {
+            format!("{merged}, but the branch could not be archived: {error}")
+        } else if self.archived {
+            format!("{merged} and archived {}", self.branch)
+        } else {
+            merged
+        }
+    }
+
+    pub(crate) fn notification(&self) -> Notification {
+        if self.archive_error.is_some() {
+            Notification::warning(self.message())
+        } else {
+            Notification::success(self.message())
+        }
+    }
+}
+
+/// Archiving is independent of merge success: its failure must never report
+/// an already merged PR as failed or invite the user to merge it again.
+pub(crate) fn merge_pull_request_with_archive(
+    repo: &Path,
+    branch: &str,
+    expected_base_branch: Option<&str>,
+    expected_head_sha: Option<&str>,
+    archive: bool,
+) -> anyhow::Result<MergePullRequestOutcome> {
+    let mut outcome =
+        merge_pull_request_with_gh(repo, branch, expected_base_branch, expected_head_sha)?;
+    if archive {
+        match ide_core::git::archive_merged_branch(repo, &outcome.branch, &outcome.head_sha) {
+            Ok(()) => outcome.archived = true,
+            Err(error) => outcome.archive_error = Some(format!("{error:#}")),
+        }
+    }
+    Ok(outcome)
 }
 
 /// Immediately merges an open PR using the repository's preferred allowed
@@ -649,6 +696,9 @@ pub(crate) fn merge_pull_request_with_gh(
     }
 
     Ok(MergePullRequestOutcome {
+        head_sha: head_oid.to_string(),
+        archived: false,
+        archive_error: None,
         number: pr.number,
         branch: pr.branch,
         base_branch: pr.base_branch,
@@ -673,9 +723,13 @@ impl GitPanel {
         .tone(crate::ui::confirm::ConfirmTone::Primary)
         .icon(IconName::GitHub)
         .branch_route(pr.branch.clone(), pr.base_branch.clone())
+        .checkbox(
+            "Archive branch after merge",
+            "Hide it from Choro's branch picker. Search for it to restore it; files and GitHub branches are kept.",
+        )
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-branch-pr")
-        .on_confirm(move |window, cx| {
+        .on_confirm_with_checkbox(move |archive, window, cx| {
             let window_handle = window.window_handle();
             let repo = git.read(cx).repo_path.clone();
             let branch = pr.branch.clone();
@@ -704,11 +758,12 @@ impl GitPanel {
                     let result = cx
                         .background_executor()
                         .spawn(async move {
-                            merge_pull_request_with_gh(
+                            merge_pull_request_with_archive(
                                 &repo,
                                 &branch,
                                 Some(&base_branch),
                                 expected_head_sha.as_deref(),
+                                archive,
                             )
                         })
                         .await;
@@ -717,10 +772,7 @@ impl GitPanel {
                             git.is_busy = false;
                             match &result {
                                 Ok(outcome) => {
-                                    git.last_message = Some(format!(
-                                        "Merged pull request #{} into {}",
-                                        outcome.number, outcome.base_branch
-                                    ));
+                                    git.last_message = Some(outcome.message());
                                     git.last_error = None;
                                 }
                                 Err(error) => {
@@ -744,10 +796,7 @@ impl GitPanel {
                     })
                     .ok();
                     let notification = match &result {
-                        Ok(outcome) => Notification::success(format!(
-                            "Merged pull request #{} into {}",
-                            outcome.number, outcome.base_branch
-                        )),
+                        Ok(outcome) => outcome.notification(),
                         Err(error) => Notification::error(format!("{error:#}")),
                     };
                     window_handle

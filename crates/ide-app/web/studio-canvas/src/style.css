@@ -121,6 +121,179 @@ body,
   display: none;
 }
 
+/* ---- Sections: a quiet grouping surface behind artboards ----
+   Strokes and title sizes are display pixels divided by the live --zoom, so a
+   section reads the same at any scale. Selection and drop use the existing ink. */
+.section {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  --section-radius: min(calc(12px / var(--zoom, 1)), 48px);
+  --section-stroke: color-mix(in srgb, var(--line2, #322f38) 85%, transparent);
+}
+.react-flow__node-section {
+  cursor: default;
+}
+.section-surface {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: var(--section-radius);
+  background: color-mix(in srgb, var(--surface, #1f1e23) 34%, transparent);
+  box-shadow: 0 0 0 calc(1px / var(--zoom, 1)) var(--section-stroke);
+  transition: background-color 0.12s ease-out;
+  pointer-events: none;
+}
+.section-surface.joined {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.section.selected {
+  --section-stroke: var(--ink, #cac9ee);
+}
+.section.selected .section-surface,
+.section.drop-target .section-surface {
+  box-shadow: 0 0 0 calc(2px / var(--zoom, 1)) var(--ink, #cac9ee);
+}
+.section.drop-target .section-surface {
+  background: color-mix(in srgb, var(--ink, #cac9ee) 7%, color-mix(in srgb, var(--surface, #1f1e23) 34%, transparent));
+}
+/* Reserved title band: open space above, the title resting on the surface.
+   Below the minimum label zoom the title grows upward out of the band. */
+.section-band {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.section-label {
+  display: flex;
+  min-width: 0;
+}
+.section-bar {
+  display: flex;
+  align-items: center;
+  padding: 0 min(calc(16px / var(--zoom, 1)), 64px);
+  border-radius: var(--section-radius) var(--section-radius) 0 0;
+  background: color-mix(in srgb, var(--ink, #cac9ee) 14%, var(--surface, #1f1e23));
+  box-shadow: 0 0 0 calc(1px / var(--zoom, 1)) var(--section-stroke);
+  clip-path: inset(calc(-3px / var(--zoom, 1)) calc(-3px / var(--zoom, 1)) 0 calc(-3px / var(--zoom, 1)));
+}
+.section.selected .section-bar,
+.section.drop-target .section-bar {
+  box-shadow: 0 0 0 calc(2px / var(--zoom, 1)) var(--ink, #cac9ee);
+}
+.section-bar.center {
+  justify-content: center;
+}
+.section-title {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text, #ede9ea);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.section.selected .section-title {
+  color: var(--ink, #cac9ee);
+}
+.section-empty {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: min(calc(12px / var(--zoom, 1)), 48px);
+  border: calc(1.5px / var(--zoom, 1)) dashed color-mix(in srgb, var(--faint, #8b8691) 55%, transparent);
+  border-radius: min(calc(8px / var(--zoom, 1)), 32px);
+  color: var(--faint, #8b8691);
+  pointer-events: none;
+}
+.section-marker {
+  position: absolute;
+  border-radius: calc(3px / var(--zoom, 1));
+  background: var(--ink, #cac9ee);
+  pointer-events: none;
+  animation: choro-veil 0.12s ease-out both;
+}
+.section-marker.area {
+  background: color-mix(in srgb, var(--ink, #cac9ee) 12%, transparent);
+  outline: calc(2px / var(--zoom, 1)) dashed var(--ink, #cac9ee);
+  outline-offset: calc(-8px / var(--zoom, 1));
+}
+@media (prefers-reduced-motion: reduce) {
+  .section,
+  .section-marker {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* ---- Canvas context menu: follows the Studio chrome tokens ---- */
+.canvas-menu,
+.canvas-submenu {
+  position: fixed;
+  z-index: 30;
+  min-width: 200px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--surface, #1f1e23);
+  border: 1px solid var(--line2, #322f38);
+  box-shadow: 0 12px 32px -8px #00000073;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-submenu {
+  position: absolute;
+  left: calc(100% - 4px);
+  top: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.canvas-menu button {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  padding: 6px 10px;
+  border-radius: 5px;
+  color: var(--text, #ede9ea);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+  cursor: default;
+}
+.canvas-menu button:hover:not(:disabled),
+.canvas-menu button:focus-visible {
+  background: color-mix(in srgb, var(--ink, #cac9ee) 14%, transparent);
+}
+.canvas-menu button:disabled {
+  color: var(--faint, #8b8691);
+}
+.canvas-menu button.has-submenu::after {
+  content: "›";
+  float: right;
+  margin-left: 16px;
+  color: var(--faint, #8b8691);
+}
+.canvas-menu-rule {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line2, #322f38);
+}
+
 /* A single unscaled editor shell; only the exposed artboard and chrome hit-test. */
 .inline-editor { position:fixed; inset:0; width:100%; height:100%; border:0; background:transparent; z-index:10; }
 

@@ -16,19 +16,30 @@ import {
   trimPreviews,
   IMAGE_BUDGET,
   previewPlan,
+  sectionLabels,
+  dropTarget,
+  sameSlot,
+  boardBounds,
   type Camera,
   type Activity,
   type Layout,
   type Screen,
   type Request,
+  type Section,
+  type Arrangement,
+  type DropTarget,
+  type Rect,
 } from "./model";
 import "./style.css";
 import {createInlineEditor} from "./inline-editor";
+import { SectionBoard, CanvasMenu, type SectionNode, type MenuState } from "./sections";
 type Boot = {
   session: string;
   revision: number;
   fingerprint: string;
   screens: Screen[];
+  sections?: Section[];
+  arrangement?: Arrangement;
   layout: Layout;
   theme: Record<string, string>;
   test?: boolean;
@@ -46,6 +57,9 @@ type Data = {
   end: (width: number, height: number, x: number, y: number) => void;
 };
 type ArtboardNode = Node<Data, "artboard">;
+type CanvasNode = ArtboardNode | SectionNode;
+/** An in-flight artboard drag, with the revision it started from. */
+type DragState = { id: string; revision: number; fingerprint: string; origin: { x: number; y: number }; cancelled: boolean; sizes: Map<string, Screen> };
 declare global {
   interface Window {
     __CHORO_CANVAS__: Boot;
@@ -53,9 +67,22 @@ declare global {
     choroCanvasReply: (value: any) => void;
     choroCanvasStats: () => unknown;
     choroStudioReply: (value:any) => void;
-    choroCanvasTest?: { flow: ReactFlowInstance<ArtboardNode> };
+    choroCanvasTest?: {
+      flow: ReactFlowInstance<CanvasNode>;
+      begin: (id: string) => void;
+      hover: (id: string, x: number, y: number) => void;
+      finish: (id: string, x: number, y: number) => void;
+      drop: (id: string, x: number, y: number) => void;
+      escape: () => void;
+    };
   }
 }
+const SECTION_PREFIX = "section:";
+const pointer = (event: MouseEvent | TouchEvent) => {
+  if ("clientX" in event) return { x: event.clientX, y: event.clientY };
+  const touch = event.changedTouches[0] ?? event.touches[0];
+  return { x: touch?.clientX ?? 0, y: touch?.clientY ?? 0 };
+};
 const boot = window.__CHORO_CANVAS__;
 const requestId = () =>
   crypto.randomUUID?.() ??
@@ -200,17 +227,25 @@ const Artboard = memo(function Artboard({
     </div>
   );
 });
-const nodeTypes = { artboard: Artboard };
+const nodeTypes = { artboard: Artboard, section: SectionBoard };
 function Canvas() {
-  const [nodes, setNodes] = useState<ArtboardNode[]>([]);
+  const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const inline = useRef<ReturnType<typeof createInlineEditor> | null>(null);
   const screens = useRef(boot.screens),
+    sections = useRef<Section[]>(boot.sections ?? []),
+    arrangement = useRef<Arrangement>(boot.arrangement ?? "stacked"),
     layout = useRef(boot.layout),
     revision = useRef({
       revision: boot.revision,
       fingerprint: boot.fingerprint,
     });
-  const flow = useRef<ReactFlowInstance<ArtboardNode> | null>(null),
+  const drag = useRef<DragState | null>(null),
+    hint = useRef<DropTarget | null>(null),
+    /** Screens dropped into or out of a section, held until the host answers. */
+    moving = useRef(new Map<string, { request_id: string; x: number; y: number; timer: ReturnType<typeof setTimeout> }>()),
+    labelZoom = useRef(boot.layout.viewport.zoom);
+  const [menu, setMenu] = useState<MenuState>(null);
+  const flow = useRef<ReactFlowInstance<CanvasNode> | null>(null),
     desired = useRef(new Map<string, Request>()),
     previews = useRef(new Map<string, Preview>());
   const [ready, setReady] = useState(false);
@@ -248,25 +283,75 @@ function Canvas() {
   const lastMotion = useRef(-Infinity);
   const canvasCamera = useRef<Camera | null>(null);
   const activation = useRef<{screen:string;x:number;y:number} | null>(null);
-  const fitScreens = (selected?: string) => {
-    const f=flow.current;if(!f)return;
-    const visible=screens.current.filter(s=>!s.archived&&(!selected||s.id===selected)
-      &&(layout.current.overview_mode!=="focus"||s.id===layout.current.selected_screen_id));
-    const bounds=visible.map(s=>({s,p:layout.current.positions[s.id]})).filter(v=>v.p);
-    if(!bounds.length)return;
-    const x=Math.min(...bounds.map(v=>v.p.x)),y=Math.min(...bounds.map(v=>v.p.y));
-    const width=Math.max(...bounds.map(v=>v.p.x+v.s.width))-x,height=Math.max(...bounds.map(v=>v.p.y+v.s.height))-y;
+  const fitRects = (rects: Rect[], boards: Section[] = []) => {
+    const f=flow.current;if(!f||(!rects.length&&!boards.length))return;
     const target=inline.current?.area??{x:0,y:0,width:innerWidth,height:innerHeight};
-    const v=getViewportForBounds({x,y,width,height},target.width,target.height,.02,1,.15);
+    let v = { x: 0, y: 0, zoom: 1 };
+    // Recompute the display-sized title extents at the resulting fit zoom.
+    for (let pass = 0; pass < 4; pass++) {
+      const board = boardBounds(boards, v.zoom);
+      const all = board ? [...rects, board] : rects;
+      const x=Math.min(...all.map(r=>r.x)),y=Math.min(...all.map(r=>r.y));
+      const width=Math.max(...all.map(r=>r.x+r.width))-x,height=Math.max(...all.map(r=>r.y+r.height))-y;
+      v=getViewportForBounds({x,y,width,height},target.width,target.height,.02,1,.15);
+    }
     void f.setViewport({...v,x:v.x+target.x,y:v.y+target.y});
+  };
+  /** Fit all includes every section with its title band. */
+  const fitScreens = (selected?: string) => {
+    const focus=layout.current.overview_mode==="focus";
+    const visible=screens.current.filter(s=>!s.archived&&(!selected||s.id===selected)
+      &&(!focus||s.id===layout.current.selected_screen_id));
+    const rects:Rect[]=visible.map(s=>({s,p:layout.current.positions[s.id]})).filter(v=>v.p).map(v=>({x:v.p.x,y:v.p.y,width:v.s.width,height:v.s.height}));
+    fitRects(rects,!selected&&!focus?sections.current:[]);
+  };
+  /** Keep section object identity when unchanged so boards do not re-render. */
+  const adoptSections = (next?: Section[], nextArrangement?: Arrangement) => {
+    if (nextArrangement) arrangement.current = nextArrangement;
+    if (!next) return;
+    const old = new Map(sections.current.map((s) => [s.id, s]));
+    sections.current = next.map((s) => (JSON.stringify(old.get(s.id)) === JSON.stringify(s) ? old.get(s.id)! : s));
+  };
+  const sectionOf = (screen: string) => sections.current.find((s) => s.screen_ids.includes(screen)) ?? null;
+  const fitSection = (id: string) => {
+    const s=sections.current.find(s=>s.id===id);
+    if(s)fitRects([], [s]);
   };
   const syncNodes = useCallback(() => {
     setNodes((old) => {
-      const previousNodes = new Map(old.map(n => [n.id, n]));
-      const next = screens.current
+      const previousNodes = new Map<string, CanvasNode>(old.map(n => [n.id, n]));
+      const focus = layout.current.overview_mode === "focus";
+      const zoom = labelZoom.current;
+      const selectedSection = layout.current.selected_section_id ?? null;
+      const plans = sectionLabels(sections.current, zoom, selectedSection, arrangement.current);
+      // Section boards render behind artboards and never move on their own.
+      const boards: SectionNode[] = sections.current.map((section) => {
+        const id = SECTION_PREFIX + section.id;
+        const previous = previousNodes.get(id) as SectionNode | undefined;
+        const target = hint.current?.section_id === section.id;
+        const marker = target ? hint.current?.marker : undefined;
+        const label = plans[section.id];
+        const selected = selectedSection === section.id;
+        if (previous && previous.data.section === section && previous.data.selected === selected &&
+          previous.data.target === target && previous.data.marker === marker && previous.data.zoom === zoom &&
+          previous.data.label.mode === label.mode && previous.data.label.size === label.size &&
+          previous.data.label.maxWidth === label.maxWidth && previous.data.label.chars === label.chars && previous.hidden === focus)
+          return previous;
+        // Exact host geometry doubles as the measured size, so a re-planned
+        // title never makes a board briefly unmeasured (and thus unculled).
+        return {
+          id, type: "section", position: { x: section.x, y: section.y },
+          width: section.width, height: section.height,
+          measured: { width: section.width, height: section.height },
+          style: { width: section.width, height: section.height },
+          zIndex: -1, selectable: false, draggable: false, focusable: false, hidden: focus,
+          data: { section, selected, target, marker, label, zoom },
+        };
+      });
+      const artboards = screens.current
         .filter((s) => !s.archived)
         .map((screen) => {
-          const previous = previousNodes.get(screen.id);
+          const previous = previousNodes.get(screen.id) as ArtboardNode | undefined;
           if (
             previous &&
             resize.current?.id === screen.id &&
@@ -274,6 +359,7 @@ function Canvas() {
           )
             return previous;
           const saving = pending.current.get(screen.id);
+          const moved = moving.current.get(screen.id);
           const legible =
             Math.max(screen.width, screen.height) * layout.current.viewport.zoom >= 48 ||
             inline.current?.screen === screen.id;
@@ -284,7 +370,9 @@ function Canvas() {
               ? previous.position
               : saving
                 ? { x: saving.x, y: saving.y }
-                : (layout.current.positions[screen.id] ?? { x: 0, y: 0 }),
+                : moved
+                  ? { x: moved.x, y: moved.y }
+                  : (layout.current.positions[screen.id] ?? { x: 0, y: 0 }),
             width: saving?.width ?? screen.width,
             height: saving?.height ?? screen.height,
             dragging: previous?.dragging,
@@ -295,13 +383,13 @@ function Canvas() {
             dragHandle: ".artboard-title",
             hidden: layout.current.overview_mode === "focus" && layout.current.selected_screen_id !== screen.id,
             selected: layout.current.selected_screen_id === screen.id,
-            draggable: layout.current.overview_mode !== "focus" && !pending.current.has(screen.id),
+            draggable: layout.current.overview_mode !== "focus" && !pending.current.has(screen.id) && !moved,
             data: {
               screen,
               legible,
               preview: legible ? previews.current.get(screen.id) : undefined,
               error: failures.current.get(screen.id),
-              pending: pending.current.has(screen.id),
+              pending: pending.current.has(screen.id) || !!moved,
               editing: inline.current?.screen===screen.id,
               begin: () => {
                 resize.current = {
@@ -345,8 +433,8 @@ function Canvas() {
                   fingerprint: start.fingerprint,
                 });
                 setNodes((all) =>
-                  all.map((n) =>
-                    n.id === screen.id
+                  all.map((n): CanvasNode =>
+                    n.id === screen.id && n.type === "artboard"
                       ? {
                           ...n,
                           draggable: false,
@@ -362,6 +450,7 @@ function Canvas() {
             previous &&
             previous.data.screen === screen &&
             previous.data.preview === n.data.preview &&
+            previous.data.legible === n.data.legible &&
             previous.selected === n.selected &&
             previous.hidden === n.hidden &&
             previous.draggable === n.draggable &&
@@ -376,9 +465,38 @@ function Canvas() {
             return previous;
           return n;
         });
+      const next: CanvasNode[] = [...boards, ...artboards];
       return old.length === next.length && next.every((n, i) => n === old[i]) ? old : next;
     });
   }, []);
+  /** Camera and insertion feedback leave every artboard object untouched. */
+  const syncSectionNodes = () => {
+    const zoom = labelZoom.current;
+    const plans = sectionLabels(sections.current, zoom, layout.current.selected_section_id, arrangement.current);
+    setNodes((all) => all.map((node) => {
+      if (node.type !== "section") return node;
+      const target = hint.current?.section_id === node.data.section.id;
+      const marker = target ? hint.current?.marker : undefined;
+      const label = plans[node.data.section.id];
+      const before = node.data.label;
+      if (node.data.zoom === zoom && node.data.target === target && node.data.marker === marker &&
+          before.mode === label.mode && before.size === label.size && before.chars === label.chars && before.maxWidth === label.maxWidth)
+        return node;
+      return { ...node, data: { ...node.data, zoom, target, marker, label } };
+    }));
+  };
+  const trackMove = (id: string, request_id: string, position: { x: number; y: number }, origin = position) => {
+    const timer = setTimeout(() => {
+      if (!alive.current || moving.current.get(id)?.request_id !== request_id) return;
+      moving.current.delete(id);
+      layout.current.positions[id] = origin;
+      failures.current.set(id, "The grouping request did not respond. Restoring saved positions.");
+      syncNodes();
+      // Request authoritative state, including any edit completed after the timeout.
+      send("ready");
+    }, 35000);
+    moving.current.set(id, { request_id, ...position, timer });
+  };
   const planPreviews = useCallback(() => {
     if (!flow.current || !alive.current) return;
     const v = flow.current.getViewport();
@@ -590,6 +708,7 @@ function Canvas() {
             ? old.get(s.id)
             : s,
         );
+        adoptSections(message.sections, message.arrangement);
         const previousView = layout.current.overview_mode;
         if (previousView === "canvas" && message.layout.overview_mode === "focus")
           canvasCamera.current = flow.current?.getViewport() ?? layout.current.viewport;
@@ -607,6 +726,11 @@ function Canvas() {
             else if (view === "canvas" && canvasCamera.current) void flow.current?.setViewport(canvasCamera.current);
           });
         }
+      } else if (message.type === "selection") {
+        layout.current.selected_screen_id = message.screen_id;
+        layout.current.selected_section_id = message.section_id;
+        syncNodes();
+        schedulePreviews();
       } else if (message.type === "editor") {
         inline.current?.open(message.screen_id?message:null);
         const point=activation.current;
@@ -647,7 +771,25 @@ function Canvas() {
           fingerprint: message.fingerprint,
         };
         screens.current = message.screens;
+        adoptSections(message.sections, message.arrangement);
         layout.current.positions = message.positions;
+        syncNodes();
+        schedulePreviews();
+      } else if (message.type === "move-result") {
+        // Correlated by request: stale or foreign answers are ignored.
+        const entry = [...moving.current].find(([, m]) => m.request_id === message.request_id);
+        if (!entry) return;
+        clearTimeout(entry[1].timer);
+        moving.current.delete(entry[0]);
+        if (message.error) failures.current.set(entry[0], message.error);
+        else failures.current.delete(entry[0]);
+        if (message.revision >= revision.current.revision) {
+          // Success or conflict, the host's answer is the authority to show.
+          revision.current = { revision: message.revision, fingerprint: message.fingerprint };
+          screens.current = message.screens;
+          adoptSections(message.sections, message.arrangement);
+          layout.current.positions = message.positions;
+        }
         syncNodes();
         schedulePreviews();
       } else if (message.type === "command" && flow.current) {
@@ -656,7 +798,10 @@ function Canvas() {
           inline.current?.focus();
         if (message.command === "zoom-in") void f.zoomIn({ duration: 0 });
         if (message.command === "zoom-out") void f.zoomOut({ duration: 0 });
-        if (message.command === "fit-all") requestAnimationFrame(()=>fitScreens());
+        if (message.command === "fit-all") fitScreens();
+        // Section geometry is host-authored, so no layout pass is needed first.
+        if (message.command === "fit-section" && typeof message.section_id === "string")
+          fitSection(message.section_id);
         if (message.command === "fit-selected" && inline.current?.screen) inline.current.focus();
         else if (
           message.command === "fit-selected" &&
@@ -676,7 +821,8 @@ function Canvas() {
       }
     };
     window.choroCanvasStats = () => ({
-      mounted: document.querySelectorAll(".react-flow__node").length,
+      mounted: document.querySelectorAll(".react-flow__node-artboard").length,
+      sections_mounted: document.querySelectorAll(".react-flow__node-section").length,
       images: previews.current.size,
       decoded_bytes: [...previews.current.values()].reduce(
         (n, p) => n + p.width * p.height * 4,
@@ -692,10 +838,16 @@ function Canvas() {
         syncNodes();
         event.preventDefault();
       }
+      if (event.key === "Escape" && drag.current && !drag.current.cancelled) {
+        cancelDrag();
+        event.preventDefault();
+      }
+      if (event.key === "Escape") setMenu(null);
       if (
         event.key === "Enter" &&
         layout.current.selected_screen_id &&
-        !resize.current
+        !resize.current &&
+        !(event.target as HTMLElement | null)?.closest?.(".canvas-menu")
       ) {
         flushCamera();
         send("open", { screen_id: layout.current.selected_screen_id });
@@ -711,6 +863,7 @@ function Canvas() {
       inline.current?.dispose();inline.current=null;
       clearTimeout(timers.current.preview);
       clearTimeout(timers.current.camera);
+      for (const move of moving.current.values()) clearTimeout(move.timer);
       for (const p of previews.current.values()) p.image.src = "";
       previews.current.clear();
       decodeQueue.current = [];
@@ -718,7 +871,7 @@ function Canvas() {
       removeEventListener("resize", onResize);
     };
   }, [syncNodes, schedulePreviews, decodeNext, flushCamera, planPreviews]);
-  const onChanges = useCallback((changes: NodeChange<ArtboardNode>[]) => {
+  const onChanges = useCallback((changes: NodeChange<CanvasNode>[]) => {
     const accepted = changes.filter(
       (c) =>
         !(
@@ -726,10 +879,14 @@ function Canvas() {
           "id" in c &&
           c.id === resize.current.id &&
           (c.type === "dimensions" || c.type === "position")
-        ),
+        ) &&
+        // A drag cancelled with Escape stays at its authoritative position.
+        !(drag.current?.cancelled && "id" in c && c.id === drag.current.id && c.type === "position") &&
+        // Grouped screens move only by drag-and-drop; keyboard nudges cannot detach them.
+        !(c.type === "position" && !c.dragging && !drag.current && !!sectionOf(c.id)),
     );
     for (const c of accepted) {
-      if (c.type === "select") {
+      if (c.type === "select" && !c.id.startsWith(SECTION_PREFIX)) {
         const next = c.selected
           ? c.id
           : layout.current.selected_screen_id === c.id
@@ -737,6 +894,7 @@ function Canvas() {
             : layout.current.selected_screen_id;
         if (next !== layout.current.selected_screen_id) {
           layout.current.selected_screen_id = next;
+          if (next) layout.current.selected_section_id = null;
           send("select", { screen_id: next });
         }
       }
@@ -744,19 +902,82 @@ function Canvas() {
         c.type === "position" &&
         c.position &&
         !resize.current &&
-        !pending.current.has(c.id)
+        !pending.current.has(c.id) &&
+        !moving.current.has(c.id) &&
+        !c.id.startsWith(SECTION_PREFIX)
       ) {
-        layout.current.positions[c.id] = c.position;
-        if (!c.dragging)
+        // Grouped screens keep their section's authoritative position;
+        // drops are decided once in finishDrag.
+        const grouped = !!sectionOf(c.id);
+        if (!grouped) layout.current.positions[c.id] = c.position;
+        if (!c.dragging && !drag.current && !grouped)
           send("position", { screen_id: c.id, position: c.position });
       }
     }
     setNodes((n) => applyNodeChanges(accepted, n));
   }, []);
+  /** Escape: restore the authoritative position; nothing is saved. */
+  const cancelDrag = () => {
+    const d = drag.current;
+    if (!d) return;
+    d.cancelled = true;
+    hint.current = null;
+    if (!sectionOf(d.id)) layout.current.positions[d.id] = d.origin;
+    setNodes((all) => all.map((n) => (n.id === d.id ? { ...n, position: { ...d.origin }, dragging: false } : n)));
+    syncNodes();
+  };
+  /** One accepted drop is one saved edit; same-slot drops snap back. */
+  const finishDrag = useCallback((id: string, position: { x: number; y: number }, pointer: { x: number; y: number }) => {
+    const start = drag.current;
+    drag.current = null;
+    hint.current = null;
+    if (!start || start.id !== id || start.cancelled) { syncNodes(); return; }
+    const grouped = sectionOf(id);
+    const target: DropTarget = sections.current.length
+      ? dropTarget(sections.current, screens.current, layout.current.positions, id, pointer, start.sizes)
+      : { section_id: null, before_screen_id: null };
+    if (!target.section_id && !grouped) {
+      layout.current.positions[id] = position;
+      send("position", { screen_id: id, position });
+      syncNodes();
+      return;
+    }
+    if (target.section_id && sameSlot(sections.current, id, target)) { syncNodes(); return; }
+    const request_id = requestId();
+    trackMove(id, request_id, position, start.origin);
+    send("move-screen", {
+      request_id, screen_id: id, section_id: target.section_id, before_screen_id: target.before_screen_id,
+      position: target.section_id ? null : position, revision: start.revision, fingerprint: start.fingerprint,
+    });
+    syncNodes();
+  }, [syncNodes]);
+  const beginDrag = (id: string, position: { x: number; y: number }) => {
+    drag.current = { id, ...revision.current, origin: { ...(layout.current.positions[id] ?? position) }, cancelled: false, sizes: new Map(screens.current.map((s) => [s.id, s])) };
+    setMenu(null);
+  };
+  /** Show the target section and insertion point without reflowing anything. */
+  const hoverDrag = (id: string, pointer: { x: number; y: number }) => {
+    const d = drag.current;
+    if (!d || d.cancelled || d.id !== id || !sections.current.length) return;
+    const target = dropTarget(sections.current, screens.current, layout.current.positions, id, pointer, d.sizes);
+    const next = target.section_id ? target : null;
+    if (next?.section_id === hint.current?.section_id && next?.before_screen_id === hint.current?.before_screen_id) return;
+    hint.current = next;
+    syncSectionNodes();
+  };
+  const closeMenu = useCallback(() => setMenu(null), []);
   const onInit = useCallback(
-    (f: ReactFlowInstance<ArtboardNode>) => {
+    (f: ReactFlowInstance<CanvasNode>) => {
       flow.current = f;
-      if (boot.test) window.choroCanvasTest = { flow: f };
+      // Isolated fixtures drive the same drag lifecycle without OS pointer events.
+      if (boot.test) window.choroCanvasTest = {
+        flow: f,
+        begin: (id) => beginDrag(id, layout.current.positions[id] ?? { x: 0, y: 0 }),
+        hover: (id, x, y) => hoverDrag(id, { x, y }),
+        finish: (id, x, y) => finishDrag(id, { x, y }, { x, y }),
+        drop: (id, x, y) => { beginDrag(id, { x, y }); hoverDrag(id, { x, y }); finishDrag(id, { x, y }, { x, y }); },
+        escape: () => dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+      };
       setReady(true);
       send("ready");
       schedulePreviews();
@@ -773,7 +994,7 @@ function Canvas() {
   }, [ready]);
   return (
     <>
-      <ReactFlow<ArtboardNode>
+      <ReactFlow<CanvasNode>
         nodes={nodes}
         edges={[]}
         nodeTypes={nodeTypes}
@@ -801,6 +1022,13 @@ function Canvas() {
         onMove={(_, v) => {
           lastMotion.current = performance.now();
           layout.current.viewport = v;
+          if (document.documentElement.style.getPropertyValue("--zoom") !== String(v.zoom))
+            document.documentElement.style.setProperty("--zoom", String(v.zoom));
+          // Re-plan section titles only when the zoom has moved noticeably.
+          if (sections.current.length && Math.abs(Math.log(v.zoom / labelZoom.current)) > 0.03) {
+            labelZoom.current = v.zoom;
+            syncSectionNodes();
+          }
           clearTimeout(timers.current.camera);
           timers.current.camera = setTimeout(flushCamera, 300);
           positionEditor();
@@ -815,13 +1043,28 @@ function Canvas() {
           schedulePreviews();
         }}
         onNodeClick={(_, n) => {
+          if (n.type === "section") {
+            const id = n.id.slice(SECTION_PREFIX.length);
+            layout.current.selected_section_id = id;
+            layout.current.selected_screen_id = null;
+            send("select-section", { section_id: id });
+            syncNodes();
+            return;
+          }
           if(inline.current?.screen && inline.current.screen!==n.id){send("open",{screen_id:n.id});return;}
           layout.current.selected_screen_id = n.id;
+          layout.current.selected_section_id = null;
           send("select", { screen_id: n.id });
           syncNodes();
           schedulePreviews();
         }}
+        onNodeContextMenu={(event, n) => {
+          event.preventDefault();
+          const section = n.type === "section";
+          setMenu({ x: event.clientX, y: event.clientY, kind: section ? "section" : "screen", id: section ? n.id.slice(SECTION_PREFIX.length) : n.id, ...revision.current });
+        }}
         onNodeDoubleClick={(event, n) => {
+          if (n.type === "section") { fitSection(n.id.slice(SECTION_PREFIX.length)); return; }
           const v=flow.current!.getViewport();
           activation.current={screen:n.id,x:(event.clientX-v.x)/v.zoom-n.position.x,y:(event.clientY-v.y)/v.zoom-n.position.y};
           flushCamera();
@@ -831,25 +1074,54 @@ function Canvas() {
           if(inline.current?.screen){inline.current.reply({session:inline.current.session,type:"deselect"});return;}
           if(layout.current.overview_mode === "focus")return;
           layout.current.selected_screen_id = null;
+          layout.current.selected_section_id = null;
           send("select", { screen_id: null });
           syncNodes();
         }}
-        onNodeDrag={positionEditor}
-        onNodeDragStop={(_, n) => {
-          layout.current.positions[n.id] = n.position;
+        onNodeDragStart={(_, n) => { if (n.type === "artboard") beginDrag(n.id, n.position); }}
+        onNodeDrag={(event, n) => {
           positionEditor();
-          send("position", { screen_id: n.id, position: n.position });
+          if (n.type === "artboard" && flow.current)
+            hoverDrag(n.id, flow.current.screenToFlowPosition(pointer(event)));
+        }}
+        onNodeDragStop={(event, n) => {
+          if (n.type === "artboard" && flow.current)
+            finishDrag(n.id, n.position, flow.current.screenToFlowPosition(pointer(event)));
+          positionEditor();
           schedulePreviews();
         }}
       />
-      {!screens.current.some((s) => !s.archived) && (
+      {!screens.current.some((s) => !s.archived) && !sections.current.length && (
         <div className="empty">Add a screen to start designing</div>
+      )}
+      {menu && (
+        <CanvasMenu
+          menu={menu}
+          sections={sections.current}
+          current={menu.kind === "screen" ? (sectionOf(menu.id)?.id ?? null) : null}
+          onClose={closeMenu}
+          onAction={(action) => {
+            if (menu.kind === "section" && action === "fit") { fitSection(menu.id); return; }
+            send("context-action", menu.kind === "screen" ? { screen_id: menu.id, section_id: null, action } : { screen_id: null, section_id: menu.id, action });
+          }}
+          onMove={(section) => {
+            const request_id = requestId();
+            const position = layout.current.positions[menu.id] ?? { x: 0, y: 0 };
+            trackMove(menu.id, request_id, position);
+            send("move-screen", {
+              request_id, screen_id: menu.id, section_id: section, before_screen_id: null, position: null,
+              revision: menu.revision, fingerprint: menu.fingerprint,
+            });
+            syncNodes();
+          }}
+        />
       )}
     </>
   );
 }
 for (const [key, value] of Object.entries(boot.theme ?? {}))
   document.documentElement.style.setProperty(`--${key}`, value);
+document.documentElement.style.setProperty("--zoom", String(boot.layout.viewport.zoom));
 try {
   createRoot(document.getElementById("root")!, {
     onUncaughtError: (error) =>

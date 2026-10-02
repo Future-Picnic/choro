@@ -284,6 +284,14 @@ pub enum ChatBackendCommand {
         read_only: bool,
         turn_id: String,
     },
+    /// Activate the frozen target only after the preceding backend has stopped.
+    SendStudioTurn {
+        text: String,
+        mode: AgentInteractionMode,
+        turn_id: String,
+        title: String,
+        request: super::StudioChatRequest,
+    },
     UpdateAccessMode {
         access_mode: AgentAccessMode,
     },
@@ -348,7 +356,7 @@ impl ChatBackendController {
         &self,
         command: ChatBackendCommand,
     ) -> Result<(), crossbeam_channel::SendError<ChatBackendCommand>> {
-        if matches!(&command, ChatBackendCommand::SendTurn { .. }) {
+        if matches!(&command, ChatBackendCommand::SendTurn { .. } | ChatBackendCommand::SendStudioTurn { .. }) {
             self.timing
                 .prompt
                 .store(ide_core::agent_changes::now_micros(), Ordering::Relaxed);
@@ -586,7 +594,7 @@ struct CodexRuntime {
     active_command_item_id: Option<String>,
     pending_user_inputs: std::collections::HashMap<String, PendingRequest>,
     pending_approvals: std::collections::HashMap<String, PendingApprovalRequest>,
-    deferred_turns: VecDeque<(String, AgentInteractionMode, bool, String)>,
+    deferred_turns: VecDeque<ChatBackendCommand>,
     active_reconnect_work_log_id: Option<String>,
     model: Option<String>,
     effort: String,
@@ -1067,7 +1075,7 @@ fn choro_acp_mcp_servers_json_at(
     }])
 }
 
-fn claude_bridge_script_path() -> anyhow::Result<PathBuf> {
+pub(crate) fn claude_bridge_script_path() -> anyhow::Result<PathBuf> {
     let current_exe = std::env::current_exe().context("failed to locate current executable")?;
     let bundle_resource = current_exe
         .parent()

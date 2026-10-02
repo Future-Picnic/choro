@@ -64,8 +64,11 @@ mod remote_agents;
 mod services;
 mod shutdown;
 mod studio;
+mod studio_composer;
 mod studio_links;
 mod studio_canvas;
+mod studio_sections;
+mod studio_sections_sidebar;
 mod studio_editor;
 mod studio_systems;
 mod studio_code_import;
@@ -417,6 +420,7 @@ struct PostHydrationAgentChatSubmission {
     tags: Vec<AgentChatMessageTag>,
     mode: AgentInteractionMode,
     read_only: bool,
+    studio_request: Option<crate::state::agent_chat::StudioChatRequest>,
 }
 
 fn should_defer_agent_chat_submission_for_resume(

@@ -400,6 +400,9 @@ impl GeminiRuntime {
             } => self
                 .deferred_turns
                 .push_back((text, mode, read_only, turn_id)),
+            ChatBackendCommand::SendStudioTurn { .. } => {
+                return Err(anyhow!("Studio requires a Claude or Codex backend"));
+            }
             ChatBackendCommand::ResolveApproval {
                 request_id,
                 approved,

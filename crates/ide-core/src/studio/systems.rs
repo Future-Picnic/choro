@@ -61,7 +61,6 @@ fn escape(value: &str) -> String {
 pub(super) fn validate_system_binding(design: &StudioDesign) -> Result<()> {
     // Explicit CSS fallbacks are safe. Unresolved references must be mapped before switching.
     let tokens = design.tokens();
-    let mut missing = BTreeSet::new();
     let declaration =
         regex::Regex::new(r"--([a-zA-Z0-9-]+)\s*:").expect("static CSS declaration expression");
     let local_names = design
@@ -74,30 +73,10 @@ pub(super) fn validate_system_binding(design: &StudioDesign) -> Result<()> {
                 .map(|c| c[1].to_string())
         })
         .collect::<BTreeSet<_>>();
-    let mut inspect = |text: &str| {
-        for tail in text.split("var(--").skip(1) {
-            let Some(end) = tail.find(')') else { continue };
-            let value = &tail[..end];
-            if !value.contains(',')
-                && !tokens.contains_key(value.trim())
-                && !local_names.contains(value.trim())
-            {
-                missing.insert(value.trim().to_string());
-            }
-        }
-    };
-    for value in tokens.values() {
-        inspect(value);
-    }
-    for doc in design.documents.values() {
-        inspect(&doc.css);
-        inspect(&doc.html);
-    }
-    for recipe in design.system.recipes.values() {
-        for value in recipe.values() {
-            inspect(value);
-        }
-    }
+    let missing = missing_token_references(&tokens, &local_names,
+        tokens.values().map(String::as_str)
+            .chain(design.documents.values().flat_map(|doc| [doc.css.as_str(), doc.html.as_str()]))
+            .chain(design.system.recipes.values().flat_map(|recipe| recipe.values().map(String::as_str))));
     ensure!(
         missing.is_empty(),
         "Map these missing tokens before changing systems: {}",
@@ -555,6 +534,8 @@ impl StudioStore {
                     content: serde_json::to_string(&record.sources)?,
                 },
             )]),
+            sections: Vec::new(),
+            section_layout: Default::default(),
         };
         let mut design = StudioDesign {
             manifest,
@@ -650,22 +631,36 @@ impl StudioStore {
 /// Deterministic, script-free specimens rendered by Studio's existing isolated renderer.
 pub fn system_specimen(record: &StudioSystemRecord) -> StudioDocument {
     let mut html = format!("<!doctype html><html><head><meta charset=\"utf-8\"></head><body><main><header><h1>{}</h1><p>{}</p></header>", escape(&record.name), escape(&record.platform));
+    let missing = missing_system_tokens(&record.draft);
+    if !missing.is_empty() {
+        html.push_str(&format!("<section class=\"missing-tokens\"><h2>Unresolved references</h2><p>Add these source tokens or edit their recipe references before applying: {}</p></section>", escape(&missing.into_iter().collect::<Vec<_>>().join(", "))));
+    }
     if record.draft.tokens.is_empty() {
         html.push_str("<section><h2>Build your design system</h2><p>Use the agent to extract styles from your app, or describe the system you want to create. Your colors, typography and components will appear here.</p></section>");
     } else {
         html.push_str("<section id=\"system-typography\"><h2>Typography</h2><div class=\"type-sample\"><h1 class=\"ds-heading\" role=\"button\" tabindex=\"0\" data-system-token=\"font-size-heading\">A clear voice for your product</h1><p>Choose the words, size and rhythm that make your interface feel familiar.</p><small>Labels, captions and supporting information</small></div></section><section id=\"system-colors\"><h2>Colors</h2><div class=\"swatches\">");
         for (name, value) in &record.draft.tokens {
-            if name.contains("color") {
+            if system_token_group(name, &record.draft.tokens) == "Colors" {
                 html.push_str(&format!("<div role=\"button\" tabindex=\"0\" data-system-token=\"{}\"><div class=\"swatch\" style=\"background:var(--{})\"></div><strong>{}</strong><p>{}</p></div>", escape(name),escape(name),escape(name),escape(value)));
             }
         }
         html.push_str("</div></section><section id=\"system-recipes\"><h2>Components</h2><div class=\"examples\"><div><h3>Actions</h3><button class=\"ds-button\" data-system-recipe=\"button\">Continue</button> <button class=\"ds-button\" disabled>Unavailable</button></div><div><h3>Form fields</h3><label>Your name<input data-system-recipe=\"input\" class=\"ds-input\" placeholder=\"Alex Morgan\"></label></div><div role=\"button\" tabindex=\"0\" data-system-recipe=\"card\" class=\"ds-card\"><h3 class=\"ds-heading\">A place for related content</h3><p>A card using this system’s spacing, color and shape.</p></div></div></section><section id=\"system-foundations\"><h2>Foundations</h2><dl>");
         for (name, value) in &record.draft.tokens {
-            if !name.contains("color") {
+            if system_token_group(name, &record.draft.tokens) != "Colors" {
                 html.push_str(&format!("<dt role=\"button\" tabindex=\"0\" data-system-token=\"{}\">{}</dt><dd>{}</dd>",escape(name),escape(name),escape(value)));
             }
         }
         html.push_str("</dl></section>");
+        for (name, properties) in &record.draft.recipes {
+            if ["button", "input", "card"].contains(&name.as_str()) {
+                continue;
+            }
+            html.push_str(&format!("<section><h2>{}</h2><div role=\"button\" tabindex=\"0\" data-system-recipe=\"{}\" class=\"ds-{} recipe-sample\">{}<dl>", escape(name), escape(name), escape(name), escape(name)));
+            for (property, value) in properties {
+                html.push_str(&format!("<dt>{}</dt><dd>{}</dd>", escape(property), escape(value)));
+            }
+            html.push_str("</dl></div></section>");
+        }
     }
     if !record.sources.is_empty() {
         html.push_str("<section><h2>Sources and decisions</h2>");
@@ -678,6 +673,30 @@ pub fn system_specimen(record: &StudioSystemRecord) -> StudioDocument {
         }
         html.push_str("</section>");
     }
+    if !record.draft.tokens.contains_key("font-size-heading") {
+        if let Some(name) = ["page-title-size", "heading-font", "font-heading"].iter().find(|name| record.draft.tokens.contains_key(**name)) {
+            html = html.replace("data-system-token=\"font-size-heading\"", &format!("data-system-token=\"{name}\""));
+        }
+    }
     html.push_str("</main></body></html>");
-    StudioDocument { html, js: String::new(), css: "body{margin:0;background:var(--color-background,#fff);color:var(--color-text,#202124);font-family:var(--font-body,system-ui);font-size:var(--font-size-body,16px);line-height:1.5}main{max-width:960px;margin:auto;padding:48px}header{margin-bottom:48px}header h1{font-size:36px;margin:0}header p{margin:8px 0}section{margin:40px 0}section>h2{font:600 18px system-ui;margin-bottom:24px}p{max-width:65ch}h3{margin-top:0}.type-sample{font-family:var(--font-body,system-ui)}.type-sample h1{font-size:var(--font-size-heading,32px)}.swatches{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:24px}.swatch{height:92px;border-radius:var(--radius-control,6px);border:1px solid #8885;margin-bottom:12px}.swatches strong,.swatches p{font-size:13px;overflow-wrap:anywhere}.swatches p{margin:4px 0}.examples{display:grid;gap:32px}button,input{font:inherit;padding:var(--space-small,8px) var(--space-medium,16px);border:1px solid #8887;border-radius:var(--radius-control,6px)}button:disabled{opacity:.45}input{display:block;margin-top:8px}dl{display:grid;grid-template-columns:minmax(150px,1fr) 2fr;gap:12px}dd{margin:0;overflow-wrap:anywhere}dt{font-weight:500}@media(max-width:600px){main{padding:24px}dl{grid-template-columns:1fr}}[data-system-token],[data-system-recipe]{cursor:pointer}:focus-visible{outline:2px solid var(--color-primary,#335cff);outline-offset:3px}".into() }
+    let css = "body{margin:0;line-height:1.5}main{max-width:960px;margin:auto;padding:48px}header{margin-bottom:48px}header h1{font-size:36px;margin:0}header p{margin:8px 0}section{margin:40px 0}section>h2{font:600 18px system-ui;margin-bottom:24px}p{max-width:65ch}h3{margin-top:0}.swatches{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:24px}.swatch{height:92px;border-radius:var(--radius-control,6px);border:1px solid #8885;margin-bottom:12px}.swatches strong,.swatches p{font-size:13px;overflow-wrap:anywhere}.swatches p{margin:4px 0}.examples{display:grid;gap:32px}button,input{font:inherit;padding:var(--space-small,8px) var(--space-medium,16px);border:1px solid #8887;border-radius:var(--radius-control,6px)}button:disabled{opacity:.45}input{display:block;margin-top:8px}dl{display:grid;grid-template-columns:minmax(150px,1fr) 2fr;gap:12px}dd{margin:0;overflow-wrap:anywhere}dt{font-weight:500}.recipe-sample{padding:24px}.missing-tokens{border:1px solid #b45309;padding:16px}@media(max-width:600px){main{padding:24px}dl{grid-template-columns:1fr}}[data-system-token],[data-system-recipe]{cursor:pointer}:focus-visible{outline:2px solid var(--color-primary,#335cff);outline-offset:3px}";
+    StudioDocument { html, js: String::new(), css: format!("{css}{}", specimen_styles(&record.draft)) }
+}
+
+fn specimen_styles(system: &StudioDesignSystem) -> String {
+    // Preview-only mappings let source names work without renaming or mutating the draft.
+    let token = |names: &[&str], fallback: &str| {
+        names.iter().find(|name| system.tokens.contains_key(**name))
+            .map(|name| format!("var(--{name},{fallback})")).unwrap_or_else(|| fallback.into())
+    };
+    let background = token(&["color-background", "background", "ground", "paper"], "#fff");
+    let surface = token(&["color-surface", "surface", "paper"], &background);
+    let text = token(&["color-text", "text", "ink", "foreground"], "#202124");
+    let primary = token(&["color-primary", "primary", "accent", "accent-light", "cyan"], &text);
+    let on_primary = token(&["color-on-primary", "on-primary"], &background);
+    let body_font = token(&["font-body", "body-font", "font-family", "font"], "system-ui");
+    let heading_font = token(&["font-heading", "heading-font"], &body_font);
+    let body_size = token(&["font-size-body", "body-size"], "16px");
+    let heading_size = token(&["font-size-heading", "page-title-size"], "32px");
+    format!("body{{background:{background};color:{text};font-family:{body_font};font-size:{body_size}}}.type-sample{{font-family:{body_font}}}.type-sample h1{{font-family:{heading_font};font-size:{heading_size}}}header h1{{font-family:{heading_font}}}:where(.examples button){{background:{primary};color:{on_primary}}}:where(.examples input,.examples .ds-card){{background:{surface};color:{text}}}")
 }

@@ -5,6 +5,38 @@ use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 static RENDER_LOCK: Mutex<()> = Mutex::new(());
+/// Playback fits a device viewport, while the authored page scrolls inside it.
+/// Short screens retain their dimensions; tall artboards never shrink a phone
+/// to fit the entire document. These match Studio's Mobile/Desktop presets.
+pub(super) fn prototype_viewport(width: u32, height: u32) -> (u32, u32) {
+    (width, height.min(if width < 600 { 844 } else { 960 }))
+}
+
+/// Repeated exports get numbered names and never replace an existing download.
+pub(super) fn save_png_export(directory: &std::path::Path, name: &str, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(directory)?;
+    let stem = name.strip_suffix(".png").unwrap_or(name);
+    let mut length = 0;
+    let stem: String = stem.chars().take_while(|c| {
+        length += c.len_utf8();
+        length <= 180
+    }).collect();
+    for index in 1..=10_000 {
+        let filename = if index == 1 { format!("{stem}.png") } else { format!("{stem} ({index}).png") };
+        let path = directory.join(filename);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(bytes)?;
+                file.sync_all()?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("Too many exports with this screen name in Downloads")
+}
 static URGENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 struct Urgent;
 impl Drop for Urgent {
@@ -150,8 +182,13 @@ pub fn document_for_surface(
                             .unwrap_or(Value::Null)
             })
     };
+    let (width, height) = if !thumbnail && matches!(surface, EditorSurface::Prototype) {
+        prototype_viewport(screen.width, screen.height)
+    } else {
+        (screen.width, screen.height)
+    };
     let bootstrap = json!({"native_toolbar":!thumbnail && !design.manifest.system_workspace && !matches!(surface,EditorSurface::Screen),"inline":matches!(surface,EditorSurface::Canvas),"prototype":matches!(surface,EditorSurface::Prototype),"system_specimen":design.manifest.system_workspace,"draft":draft,"session":session,"document":design.documents.get(&screen_id),"revision":design.manifest.revision,"fingerprint":design.fingerprint,
-        "screen_id":screen_id,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":screen.width,"height":screen.height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme});
+        "screen_id":screen_id,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":width,"height":height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme});
     // Bootstrap is data, never executable HTML supplied by a design.
     let bootstrap = serde_json::to_string(&bootstrap)?
         .replace('<', "\\u003c")
@@ -390,6 +427,55 @@ fn render_path(
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    #[test]
+    fn studio_png_download_preserves_existing_files_and_numbers_repeated_exports() {
+        let downloads = std::env::temp_dir().join(format!("choro-studio-downloads-{}", Uuid::new_v4())).join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(downloads.join("Mobile app.png"), b"existing download").unwrap();
+        let first = save_png_export(&downloads, "Mobile app.png", b"first export").unwrap();
+        let second = save_png_export(&downloads, "Mobile app.png", b"second export").unwrap();
+        assert_eq!(first, downloads.join("Mobile app (2).png"));
+        assert_eq!(second, downloads.join("Mobile app (3).png"));
+        assert_eq!(std::fs::read(downloads.join("Mobile app.png")).unwrap(), b"existing download");
+        assert_eq!(std::fs::read(first).unwrap(), b"first export");
+        assert_eq!(std::fs::read(second).unwrap(), b"second export");
+    }
+
+    #[test]
+    fn studio_prototype_fits_device_viewport_without_cropping_saved_artboard() {
+        let root = std::env::temp_dir().join(format!("choro-studio-player-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        let store = StudioStore::new(root.join("project"), root.join("data")).unwrap();
+        let design = store.create("Long mobile page").unwrap();
+        let mut screen = design.manifest.screens[0].clone();
+        screen.width = 390;
+        screen.height = 2300;
+        let scope = StudioTurnScope::whole_design(&design);
+        let mobile = store.apply(&scope, &StudioTransaction {
+            id: Uuid::new_v4(), scope_id: scope.id, design_id: design.manifest.id,
+            expected_revision: design.manifest.revision, expected_fingerprint: design.fingerprint,
+            operations: vec![StudioOperation::UpdateScreen { screen: screen.clone() }],
+        }).unwrap();
+        let bootstrap = |surface, thumbnail| {
+            let html = document_for_surface(&store, &mobile, screen.id, Uuid::new_v4(),
+                thumbnail, true, json!({}), surface).unwrap();
+            let encoded = html.split("window.__CHORO_STUDIO__=").nth(1).unwrap()
+                .split(";\n").next().unwrap();
+            serde_json::from_str::<Value>(encoded).unwrap()
+        };
+        let player = bootstrap(EditorSurface::Prototype, false);
+        assert_eq!(player["width"], 390);
+        assert_eq!(player["height"], 844);
+        assert_eq!(player["screens"][0]["height"], 2300);
+        assert_eq!(player["document"], serde_json::to_value(&mobile.documents[&screen.id]).unwrap());
+        for (surface, thumbnail) in [(EditorSurface::Screen, false), (EditorSurface::Canvas, false), (EditorSurface::Screen, true)] {
+            assert_eq!(bootstrap(surface, thumbnail)["height"], 2300);
+        }
+        assert_eq!(prototype_viewport(1440, 3000), (1440, 960));
+        assert_eq!(prototype_viewport(390, 600), (390, 600));
+        assert_eq!(store.load(mobile.manifest.id).unwrap(), mobile);
+    }
+
     #[test]
     fn inline_editor_grants_are_session_scoped_and_revocable() {
         let canvas=Uuid::new_v4();let editor=Uuid::new_v4();let next=Uuid::new_v4();

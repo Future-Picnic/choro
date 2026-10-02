@@ -71,10 +71,16 @@ pub(crate) fn dispatch_loaded(
     mode: AgentInteractionMode,
     queued: bool,
     read_only: bool,
+    studio_request: Option<StudioChatRequest>,
     cx: &mut Context<AgentChatState>,
-) {
+) -> Result<()> {
+    let title = display_text.as_deref().unwrap_or(&text).to_owned();
+    if let Some(request) = &studio_request {
+        request.validate()?;
+        request.title_conversation(&title)?;
+    }
     if queued {
-        chats.queue_turn(agent_id, text, display_text, tags, mode, cx);
+        chats.queue_turn_with_studio(agent_id, text, display_text, tags, mode, studio_request, cx);
     } else {
         let created_at = ide_core::agents::unix_now();
         chats.append_message(
@@ -90,9 +96,10 @@ pub(crate) fn dispatch_loaded(
         if read_only {
             chats.send_read_only_turn(agent_id, text, mode, cx);
         } else {
-            chats.send_turn(agent_id, text, mode, cx);
+            chats.send_turn_with_studio_request(agent_id, text, mode, studio_request, title, cx);
         }
     }
+    Ok(())
 }
 
 pub(crate) fn managed_send(
@@ -134,7 +141,8 @@ pub(crate) fn managed_send(
         mode,
         false,
         false,
+        None,
         cx,
-    );
+    )?;
     Ok(chats.backend_generation(id))
 }

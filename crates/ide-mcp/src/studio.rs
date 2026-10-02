@@ -71,10 +71,10 @@ impl Tool for StudioTool {
         match self.0 {
             "studio_import_propose" => "Save results of an authorized From code analysis for native review. Does not create or publish systems. Provide summary and systems: [{name,platform,description,sources:{project_relative_file:evidence},system:{schema_version:1,revision:0,tokens,recipes,font_faces},assets?:{font_filename:project_relative_file},existing_system_id?:uuid}]. Recover distinct systems from real UI evidence; shared app themes are one system. Up to 16 systems; an empty list explains no UI found. Only From code agents can call this tool.",
             "studio_project_read" => "Read project context without shell access. Optional path is a contained project-relative file or directory (default root). Files return up to 200 lines starting at optional start_line. Directories return up to 200 children. No writes.",
-            "studio_context" => "Read this Studio agent's exact design, current host-authorized turn scope, effective tokens, screen list, revision and fingerprint. Call before editing. Scope cannot be expanded through MCP.",
-            "studio_read" => "Read an HTML screen (screen_id), a bundled asset (asset_path), or all design source if omitted. Other screens are read-only unless listed in studio_context scope.",
-            "studio_apply" => "Apply a StudioTransaction: id (fresh UUID/idempotency key), scope_id, design_id, expected_revision, expected_fingerprint, operations. Operations: add_asset {name,bytes} (new local image/font only, maximum 4 MB), write_screen {screen_id,document:{html,css,js}}, create_screen {screen:{id,name,width,height,archived,files:{html:index.html,css:styles.css,js:prototype.js}},document}, update_screen {screen}, reorder {screen_ids}, rename_design {name}, set_overrides {overrides:{tokens}}, set_source {document?:{reference,content},task?:{reference,content}}, set_system {system,expected_system_revision} (system draft only), system_details {platform,sources:{relative_source_or_proposal:explanation}} (system workspace only). A system workspace has generated specimens: use set_system, not write_screen. Applying a shared system is a host review action. Only host-authorized operations succeed. On conflict read again, never overwrite newer edits.",
-            "studio_snapshot" => "Request/read a screenshot of screen_id at a saved revision and fingerprint. Both revision and fingerprint are required. If pending, retry after rendering; never claim visual review without the returned image.",
+            "studio_context" => "Read this Studio agent's exact design, current host-authorized turn scope, effective tokens, screen list, ordered sections, the frozen current section (if the user selected one), revision and fingerprint. Call before editing. Scope cannot be expanded through MCP.",
+            "studio_read" => "Read exactly one of: an HTML screen (screen_id); a section (section_id) with its ordered screen metadata, archived status and documents; a bundled asset (asset_path); or all design source if none is given. Other screens are read-only unless listed in studio_context scope.",
+            "studio_apply" => "Apply a StudioTransaction: id (fresh UUID/idempotency key), scope_id, design_id, expected_revision, expected_fingerprint, operations. Operations: add_asset {name,bytes} (new local image/font only, maximum 4 MB), write_screen {screen_id,document:{html,css,js}}, create_screen {screen:{id,name,width,height,archived,files:{html:index.html,css:styles.css,js:prototype.js}},document,section_id?} (omit section_id to use the frozen current section, null for unsectioned, or a section UUID), update_screen {screen}, reorder {screen_ids}, rename_design {name}, set_overrides {overrides:{tokens}}, set_source {document?:{reference,content},task?:{reference,content}}, create_section {section:{id,name,screen_ids?,direction?:horizontal|vertical,gap?,title_style?:left_title|full_width_header,header_alignment?:left|center}} (listed screens move into it), update_section {section_id,name?,direction?,gap?,title_style?,header_alignment?}, move_screen_to_section {screen_id,section_id (null = unsectioned),before_screen_id?}, reorder_section_screens {section_id,screen_ids}, reorder_sections {section_ids}, set_section_layout {direction:stacked|side_by_side,origin?:{x,y}}, ungroup_section {section_id} (keeps every screen), set_system {system,expected_system_revision} (system draft only), system_details {platform,sources:{relative_source_or_proposal:explanation}} (system workspace only). A system workspace has generated specimens: use set_system, not write_screen. Applying a shared system is a host review action. Only host-authorized operations succeed. On conflict read again, never overwrite newer edits.",
+            "studio_snapshot" => "Request/read a screenshot at a saved revision and fingerprint (both required) of exactly one target: screen_id, or section_id for a paginated overview of that section's active screens in order (at most 12 per page; optional page from 1). A section overview supplements but never replaces per-screen snapshots and reviews of edited screens. If pending, retry after rendering; never claim visual review without the returned image.",
             "studio_review" => "Record a passed visual review after inspecting studio_snapshot for this screen at its current fingerprint. Provide concrete notes about layout, content and accessibility. Fix issues first. Completion is blocked until every changed screen passes review.",
             _ => "Read the immutable Studio implementation snapshot identified by handoff_id. It remains accessible from Solo worktrees and when source files are untracked. Optional screen_id returns that screen; section can be manifest, assets, tokens, or full (default manifest).",
         }
@@ -91,13 +91,13 @@ impl Tool for StudioTool {
                 json!({"type":"object","properties":{},"additionalProperties":false})
             }
             "studio_snapshot" => {
-                json!({"type":"object","properties":{"screen_id":{"type":"string","format":"uuid"},"revision":{"type":"integer","minimum":0},"fingerprint":{"type":"string"}},"required":["screen_id","revision","fingerprint"],"additionalProperties":false})
+                json!({"type":"object","properties":{"screen_id":{"type":"string","format":"uuid"},"section_id":{"type":"string","format":"uuid"},"page":{"type":"integer","minimum":1},"revision":{"type":"integer","minimum":0},"fingerprint":{"type":"string"}},"required":["revision","fingerprint"],"additionalProperties":false})
             }
             "studio_review" => {
                 json!({"type":"object","properties":{"screen_id":{"type":"string","format":"uuid"},"fingerprint":{"type":"string"},"notes":{"type":"string"}},"required":["screen_id","fingerprint","notes"],"additionalProperties":false})
             }
             "studio_read" => {
-                json!({"type":"object","properties":{"screen_id":{"type":"string","format":"uuid"},"asset_path":{"type":"string"}},"additionalProperties":false})
+                json!({"type":"object","properties":{"screen_id":{"type":"string","format":"uuid"},"section_id":{"type":"string","format":"uuid"},"asset_path":{"type":"string"}},"additionalProperties":false})
             }
             "studio_apply" => {
                 json!({"type":"object","properties":{"transaction":{"type":"object","properties":{"id":{"type":"string"},"scope_id":{"type":"string"},"design_id":{"type":"string"},"expected_revision":{"type":"integer"},"expected_fingerprint":{"type":"string"},"operations":{"type":"array","items":{"type":"object"}}},"required":["id","scope_id","design_id","expected_revision","expected_fingerprint","operations"]}},"required":["transaction"],"additionalProperties":false})
@@ -237,10 +237,31 @@ impl Tool for StudioTool {
         };
         let result = match self.0 {
             "studio_context" => {
-                json!({"request_context":store.request_context(ctx.agent_id()?)?,"scope":scope,"overrides":design.overrides,"manifest":design.manifest,"fingerprint":design.fingerprint,"tokens":design.tokens(),"recipes":design.system.recipes,"asset_paths":store.assets(role.design_id)?.keys().collect::<Vec<_>>()})
+                let request_context = store.request_context(ctx.agent_id()?)?;
+                let sections = design
+                    .manifest
+                    .sections
+                    .iter()
+                    .map(|section| section_summary(&design.manifest, section))
+                    .collect::<Vec<_>>();
+                json!({"current_section":request_context["current_section"].clone(),"request_context":request_context,"scope":scope,"overrides":design.overrides,"manifest":design.manifest,"sections":sections,"section_layout":design.manifest.section_layout,"fingerprint":design.fingerprint,"tokens":design.tokens(),"recipes":design.system.recipes,"asset_paths":store.assets(role.design_id)?.keys().collect::<Vec<_>>()})
             }
             "studio_read" => {
-                if let Some(path) = args.get("asset_path").and_then(Value::as_str) {
+                let selector = single_selector(args, &["screen_id", "section_id", "asset_path"])?;
+                if selector == Some("section_id") {
+                    let id = parse_id(args, "section_id")?;
+                    let section = design
+                        .manifest
+                        .section(id)
+                        .context("Section does not exist")?;
+                    let documents = section
+                        .screen_ids
+                        .iter()
+                        .filter_map(|id| design.documents.get(id).map(|doc| (id, doc)))
+                        .map(|(id, doc)| json!({"screen_id":id,"document":doc}))
+                        .collect::<Vec<_>>();
+                    json!({"section":section_summary(&design.manifest, section),"documents":documents,"revision":design.manifest.revision,"fingerprint":design.fingerprint})
+                } else if let Some(path) = args.get("asset_path").and_then(Value::as_str) {
                     let assets = store.assets(role.design_id)?;
                     let bytes = assets.get(path).context("Asset does not exist")?;
                     json!({"path":path,"base64":base64::engine::general_purpose::STANDARD.encode(bytes)})
@@ -292,6 +313,11 @@ impl Tool for StudioTool {
                 json!({"review":"passed"})
             }
             "studio_snapshot" => {
+                match single_selector(args, &["screen_id", "section_id"])? {
+                    Some("section_id") => return section_overview(&store, &design, args),
+                    Some(_) => {}
+                    None => anyhow::bail!("Pass screen_id or section_id"),
+                }
                 let id = parse_id(args, "screen_id")?;
                 ensure!(design.documents.contains_key(&id), "Screen does not exist");
                 store.request_thumbnail(&design, id)?;
@@ -314,6 +340,75 @@ impl Tool for StudioTool {
         };
         Ok(vec![text_content(result.to_string())])
     }
+}
+/// At most one target selector; ambiguous combinations are rejected.
+fn single_selector(args: &Value, names: &[&'static str]) -> Result<Option<&'static str>> {
+    let present = names
+        .iter()
+        .copied()
+        .filter(|name| args.get(*name).is_some_and(|v| !v.is_null()))
+        .collect::<Vec<_>>();
+    ensure!(
+        present.len() <= 1,
+        "Ambiguous Studio target: pass only one of {}",
+        names.join(", ")
+    );
+    Ok(present.first().copied())
+}
+const OVERVIEW_PAGE: usize = 12;
+/// Ordered overview images of a section's active screens at an exact saved
+/// revision. It supplements, and never records, per-screen visual reviews.
+fn section_overview(store: &StudioStore, design: &StudioDesign, args: &Value) -> Result<Vec<Value>> {
+    let id = parse_id(args, "section_id")?;
+    let section = design
+        .manifest
+        .section(id)
+        .context("Section does not exist in this revision")?;
+    let active = section
+        .screen_ids
+        .iter()
+        .filter_map(|id| design.manifest.screens.iter().find(|s| s.id == *id))
+        .filter(|s| !s.archived)
+        .collect::<Vec<_>>();
+    let pages = active.len().div_ceil(OVERVIEW_PAGE).max(1);
+    let page = args.get("page").and_then(Value::as_u64).unwrap_or(1) as usize;
+    ensure!((1..=pages).contains(&page), "Page must be between 1 and {pages}");
+    let mut images = Vec::new();
+    let mut listed = Vec::new();
+    for (index, screen) in active
+        .iter()
+        .enumerate()
+        .skip((page - 1) * OVERVIEW_PAGE)
+        .take(OVERVIEW_PAGE)
+    {
+        store.request_thumbnail(design, screen.id)?;
+        let status = match fs::read(store.thumbnail_path(design, screen.id)) {
+            Ok(bytes) => {
+                images.push(image_content(
+                    "image/png",
+                    &base64::engine::general_purpose::STANDARD.encode(bytes),
+                ));
+                format!("image {}", images.len())
+            }
+            Err(_) => "pending".to_string(),
+        };
+        listed.push(json!({"order":index + 1,"screen_id":screen.id,"name":screen.name,"width":screen.width,"height":screen.height,"status":status}));
+    }
+    let summary = json!({
+        "section_id": section.id,
+        "name": section.name,
+        "direction": section.direction,
+        "revision": design.manifest.revision,
+        "fingerprint": design.fingerprint,
+        "page": page,
+        "pages": pages,
+        "active_screens": active.len(),
+        "screens": listed,
+        "note": "Overview only. Edited screens still need studio_snapshot by screen_id and studio_review. Retry pending images after Studio renders them."
+    });
+    let mut content = vec![text_content(summary.to_string())];
+    content.extend(images);
+    Ok(content)
 }
 fn parse_id(args: &Value, name: &str) -> Result<uuid::Uuid> {
     Ok(args
@@ -367,16 +462,135 @@ mod tests {
     #[test]
     fn screenshot_schema_requires_exact_revision_and_review_is_scoped() {
         let schema = StudioTool("studio_snapshot").input_schema();
-        assert_eq!(
-            schema["required"],
-            json!(["screen_id", "revision", "fingerprint"])
-        );
+        assert_eq!(schema["required"], json!(["revision", "fingerprint"]));
+        assert!(schema["properties"]["screen_id"].is_object());
+        assert!(schema["properties"]["section_id"].is_object());
         assert_eq!(schema["additionalProperties"], false);
         assert!(allowed("studio_review"));
         assert!(!allowed("studio_handoff_read"));
         let names = tools().iter().map(|t| t.name()).collect::<Vec<_>>();
         assert!(names.contains(&"studio_review"));
     }
+    fn design_agent(sections: usize, screens: usize) -> (tempfile::TempDir, ServerContext, StudioStore, StudioDesign, uuid::Uuid) {
+        let temp = tempfile::tempdir().unwrap();
+        let local = LocalStore::open(temp.path().join("store")).unwrap();
+        let root = temp.path().join("project");
+        fs::create_dir_all(&root).unwrap();
+        let project = ide_core::Project::from_path(root.clone());
+        let mut config = ide_core::AppConfig::default();
+        config.projects.push(project.clone());
+        local.save_workspace_config(&config).unwrap();
+        let store = StudioStore::new(root, local.root()).unwrap();
+        let design = store.create("Flows").unwrap();
+        let scope = StudioTurnScope::whole_design(&design);
+        let created = (0..screens)
+            .map(|i| StudioScreen { id: uuid::Uuid::new_v4(), name: format!("Step {}", i + 1), width: 390, height: 844, archived: i == 1, files: Default::default() })
+            .collect::<Vec<_>>();
+        let mut operations = created
+            .iter()
+            .map(|screen| StudioOperation::CreateScreen { screen: screen.clone(), document: starter_document(), section_id: Some(None) })
+            .collect::<Vec<_>>();
+        for i in 0..sections {
+            operations.push(StudioOperation::CreateSection {
+                section: StudioSection {
+                    screen_ids: if i == 0 { created.iter().map(|s| s.id).collect() } else { vec![] },
+                    ..StudioSection::new(format!("Flow {i}"))
+                },
+            });
+        }
+        let design = store
+            .apply(&scope, &StudioTransaction { id: uuid::Uuid::new_v4(), scope_id: scope.id, design_id: design.manifest.id, expected_revision: design.manifest.revision, expected_fingerprint: design.fingerprint.clone(), operations })
+            .unwrap();
+        let agent = uuid::Uuid::new_v4();
+        let section = design.manifest.sections[0].id;
+        store.save_scope(agent, &scope_for_section_request(&design, section)).unwrap();
+        ide_core::studio::atomic(
+            &store.cache.join("roles").join(format!("{agent}.json")),
+            &serde_json::to_vec(&StudioAgentContext { target: StudioAgentTarget::Design, design_id: design.manifest.id, conversation_id: uuid::Uuid::new_v4() }).unwrap(),
+        )
+        .unwrap();
+        let ctx = ServerContext { studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
+        (temp, ctx, store, design, section)
+    }
+
+    #[test]
+    fn section_reads_and_overviews_are_ordered_paginated_and_unambiguous() {
+        let (_temp, ctx, store, design, section) = design_agent(2, 14);
+        let registry = ToolRegistry::default();
+        let context = registry.call(&ctx, &json!({"name":"studio_context","arguments":{}}));
+        let context: Value = serde_json::from_str(context["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(context["current_section"]["id"], json!(section));
+        assert_eq!(context["sections"].as_array().unwrap().len(), 2);
+        let read = registry.call(&ctx, &json!({"name":"studio_read","arguments":{"section_id":section}}));
+        let read: Value = serde_json::from_str(read["content"][0]["text"].as_str().unwrap()).unwrap();
+        let members = &design.manifest.sections[0].screen_ids;
+        assert_eq!(read["section"]["screen_ids"], json!(members));
+        assert_eq!(read["section"]["screens"][1]["archived"], true);
+        assert_eq!(read["documents"].as_array().unwrap().len(), 14);
+        for ambiguous in [
+            json!({"name":"studio_read","arguments":{"section_id":section,"screen_id":members[0]}}),
+            json!({"name":"studio_read","arguments":{"section_id":section,"asset_path":"x.png"}}),
+            json!({"name":"studio_snapshot","arguments":{"section_id":section,"screen_id":members[0],"revision":design.manifest.revision,"fingerprint":design.fingerprint}}),
+            json!({"name":"studio_snapshot","arguments":{"revision":design.manifest.revision,"fingerprint":design.fingerprint}}),
+        ] {
+            let result = registry.call(&ctx, &ambiguous);
+            assert_eq!(result["isError"], true, "{ambiguous}");
+        }
+        // Rendered screens arrive as images; others are reported pending.
+        let png = b"\x89PNG\r\n\x1a\nfixture".to_vec();
+        for id in members.iter().take(3) {
+            let path = store.thumbnail_path(&design, *id);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, &png).unwrap();
+        }
+        let snapshot = |page: u64| registry.call(&ctx, &json!({"name":"studio_snapshot","arguments":{"section_id":section,"page":page,"revision":design.manifest.revision,"fingerprint":design.fingerprint}}));
+        let first = snapshot(1);
+        assert_ne!(first["isError"], true, "{first}");
+        let summary: Value = serde_json::from_str(first["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(summary["active_screens"], 13, "archived members take no overview slot");
+        assert_eq!(summary["pages"], 2);
+        assert_eq!(summary["screens"].as_array().unwrap().len(), 12);
+        assert_eq!(summary["screens"][0]["status"], "image 1");
+        assert_eq!(summary["screens"][1]["screen_id"], json!(members[2]));
+        assert_eq!(summary["screens"][11]["status"], "pending");
+        assert_eq!(first["content"].as_array().unwrap().len(), 1 + 2);
+        let second: Value = serde_json::from_str(snapshot(2)["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(second["screens"].as_array().unwrap().len(), 1);
+        assert_eq!(second["screens"][0]["order"], 13);
+        assert_eq!(snapshot(3)["isError"], true);
+        // An overview never counts as a per-screen review view.
+        let review = registry.call(&ctx, &json!({"name":"studio_review","arguments":{"screen_id":members[0],"fingerprint":design.fingerprint,"notes":"Looks right."}}));
+        assert_eq!(review["isError"], true);
+    }
+
+    #[test]
+    fn agents_group_screens_through_studio_apply() {
+        let (_temp, ctx, store, design, section) = design_agent(1, 2);
+        let registry = ToolRegistry::default();
+        let scope = store.scope(ctx.agent_id.unwrap()).unwrap();
+        let members = design.manifest.sections[0].screen_ids.clone();
+        let created = uuid::Uuid::new_v4();
+        let result = registry.call(&ctx, &json!({"name":"studio_apply","arguments":{"transaction":{
+            "id": uuid::Uuid::new_v4(), "scope_id": scope.id, "design_id": design.manifest.id,
+            "expected_revision": design.manifest.revision, "expected_fingerprint": design.fingerprint,
+            "operations": [
+                {"operation":"create_section","section":{"id":created,"name":"Add images","direction":"vertical","title_style":"full_width_header","header_alignment":"center"}},
+                {"operation":"move_screen_to_section","screen_id":members[1],"section_id":created},
+                {"operation":"reorder_sections","section_ids":[created, section]},
+                {"operation":"set_section_layout","direction":"side_by_side"},
+                {"operation":"create_screen","screen":{"id":uuid::Uuid::new_v4(),"name":"Pick","width":390,"height":844,"archived":false,"files":{"html":"index.html","css":"styles.css","js":"prototype.js"}},"document":{"html":"<h1>Pick</h1>","css":"","js":""}}
+            ]
+        }}}));
+        assert_ne!(result["isError"], true, "{result}");
+        let after = store.load(design.manifest.id).unwrap();
+        assert_eq!(after.manifest.sections[0].id, created);
+        assert_eq!(after.manifest.sections[0].title_style, StudioSectionTitleStyle::FullWidthHeader);
+        assert_eq!(after.manifest.section_layout.direction, StudioSectionArrangement::SideBySide);
+        // Omitted section_id uses the frozen current section.
+        assert_eq!(after.manifest.sections[1].screen_ids.len(), 2);
+        assert_eq!(after.manifest.sections[1].screen_ids[0], members[0]);
+    }
+
     #[test]
     fn role_restrictions_fail_closed_even_without_a_project_store() {
         let ctx = ServerContext {

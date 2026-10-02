@@ -1,7 +1,9 @@
 mod chrome;
 mod left_sidebar;
+pub(crate) use left_sidebar::FOOTER_H as LEFT_SIDEBAR_FOOTER_H;
 mod newsletter_card;
 mod settings;
+mod subscription_usage;
 
 #[cfg(all(test, feature = "ui-layout-tests"))]
 mod focus_tests;
@@ -233,6 +235,7 @@ pub struct RootView {
     git_states: Entity<GitStates>,
     agents: Entity<AgentRecords>,
     agent_chats: Entity<AgentChatState>,
+    subscription_usage: Entity<crate::state::subscription_usage::SubscriptionUsageState>,
     voice: Entity<VoiceState>,
     quick_ask: Entity<QuickAskState>,
     quick_ask_panel: Entity<QuickAskPanel>,
@@ -540,7 +543,19 @@ impl RootView {
             cx,
         );
 
+        let connected_providers = agents
+            .read(cx)
+            .iter_records()
+            .map(|agent| agent.provider)
+            .collect::<Vec<_>>();
+        let subscription_usage = crate::state::subscription_usage::SubscriptionUsageState::view(
+            connected_providers.contains(&ide_core::AgentKind::Gemini),
+            connected_providers.contains(&ide_core::AgentKind::OpenCode),
+            cx,
+        );
         let view = cx.new(|cx| {
+            cx.observe(&subscription_usage, |_: &mut Self, _, cx| cx.notify())
+                .detach();
             restore_workspace_focus_on_loss(root_focus.clone(), window, cx);
             let workspace_remote_events = remote_events.clone();
             cx.observe(&workspace, move |_: &mut Self, _, cx| {
@@ -653,7 +668,16 @@ impl RootView {
                 let _ = attention_remote_events.send(RemoteEvent::HostSnapshotChanged);
             }).detach();
             let agent_remote_events = remote_events.clone();
-            cx.observe(&agents, move |_: &mut Self, _, cx| {
+            cx.observe(&agents, move |this: &mut Self, _, cx| {
+                let providers = this
+                    .agents
+                    .read(cx)
+                    .iter_records()
+                    .map(|agent| agent.provider)
+                    .collect::<Vec<_>>();
+                this.subscription_usage.update(cx, |usage, cx| {
+                    usage.include_connected(&providers, cx)
+                });
                 let _ = agent_remote_events.send(RemoteEvent::HostSnapshotChanged);
                 cx.notify();
             })
@@ -706,6 +730,7 @@ impl RootView {
                 git_states,
                 agents,
                 agent_chats,
+                subscription_usage,
                 voice,
                 quick_ask,
                 quick_ask_panel,

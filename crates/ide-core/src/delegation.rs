@@ -14,11 +14,11 @@ pub mod context;
 pub mod workspace;
 
 pub const BETA_DISABLED: &str =
-    "Delegation is off. Enable it in Settings → Beta features → Delegation to start a new run.";
+    "Delegation is off. Turn it on in Settings → Band → Delegation to start a new run.";
 
 pub fn enabled() -> bool {
     // Availability of Expert profiles and managed-run recovery. Starting a new
-    // run additionally requires the persisted Beta features opt-in.
+    // run additionally requires the Band delegation switch (on unless saved off).
     !std::env::var("CHORO_EXPERTS").is_ok_and(|v| v == "0")
 }
 

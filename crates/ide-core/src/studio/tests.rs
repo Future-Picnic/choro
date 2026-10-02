@@ -17,6 +17,7 @@ fn new_screens_and_neighbor_edits_rebase_without_losing_manual_changes() {
             html: "<!doctype html><html><body></body></html>".into(),
             ..Default::default()
         },
+        section_id: None,
     }];
     let created = store.apply(&scope, &create).unwrap();
     assert_eq!(
@@ -217,6 +218,7 @@ fn direct_scope_escalation_is_rejected() {
             ..design.manifest.screens[0].clone()
         },
         document: starter_document(),
+        section_id: None,
     }];
     assert!(store.apply(&scope, &transaction).is_err());
     transaction.design_id = Uuid::new_v4();
@@ -349,6 +351,7 @@ fn thumbnail_changes_are_scoped_to_the_changed_screen() {
     tx.operations = vec![StudioOperation::CreateScreen {
         screen: second.clone(),
         document: starter_document(),
+        section_id: None,
     }];
     let design = store.apply(&scope, &tx).unwrap();
     let original = store.thumbnail_path(&design, second.id);
@@ -400,6 +403,7 @@ fn design_agent_can_edit_multiple_screens_while_one_is_selected() {
             ..design.manifest.screens[0].clone()
         },
         document: starter_document(),
+        section_id: None,
     }];
     let design = store.apply_for_agent(agent, &transaction).unwrap();
     let scope = scope_for_request(&design, Some(current), Some("heading".into()));
@@ -448,6 +452,7 @@ fn a_requested_new_screen_can_be_refined_in_the_same_turn() {
     tx.operations = vec![StudioOperation::CreateScreen {
         screen: screen.clone(),
         document: starter_document(),
+        section_id: None,
     }];
     let next = store.apply_for_agent(agent, &tx).unwrap();
     let mut tx = edit(&next, &scope);
@@ -918,6 +923,45 @@ fn bind_system(store: &StudioStore, design: &StudioDesign, id: Option<Uuid>) -> 
     store.apply(&scope, &tx).unwrap()
 }
 #[test]
+fn source_named_system_specimens_show_palette_typography_and_all_recipes_without_mutating_tokens() {
+    let (_dir, store, _) = fixture();
+    let record = store.create_system("Wholething workspace", "Web", None).unwrap();
+    let system = StudioDesignSystem {
+        tokens: BTreeMap::from([
+            ("cyan".into(), "#00dce5".into()),
+            ("paper".into(), "#ffffff".into()),
+            ("ground".into(), "#f3f4f1".into()),
+            ("ink".into(), "#101211".into()),
+            ("body-font".into(), "Manrope, Arial, sans-serif".into()),
+            ("body-size".into(), "13px".into()),
+            ("heading-font".into(), "Barlow Condensed, sans-serif".into()),
+            ("page-title-size".into(), "34px".into()),
+        ]),
+        recipes: BTreeMap::from([("navigation".into(), [("background".into(), "var(--new-bgColorInner)".into())].into())]),
+        ..empty_system()
+    };
+    let draft = system_edit(&store, record.id, system.clone());
+    let specimen = &draft.documents[&record.id];
+    for name in ["cyan", "paper", "ground", "ink"] {
+        assert!(specimen.html.contains(&format!("class=\"swatch\" style=\"background:var(--{name})\"")));
+    }
+    assert!(specimen.html.contains("data-system-token=\"page-title-size\""));
+    assert!(specimen.html.contains("data-system-recipe=\"navigation\""));
+    assert!(specimen.css.contains("font-family:var(--body-font,system-ui)"));
+    assert!(specimen.css.contains("background:var(--ground,#fff)"));
+    assert!(specimen.html.contains("Unresolved references"));
+    assert_eq!(draft.system.tokens, system.tokens);
+    // Broken drafts remain reviewable and editable, but publication still requires a repair.
+    assert!(store.system_comparison(record.id, Some(record.id), true).is_ok());
+    assert!(store.publish_system(record.id, draft.manifest.revision, &draft.fingerprint, &[]).is_err());
+    let mut repaired = draft.system;
+    repaired.tokens.insert("new-bgColorInner".into(), "var(--paper)".into());
+    let repaired = system_edit(&store, record.id, repaired);
+    assert!(!repaired.documents[&record.id].html.contains("Unresolved references"));
+    store.publish_system(record.id, repaired.manifest.revision, &repaired.fingerprint, &[]).unwrap();
+}
+
+#[test]
 fn named_systems_are_independent_and_handoffs_freeze_applied_values() {
     let (_dir, store, design) = fixture();
     assert!(design.system.tokens.is_empty());
@@ -1277,6 +1321,7 @@ fn only_the_first_unwritten_screen_of_a_live_turn_reads_as_working() {
                 html: "<!doctype html><html><body></body></html>".into(),
                 ..Default::default()
             },
+            section_id: None,
         })
         .collect();
     let created = store.apply_for_agent(agent, &create).unwrap();
@@ -1366,6 +1411,7 @@ fn focus_overrides_manifest_order_when_the_agent_works_out_of_sequence() {
                 html: "<!doctype html><html><body></body></html>".into(),
                 ..Default::default()
             },
+            section_id: None,
         })
         .collect();
     let created = store.apply_for_agent(agent, &create).unwrap();
