@@ -9,6 +9,7 @@ SIGN_IDENTITY="${CHORO_RELEASE_SIGN_IDENTITY:-Developer ID Application: Liran Ga
 NOTARY_PROFILE="${CHORO_NOTARY_PROFILE:-choro-notary}"
 SPARKLE_ACCOUNT="${CHORO_SPARKLE_ACCOUNT:-choro}"
 DRY_RUN=0
+CHECK_ONLY=0
 REQUESTED_VERSION=""
 NOTES_SOURCE=""
 RESUME_TAG=""
@@ -17,6 +18,7 @@ STATE_FILE=""
 
 usage() {
   echo "Usage: ./scripts/release-macos.sh [--version 0.N] [--notes-file PATH] [--dry-run] [--resume v0.N]"
+  echo "       ./scripts/release-macos.sh --check (local tests and production build only)"
 }
 
 while (( $# > 0 )); do
@@ -31,6 +33,10 @@ while (( $# > 0 )); do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --check)
+      CHECK_ONLY=1
       shift
       ;;
     --resume)
@@ -48,6 +54,14 @@ while (( $# > 0 )); do
       ;;
   esac
 done
+
+if [[ "$CHECK_ONLY" == "1" ]]; then
+  if [[ "$DRY_RUN" == "1" || -n "$REQUESTED_VERSION" || -n "$NOTES_SOURCE" || -n "$RESUME_TAG" ]]; then
+    echo "Use --check on its own; it does not create or resume a release." >&2
+    exit 2
+  fi
+  exec bash scripts/verify-release.sh
+fi
 
 if [[ -n "$RESUME_TAG" && -n "$REQUESTED_VERSION" ]]; then
   echo "Use either --resume or --version, not both." >&2
@@ -129,7 +143,12 @@ on_error() {
   local exit_code=$?
   write_state "failed:$CURRENT_STAGE"
   echo "Release stopped during: $CURRENT_STAGE" >&2
-  echo "No tags, releases, or artifacts were deleted. Resume with: ./scripts/release-macos.sh --resume $TAG" >&2
+  echo "No tags, releases, or artifacts were deleted." >&2
+  if [[ -d "$OUTPUT_DIR" ]]; then
+    echo "Resume with: ./scripts/release-macos.sh --resume $TAG" >&2
+  else
+    echo "No release candidate was created. Fix the failure and rerun the original release command." >&2
+  fi
   exit "$exit_code"
 }
 trap on_error ERR
@@ -313,14 +332,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 if [[ "$RESUMING" == "0" || ! -e "$APP_PATH" ]]; then
+  CURRENT_STAGE="code verification"
+  bash scripts/verify-release.sh
+
   mkdir -p "$OUTPUT_DIR"
   write_state "building"
-  CURRENT_STAGE="tests"
-  cargo test -p ide-core
-  cargo test -p ide-app
-
-  CURRENT_STAGE="production workspace build"
-  cargo build --release --workspace
 
   CURRENT_STAGE="bundle"
   PARTIAL_APP="$OUTPUT_DIR/.Choro.app.partial.$$.app"

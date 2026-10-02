@@ -398,9 +398,12 @@ fn screen_menu(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "ui-layout-tests")]
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
+    #[cfg(feature = "ui-layout-tests")]
     struct DropRows { highlights: Arc<AtomicUsize>, drops: Arc<AtomicUsize> }
+    #[cfg(feature = "ui-layout-tests")]
     impl Render for DropRows {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             let highlights = self.highlights.clone();
@@ -416,12 +419,15 @@ mod tests {
                     .on_drop(move |_: &DraggedStudioScreen, _, _| { drops.fetch_add(1, Ordering::Relaxed); }))
         }
     }
+    #[cfg(feature = "ui-layout-tests")]
     struct CachedRows(gpui::Entity<DropRows>);
+    #[cfg(feature = "ui-layout-tests")]
     impl Render for CachedRows {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             gpui::AnyView::from(self.0.clone()).cached(gpui::StyleRefinement::default().size_full())
         }
     }
+    #[cfg(feature = "ui-layout-tests")]
     #[gpui::test]
     fn studio_cached_sidebar_keeps_drop_feedback_and_escape_cancels(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);

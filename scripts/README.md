@@ -35,11 +35,44 @@ The other files are not additional app modes:
   a successful build, replaces `/Applications/Choro.app`, and reopens it. Run
   it from any terminal with `./scripts/rebuild-and-relaunch.sh`.
 - `verify.sh` runs the local verification baseline.
+- `verify-release.sh` runs the code checks shared by local verification and
+  macOS releases: default-feature compilation and tests, UI-feature compilation
+  and tests, MCP tests, and the production workspace build.
 - `gen_themes.py` regenerates the Choro theme asset.
 - `collect-third-party-licenses.mjs` assembles release license material.
 - `list-agent-runtime-skills.mjs` is the one runtime helper included in apps.
 
 The feedback receiver lives in the private `choro-relay` project.
+
+## macOS release checks
+
+After code changes, run this before starting a release:
+
+```bash
+./scripts/release-macos.sh --check
+```
+
+This works with uncommitted changes on any branch and does not require GitHub
+or Apple signing credentials. It runs the same Rust tests and production build
+as a new release, including `ui-layout-tests`. It writes local test and build
+outputs; it does not bump VERSION, create a release directory, install the app,
+commit, tag, push, notarize, or upload. The normal release command runs these
+checks again before creating its candidate app. A resume with an existing
+candidate app validates and reuses that app.
+
+`--dry-run` checks release prerequisites such as the branch, clean worktree,
+GitHub access, and signing keys, then prints the release plan. It does not run
+the code checks. A successful `--check` catches code failures early; bundling,
+Apple notarization, and GitHub publishing still depend on their tools and
+services when the release runs.
+
+For the broader development baseline, including formatting, agent bridge tests,
+Velotype tests, and bundled Expert checks, run `./scripts/verify.sh`.
+
+GPUI tests that use `gpui::TestAppContext` must be gated with
+`#[cfg(feature = "ui-layout-tests")]` inside a test module, or with
+`#[cfg(all(test, feature = "ui-layout-tests"))]` on a separate module. Keep
+ordinary Rust unit tests available without that feature.
 
 ## iPhone releases
 
