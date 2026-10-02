@@ -1001,7 +1001,8 @@ impl CenterArea {
         let studio_active = self.view_mode == CenterMode::Design
             && self.studio.as_ref().is_some_and(|s| self.workspace.read(cx).active == Some(s.project));
         if !studio_active && self.studio.as_ref().is_some_and(|s| s.screen.is_none() && s.canvas.html.is_some()) { self.flush_studio_canvas(); }
-        self.process_studio_canvas(studio_active && !window.has_active_dialog(cx) && !window.has_active_sheet(cx), cx);
+        let canvas_visible = studio_active && !window.has_active_dialog(cx) && !window.has_active_sheet(cx);
+        self.process_studio_canvas(canvas_visible, window, cx);
         self.refresh_studio_canvas(cx);
     }
 }

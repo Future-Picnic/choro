@@ -238,12 +238,7 @@ impl CenterArea {
             )
             .when(overflowing, |col| {
                 col.child(
-                    Button::new(("agent-chat-queue-toggle", agent_id.as_u128() as u64))
-                        .ghost()
-                        .xsmall()
-                        .compact()
-                        .h(crate::ui::design::control_h_xs())
-                        .label(if expanded {
+                    crate::ui::style::ghost_button_compact(("agent-chat-queue-toggle", agent_id.as_u128() as u64), if expanded {
                             "Show less".to_string()
                         } else {
                             format!("Show {hidden} more")
@@ -284,6 +279,8 @@ impl CenterArea {
         let dim = crate::ui::design::t3(cx);
         let hover_bg = crate::ui::design::hover(cx);
         let action_size = crate::ui::design::control_h_xs();
+        let studio_busy = turn.studio_request.is_some() && self.agent_chats.read(cx)
+            .session(agent_id).is_none_or(|session| session.status != AgentChatStatus::Idle);
 
         h_flex()
             .id(("agent-chat-queued-turn", turn_key))
@@ -310,6 +307,13 @@ impl CenterArea {
                     .text_color(dim)
                     .child(preview),
             )
+            .when_some(turn.studio_request.as_ref(), |row, request| {
+                let target_name = request.target_label.clone();
+                row.child(crate::ui::style::composer_target_chip(request.target_label.clone(), request.current_screen_id.is_some(), cx)
+                    .max_w(px(100.))
+                    .id(("studio-queued-target", turn_key))
+                    .tooltip(move |window, cx| Tooltip::new(target_name.clone()).build(window, cx)))
+            })
             .child(
                 h_flex()
                     .flex_none()
@@ -322,13 +326,18 @@ impl CenterArea {
                             ("agent-chat-steer-queued", turn_key),
                             if turn.handoff.is_some() {
                                 "Send now"
+                            } else if turn.studio_request.is_some() {
+                                "Send next"
                             } else {
                                 "Steer"
                             },
                         )
+                        .disabled(studio_busy)
                         .icon(IconName::Redo2)
                         .tooltip(if turn.handoff.is_some() {
                             "Send this to the teammate now"
+                        } else if turn.studio_request.is_some() {
+                            "Queued design requests start after the current turn finishes"
                         } else {
                             "Send this into the current run now"
                         })

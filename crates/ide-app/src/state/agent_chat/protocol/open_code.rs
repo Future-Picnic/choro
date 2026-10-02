@@ -560,6 +560,9 @@ impl OpenCodeRuntime {
                 read_only,
                 turn_id,
             } => self.send_turn(text, mode, read_only, turn_id)?,
+            ChatBackendCommand::SendStudioTurn { .. } => {
+                return Err(anyhow!("Studio requires a Claude or Codex backend"));
+            }
             ChatBackendCommand::UpdateAccessMode { access_mode } => self.access_mode = access_mode,
             ChatBackendCommand::UpdateModelEffort { effort, external_model, .. } => {
                 if let Some((id,variants))=external_model {self.model_id=id;self.agent.external_model_variants=variants;}
@@ -609,6 +612,9 @@ impl OpenCodeRuntime {
                     turn_id,
                 }) => {
                     self.deferred_turns.push_back((text, mode, read_only, turn_id));
+                }
+                Ok(ChatBackendCommand::SendStudioTurn { .. }) => {
+                    return Err(anyhow!("Studio requires a Claude or Codex backend"));
                 }
                 Ok(ChatBackendCommand::UpdateModelEffort { effort, external_model, .. }) => {
                     if let Some((id,variants))=external_model {self.model_id=id;self.agent.external_model_variants=variants;}

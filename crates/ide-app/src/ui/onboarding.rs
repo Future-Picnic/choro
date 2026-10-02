@@ -363,6 +363,22 @@ impl Phase {
             )
     }
 
+    /// The control a step without Continue is waiting for, as its card footer
+    /// names it. `None` where the label changes under you (the Ship dialog's
+    /// primary button reads Generate, then Commit & push, …).
+    fn target_label(self) -> Option<&'static str> {
+        match self {
+            Self::NewAgent => Some("New agent"),
+            Self::FirstSend | Self::TaskSend => Some("Send"),
+            Self::DocsNav => Some("Docs"),
+            Self::TasksNav => Some("Tasks"),
+            Self::TaskImplement => Some("Implement"),
+            Self::Ship => Some("Ship"),
+            Self::RunScript => Some("Preview"),
+            _ => None,
+        }
+    }
+
     fn can_go_back(self) -> bool {
         matches!(
             self,
@@ -586,6 +602,8 @@ pub struct OnboardingTour {
     active_agent: Option<Uuid>,
     agent_was_active: bool,
     last_agent_status: Option<AgentChatStatus>,
+    /// The bottom pill's "Leave the tour?" confirmation is open.
+    exit_confirm: bool,
 }
 
 impl OnboardingTour {
@@ -609,15 +627,20 @@ impl OnboardingTour {
                 .providers
                 .iter()
                 .filter_map(|provider| OnboardingProviderChoice::from_key(provider))
+                .filter(|provider| provider.is_visible_in_picker())
                 .collect()
         } else if matches!(saved.provider.as_deref(), Some("all" | "both")) {
-            OnboardingProviderChoice::ALL.to_vec()
+            OnboardingProviderChoice::ALL
+                .into_iter()
+                .filter(|provider| provider.is_visible_in_picker())
+                .collect()
         } else {
             saved
                 .provider
                 .as_deref()
                 .and_then(OnboardingProviderChoice::from_key)
                 .into_iter()
+                .filter(|provider| provider.is_visible_in_picker())
                 .collect()
         };
         let stack = saved
@@ -653,6 +676,7 @@ impl OnboardingTour {
                 active_agent,
                 agent_was_active: saved.agent_was_active,
                 last_agent_status: None,
+                exit_confirm: false,
             }
         });
         tour.update(cx, |tour, cx| {
@@ -686,6 +710,7 @@ impl OnboardingTour {
                 if this.provider_choices.is_empty() {
                     this.provider_choices = OnboardingProviderChoice::ALL
                         .into_iter()
+                        .filter(|provider| provider.is_visible_in_picker())
                         .filter(|provider| {
                             statuses.for_provider(*provider) == ProviderConnectionStatus::Connected
                         })
@@ -798,6 +823,7 @@ impl OnboardingTour {
             return;
         }
         self.phase = phase;
+        self.exit_confirm = false;
         self.persist_progress();
         cx.notify();
     }

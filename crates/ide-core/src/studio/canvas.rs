@@ -59,8 +59,17 @@ pub struct StudioCanvasState {
     pub schema_version: u32,
     pub overview_mode: StudioOverviewMode,
     pub viewport: StudioCanvasViewport,
+    /// Free positions. Grouped screens keep their old entry, but the section
+    /// board's derived geometry overrides it while they are grouped.
     pub positions: BTreeMap<Uuid, StudioCanvasPoint>,
     pub selected_screen_id: Option<Uuid>,
+    /// Exclusive with `selected_screen_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_section_id: Option<Uuid>,
+    /// Personal fallback board origin, frozen once, for designs whose sections
+    /// were created without a saved origin (for example by an agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_origin: Option<StudioSectionOrigin>,
 }
 impl Default for StudioCanvasState {
     fn default() -> Self {
@@ -70,6 +79,8 @@ impl Default for StudioCanvasState {
             viewport: Default::default(),
             positions: Default::default(),
             selected_screen_id: None,
+            selected_section_id: None,
+            section_origin: None,
         }
     }
 }
@@ -84,7 +95,165 @@ impl StudioCanvasState {
         for point in self.positions.values() {
             point.validate()?;
         }
+        if let Some(origin) = &self.section_origin {
+            ensure!(
+                origin.x.abs() <= MAX_BOARD_COORDINATE && origin.y.abs() <= MAX_BOARD_COORDINATE,
+                "Invalid section board origin"
+            );
+        }
         Ok(())
+    }
+    /// The saved design origin, else this person's frozen fallback, else a
+    /// position below the existing unsectioned screens.
+    pub fn board_origin(&self, manifest: &StudioDesignManifest) -> StudioSectionOrigin {
+        manifest
+            .section_layout
+            .origin
+            .or(self.section_origin)
+            .unwrap_or_else(|| self.default_board_origin(manifest))
+    }
+    /// Below the visible unsectioned screens, aligned with their left edge.
+    pub fn default_board_origin(&self, manifest: &StudioDesignManifest) -> StudioSectionOrigin {
+        let free: Vec<_> = manifest
+            .screens
+            .iter()
+            .filter(|s| !s.archived && manifest.section_of(s.id).is_none())
+            .filter_map(|s| self.positions.get(&s.id).map(|p| (s, p)))
+            .collect();
+        if free.is_empty() {
+            return StudioSectionOrigin::default();
+        }
+        let left = free.iter().map(|(_, p)| p.x).fold(f64::INFINITY, f64::min);
+        let bottom = free
+            .iter()
+            .map(|(s, p)| p.y + s.height as f64)
+            .fold(f64::NEG_INFINITY, f64::max);
+        StudioSectionOrigin {
+            x: (left.round() as i64).clamp(-MAX_BOARD_COORDINATE, MAX_BOARD_COORDINATE),
+            y: ((bottom + SECTION_SPACING as f64).round() as i64)
+                .clamp(-MAX_BOARD_COORDINATE, MAX_BOARD_COORDINATE),
+        }
+    }
+    pub fn board(&self, manifest: &StudioDesignManifest) -> StudioBoardGeometry {
+        board_geometry(manifest, self.board_origin(manifest))
+    }
+    /// Free positions with grouped screens' authoritative board positions.
+    pub fn effective_positions(
+        &self,
+        board: &StudioBoardGeometry,
+    ) -> BTreeMap<Uuid, StudioCanvasPoint> {
+        let mut positions = self.positions.clone();
+        positions.extend(board.positions.iter().map(|(id, p)| (*id, *p)));
+        positions
+    }
+    /// Lowest edge of the board and visible unsectioned screens.
+    fn content_bottom(&self, manifest: &StudioDesignManifest, board: &StudioBoardGeometry) -> f64 {
+        let free = manifest
+            .screens
+            .iter()
+            .filter(|s| !s.archived && manifest.section_of(s.id).is_none())
+            .filter_map(|s| self.positions.get(&s.id).map(|p| p.y + s.height as f64));
+        let board = board.bounds().map(|(_, y, _, h)| (y + h) as f64);
+        free.chain(board).fold(f64::NEG_INFINITY, f64::max)
+    }
+    /// Newly unsectioned screens leave the board area. A remembered free
+    /// position is kept when it no longer overlaps any section.
+    pub fn place_outside_board(&mut self, manifest: &StudioDesignManifest, screens: &[Uuid]) {
+        let board = self.board(manifest);
+        let overlaps = |p: &StudioCanvasPoint, s: &StudioScreen| {
+            board.sections.iter().any(|b| {
+                p.x < (b.x + b.width) as f64
+                    && p.x + s.width as f64 > b.x as f64
+                    && p.y < (b.y + b.height) as f64
+                    && p.y + s.height as f64 > b.y as f64
+            })
+        };
+        let moving: Vec<&StudioScreen> = screens
+            .iter()
+            .filter_map(|id| manifest.screens.iter().find(|s| s.id == *id))
+            .filter(|s| self.positions.get(&s.id).is_none_or(|p| overlaps(p, s)))
+            .collect();
+        if moving.is_empty() {
+            return;
+        }
+        for screen in &moving {
+            self.positions.remove(&screen.id);
+        }
+        let left = board
+            .bounds()
+            .map(|(x, ..)| x as f64)
+            .unwrap_or_default();
+        let mut y = self.content_bottom(manifest, &board).max(0.) + SECTION_SPACING as f64;
+        for row in moving.chunks(4) {
+            let mut x = left;
+            let mut height: f64 = 0.;
+            for screen in row {
+                self.positions.insert(screen.id, StudioCanvasPoint { x, y });
+                x += screen.width as f64 + 120.;
+                height = height.max(screen.height as f64);
+            }
+            y += height + 120.;
+        }
+    }
+    /// Section-aware reconcile: retain every remembered position, clear stale
+    /// selections, freeze a fallback board origin, and place missing
+    /// unsectioned screens below both the free screens and the board.
+    pub fn reconcile_design(&mut self, manifest: &StudioDesignManifest) {
+        if self
+            .selected_section_id
+            .is_some_and(|id| manifest.section(id).is_none())
+        {
+            self.selected_section_id = None;
+        }
+        if self.selected_section_id.is_some() && self.selected_screen_id.is_some() {
+            self.selected_section_id = None;
+        }
+        if manifest.sections.is_empty() {
+            self.section_origin = None;
+            self.reconcile(&manifest.screens);
+            return;
+        }
+        let grouped: BTreeSet<Uuid> = manifest
+            .sections
+            .iter()
+            .flat_map(|s| s.screen_ids.iter().copied())
+            .collect();
+        self.positions
+            .retain(|id, _| manifest.screens.iter().any(|s| s.id == *id));
+        if manifest.section_layout.origin.is_none() && self.section_origin.is_none() {
+            self.section_origin = Some(self.default_board_origin(manifest));
+        }
+        let missing: Vec<Uuid> = manifest
+            .screens
+            .iter()
+            .filter(|s| !grouped.contains(&s.id) && !self.positions.contains_key(&s.id))
+            .map(|s| s.id)
+            .collect();
+        self.place_outside_board(manifest, &missing);
+        // Selection rules shared with the section-free path.
+        let screens = manifest.screens.clone();
+        if self
+            .selected_screen_id
+            .is_some_and(|id| !screens.iter().any(|s| s.id == id && !s.archived))
+        {
+            self.selected_screen_id = None;
+        }
+        if self.overview_mode == StudioOverviewMode::Focus && self.selected_screen_id.is_none() {
+            self.selected_screen_id = screens.iter().find(|s| !s.archived).map(|s| s.id);
+            self.selected_section_id = None;
+        }
+    }
+    pub fn select_section(&mut self, section: Option<Uuid>) {
+        self.selected_section_id = section;
+        if section.is_some() {
+            self.selected_screen_id = None;
+        }
+    }
+    pub fn select_screen(&mut self, screen: Option<Uuid>) {
+        self.selected_screen_id = screen;
+        if screen.is_some() {
+            self.selected_section_id = None;
+        }
     }
     /// Append missing screens below existing artboards; retain archived positions.
     pub fn reconcile(&mut self, screens: &[StudioScreen]) {
@@ -135,6 +304,46 @@ impl StudioCanvasState {
                 .collect::<Vec<_>>(),
         );
         self.positions.extend(archived);
+    }
+    /// Arrange re-flows visible unsectioned screens; sections lay themselves out.
+    pub fn arrange_design(&mut self, manifest: &StudioDesignManifest) {
+        if manifest.sections.is_empty() {
+            self.arrange(&manifest.screens);
+            return;
+        }
+        self.positions.retain(|id, _| {
+            manifest
+                .screens
+                .iter()
+                .any(|s| s.id == *id && (s.archived || manifest.section_of(s.id).is_some()))
+        });
+        let free: Vec<_> = manifest
+            .screens
+            .iter()
+            .filter(|s| !s.archived && manifest.section_of(s.id).is_none())
+            .cloned()
+            .collect();
+        let mut above = Self {
+            positions: Default::default(),
+            ..self.clone()
+        };
+        above.reconcile(&free);
+        // Free screens go above the board's origin so the board never moves.
+        let origin = self.board_origin(manifest);
+        let height = free
+            .iter()
+            .filter_map(|s| above.positions.get(&s.id).map(|p| p.y + s.height as f64))
+            .fold(0., f64::max);
+        for (id, p) in above.positions {
+            self.positions.insert(
+                id,
+                StudioCanvasPoint {
+                    x: p.x + origin.x as f64,
+                    y: p.y + origin.y as f64 - height - SECTION_SPACING as f64,
+                },
+            );
+        }
+        self.reconcile_design(manifest);
     }
 }
 impl StudioStore {

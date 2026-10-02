@@ -32,6 +32,13 @@ pub enum AgentKind {
 
 impl AgentKind {
     pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::OpenCode, Self::Gemini];
+
+    /// Keep Gemini implemented but hidden until Google approval is resolved.
+    /// Re-enable its picker entries here when requested.
+    pub const fn is_visible_in_picker(self) -> bool {
+        !matches!(self, Self::Gemini)
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             AgentKind::Claude => "Claude",

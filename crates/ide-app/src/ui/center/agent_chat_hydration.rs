@@ -975,7 +975,7 @@ impl CenterArea {
                                 });
                             }
                         }
-                        this.dispatch_agent_chat_submission_inner(
+                        this.dispatch_agent_chat_submission_with_studio_request(
                             agent.id,
                             submission.text,
                             submission.display_text,
@@ -983,6 +983,7 @@ impl CenterArea {
                             submission.mode,
                             Some(agent.clone()),
                             submission.read_only,
+                            submission.studio_request,
                             cx,
                         );
                     }

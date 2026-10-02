@@ -85,6 +85,7 @@ impl SettingsView {
             .collect::<Vec<_>>();
             let provider_buttons = AgentKind::ALL
                 .into_iter()
+                .filter(|provider| provider.is_visible_in_picker())
                 .enumerate()
                 .map(|(index, provider)| {
                     let button = if generation_agent.provider == provider {
@@ -112,6 +113,7 @@ impl SettingsView {
             } else {
                 AgentModel::models_for(generation_agent.provider)
                     .iter()
+                    .filter(|_| generation_agent.provider.is_visible_in_picker())
                     .map(|model| (*model, model.menu_label().to_string()))
                     .collect::<Vec<_>>()
             };
@@ -153,6 +155,7 @@ impl SettingsView {
             let quick_ask_provider_buttons =
                 AgentKind::ALL
                     .into_iter()
+                    .filter(|provider| provider.is_visible_in_picker())
                     .enumerate()
                     .map(|(index, provider)| {
                         let button = if quick_ask_agent.provider == provider {
@@ -181,6 +184,7 @@ impl SettingsView {
                 } else {
                     AgentModel::models_for(quick_ask_agent.provider)
                         .iter()
+                        .filter(|_| quick_ask_agent.provider.is_visible_in_picker())
                         .map(|model| (*model, model.menu_label().to_string()))
                         .collect::<Vec<_>>()
                 };
@@ -221,6 +225,7 @@ impl SettingsView {
             let default_provider_buttons =
                 AgentKind::ALL
                     .into_iter()
+                    .filter(|provider| provider.is_visible_in_picker())
                     .enumerate()
                     .map(|(index, provider)| {
                         let button = if agent_defaults.provider == provider {
@@ -249,6 +254,7 @@ impl SettingsView {
                 } else {
                     AgentModel::models_for(agent_defaults.provider)
                         .iter()
+                        .filter(|_| agent_defaults.provider.is_visible_in_picker())
                         .map(|model| (*model, model.menu_label().to_string()))
                         .collect::<Vec<_>>()
                 };

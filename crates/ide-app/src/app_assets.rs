@@ -5,7 +5,7 @@ use gpui::{AssetSource, Result, SharedString};
 pub struct AppAssets;
 
 impl AppAssets {
-    const APP_ASSETS: [(&'static str, &'static [u8]); 119] = [
+    const APP_ASSETS: [(&'static str, &'static [u8]); 121] = [
         (
             "avatar/choro-companion-idle.webp",
             include_bytes!("../assets/avatar/exports/v22/idle/choro-companion-idle.webp"),
@@ -390,6 +390,14 @@ impl AppAssets {
             include_bytes!("../assets/brand/asana.svg"),
         ),
         (
+            "community/discord.svg",
+            include_bytes!("../assets/community/discord.svg"),
+        ),
+        (
+            "community/reddit.svg",
+            include_bytes!("../assets/community/reddit.svg"),
+        ),
+        (
             "brand/clickup.svg",
             include_bytes!("../assets/brand/clickup.svg"),
         ),
@@ -533,6 +541,23 @@ mod tests {
     use image::AnimationDecoder;
 
     use super::AppAssets;
+
+    #[test]
+    fn community_marks_are_embedded_self_contained_svgs() {
+        for path in ["community/discord.svg", "community/reddit.svg"] {
+            let bytes = AppAssets
+                .load(path)
+                .unwrap()
+                .expect("bundled community mark");
+            let source = std::str::from_utf8(bytes.as_ref()).unwrap();
+            let document = roxmltree::Document::parse(source).unwrap();
+            assert_eq!(document.root_element().tag_name().name(), "svg");
+            assert!(document.root_element().attribute("viewBox").is_some());
+            assert!(!document.descendants().any(|node| {
+                matches!(node.tag_name().name(), "script" | "image" | "foreignObject")
+            }));
+        }
+    }
 
     fn visible_bounds(image: &image::DynamicImage) -> Option<(u32, u32)> {
         let pixels = image.to_rgba8();

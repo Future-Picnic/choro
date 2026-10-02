@@ -1321,9 +1321,7 @@ impl ProjectList {
                 .tooltip("Mark complete")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.workspace.update(cx, |workspace, cx| {
-                        workspace.set_agent_pinned(agent_id, false, cx);
-                    });
+                    // Pins survive completion; the user unpins explicitly.
                     // This is deliberately the same status transition used by
                     // the agent's Done controls. CenterArea observes it and
                     // requests the terminal brain summary for chat agents.
@@ -1442,8 +1440,10 @@ impl ProjectList {
         for project in &state.projects {
             let project_name = SharedString::from(project.name.clone());
             for agent in self.model.read(cx).records_for_project(project.id) {
-                if !ide_core::agent_navigation::pinned_eligible(agent.status,state.is_agent_pinned(agent.id),self.runtime_for_agent(project.id,&agent,cx)==ProjectAgentRuntime::Waiting)
-                {
+                if !ide_core::agent_navigation::pinned_eligible(
+                    state.is_agent_pinned(agent.id),
+                    self.runtime_for_agent(project.id, &agent, cx) == ProjectAgentRuntime::Waiting,
+                ) {
                     continue;
                 }
                 pinned.push((
@@ -1454,7 +1454,10 @@ impl ProjectList {
                 ));
             }
         }
-        pinned.sort_by_key(|(_, _, _, agent)| std::cmp::Reverse(agent.updated_at));
+        // Ongoing pins first, finished pins after; newest first within each.
+        pinned.sort_by_key(|(_, _, _, agent)| {
+            (agent.status.is_finished(), std::cmp::Reverse(agent.updated_at))
+        });
         pinned
     }
 
@@ -1483,6 +1486,7 @@ impl ProjectList {
             .and_then(|candidate| candidate.icon_image_path.clone());
 
         let has_delegations = agent.has_delegations;
+        let finished = agent.status.is_finished();
         let row = h_flex()
             .id(("pinned-agent-row", agent_id.as_u128() as u64))
 
@@ -1518,12 +1522,21 @@ impl ProjectList {
                     crate::ui::design::icon_sm(),
                 ))
             })
+            .when(finished, |row| {
+                row.child(crate::ui::design::indicator::lucide_icon(
+                    lucide_icons::Icon::CheckCircle2,
+                    crate::ui::design::sage(cx),
+                    crate::ui::design::icon_sm(),
+                ))
+            })
             .child(self.render_agent_title(
                 agent,
                 hovered,
                 FontWeight::NORMAL,
                 if selected {
                     crate::ui::design::t1(cx)
+                } else if finished {
+                    crate::ui::design::t3(cx)
                 } else {
                     crate::ui::design::t2(cx)
                 },

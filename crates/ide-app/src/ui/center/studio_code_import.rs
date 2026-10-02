@@ -1,6 +1,5 @@
 //! Import discovery uses the existing Studio chat; draft creation stays native.
 use super::*;
-use gpui_component::Colorize;
 use ide_core::studio::{StudioCodeImport, StudioStore};
 use std::collections::BTreeSet;
 
@@ -307,8 +306,8 @@ impl CenterArea {
                     .system
                     .tokens
                     .iter()
-                    .filter(|(name, _)| name.contains("color"))
-                    .filter_map(|(_, value)| gpui::Hsla::parse_hex(value).ok())
+                    .filter(|(name, _)| ide_core::studio::system_token_group(name, &definition.system.tokens) == "Colors")
+                    .filter_map(|(name, _)| ide_core::studio::resolved_token_value(name, &definition.system.tokens).and_then(|value| gpui::Rgba::try_from(value).ok()))
                     .take(6)
                     .collect::<Vec<_>>();
                 findings = findings.child(

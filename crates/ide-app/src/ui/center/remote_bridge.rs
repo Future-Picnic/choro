@@ -1858,6 +1858,7 @@ impl CenterArea {
         let defaults = self.workspace.read(cx).new_agent_defaults();
         let mut providers = [AgentKind::Codex, AgentKind::Claude, AgentKind::Gemini]
             .into_iter()
+            .filter(|provider| provider.is_visible_in_picker())
             .map(|provider| ProviderConfigurationDto {
                 id: wire_value(provider),
                 label: provider.label().to_string(),

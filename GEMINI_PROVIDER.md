@@ -1,3 +1,5 @@
+Gemini is temporarily hidden from provider and model pickers pending Google approval. Its integration, model definitions, and saved-chat support remain in place. Restore visibility through `AgentKind::is_visible_in_picker` in `crates/ide-core/src/agents.rs` when requested. The instructions below apply once Gemini is visible again.
+
 Choro's Gemini provider uses Google's official Antigravity ACP server with Google subscription sign-in. Google ended personal Gemini CLI subscription access on June 18, 2026; enterprise Gemini CLI access is separate.
 
 Select Gemini in the model picker and start a chat. Choro downloads Google's ACP server into its own provider cache on first use. Approve **Sign in with Google**, then sign in with the Google account attached to your AI Pro or Ultra subscription. Google also supports a free allowance. No Gemini API key or Google Cloud project is required for personal subscription sign-in.

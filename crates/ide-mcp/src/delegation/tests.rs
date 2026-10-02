@@ -268,7 +268,7 @@ fn beta_off_rejects_new_tool_assignments_and_explains_where_to_enable() {
         let error = DelegationTool(name).call_enabled(&ctx, &args).unwrap_err();
         assert!(error
             .to_string()
-            .contains("Settings → Beta features → Delegation"));
+            .contains("Settings → Band → Delegation"));
     }
     assert!(store.load_delegations().unwrap().is_empty());
     assert_eq!(store.load_agents().unwrap().len(), 1);

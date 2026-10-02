@@ -167,12 +167,19 @@ pub enum SeparatorStyle {
     Solid,
 }
 
-/// Explicit local opt-ins, stored separately from portable workspace configuration.
-/// Missing settings and older installations keep experimental behavior disabled.
+/// Local feature switches, stored separately from portable workspace
+/// configuration. `Default` is the all-off value; a store that has never saved
+/// a choice reads [`BetaFeatures::UNSET`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BetaFeatures {
     #[serde(default)]
     pub delegation: bool,
+}
+
+impl BetaFeatures {
+    /// What a store without a saved choice gets: Band delegation is on until
+    /// the user turns it off in Settings → Band.
+    pub const UNSET: Self = Self { delegation: true };
 }
 
 /// When a completed agent turn should create an operating-system notification.

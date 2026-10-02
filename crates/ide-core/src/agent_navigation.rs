@@ -58,8 +58,10 @@ pub fn includes_agent(
     }
     !status.is_finished() && (working || waiting || (expanded && status == AgentStatus::InProgress))
 }
-pub fn pinned_eligible(status: AgentStatus, pinned: bool, waiting: bool) -> bool {
-    !status.is_finished() && pinned && !waiting
+/// Pins are the user's ongoing work list, so finished agents stay pinned until
+/// the user unpins them. Waiting agents surface in Attention instead.
+pub fn pinned_eligible(pinned: bool, waiting: bool) -> bool {
+    pinned && !waiting
 }
 
 #[cfg(test)]
@@ -88,8 +90,9 @@ mod tests {
     }
     #[test]
     fn attention_does_not_duplicate_pins_and_finished_agents_are_not_active() {
-        assert!(!pinned_eligible(AgentStatus::InProgress, true, true));
-        assert!(pinned_eligible(AgentStatus::InProgress, true, false));
+        assert!(!pinned_eligible(true, true));
+        assert!(pinned_eligible(true, false));
+        assert!(!pinned_eligible(false, false));
         assert!(!includes_agent(AgentStatus::Done, true, true, true, true));
         assert!(includes_agent(
             AgentStatus::InProgress,

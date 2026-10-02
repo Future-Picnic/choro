@@ -4,6 +4,10 @@ pub use settings::*;
 mod activity;
 mod agent;
 mod canvas;
+mod sections;
+mod tokens;
+pub use sections::*;
+pub use tokens::*;
 pub use activity::*;
 pub use canvas::*;
 mod store;
@@ -57,6 +61,12 @@ pub struct StudioDesignManifest {
     pub source_task: Option<String>,
     #[serde(default)]
     pub source_context: BTreeMap<String, StudioSource>,
+    /// Optional ordered flows. Omitted when empty so older designs keep their
+    /// exact manifest bytes and fingerprints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<StudioSection>,
+    #[serde(default, skip_serializing_if = "StudioSectionLayout::is_default")]
+    pub section_layout: StudioSectionLayout,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioDocument {
@@ -266,6 +276,10 @@ pub struct StudioTurnScope {
     pub selected_element: Option<String>,
     #[serde(default)]
     pub current_screen_id: Option<Uuid>,
+    /// Frozen conversational default when a section was selected. It never
+    /// restricts explicit work on other sections or screens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_section_id: Option<Uuid>,
     #[serde(default)]
     pub base_revision: u64,
     #[serde(default)]
@@ -290,6 +304,7 @@ impl StudioTurnScope {
             screen_ids: [screen_id].into(),
             selected_element: None,
             current_screen_id: Some(screen_id),
+            current_section_id: None,
             base_revision: 0,
             base_fingerprint: String::new(),
             allow_create: false,
@@ -325,6 +340,9 @@ pub enum StudioOperation {
     CreateScreen {
         screen: StudioScreen,
         document: StudioDocument,
+        /// Omitted: the request's frozen current section. `null`: unsectioned.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "sections::presence")]
+        section_id: Option<Option<Uuid>>,
     },
     UpdateScreen {
         screen: StudioScreen,
@@ -353,6 +371,50 @@ pub enum StudioOperation {
     SetSystem {
         system: StudioDesignSystem,
         expected_system_revision: u64,
+    },
+    CreateSection {
+        section: StudioSection,
+    },
+    UpdateSection {
+        section_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<StudioSectionDirection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gap: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title_style: Option<StudioSectionTitleStyle>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        header_alignment: Option<StudioSectionHeaderAlignment>,
+    },
+    /// `section_id: null` (or omitted) moves the screen to Unsectioned.
+    MoveScreenToSection {
+        screen_id: Uuid,
+        #[serde(default)]
+        section_id: Option<Uuid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_screen_id: Option<Uuid>,
+    },
+    ReorderSectionScreens {
+        section_id: Uuid,
+        screen_ids: Vec<Uuid>,
+    },
+    ReorderSections {
+        section_ids: Vec<Uuid>,
+    },
+    SetSectionLayout {
+        direction: StudioSectionArrangement,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<StudioSectionOrigin>,
+    },
+    UngroupSection {
+        section_id: Uuid,
+    },
+    /// Host history restore of the complete grouping; validated like any edit.
+    ReplaceSections {
+        sections: Vec<StudioSection>,
+        section_layout: StudioSectionLayout,
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

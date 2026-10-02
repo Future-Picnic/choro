@@ -40,6 +40,9 @@ impl ComposerModelPickerTarget {
     }
 
     fn shows_provider(&self, provider: AgentKind, current_provider: AgentKind) -> bool {
+        if !provider.is_visible_in_picker() {
+            return false;
+        }
         match self {
             Self::NewAgent => true,
             Self::AgentChat { surface, provider_switch_locked, .. } => {

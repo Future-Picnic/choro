@@ -84,21 +84,21 @@ impl StudioStore {
         let systems = self.systems()?;
         let _lock = self.lock()?;
         let mut import = self.code_import(context.design_id)?;
-        ensure!(
-            import.created.is_empty(),
-            "Start a new analysis after creating drafts"
-        );
         let mut scope = StudioTurnScope::screen(import.id, Uuid::nil());
         scope.screen_ids.clear();
         scope.current_screen_id = None;
         import.scope_id = Some(scope.id);
-        import.proposed = false;
+        if import.created.is_empty() {
+            import.proposed = false;
+        }
         atomic(
             &self.code_import_path(import.id),
             &serde_json::to_vec(&import)?,
         )?;
         let request = serde_json::json!({
             "scope": scope, "import_id": import.id,
+            "drafts_created": !import.created.is_empty(),
+            "previous_analysis": import,
             "existing_systems": systems.iter().map(|system| serde_json::json!({"id":system.id,"name":system.name,"platform":system.platform,"sources":system.sources,"archived":system.archived})).collect::<Vec<_>>(),
             "context_rule": "Read project code and propose distinct design systems. Only the host can create the selected drafts. Existing systems and project source are read-only."
         });
@@ -228,6 +228,8 @@ impl StudioStore {
             );
             definition.system.revision = 0;
             validate_system(&definition.system)?;
+            let missing = missing_system_tokens(&definition.system);
+            ensure!(missing.is_empty(), "Resolve these missing tokens before proposing a draft: {}. Recover their source values or use an explicit CSS fallback.", missing.into_iter().collect::<Vec<_>>().join(", "));
             ensure!(
                 !definition.system.tokens.is_empty(),
                 "No design tokens were recovered for this system"
@@ -477,6 +479,69 @@ mod tests {
                 candidates,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn follow_up_after_creation_keeps_findings_and_drafts_available() {
+        let (_temp, store, context, agent) = fixture();
+        let proposal = propose(
+            &store,
+            agent,
+            vec![candidate("Web", "apps/web/theme.css", "#123456")],
+        );
+        let selected = BTreeSet::from([proposal.candidates[0].id]);
+        let ids = store
+            .create_code_system_drafts(context.design_id, proposal.proposal_id, &selected)
+            .unwrap();
+        let draft = store.load(ids[0]).unwrap();
+        store.prepare_code_import(agent, &context).unwrap();
+        let follow_up = store.code_import(context.design_id).unwrap();
+        assert!(follow_up.proposed);
+        assert_eq!(follow_up.proposal_id, proposal.proposal_id);
+        assert_eq!(follow_up.created, selected);
+        let request = store.request_context(agent).unwrap();
+        assert_eq!(request["drafts_created"], true);
+        assert_eq!(
+            request["previous_analysis"]["candidates"][0]["definition"]["system"]["tokens"]
+                ["color-primary"],
+            "#123456"
+        );
+        assert!(store
+            .propose_code_systems(
+                agent,
+                store.scope(agent).unwrap().id,
+                "Replacement".into(),
+                vec![]
+            )
+            .is_err());
+        store.verify_code_import_proposal(agent).unwrap();
+        assert_eq!(store.load(ids[0]).unwrap(), draft);
+    }
+
+    #[test]
+    fn code_import_rejects_unresolved_recipe_references_before_creating_drafts() {
+        let (_temp, store, context, agent) = fixture();
+        let mut definition = candidate("Web", "apps/web/theme.css", "#123456");
+        definition.system.recipes.insert(
+            "button".into(),
+            [("background".into(), "var(--new-btn-primary)".into())].into(),
+        );
+        let error = store
+            .propose_code_systems(
+                agent,
+                store.scope(agent).unwrap().id,
+                "Web theme".into(),
+                vec![definition.clone()],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("new-btn-primary"));
+        assert!(!store.code_import(context.design_id).unwrap().proposed);
+        assert!(store.systems().unwrap().is_empty());
+        definition
+            .system
+            .tokens
+            .insert("new-btn-primary".into(), "var(--color-primary)".into());
+        assert!(propose(&store, agent, vec![definition]).proposed);
     }
 
     #[test]

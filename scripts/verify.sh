@@ -37,7 +37,7 @@ run_step 2 "Compile every workspace target" cargo check --workspace --all-target
 run_step 3 "Run ide-core tests" cargo test -p ide-core --quiet
 run_step 4 "Run ide-app tests" cargo test -p ide-app --quiet
 run_step 5 "Run ide-mcp tests" cargo test -p ide-mcp --quiet
-run_step 6 "Run Claude bridge tests" node --test crates/ide-app/assets/agent-chat/claude_file_attribution.test.mjs crates/ide-app/assets/agent-chat/claude_delegation.test.mjs
+run_step 6 "Run agent bridge tests" node --test crates/ide-app/assets/agent-chat/claude_file_attribution.test.mjs crates/ide-app/assets/agent-chat/claude_delegation.test.mjs crates/ide-app/assets/agent-chat/subscription_usage.test.mjs
 run_step 7 "Run Velotype tests" cargo test -p velotype --quiet -- --test-threads=1
 run_step 8 "Verify bundled Expert skills and provenance" python3 scripts/verify-expert-catalog.py
 run_step 9 "Build production app and MCP binaries" cargo build --release -p ide-app -p ide-mcp

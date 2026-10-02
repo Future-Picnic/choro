@@ -9,15 +9,14 @@
 //! "detail" chip for the affected target (file path, branch, …) and a footer
 //! with a ghost *Cancel* and a tone-colored confirm button.
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use gpui::{
     div, px, relative, App, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled,
     Window,
 };
 use gpui_component::{
-    button::{Button, ButtonVariants},
-    h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, WindowExt,
+    checkbox::Checkbox, h_flex, v_flex, ActiveTheme, Icon, IconName, Sizable, WindowExt,
 };
 
 /// Accent tone for a confirmation dialog. Picks the icon-badge tint and the
@@ -34,7 +33,7 @@ pub enum ConfirmTone {
     Primary,
 }
 
-type ConfirmHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+type ConfirmHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 /// A reusable confirmation modal.
 pub struct ConfirmDialog {
@@ -44,6 +43,7 @@ pub struct ConfirmDialog {
     message: SharedString,
     detail: Option<SharedString>,
     route: Option<(SharedString, SharedString)>,
+    checkbox: Option<(SharedString, SharedString)>,
     confirm_label: SharedString,
     cancel_label: SharedString,
     confirm_id: SharedString,
@@ -62,6 +62,7 @@ impl ConfirmDialog {
             message: message.into(),
             detail: None,
             route: None,
+            checkbox: None,
             confirm_label: "Confirm".into(),
             cancel_label: "Cancel".into(),
             confirm_id: "confirm-dialog-ok".into(),
@@ -105,6 +106,16 @@ impl ConfirmDialog {
         self
     }
 
+    /// An opt-in option that starts unchecked each time the dialog opens.
+    pub fn checkbox(
+        mut self,
+        label: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+    ) -> Self {
+        self.checkbox = Some((label.into(), description.into()));
+        self
+    }
+
     pub fn cancel_label(mut self, label: impl Into<SharedString>) -> Self {
         self.cancel_label = label.into();
         self
@@ -125,6 +136,14 @@ impl ConfirmDialog {
     /// Runs when the user accepts. The dialog is already closed by the time this
     /// fires.
     pub fn on_confirm(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_confirm = Some(Rc::new(move |_, window, cx| handler(window, cx)));
+        self
+    }
+
+    pub fn on_confirm_with_checkbox(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_confirm = Some(Rc::new(handler));
         self
     }
@@ -138,12 +157,14 @@ impl ConfirmDialog {
             message,
             detail,
             route,
+            checkbox,
             confirm_label,
             cancel_label,
             confirm_id,
             width,
             on_confirm,
         } = self;
+        let checked = Rc::new(Cell::new(false));
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let accent = tone_color(tone, cx);
@@ -154,6 +175,28 @@ impl ConfirmDialog {
             let cancel_label = cancel_label.clone();
             let detail = detail.clone();
             let route = route.clone();
+            let checked_for_footer = checked.clone();
+            let checkbox = checkbox.clone().map(|(label, description)| {
+                let checked_for_click = checked.clone();
+                v_flex()
+                    .gap_1()
+                    .child(
+                        Checkbox::new("confirm-dialog-checkbox")
+                            .small()
+                            .label(label)
+                            .checked(checked.get())
+                            .on_click(move |value, _, cx| {
+                                checked_for_click.set(*value);
+                                cx.refresh_windows();
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::ui::design::text_label())
+                            .text_color(crate::ui::design::t3(cx))
+                            .child(description),
+                    )
+            });
 
             dialog
                 .w(px(width))
@@ -177,20 +220,31 @@ impl ConfirmDialog {
                                 .child(message.clone()),
                         )
                         .children(detail.map(|detail| detail_chip(detail, cx)))
-                        .children(route.map(|(from, into)| route_chip(from, into, cx))),
+                        .children(route.map(|(from, into)| route_chip(from, into, cx)))
+                        .children(checkbox),
                 )
                 .footer(move |_, _, _, cx| {
                     let on_confirm = on_confirm.clone();
-                    let confirm = apply_tone(
-                        Button::new(confirm_id.clone())
-                            .small()
-                            .label(confirm_label.clone()),
-                        tone,
-                    )
+                    let checked = checked_for_footer.clone();
+                    let confirm = match tone {
+                        ConfirmTone::Danger => crate::ui::style::danger_button_compact(
+                            confirm_id.clone(),
+                            confirm_label.clone(),
+                        ),
+                        ConfirmTone::Warning => crate::ui::style::warning_button_compact(
+                            confirm_id.clone(),
+                            confirm_label.clone(),
+                        ),
+                        ConfirmTone::Primary => crate::ui::style::primary_button_compact(
+                            confirm_id.clone(),
+                            confirm_label.clone(),
+                            cx,
+                        ),
+                    }
                     .on_click(move |_, window, cx| {
                         window.close_dialog(cx);
                         if let Some(handler) = on_confirm.clone() {
-                            handler(window, cx);
+                            handler(checked.get(), window, cx);
                         }
                     });
                     vec![
@@ -198,11 +252,12 @@ impl ConfirmDialog {
                         // *recessed* (a step darker than the popover surface) —
                         // a raised fill would sit almost on the dialog colour and
                         // read as bare text.
-                        Button::new("confirm-dialog-cancel")
-                            .small()
-                            .custom(crate::ui::style::dialog_neutral_variant(cx))
-                            .label(cancel_label.clone())
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                        crate::ui::style::dialog_neutral_button(
+                            "confirm-dialog-cancel",
+                            cancel_label.clone(),
+                            cx,
+                        )
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
                         confirm,
                     ]
                 })
@@ -216,15 +271,6 @@ fn tone_color(tone: ConfirmTone, cx: &App) -> Hsla {
         ConfirmTone::Danger => crate::ui::design::rose(cx),
         ConfirmTone::Warning => crate::ui::design::amber(cx),
         ConfirmTone::Primary => crate::ui::design::accent(cx),
-    }
-}
-
-/// Applies the matching button variant for a tone.
-fn apply_tone(button: Button, tone: ConfirmTone) -> Button {
-    match tone {
-        ConfirmTone::Danger => button.danger(),
-        ConfirmTone::Warning => button.warning(),
-        ConfirmTone::Primary => button.primary(),
     }
 }
 

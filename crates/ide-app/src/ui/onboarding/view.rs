@@ -25,15 +25,174 @@ impl OnboardingTour {
             .on_click(cx.listener(|this, _, _, cx| this.handle_event(OnboardingEvent::Exit, cx)))
     }
 
+    /// The footer of a step that is answered out in the app: name the control
+    /// the spotlight is on, so the card's only call to action points forward.
+    fn render_next_hint(&self, cx: &App) -> gpui::AnyElement {
+        let accent = crate::ui::design::accent(cx);
+        let row = h_flex()
+            .flex_1()
+            .min_w(px(0.))
+            .items_center()
+            .gap_1p5()
+            .text_size(crate::ui::design::text_ui())
+            .text_color(crate::ui::design::t2(cx));
+        let row = match self.phase.target_label() {
+            Some(label) => row
+                .child("Click")
+                .child(
+                    div()
+                        .flex_none()
+                        .px_2()
+                        .py_0p5()
+                        .rounded(crate::ui::design::r_sm())
+                        .border_1()
+                        .border_color(accent.opacity(0.32))
+                        .bg(accent.opacity(0.12))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(accent)
+                        .child(label),
+                )
+                .child("to continue"),
+            None => row.child("Use the highlighted button to continue"),
+        };
+        // No trailing arrow: the target can sit on any side of the card (the
+        // beak and beacon already point at it), and a → beside "← Previous"
+        // read as two arrows fighting.
+        row.into_any_element()
+    }
+
+    /// The tour's one way out on dimmed steps: a quiet pill at the foot of the
+    /// left sidebar, the same spot the sidebar tour panel's Exit uses while an
+    /// agent works, so the exit never moves. The sidebar is GPUI-painted on
+    /// every step, unlike the centre, where Doc and preview webviews paint over
+    /// overlays. Exit asks once; there is deliberately no Esc shortcut, because
+    /// people press Esc reflexively and lose the tour.
+    fn render_exit_pill(&self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let screen = window.bounds().size;
+        let (lane_left, lane_width) = self
+            .targets
+            .get(&SpotlightTarget::ProjectSidebar)
+            .filter(|sidebar| f32::from(sidebar.size.width) >= 180.0)
+            .map(|sidebar| (sidebar.left(), sidebar.size.width))
+            .unwrap_or((px(0.), screen.width));
+        let progress = self.phase.progress();
+        let dots = h_flex().gap_1().children((1..=STEPS).map(|index| {
+            div()
+                .size(px(5.))
+                .rounded_full()
+                .bg(match index.cmp(&progress) {
+                    std::cmp::Ordering::Less => crate::ui::design::accent(cx).opacity(0.45),
+                    std::cmp::Ordering::Equal => crate::ui::design::accent(cx),
+                    std::cmp::Ordering::Greater => crate::ui::design::line_2(cx),
+                })
+        }));
+        let pill = h_flex()
+            .id("onboarding-exit-pill")
+            .occlude()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .pl_3p5()
+            .pr_1()
+            .py_1()
+            .rounded_full()
+            .border_1()
+            .border_color(crate::ui::design::line_2(cx))
+            .bg(crate::ui::design::focus(cx))
+            .shadow(crate::ui::design::shadow())
+            .text_size(crate::ui::design::text_label())
+            .text_color(crate::ui::design::t3(cx))
+            .child("Tour")
+            .child(dots)
+            .when((1..=STEPS).contains(&progress), |pill| {
+                pill.child(format!("{progress} of {STEPS}"))
+            })
+            .child(div().w(px(1.)).h(px(14.)).bg(crate::ui::design::line_2(cx)))
+            .child(
+                style::ghost_button_compact("onboarding-exit-pill-button", "Exit")
+                    .text_color(crate::ui::design::t2(cx))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.exit_confirm = !this.exit_confirm;
+                        cx.notify();
+                    })),
+            );
+        let confirm = self.exit_confirm.then(|| {
+            v_flex()
+                .id("onboarding-exit-confirm")
+                .occlude()
+                .w(px((f32::from(lane_width) - 16.0).clamp(220.0, 300.0)))
+                .gap_1()
+                .p_3p5()
+                .rounded(crate::ui::design::r_md())
+                .border_1()
+                .border_color(crate::ui::design::line_2(cx))
+                .bg(crate::ui::design::focus(cx))
+                .shadow(crate::ui::design::shadow())
+                .child(
+                    div()
+                        .text_size(crate::ui::design::text_body())
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(crate::ui::design::t1(cx))
+                        .child("Leave the tour?"),
+                )
+                .child(
+                    div()
+                        .text_size(crate::ui::design::text_ui())
+                        .line_height(gpui::relative(1.45))
+                        .text_color(crate::ui::design::t2(cx))
+                        .child("The Playground stays, so you can keep exploring on your own."),
+                )
+                .child(
+                    h_flex()
+                        .pt_2()
+                        .gap_2()
+                        .justify_end()
+                        .child(
+                            style::dialog_neutral_button(
+                                "onboarding-exit-confirm-leave",
+                                "Leave tour",
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.handle_event(OnboardingEvent::Exit, cx)
+                            })),
+                        )
+                        .child(
+                            style::primary_button_compact(
+                                "onboarding-exit-confirm-stay",
+                                "Keep going",
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.exit_confirm = false;
+                                cx.notify();
+                            })),
+                        ),
+                )
+        });
+        div()
+            .absolute()
+            .left(lane_left)
+            .bottom(px(10.))
+            .w(lane_width)
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_2()
+            .children(confirm)
+            .child(pill)
+            .into_any_element()
+    }
+
     /// Exit, as an actual control. In the cards it can be a ghost — it sits in a
     /// tray beside other buttons, so its shape is obvious. Loose in the sidebar
     /// with no card around it, bare text just reads as another label; the way
-    /// out of the tour has to look like the way out. `chip_dropdown_variant` is
-    /// the app's neutral filled control for exactly this plane: a `control_raised`
-    /// fill that lifts off the panel, no resting stroke.
+    /// out of the tour has to look like the way out: the app's neutral filled
+    /// control. Not an outline button with a custom variant: gpui-component
+    /// paints an outline custom button's label in its *fill* colour, which left
+    /// "Exit tour" dark-on-dark and unreadable.
     fn render_exit_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        style::secondary_button_compact("onboarding-exit-sidebar", "Exit tour")
-            .custom(style::chip_dropdown_variant(cx))
+        style::dialog_neutral_button("onboarding-exit-sidebar", "Exit tour", cx)
             .on_click(cx.listener(|this, _, _, cx| this.handle_event(OnboardingEvent::Exit, cx)))
     }
 
@@ -244,7 +403,6 @@ impl OnboardingTour {
                         tour_footer(cx)
                             .px_6()
                             .py_3()
-                            .child(self.render_exit(cx))
                             .child(div().flex_1())
                             .child(self.render_back("onboarding-stack-back", "Back", cx))
                             .child(
@@ -301,7 +459,11 @@ impl OnboardingTour {
                             .child(
                                 div()
                                     .grid()
-                                    .grid_cols(4)
+                                    .grid_cols(if ide_core::AgentKind::Gemini.is_visible_in_picker() {
+                                        4
+                                    } else {
+                                        3
+                                    })
                                     .w_full()
                                     .gap_2p5()
                                     .child(self.render_provider_card(
@@ -318,13 +480,18 @@ impl OnboardingTour {
                                         "Codex",
                                         cx,
                                     ))
-                                    .child(self.render_provider_card(
-                                        "onboarding-provider-gemini",
-                                        OnboardingProviderChoice::Gemini,
-                                        ide_core::AgentKind::Gemini,
-                                        "Gemini",
-                                        cx,
-                                    ))
+                                    .when(
+                                        ide_core::AgentKind::Gemini.is_visible_in_picker(),
+                                        |grid| {
+                                            grid.child(self.render_provider_card(
+                                                "onboarding-provider-gemini",
+                                                OnboardingProviderChoice::Gemini,
+                                                ide_core::AgentKind::Gemini,
+                                                "Gemini",
+                                                cx,
+                                            ))
+                                        },
+                                    )
                                     .child(self.render_provider_card(
                                         "onboarding-provider-opencode",
                                         OnboardingProviderChoice::OpenCode,
@@ -338,7 +505,6 @@ impl OnboardingTour {
                         tour_footer(cx)
                             .px_6()
                             .py_3()
-                            .child(self.render_exit(cx))
                             .child(div().flex_1())
                             .child(self.render_back(
                                 "onboarding-provider-back",
@@ -758,11 +924,15 @@ impl OnboardingTour {
             .get(&SpotlightTarget::ProjectSidebar)
             .map(|sidebar| {
                 let inset = 8.0;
+                // Clear the sidebar's footer toolbar so Exit tour never lands
+                // on top of its icon buttons.
+                let footer = crate::ui::root_view::LEFT_SIDEBAR_FOOTER_H;
                 (
                     px(f32::from(sidebar.left()) + inset),
                     px((f32::from(sidebar.size.width) - inset * 2.0).max(210.0)),
                     px(
                         (f32::from(window.bounds().size.height) - f32::from(sidebar.bottom())
+                            + footer
                             + inset)
                             .max(inset),
                     ),
@@ -770,10 +940,10 @@ impl OnboardingTour {
             })
             .unwrap_or((px(10.), px(280.), px(10.)));
         let failed = self.last_agent_status == Some(AgentChatStatus::Failed);
-        // Not a card on the sidebar — a section *of* it. Nothing is being asked
-        // of you while an agent works, so the tour stops presenting itself as a
-        // notification and just sits in the project alongside Projects, wearing
-        // the same section header the sidebar already uses.
+        // Nothing is being asked of you while an agent works, so the tour sits
+        // quietly at the foot of the sidebar wearing its section header. It
+        // still needs its own opaque surface: without one, the project rows
+        // behind it show through and the steps blend into them.
         div()
             .absolute()
             .left(left)
@@ -781,13 +951,10 @@ impl OnboardingTour {
             .w(width)
             .occlude()
             .child(
-                v_flex()
+                tour_card(cx)
+                    .rounded(crate::ui::design::r_md())
+                    .py_3()
                     .gap_2()
-                    // The one hairline in the tour. Everywhere else a plane step
-                    // does this job, but here the tour butts straight into
-                    // unrelated sidebar content with no surface of its own to
-                    // separate them.
-                    .child(div().h(px(1.)).mx_2().bg(crate::ui::design::line(cx)))
                     .child(self.render_section_header(cx))
                     // All six chapters: ticked where they're done, lit where you
                     // are, quiet where they're still to come. The live status
@@ -879,14 +1046,17 @@ impl OnboardingTour {
                 tour_footer(cx)
                     .px_4()
                     .py_2()
-                    // Exit leads, quiet and left. It used to sit after the
-                    // spacer — which put the most destructive control in the
-                    // bottom-right primary slot on every step that has no Next,
-                    // i.e. most of them. Someone in a test tapped it because it
-                    // was the only button on the card. A way out should be
-                    // findable, never the default.
-                    .child(self.render_exit(cx))
-                    .child(div().flex_1())
+                    // No Exit here. Even quiet and left-aligned, it was the only
+                    // button on every step without Next, so testers kept tapping
+                    // it to move on. The footer now names the way forward, and
+                    // the one way out lives in the bottom pill.
+                    .map(|footer| {
+                        if has_continue {
+                            footer.child(div().flex_1())
+                        } else {
+                            footer.child(self.render_next_hint(cx))
+                        }
+                    })
                     .when(self.phase.can_go_back(), |footer| {
                         footer.child(self.render_back(
                             "onboarding-instruction-previous",
@@ -1107,18 +1277,22 @@ impl Render for OnboardingTour {
             return self.render_welcome(cx);
         }
         if self.phase == Phase::Stack {
-            return self.render_stack(cx);
+            let body = self.render_stack(cx);
+            return self.with_exit_pill(body, window, cx);
         }
         if self.phase == Phase::ProviderChoice {
-            return self.render_provider_choice(cx);
+            let body = self.render_provider_choice(cx);
+            return self.with_exit_pill(body, window, cx);
         }
+        // Undimmed: the sidebar tour panel carries its own Exit.
         if self.phase.is_waiting() {
             return self.render_waiting(window, cx);
         }
         // Before the `target()` lookup below: the map deliberately has no single
         // focus, so it must not fall through to the no-target fallback.
         if self.phase == Phase::Map {
-            return self.render_map(window, cx);
+            let body = self.render_map(window, cx);
+            return self.with_exit_pill(body, window, cx);
         }
         if self.phase == Phase::AddProject {
             return self.render_add_project(window, cx);
@@ -1134,7 +1308,8 @@ impl Render for OnboardingTour {
             .target()
             .and_then(|target| self.targets.get(&target).copied())
         else {
-            return scrim(SHADE_SPOTLIGHT, cx).into_any_element();
+            let body = scrim(SHADE_SPOTLIGHT, cx).into_any_element();
+            return self.with_exit_pill(body, window, cx);
         };
         let reveal_target = match self.phase {
             Phase::TaskSend => Some(SpotlightTarget::Composer),
@@ -1170,6 +1345,24 @@ impl Render for OnboardingTour {
             Phase::ShipResult => self.targets.get(&SpotlightTarget::AgentContext).copied(),
             _ => None,
         };
-        self.render_spotlight(&reveals, focus, secondary_focus, window, cx)
+        let body = self.render_spotlight(&reveals, focus, secondary_focus, window, cx);
+        self.with_exit_pill(body, window, cx)
+    }
+}
+
+impl OnboardingTour {
+    /// Every dimmed tour step gets the same exit pill over its shade.
+    fn with_exit_pill(
+        &self,
+        body: gpui::AnyElement,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        div()
+            .absolute()
+            .inset_0()
+            .child(body)
+            .child(self.render_exit_pill(window, cx))
+            .into_any_element()
     }
 }

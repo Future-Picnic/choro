@@ -80,14 +80,15 @@
       // Only an explicit zoom gesture, forwarded by message below, moves the
       // camera from inside the screen.
       const isolate=doc.createElement('style');
-      isolate.textContent='html{overscroll-behavior:contain}';
+      isolate.textContent='html{overscroll-behavior:contain}'+
+        (boot.prototype?'html{overflow-x:hidden !important;overflow-y:auto !important}body{overflow:visible !important}':'');
       doc.head.append(isolate);
       const script=doc.createElement('script');
       script.textContent=source.js+'\n;document.addEventListener("click",e=>{const a=e.target.closest("[data-studio-screen]");if(a){e.preventDefault();parent.postMessage({type:"studio-navigate",screen_id:a.dataset.studioScreen},"*")}});';
       doc.body.append(script);
       if(cameraEnabled){
         const controls=doc.createElement('script');
-        controls.textContent='('+installCameraInput.toString()+')(document,input=>parent.postMessage({type:"studio-camera",input},"*"),()=>true,false);';
+        controls.textContent='('+installCameraInput.toString()+')(document,input=>parent.postMessage({type:"studio-camera",input},"*"),()=>true,false,'+!!boot.prototype+');';
         doc.head.append(controls);
       }
     }
@@ -176,7 +177,7 @@
   }
   // This same small input adapter runs inside the opaque Preview frame. It can
   // only request camera movement; it cannot save or inspect the host document.
-  function installCameraInput(doc,emit,accept=()=>true,panWheel=true){
+  function installCameraInput(doc,emit,accept=()=>true,panWheel=true,scrollPage=false){
     const win=doc.defaultView;
     let space=false, drag=null, gesture=0, suppressClick=false;
     const typing=target=>!!target?.closest?.('input,textarea,select,button,a,[contenteditable]:not([contenteditable="false"]),[role="textbox"]');
@@ -206,11 +207,37 @@
     doc.addEventListener('pointercancel',end,true);
     doc.addEventListener('lostpointercapture',end,true);
     doc.addEventListener('click',event=>{if(suppressClick){suppressClick=false;stop(event);}},true);
+    // WebKit can leave native wheel scrolling inert inside a scaled, opaque
+    // iframe even though selection auto-scroll works. Route prototype wheels to
+    // the actual scroll containers, keeping the stage out of the scroll chain.
+    const scrollContent=(target,dx,dy)=>{
+      const root=doc.scrollingElement;
+      for(let node=target?.nodeType===1?target:target?.parentElement;node;node=node.parentElement){
+        const style=win.getComputedStyle(node);
+        for(const [axis,delta] of [['x',dx],['y',dy]]){
+          if(!delta)continue;
+          const vertical=axis==='y',position=vertical?'scrollTop':'scrollLeft';
+          const overflow=vertical?style.overflowY:style.overflowX;
+          if(/^(hidden|clip)$/.test(overflow)||(node!==root&&!/^(auto|scroll|overlay)$/.test(overflow)))continue;
+          const before=node[position];
+          node.scrollTo({left:node.scrollLeft+(vertical?0:delta),top:node.scrollTop+(vertical?delta:0),behavior:'instant'});
+          const containment=vertical?style.overscrollBehaviorY:style.overscrollBehaviorX;
+          const remaining=/^(contain|none)$/.test(containment)?0:delta-(node[position]-before);
+          if(vertical)dy=remaining;else dx=remaining;
+        }
+        if(!dx&&!dy)break;
+      }
+    };
     doc.addEventListener('wheel',event=>{
-      if(!accept(event)||(!panWheel&&!event.ctrlKey&&!event.metaKey))return;
-      stop(event);if(gesture)return;
+      if(!accept(event))return;
+      const zoom=event.ctrlKey||event.metaKey;
       const unit=event.deltaMode===1?16:event.deltaMode===2?win.innerHeight:1;
-      emit({kind:event.ctrlKey||event.metaKey?'zoom':'pan',x:event.clientX,y:event.clientY,dx:-event.deltaX*unit,dy:(event.ctrlKey||event.metaKey?1:-1)*event.deltaY*unit});
+      if(!panWheel&&!zoom){
+        if(scrollPage&&event.cancelable){stop(event);if(!gesture)scrollContent(event.target,event.deltaX*unit,event.deltaY*unit);}
+        return;
+      }
+      stop(event);if(gesture)return;
+      emit({kind:zoom?'zoom':'pan',x:event.clientX,y:event.clientY,dx:-event.deltaX*unit,dy:(zoom?1:-1)*event.deltaY*unit});
     },{capture:true,passive:false});
     doc.addEventListener('gesturestart',event=>{if(accept(event)){stop(event);gesture=event.scale||1;}},{passive:false});
     doc.addEventListener('gesturechange',event=>{

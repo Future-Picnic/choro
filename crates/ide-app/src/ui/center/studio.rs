@@ -1,5 +1,4 @@
 use super::*;
-use gpui_component::Colorize;
 use ide_core::studio::*;
 use serde_json::json;
 
@@ -93,6 +92,10 @@ pub(super) struct StudioWorkspace {
     pub pending_navigation: Option<Box<dyn FnOnce(&mut CenterArea, &mut Context<CenterArea>)>>,
     pub poll_id: Uuid,
     pub overview_scroll: gpui::UniformListScrollHandle,
+    /// A grouping edit waiting for the open editor to save successfully.
+    pub grouping: Option<super::studio_sections::PendingGrouping>,
+    pub section_name_input: Option<(Uuid, Entity<InputState>)>,
+    _drag_escape: gpui::Subscription,
 }
 // Called by background loading/rendering jobs, never a GPUI render callback.
 fn studio_thumbnail_paths(store: &StudioStore, design: &StudioDesign) -> HashMap<Uuid, PathBuf> {
@@ -107,9 +110,15 @@ impl StudioWorkspace {
     pub fn editing_screen(&self) -> Option<Uuid> { self.screen.or(self.inline_screen) }
 }
 #[derive(Clone)]
-enum NameAction {
+pub(super) enum NameAction {
     Design(ProjectId, Option<Uuid>),
     Screen(Option<Uuid>),
+    /// A new screen inside this section.
+    ScreenIn(Uuid),
+    /// Rename a section, or create one with `None`.
+    Section(Option<Uuid>),
+    /// Create a section containing this screen.
+    SectionWithScreen(Uuid),
     Token(String, bool),
     NewToken,
 }
@@ -143,11 +152,19 @@ impl CenterArea {
         let current=s.editing_screen()
             .or_else(||(mode==StudioOverviewMode::Focus).then_some(s.canvas.layout.selected_screen_id).flatten())
             .and_then(|id|s.design.manifest.screens.iter().find(|p|p.id==id&&!p.archived));
+        // One-screen editing keeps its flow in view: "Section › Screen".
+        let flow=|screen:&StudioScreen|s.design.manifest.section_of(screen.id).map(|section|format!("{} › {}",section.name,screen.name)).unwrap_or_else(||screen.name.clone());
+        let section=s.canvas.layout.selected_section_id.filter(|_|current.is_none()).and_then(|id|s.design.manifest.section(id));
         let (lead,name,detail)=match current {
             Some(screen) if s.prototype => (Some("Playing"),screen.name.clone(),None),
             Some(screen) => {
                 let (width,height)=s.viewing_size.filter(|_|s.screen==Some(screen.id)).unwrap_or((screen.width,screen.height));
-                (None,screen.name.clone(),Some(format!("{width} × {height}")))
+                (None,flow(screen),Some(format!("{width} × {height}")))
+            }
+            None if section.is_some() => {
+                let section=section.unwrap();
+                let count=section.screen_ids.iter().filter(|id|s.design.manifest.screens.iter().any(|p|p.id==**id&&!p.archived)).count();
+                (Some("Section"),section.name.clone(),Some(format!("{count} {}",if count==1{"screen"}else{"screens"})))
             }
             None => {
                 let count=s.design.manifest.screens.iter().filter(|p|!p.archived).count();
@@ -437,10 +454,10 @@ impl CenterArea {
                             .filter(|id| design.manifest.screens.iter().any(|s|s.id==*id&&!s.archived));
                         let screen = system_workspace.then_some(id);
                         let (mut canvas,canvas_notice)=super::studio_canvas::Runtime::new(&store,&design);
-                        if canvas.layout.selected_screen_id.is_none() {canvas.layout.selected_screen_id=remembered_screen;}
+                        if canvas.layout.selected_screen_id.is_none() && canvas.layout.selected_section_id.is_none() {canvas.layout.selected_screen_id=remembered_screen;}
                         let inline_screen = (canvas.layout.overview_mode == StudioOverviewMode::Focus && !system_workspace)
                             .then(||canvas.layout.selected_screen_id.or_else(||design.manifest.screens.iter().find(|s|!s.archived).map(|s|s.id))).flatten();
-                        if inline_screen.is_some(){canvas.layout.selected_screen_id=inline_screen;}
+                        if inline_screen.is_some(){canvas.layout.select_screen(inline_screen);}
                         this.flush_studio_canvas();
                         this.studio = Some(StudioWorkspace {
                             canvas,
@@ -497,6 +514,9 @@ impl CenterArea {
                             pending_navigation: None,
                             poll_id: Uuid::new_v4(),
                             overview_scroll: gpui::UniformListScrollHandle::new(),
+                            grouping: None,
+                            section_name_input: None,
+                            _drag_escape: super::studio_sections_sidebar::drag_escape(cx),
                         });
                         this.set_view_mode(CenterMode::Design, cx);
                         this.rebuild_studio_editor(cx);
@@ -595,7 +615,7 @@ impl CenterArea {
             });
         }).detach();
     }
-    fn queue_studio_thumbnails(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn queue_studio_thumbnails(&mut self, cx: &mut Context<Self>) {
         let visible = self.studio_workspace_visible(cx);
         let Some(studio) = self.studio.as_mut() else {
             return;
@@ -716,13 +736,13 @@ impl CenterArea {
         s.inline_screen=screen;s.inline_flush=None;s.dirty=false;s.saving=false;s.selected_element=None;
         s.editor_html=None;s.editor_session=Uuid::new_v4();
         if screen.is_some(){
-            s.canvas.layout.selected_screen_id=screen;
+            s.canvas.layout.select_screen(screen);
             if !s.canvas.corrupt {if let Err(error)=s.store.save_canvas_state(s.design.manifest.id,&s.canvas.layout){s.error=Some(format!("Could not save canvas selection: {error}"));}}
         }
-        s.canvas.invalidate_metadata();
         if screen.is_none(){
             self.web_host.read(cx).canvas_reply(&json!({"session":s.canvas.session,"type":"editor","screen_id":null}));
         }
+        self.studio_canvas_selection(cx);
         self.rebuild_studio_editor(cx);
         cx.notify();
     }
@@ -747,7 +767,7 @@ impl CenterArea {
         }
         if screen.is_some() && self.studio.as_ref().is_some_and(|s|!s.prototype&&!s.design.manifest.system_workspace) && !self.studio_canvas_active() {
             if self.defer_studio_navigation(move|this,cx|this.studio_select_screen(screen,cx),cx){return;}
-            if let Some(s)=self.studio.as_mut(){s.canvas.layout.selected_screen_id=screen;}
+            if let Some(s)=self.studio.as_mut(){s.canvas.layout.select_screen(screen);}
             self.studio_overview_mode(StudioOverviewMode::Focus,cx);
             return;
         }
@@ -771,7 +791,7 @@ impl CenterArea {
             return;
         }
         if screen.is_some(){
-            if let Some(id)=screen{studio.canvas.layout.selected_screen_id=Some(id);}
+            if let Some(id)=screen{studio.canvas.layout.select_screen(Some(id));}
             if !studio.canvas.corrupt {if let Err(e)=studio.store.save_canvas_state(studio.design.manifest.id,&studio.canvas.layout){studio.error=Some(e.to_string());}}
             studio.canvas.leave();
         }
@@ -971,6 +991,11 @@ impl CenterArea {
                     }
                 }
                 "flushed" => {
+                    let request = message["request_id"].as_str().and_then(|id| id.parse::<Uuid>().ok());
+                    if studio.grouping.as_ref().is_some_and(|g| Some(g.request) == request) {
+                        self.studio_grouping_flushed(request, cx);
+                        continue;
+                    }
                     studio.dirty = false;
                     if let Some((request,next))=studio.inline_flush {
                         if message["request_id"].as_str().and_then(|id|id.parse::<Uuid>().ok())==Some(request) {
@@ -1086,8 +1111,15 @@ impl CenterArea {
                         let result=cx.background_executor().spawn(async move{store.apply(&scope,&tx)}).await;
                         let _=this.update(cx,|this,cx|{
                             let Some(studio)=this.studio.as_mut().filter(|s|s.editor_session==session) else{return;};studio.saving=false;
+                            let failed=result.is_err();
                             let reply=match result{Ok(design)=>{let reply=json!({"session":session,"id":id,"revision":design.manifest.revision,"fingerprint":design.fingerprint});studio.redo=false;studio.design=design;studio.error=None;reply},Err(error)=>{studio.error=Some(format!("{error:#}"));json!({"session":session,"id":id,"error":format!("{error:#}")})}};
-                            this.web_host.update(cx,|host,_|host.studio_reply(&reply));this.refresh_studio_bootstrap(cx);this.queue_studio_thumbnails(cx);cx.notify();
+                            if !failed {
+                                if let Some(pending) = studio.grouping.as_mut() { pending.record_editor_save(&studio.design); }
+                            }
+                            this.web_host.update(cx,|host,_|host.studio_reply(&reply));
+                            // Grouping waits only for a successful save.
+                            if failed {this.studio_grouping_cancel("The screen could not be saved.",cx);}
+                            this.refresh_studio_bootstrap(cx);this.queue_studio_thumbnails(cx);cx.notify();
                         });
                     }).detach();
                 }
@@ -1172,7 +1204,7 @@ impl CenterArea {
             cx,
         );
     }
-    fn studio_name_dialog(
+    pub(super) fn studio_name_dialog(
         &mut self,
         title: &str,
         value: &str,
@@ -1366,6 +1398,33 @@ impl CenterArea {
                 })
                 .detach();
             }
+            NameAction::Section(Some(id)) => {
+                self.studio_update_section(id, |_| StudioOperation::UpdateSection {
+                    section_id: id,
+                    name: Some(value),
+                    direction: None,
+                    gap: None,
+                    title_style: None,
+                    header_alignment: None,
+                }, cx);
+            }
+            NameAction::Section(None) => self.studio_create_section(value, None, cx),
+            NameAction::SectionWithScreen(screen) => self.studio_create_section(value, Some(screen), cx),
+            NameAction::ScreenIn(section) => {
+                let operation = StudioOperation::CreateScreen {
+                    screen: StudioScreen {
+                        id: Uuid::new_v4(),
+                        name: value,
+                        width: 1440,
+                        height: 960,
+                        archived: false,
+                        files: StudioScreenFiles::default(),
+                    },
+                    document: starter_document(),
+                    section_id: Some(Some(section)),
+                };
+                self.studio_group(vec![operation], Default::default(), None, cx);
+            }
             NameAction::Screen(id) => {
                 let Some(studio) = self.studio.as_ref() else {
                     return;
@@ -1394,6 +1453,7 @@ impl CenterArea {
                             files: StudioScreenFiles::default(),
                         },
                         document: starter_document(),
+                        section_id: Some(None),
                     }
                 };
                 self.studio_apply_ui(vec![op], false, cx);
@@ -1432,7 +1492,11 @@ impl CenterArea {
             }
         }
     }
-    fn studio_screen_menu_action(&mut self, id: Uuid, action: &str, cx: &mut Context<Self>) {
+    pub(super) fn studio_screen_menu_action(&mut self, id: Uuid, action: &str, cx: &mut Context<Self>) {
+        // Duplicates and earlier/later respect the screen's section.
+        if self.studio_screen_group_action(id, action, cx) {
+            return;
+        }
         let Some(studio) = self.studio.as_ref() else {
             return;
         };
@@ -1447,14 +1511,6 @@ impl CenterArea {
             return;
         };
         let op = match action {
-            "duplicate" => {
-                screen.id = Uuid::new_v4();
-                screen.name = format!("{} copy", screen.name);
-                StudioOperation::CreateScreen {
-                    screen,
-                    document: studio.design.documents[&id].clone(),
-                }
-            }
             "mobile" => {
                 screen.width = 390;
                 screen.height = 844;
@@ -1578,7 +1634,15 @@ impl CenterArea {
                 "Wait for the current edit to save before sending."
             );
             let design = studio.store.load(context.design_id)?;
-            let mut scope = scope_for_request(&design, studio.editing_screen().or(studio.canvas.layout.selected_screen_id), studio.selected_element.clone());
+            // A selected section replaces the screen/element default; an open
+            // screen editor restores the screen default.
+            let section = studio.canvas.layout.selected_section_id
+                .filter(|_| studio.editing_screen().is_none() && !design.manifest.system_workspace)
+                .filter(|id| design.manifest.section(*id).is_some());
+            let mut scope = match section {
+                Some(section) => scope_for_section_request(&design, section),
+                None => scope_for_request(&design, studio.editing_screen().or(studio.canvas.layout.selected_screen_id), studio.selected_element.clone()),
+            };
             if context.target == StudioAgentTarget::Design {
                 scope.design_guidance = design_guidance;
             }
@@ -1630,7 +1694,7 @@ impl CenterArea {
         }
         cx.notify();
     }
-    fn studio_choose_implementation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn studio_choose_implementation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .studio
             .as_ref()
@@ -1743,6 +1807,11 @@ impl CenterArea {
         } else {
             (1440, 960)
         };
+        let size = if studio.prototype {
+            super::studio_editor::prototype_viewport(size.0, size.1)
+        } else {
+            size
+        };
         studio.viewing_size = Some(size);
         let reply = json!({"session":studio.editor_session,"type":"viewport","width":size.0,"height":size.1});
         self.web_host
@@ -1787,6 +1856,9 @@ impl CenterArea {
             page.width = width;
             page.height = height;
         }
+        if studio.prototype {
+            (page.width, page.height) = super::studio_editor::prototype_viewport(page.width, page.height);
+        }
         let name: String = page
             .name
             .chars()
@@ -1809,24 +1881,16 @@ impl CenterArea {
         );
         let store = studio.store.clone();
         let design_id = design.manifest.id;
-        let destination = cx.prompt_for_new_path(&store.project, Some(&name));
         studio.exporting = true;
         studio.notice = Some("Exporting screen…".into());
         cx.spawn(async move |this, cx| {
-            let result = match destination.await {
-                Ok(Ok(Some(path))) => {
-                    cx.background_executor()
-                        .spawn(async move {
-                            let bytes = super::studio_editor::export_png(store, design, screen)?;
-                            atomic(&path, &bytes)?;
-                            Ok::<_, anyhow::Error>(Some(path))
-                        })
-                        .await
-                }
-                Ok(Ok(None)) => Ok(None),
-                Ok(Err(error)) => Err(error),
-                Err(error) => Err(anyhow::anyhow!("Save dialog closed: {error}")),
-            };
+            let result = cx.background_executor().spawn(async move {
+                let downloads = dirs::download_dir()
+                    .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+                    .ok_or_else(|| anyhow::anyhow!("Could not find your Downloads folder"))?;
+                let bytes = super::studio_editor::export_png(store, design, screen)?;
+                super::studio_editor::save_png_export(&downloads, &name, &bytes)
+            }).await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(studio) = this
                     .studio
@@ -1836,10 +1900,9 @@ impl CenterArea {
                     studio.exporting = false;
                     studio.notice = None;
                     match result {
-                        Ok(Some(path)) => {
+                        Ok(path) => {
                             studio.notice = Some(format!("Exported {}", path.display()))
                         }
-                        Ok(None) => {}
                         Err(error) => {
                             studio.error = Some(format!("Could not export screen: {error:#}"))
                         }
@@ -2008,6 +2071,23 @@ impl CenterArea {
                         })),
                 ),
         );
+        let missing = ide_core::studio::missing_system_tokens(&studio.design.system);
+        if !missing.is_empty() {
+            let mut unresolved = v_flex().px_3().py_2().gap_2()
+                .child(div().text_color(crate::ui::design::rose(cx)).child("Resolve missing tokens"))
+                .child(div().text_size(crate::ui::design::text_label()).child("Add the source value, or edit its recipe reference. You can review the draft before applying."));
+            for name in missing {
+                let initial = format!("{name}: ");
+                unresolved = unresolved.child(
+                    style::ghost_button_compact(SharedString::from(format!("resolve-token-{name}")), name)
+                        .disabled(dirty)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.studio_name_dialog("Resolve design token · name: value", &initial, NameAction::NewToken, window, cx);
+                        })),
+                );
+            }
+            panel = panel.child(unresolved);
+        }
         for group in [
             "Colors",
             "Typography",
@@ -2018,7 +2098,7 @@ impl CenterArea {
         ] {
             let entries = tokens
                 .iter()
-                .filter(|(name, _)| studio_token_group(name) == group)
+                .filter(|(name, _)| ide_core::studio::system_token_group(name, &tokens) == group)
                 .collect::<Vec<_>>();
             if entries.is_empty() {
                 continue;
@@ -2068,6 +2148,16 @@ impl CenterArea {
                 );
                 if open {
                     let mut details = v_flex().px_3().pb_3().gap_2();
+                    if studio.design.manifest.system_workspace {
+                        let recipe = name.clone();
+                        details = details.child(
+                            style::ghost_button_compact(SharedString::from(format!("edit-recipe-{name}")), "Edit recipe")
+                                .disabled(dirty)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.studio_recipe_dialog(recipe.clone(), window, cx);
+                                })),
+                        );
+                    }
                     for (property, value) in properties {
                         details = details.child(
                             v_flex()
@@ -2138,7 +2228,10 @@ impl CenterArea {
         let menu_host = self.web_host.clone();
         let label = name.clone();
         let token = name.clone();
-        let swatch = gpui::Hsla::parse_hex(&value).ok();
+        let tokens = studio.design.tokens();
+        let swatch = ide_core::studio::resolved_token_value(&name, &tokens)
+            .and_then(|value| gpui::Rgba::try_from(value).ok())
+            .map(gpui::Hsla::from);
         let preview = div()
             .size(px(28.))
             .flex_none()
@@ -2260,8 +2353,8 @@ impl CenterArea {
         let mut folds = s.folded_sections.iter().cloned().collect::<Vec<_>>();
         folds.sort();
         // Only presentation metadata; never clone documents or conversations for a cache key.
-        format!("{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
-            s.design.fingerprint, s.screen, s.inline_screen, s.canvas.layout.selected_screen_id,
+        format!("{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
+            s.design.fingerprint, (s.canvas.layout.selected_section_id, s.grouping.is_some()), s.screen, s.inline_screen, s.canvas.layout.selected_screen_id,
             s.viewing_size, s.prototype, s.editor_zoom, s.canvas.active(), s.canvas.layout.overview_mode,
             (s.exporting, s.export_flush.is_some(), s.implementation_flush.is_some()),
             (s.dirty, s.saving, s.redo), s.editor_toolbar, s.sidebar_collapsed,
@@ -2277,217 +2370,18 @@ impl CenterArea {
         let sidebar_collapsed = studio.sidebar_collapsed;
         let sidebar_scroll = studio.sidebar_scroll[tab as usize].clone();
         let selected = studio.screen;
-        let selected_artboard = studio.editing_screen().or(studio.canvas.layout.selected_screen_id);
         let design_id = studio.design.manifest.id;
         let screens = studio.design.manifest.screens.clone();
+        let selected_section = studio.canvas.layout.selected_section_id
+            .filter(|_| studio.editing_screen().is_none())
+            .and_then(|id| studio.design.manifest.section(id))
+            .map(|section| section.name.clone());
         let chat = studio.relative_chat.clone();
-        let dirty = studio.dirty || studio.saving;
-        let redo = studio.redo;
         let panel = if sidebar_collapsed {
             div().into_any_element()
         } else {
             match tab {
-                StudioTab::Screens => {
-                    let mut panel = v_flex()
-                        .py_2()
-                        .child(h_flex().px_1().pt_1().child({
-                            let center = cx.entity();
-                            let host = self.web_host.clone();
-                            style::ghost_button_compact("studio-screen-actions", "Screen actions")
-                                .text_color(crate::ui::design::t2(cx))
-                                .dropdown_caret(true)
-                                .dropdown_menu(move |menu, window, cx| {
-                                    web_preview::suspend_for_menu(host.clone(), cx);
-                                    menu.item(PopupMenuItem::new("Refresh previews").on_click(
-                                        window.listener_for(
-                                            &center,
-                                            |this: &mut Self, _, _, cx| {
-                                                if let Some(studio) = this.studio.as_mut() {
-                                                    studio.thumbnail_revision = None;
-                                                }
-                                                if this.studio_canvas_active(){this.studio_canvas_command("refresh",cx);}else{this.queue_studio_thumbnails(cx);}
-                                            },
-                                        ),
-                                    ))
-                                    .item(
-                                        PopupMenuItem::new("Undo saved edit")
-                                            .disabled(dirty)
-                                            .on_click(window.listener_for(
-                                                &center,
-                                                |this: &mut Self, _, _, cx| {
-                                                    this.studio_undo(false, cx)
-                                                },
-                                            )),
-                                    )
-                                    .item(
-                                        PopupMenuItem::new("Redo saved edit")
-                                            .disabled(dirty || !redo)
-                                            .on_click(window.listener_for(
-                                                &center,
-                                                |this: &mut Self, _, _, cx| {
-                                                    this.studio_undo(true, cx)
-                                                },
-                                            )),
-                                    )
-                                    .item(
-                                        PopupMenuItem::new("Implement selected screens…").on_click(
-                                            window.listener_for(
-                                                &center,
-                                                |this: &mut Self, _, window, cx| {
-                                                    this.studio_choose_implementation(window, cx)
-                                                },
-                                            ),
-                                        ),
-                                    )
-                                })
-                        }))
-                        .child(div().h(px(1.)).my_2().bg(crate::ui::design::line(cx)));
-                    for archived in [false, true] {
-                        let count = screens
-                            .iter()
-                            .filter(|screen| screen.archived == archived)
-                            .count();
-                        if archived && count == 0 {
-                            continue;
-                        }
-                        let section = if archived { "Archived" } else { "Screens" };
-                        let open = !self
-                            .studio
-                            .as_ref()
-                            .unwrap()
-                            .folded_sections
-                            .contains(section);
-                        panel = panel.child(
-                            h_flex()
-                                .items_center()
-                                .pr_2()
-                                .child(self.studio_section(section, count, cx).flex_1())
-                                .when(!archived, |row| {
-                                    row.child(
-                                        style::header_icon_button(
-                                            "studio-add-screen",
-                                            IconName::Plus,
-                                            cx,
-                                        )
-                                        .tooltip("Add screen")
-                                        .disabled(dirty)
-                                        .on_click(
-                                            cx.listener(|this, _, window, cx| {
-                                                this.studio_name_dialog(
-                                                    "New screen",
-                                                    "New screen",
-                                                    NameAction::Screen(None),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }),
-                                        ),
-                                    )
-                                }),
-                        );
-                        if !open {
-                            continue;
-                        }
-                        for (index, screen) in screens
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, s)| s.archived == archived)
-                        {
-                            let id = screen.id;
-                            let name = screen.name.clone();
-                            let row = style::design_sidebar_row(
-                                ("studio-screen", index),
-                                selected_artboard == Some(id),
-                                cx,
-                            )
-                            .icon(IconName::File)
-                            .flex_1()
-                            .min_w(px(0.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .child(screen.name.clone()),
-                            )
-                            .tooltip(format!(
-                                "{} · {} × {}",
-                                screen.name, screen.width, screen.height
-                            ))
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.studio_select_screen(Some(id), cx),
-                            ));
-                            let center = cx.entity();
-                            let menu_host = self.web_host.clone();
-                            panel =
-                                panel.child(
-                                    h_flex()
-                                        .w_full()
-                                        .min_w(px(0.))
-                                        .pr_1()
-                                        .bg(if selected_artboard == Some(id) {
-                                            crate::ui::design::surface_2(cx)
-                                        } else {
-                                            gpui::transparent_black()
-                                        })
-                                        .child(row)
-                                        .child(
-                                            style::header_icon_button(
-                                                ("studio-screen-menu", index),
-                                                IconName::Ellipsis,
-                                                cx,
-                                            )
-                                            .disabled(dirty)
-                                            .dropdown_menu(move |mut menu, window, cx| {
-                                                web_preview::suspend_for_menu(
-                                                    menu_host.clone(),
-                                                    cx,
-                                                );
-                                                let name = name.clone();
-                                                menu = menu.item(
-                                                    PopupMenuItem::new("Rename")
-                                                        .on_click(window.listener_for(
-                                                        &center,
-                                                        move |this: &mut Self, _, window, cx| {
-                                                            this.studio_name_dialog(
-                                                                "Rename screen",
-                                                                &name,
-                                                                NameAction::Screen(Some(id)),
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                                );
-                                                for (label, action) in [
-                                                    ("Duplicate", "duplicate"),
-                                                    ("Move up", "up"),
-                                                    ("Move down", "down"),
-                                                    ("Archive / restore", "archive"),
-                                                    ("Mobile viewport", "mobile"),
-                                                    ("Desktop viewport", "desktop"),
-                                                ] {
-                                                    menu = menu.item(
-                                                        PopupMenuItem::new(label).on_click(
-                                                            window.listener_for(
-                                                                &center,
-                                                                move |this: &mut Self, _, _, cx| {
-                                                                    this.studio_screen_menu_action(
-                                                                        id, action, cx,
-                                                                    )
-                                                                },
-                                                            ),
-                                                        ),
-                                                    );
-                                                }
-                                                menu
-                                            }),
-                                        ),
-                                );
-                        }
-                    }
-                    panel.into_any_element()
-                }
+                StudioTab::Screens => self.render_studio_screens_tab(cx),
                 StudioTab::System => self.render_studio_system(cx),
                 StudioTab::Agent => {
                     let root = self.studio.as_ref().unwrap().store.project.clone();
@@ -2559,8 +2453,11 @@ impl CenterArea {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_studio_conversation(design_id, None, cx)
                             }));
+                    let section_label = selected_section.map(|name| format!("Section · {name}"));
                     let scope_label = if system_workspace {
                         "Design-system draft"
+                    } else if let Some(label) = section_label.as_deref() {
+                        label
                     } else if let Some(screen) = selected {
                         screens
                             .iter()
@@ -2640,7 +2537,7 @@ impl CenterArea {
         let sidebar_collapsed = studio.sidebar_collapsed;
         let selected = studio.screen;
         let viewport =
-            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size));
+            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size, studio.prototype));
         let exporting = studio.exporting || studio.export_flush.is_some();
         let export_disabled = exporting || studio.implementation_flush.is_some();
         let notice = studio.notice.clone();
@@ -2670,31 +2567,40 @@ impl CenterArea {
             let thumbnail_paths = studio.thumbnail_paths.clone();
             let design = studio.design.clone();
             let center = cx.entity();
-            let screens = screens
-                .into_iter()
-                .filter(|s| !s.archived)
-                .collect::<Vec<_>>();
+            drop(screens);
+            // Sections group previews in sidebar order; each group starts a row.
+            let groups = super::studio_sections_sidebar::grid_groups(&design.manifest);
+            let sectioned = !design.manifest.sections.is_empty();
+            let screens = groups.iter().flat_map(|g| g.screens.iter().cloned()).collect::<Vec<_>>();
             let columns = (((window.viewport_size().width.as_f32()
                 - if sidebar_collapsed { 520. } else { 800. })
                 / 280.)
                 .floor() as usize)
                 .clamp(1, 4);
-            let rows = screens.len().div_ceil(columns);
+            // (heading for a group's first row, first screen, end screen)
+            let mut grid_rows: Vec<(Option<(Uuid, String, usize)>, usize, usize)> = Vec::new();
+            let mut start = 0;
+            for group in &groups {
+                let count = group.screens.len();
+                for (i, offset) in (0..count).step_by(columns).enumerate() {
+                    let heading = (i == 0).then(|| group.section.clone().map(|(id, name)| (id, name, count))).flatten();
+                    grid_rows.push((heading, start + offset, start + (offset + columns).min(count)));
+                }
+                start += count;
+            }
+            let rows = grid_rows.len();
             let grid_selection=studio.canvas.layout.selected_screen_id;
+            let grid_section=studio.canvas.layout.selected_section_id;
             gpui::uniform_list("studio-overview", rows, move |range, window, cx| {
                 super::studio_editor::prioritize(
                     design.manifest.id,
-                    screens
-                        .iter()
-                        .skip(range.start * columns)
-                        .take(range.len() * columns)
-                        .map(|s| s.id)
-                        .collect(),
+                    range.clone().flat_map(|row| (grid_rows[row].1..grid_rows[row].2).map(|i| screens[i].id)).collect(),
                 );
                 range
                     .map(|row| {
+                        let (heading, first, end) = grid_rows[row].clone();
                         let mut line = h_flex().h(px(225.)).gap_4().px_4().py_3().items_start();
-                        for index in row * columns..((row + 1) * columns).min(screens.len()) {
+                        for index in first..end {
                             let screen = &screens[index];
                             let id = screen.id;
                             let path = thumbnail_paths.get(&id).cloned();
@@ -2759,7 +2665,7 @@ impl CenterArea {
                                             if matches!(event,gpui::ClickEvent::Keyboard(_)) || matches!(event,gpui::ClickEvent::Mouse(mouse) if mouse.up.click_count>=2) {
                                                 this.studio_select_screen(Some(id), cx);
                                             } else if let Some(s)=this.studio.as_mut() {
-                                                s.canvas.layout.selected_screen_id=Some(id);
+                                                s.canvas.layout.select_screen(Some(id));
                                                 if !s.canvas.corrupt {if let Err(e)=s.store.save_canvas_state(s.design.manifest.id,&s.canvas.layout){s.error=Some(e.to_string());}}
                                                 cx.notify();
                                             }
@@ -2767,7 +2673,25 @@ impl CenterArea {
                                     )),
                             );
                         }
-                        line
+                        if !sectioned {
+                            return line.into_any_element();
+                        }
+                        // Grouped rows share one height; a heading band labels each group's first row.
+                        let band = h_flex().id(("studio-grid-heading", row)).h(px(32.)).px_4().pt_2().items_end().gap_2()
+                            .text_size(crate::ui::design::text_ui());
+                        let band = match heading {
+                            Some((section, name, count)) => {
+                                let selectable = !section.is_nil();
+                                band.when(selectable, |band| band.cursor_pointer())
+                                    .child(div().min_w(px(0.)).truncate().font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(if grid_section == Some(section) { crate::ui::design::t1(cx) } else { crate::ui::design::t2(cx) })
+                                        .child(name))
+                                    .child(div().flex_none().text_color(crate::ui::design::t3(cx)).child(count.to_string()))
+                                    .when(selectable, |band| band.on_click(window.listener_for(&center, move |this: &mut Self, _, _, cx| this.studio_select_section(Some(section), cx))))
+                            }
+                            None => band,
+                        };
+                        v_flex().h(px(257.)).child(band).child(line).into_any_element()
                     })
                     .collect::<Vec<_>>()
             })
@@ -2847,13 +2771,14 @@ impl CenterArea {
                         ),
                     ))
                 });
+            let inspector = self.render_studio_section_inspector(window, cx);
             v_flex()
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
                 .bg(crate::ui::design::stage(cx))
                 .child(self.studio_canvas_header(cx))
-                .child(body)
+                .child(h_flex().flex_1().w_full().min_h(px(0.)).child(body).children(inspector))
                 .child(toolbar)
                 .into_any_element()
         } else if let Some((width, height)) = viewport.filter(|_| !system_workspace) {
@@ -2915,7 +2840,7 @@ impl CenterArea {
                                 },
                             )
                             .disabled(export_disabled)
-                            .tooltip("Save this screen as a PNG at the displayed size")
+                            .tooltip("Save a PNG to Downloads at the displayed size")
                             .on_click(cx.listener(|this, _, _, cx| this.studio_export_png(cx))),
                         )
                         .when(self.studio.as_ref().is_some_and(|s|s.prototype),|row|row
@@ -2955,7 +2880,7 @@ impl CenterArea {
         let project_root = studio.store.project.clone();
         let implementor_ids = studio.implementation_agents.clone();
         let viewport =
-            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size));
+            selected.and_then(|id| screens_for_viewport(&studio.design, id, studio.viewing_size, studio.prototype));
         let exporting = studio.exporting || studio.export_flush.is_some();
         let error = studio.error.clone();
         let notice = studio.notice.clone();
@@ -3002,7 +2927,7 @@ impl CenterArea {
                 })),
         );
         let stage_key = self.studio_region_key(false);
-        let sidebar_key = self.studio_region_key(true);
+        let sidebar_key = format!("{}:drag={}", self.studio_region_key(true), cx.has_active_drag());
         let owner = cx.entity().downgrade();
         let stage_view = self.studio_stage_view.get_or_insert_with(|| cx.new(|_| StudioRegion { owner: owner.clone(), project, sidebar: false, key: stage_key.clone() }));
         stage_view.update(cx, |view, cx| { if view.project != project || view.key != stage_key { view.project = project; view.key = stage_key; cx.notify(); } });
@@ -3016,6 +2941,8 @@ impl CenterArea {
             let view = self.studio_sidebar_view.get_or_insert_with(|| cx.new(|_| StudioRegion { owner, project, sidebar: true, key: sidebar_key.clone() }));
             view.update(cx, |view, cx| { if view.project != project || view.key != sidebar_key { view.project = project; view.key = sidebar_key; cx.notify(); } });
             let _ = view.read(cx);
+            // Keep the ordinary cached region and its size during native drags.
+            // GPUI refreshes the window for drag movement and hover feedback.
             gpui::AnyView::from(view.clone()).cached(gpui::StyleRefinement::default().size_full()).into_any_element()
         };
         let active_implementor = self
@@ -3271,24 +3198,6 @@ fn conversation_path_for(design: Uuid, conversation: Uuid, system: bool) -> Path
     }
 }
 
-fn studio_token_group(name: &str) -> &'static str {
-    if name.starts_with("color-") {
-        "Colors"
-    } else if name.starts_with("font-")
-        || name.starts_with("line-height")
-        || name.starts_with("letter-spacing")
-    {
-        "Typography"
-    } else if name.starts_with("space-") || name.starts_with("spacing-") {
-        "Spacing"
-    } else if name.starts_with("radius-") {
-        "Corners"
-    } else if name.starts_with("shadow-") {
-        "Shadows"
-    } else {
-        "Other"
-    }
-}
 fn studio_token_label(name: &str) -> String {
     let name = name
         .strip_prefix("color-")
@@ -3308,6 +3217,7 @@ fn screens_for_viewport(
     design: &StudioDesign,
     screen: Uuid,
     override_size: Option<(u32, u32)>,
+    prototype: bool,
 ) -> Option<(u32, u32)> {
     design
         .manifest
@@ -3315,6 +3225,11 @@ fn screens_for_viewport(
         .iter()
         .find(|s| s.id == screen)
         .map(|s| override_size.unwrap_or((s.width, s.height)))
+        .map(|(width, height)| if prototype {
+            super::studio_editor::prototype_viewport(width, height)
+        } else {
+            (width, height)
+        })
 }
 
 /// Studio's expensive stage is a sibling of the chat composer, so input and

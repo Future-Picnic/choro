@@ -153,6 +153,7 @@ pub fn checkout_branch(repo_path: &Path, name: &str) -> Result<()> {
             }
         })?;
     repo.set_head(&format!("refs/heads/{name}"))?;
+    super::archive::restore_branch(&repo, name)?;
     Ok(())
 }
 

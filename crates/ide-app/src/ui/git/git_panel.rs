@@ -62,12 +62,14 @@ pub(crate) use generation::{
 };
 pub(crate) use generation::{run_quick_ask_generation_with_images, run_safe_text_generation};
 use pull_request_dialog::{confirm_git_action, GitConfirmation};
+#[cfg(test)]
+use pull_request_support::merge_pull_request_with_gh;
 use pull_request_support::{
     branch_from_push_message, existing_pull_request_url, repo_pull_requests,
 };
 pub(crate) use pull_request_support::{
     branch_pull_request, create_pull_request_with_gh, github_pull_request_url,
-    merge_pull_request_with_gh, open_url, pull_request_status_style, pull_request_url_with_text,
+    merge_pull_request_with_archive, open_url, pull_request_status_style, pull_request_url_with_text,
 };
 use repository_setup::open_publish_repository_dialog;
 

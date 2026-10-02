@@ -813,6 +813,9 @@ impl CenterArea {
                                 ))
                             })
                             .when(ide_core::delegation::enabled(), |card|card.child(self.render_expert_composer(agent,cx)))
+                            .when_some(self.render_studio_composer_target(agent, cx), |card, chip| {
+                                card.child(h_flex().w_full().min_w(px(0.)).child(chip))
+                            })
                             .when(!has_composer_decision && !handoff_busy, |card| {
                                 let picker =
                                     self.render_agent_chat_context_picker(agent, input.clone(), window, cx);
@@ -1378,6 +1381,9 @@ impl CenterArea {
                                                 send_fill,
                                                 cx,
                                             )
+                                                .tooltip(move |window, cx| {
+                                                    Tooltip::new(if is_running { "Queue message" } else { "Send message" }).build(window, cx)
+                                                })
                                                 .when(can_send, |button| {
                                                     button
                                                         .cursor_pointer()

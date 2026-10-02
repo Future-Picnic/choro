@@ -168,17 +168,6 @@ impl Render for SettingsView {
                             cx,
                         ))
                     })
-                    .when(
-                        SettingsSection::BetaFeatures.matches(&settings_query),
-                        |nav| {
-                            nav.child(Self::section_button(
-                                "settings-beta-features",
-                                SettingsSection::BetaFeatures,
-                                section,
-                                cx,
-                            ))
-                        },
-                    )
                     .when(SettingsSection::Process.matches(&settings_query), |nav| {
                         nav.child(Self::section_button(
                             "settings-process-section",
@@ -253,7 +242,6 @@ impl Render for SettingsView {
                                 SettingsSection::Data => self.render_data_page(cx),
                                 SettingsSection::AgentSkills => self.render_skills_page(cx),
                                 SettingsSection::Experts => self.render_experts_page(window, cx),
-                                SettingsSection::BetaFeatures => self.render_beta_features_page(cx),
                                 SettingsSection::Orbit => self.render_orbit_page(window, cx),
                                 SettingsSection::Process => self.render_process_page(cx),
                                 SettingsSection::Shortcuts => self.render_shortcuts(cx),

@@ -46,6 +46,7 @@ impl AgentChatState {
             mode: session.interaction_mode,
             created_at: unix_now(),
             handoff: Some(handoff),
+            studio_request: None,
         });
         if session.status == AgentChatStatus::Idle {
             self.schedule_next_queued_turn(agent_id, cx);

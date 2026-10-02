@@ -6,6 +6,12 @@ Resizing commits one `UpdateScreen` transaction, checks the revision/fingerprint
 
 Workspace layout is stored atomically outside the project under the Studio cache. Missing state gets defaults. Corrupt state is preserved; explicitly choosing Arrange copies it to a preserved file before recovery. Canvas/editor navigation flushes pending layout changes. Archived positions remain available for restoration.
 
+## Sections
+
+Bootstrap and `state` carry host-authored `sections` (metadata plus authoritative geometry) and `arrangement`; grouped screens' `layout.positions` are their derived board positions. Section boards are non-selectable, non-draggable React Flow nodes at `zIndex: -1`, culled like artboards, with exact `measured` sizes. Titles size from `labelPixels(zoom)` and `sectionLabels` (collision priority for the selected section); strokes scale with the `--zoom` CSS variable.
+
+Session-scoped messages: `select-section`, `move-screen {screen_id, section_id, before_screen_id, position?, revision, fingerprint}` (revision/fingerprint captured at drag start), `reorder-sections`, and `context-action` (whitelisted actions for exactly one screen or section). Rust validates bounds and shapes before queueing. `move-result` is correlated by request ID and carries authoritative screens, sections and positions; uncorrelated or older results are ignored. A dropped screen stays at its drop position, non-draggable, until the result arrives. Escape cancels a drag back to its authoritative position. `dropTarget`/`sameSlot` mirror the Rust insertion rule. Fixture hooks (`begin`, `hover`, `finish`, `drop`, `escape`) exist only when `boot.test` is set.
+
 ## Rendering and isolation
 
 The separate `StudioCanvas` webview intent uses validated, session-scoped messages and a read-only image protocol with opaque, host-issued keys. Its CSP blocks network connections, frames, forms, and external navigation. Canvas cannot send editor-save messages.
@@ -24,14 +30,20 @@ From the repository root:
 
 ```sh
 cargo test -p ide-core --lib studio::canvas
+cargo test -p ide-core --lib studio::sections
+cargo test -p ide-mcp studio
 cargo test -p ide-app studio_ -- --test-threads=1
 python3 crates/ide-app/assets/studio/canvas.test.py --protocol
 python3 crates/ide-app/assets/studio/editor.test.py
 ```
 
-The isolated WebKit fixture checks 10/50/100/200 screens, cancellation, keyboard opening, preservation of an active drag during metadata updates, stale resize acknowledgements, ongoing preview demand, culling, and exact PNG output dimensions. `--protocol` uses raster PNGs through a custom WebKit protocol. The model tests cover budget recovery. Native tests cover message validation, session-bound image keys, encoded cache limits, serial helper reuse/idle exit, export priority, and existing PNG export behavior.
+The isolated WebKit fixture checks 10/50/100/200 screens (60% grouped into sections, stacked and side by side), section boards and zoom-independent titles, section selection, drop targets and insertion markers, same-slot snap-back, Escape cancellation, interaction-start revisions despite metadata mid-drag, correlated and stale move results with rollback, drag-out positions, empty-section drops, canvas context menus, Fit section, section culling, cancellation, keyboard opening, preservation of an active drag during metadata updates, stale resize acknowledgements, ongoing preview demand, culling, and exact PNG output dimensions. `--protocol` uses raster PNGs through a custom WebKit protocol. The model tests cover budget recovery. Native tests cover message validation, session-bound image keys, encoded cache limits, serial helper reuse/idle exit, export priority, and existing PNG export behavior.
 
 Tests retain their temporary evidence rather than deleting files. Offscreen frame timings are deliberately null because WebKit throttles animation frames.
+
+`--protocol --unsectioned` uses the original loose-screen layout for a like-for-like comparison. Selection-only replies carry IDs without regenerating preview metadata. Camera title updates and insertion feedback reconcile section nodes while preserving artboard data. Context-menu moves freeze their revision at menu open, correlate their result, and surface conflicts; unanswered moves time out and request authoritative state. Fit includes display-sized title extents at its resulting zoom.
+
+`--protocol --dense` stresses 200 screens and 100 sections. `--bundle=/path/to/dist` tests a copied baseline bundle with the same fixture without reverting workspace changes.
 
 ## Performance gate and test build
 

@@ -1390,6 +1390,10 @@ pub fn danger_button_compact(id: impl Into<ElementId>, label: impl Into<SharedSt
     base_button_compact(id, label).danger()
 }
 
+pub fn warning_button_compact(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    base_button_compact(id, label).warning()
+}
+
 /// Full-height action used in the workspace navigation rail footer. The rail
 /// has a deliberately different vertical treatment from ordinary buttons, but
 /// still routes through the shared control system so feature modules never
@@ -1662,6 +1666,17 @@ pub fn composer_control_divider(cx: &App) -> Div {
         // `line` sits almost on the composer surface and reads as nothing here —
         // a dialled-back text tone is quiet but actually visible.
         .bg(design::t3(cx).opacity(0.32))
+}
+
+/// A compact, non-interactive context label inside the composer.
+pub fn composer_target_chip(label: impl Into<SharedString>, screen: bool, cx: &App) -> Div {
+    h_flex()
+        .min_w(px(0.)).max_w_full().gap_1p5().px_2().py_1().rounded_full()
+        .bg(design::surface_2(cx)).text_color(design::t2(cx))
+        .text_size(design::text_label())
+        .child(Icon::new(if screen { IconName::File } else { IconName::LayoutDashboard })
+            .size(design::icon_sm()).text_color(design::t3(cx)))
+        .child(div().min_w(px(0.)).truncate().child(label.into()))
 }
 
 /// A non-menu counterpart to [`composer_chip`] for binary composer modes such as
@@ -2042,6 +2057,30 @@ pub fn sidebar_footer_icon_button(id: impl Into<ElementId>, icon: IconName, cx: 
 
 /// Square size of the left sidebar footer's controls.
 pub const SIDEBAR_FOOTER_CONTROL_H: f32 = 30.0;
+
+/// Footer action for glyphs that are not in gpui-component's icon set.
+pub fn sidebar_footer_glyph_button(
+    id: impl Into<ElementId>,
+    icon: lucide_icons::Icon,
+    cx: &App,
+) -> Button {
+    sidebar_footer_menu_button(id)
+        .w(px(SIDEBAR_FOOTER_CONTROL_H))
+        .child(design::indicator::lucide_icon(
+            icon,
+            design::t3(cx),
+            design::icon(),
+        ))
+}
+
+/// Footer control with custom content, at the same height as the icon actions.
+pub fn sidebar_footer_menu_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(px(SIDEBAR_FOOTER_CONTROL_H))
+}
 
 /// The one filled action in the left sidebar header (New Agent). Same geometry
 /// as `sidebar_bar_icon_button`, lifted to surface-2 so it reads as the row's

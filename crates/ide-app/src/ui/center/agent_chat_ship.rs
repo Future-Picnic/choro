@@ -441,9 +441,13 @@ impl CenterArea {
             .tone(ConfirmTone::Primary)
             .icon(IconName::GitHub)
             .branch_route(branch.clone(), base_branch.clone())
+            .checkbox(
+                "Archive branch after merge",
+                "Hide it from Choro's branch picker. Search for it to restore it; files and GitHub branches are kept.",
+            )
             .confirm_label("Merge PR")
             .confirm_id("confirm-merge-agent-ship-pr")
-            .on_confirm(move |window, cx| {
+            .on_confirm_with_checkbox(move |archive, window, cx| {
                 let window_handle = window.window_handle();
                 let merge_git = git.clone();
                 let repo_path = repo_path.clone();
@@ -469,11 +473,12 @@ impl CenterArea {
                         let result = cx
                             .background_executor()
                             .spawn(async move {
-                                crate::ui::git::git_panel::merge_pull_request_with_gh(
+                                crate::ui::git::git_panel::merge_pull_request_with_archive(
                                     &repo_path,
                                     &branch,
                                     Some(&base_branch),
                                     None,
+                                    archive,
                                 )
                             })
                             .await;
@@ -482,10 +487,7 @@ impl CenterArea {
                                 git.is_busy = false;
                                 match &result {
                                     Ok(outcome) => {
-                                        git.last_message = Some(format!(
-                                            "Merged pull request #{} into {}",
-                                            outcome.number, outcome.base_branch
-                                        ));
+                                        git.last_message = Some(outcome.message());
                                         git.last_error = None;
                                     }
                                     Err(error) => {
@@ -510,10 +512,7 @@ impl CenterArea {
                         })
                         .ok();
                         let notification = match &result {
-                            Ok(outcome) => Notification::success(format!(
-                                "Merged pull request #{} into {}",
-                                outcome.number, outcome.base_branch
-                            )),
+                            Ok(outcome) => outcome.notification(),
                             Err(error) => Notification::error(format!("{error:#}")),
                         };
                         window_handle

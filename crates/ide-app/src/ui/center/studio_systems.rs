@@ -47,14 +47,14 @@ impl CenterArea {
                 .filter(|d| system_id_from_reference(&d.design_system).ok().flatten() == Some(id))
                 .count();
             let mut palette = h_flex().w_full().h(px(66.)).gap_1();
-            for (_, value) in record
+            for (name, _) in record
                 .draft
                 .tokens
                 .iter()
-                .filter(|(k, _)| k.contains("color"))
+                .filter(|(name, _)| system_token_group(name, &record.draft.tokens) == "Colors")
                 .take(6)
             {
-                if let Ok(color) = gpui::Hsla::parse_hex(value) {
+                if let Some(color) = resolved_token_value(name, &record.draft.tokens).and_then(|value| gpui::Rgba::try_from(value).ok()) {
                     palette = palette.child(
                         div()
                             .flex_1()
@@ -186,12 +186,18 @@ impl CenterArea {
                 (key, input)
             })
             .collect::<Vec<_>>();
+        let additions = cx.new(|cx| InputState::new(window, cx).multi_line(true).rows(3)
+            .placeholder("padding: 12px\nborder-radius: var(--radius-control)"));
+        let validation_error = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
         let center = cx.entity();
-        window.open_dialog(cx, move |dialog, _, _| {
+        window.open_dialog(cx, move |dialog, _, cx| {
             let center = center.clone();
             let fields = fields.clone();
             let name = name.clone();
             let expected = expected.clone();
+            let additions = additions.clone();
+            let validation_error = validation_error.clone();
+            let validation_message = validation_error.borrow().clone();
             let form = v_flex()
                 .gap_3()
                 .children(fields.iter().map(|(name, input)| {
@@ -202,30 +208,51 @@ impl CenterArea {
                 }));
             dialog
                 .title(format!("Edit {name} recipe"))
-                .child(div().child("Use var(--token-name) to inherit a design token."))
+                .child(div().child("Use var(--token-name) to inherit a design token. Clear a value to remove that property."))
+                .when(!validation_message.is_empty(), |dialog| {
+                    dialog.child(div().text_color(crate::ui::design::rose(cx)).child(validation_message))
+                })
                 .child(
                     div()
                         .id("system-recipe-fields")
                         .max_h(px(360.))
                         .overflow_y_scroll()
-                        .child(form),
+                        .child(form)
+                        .child(div().mt_3().child("Additional properties · one property: value per line"))
+                        .child(Input::new(&additions)),
                 )
                 .footer(move |_, _, _, cx| {
                     let center = center.clone();
                     let fields = fields.clone();
                     let name = name.clone();
                     let expected = expected.clone();
+                    let additions = additions.clone();
+                    let validation_error = validation_error.clone();
                     vec![
                         style::dialog_neutral_button("recipe-cancel", "Cancel", cx)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                         style::primary_button_compact("recipe-save", "Save draft", cx).on_click(
                             move |_, window, cx| {
-                                let properties = fields
+                                let mut properties: BTreeMap<String, String> = fields
                                     .iter()
                                     .map(|(key, input)| {
                                         (key.clone(), input.read(cx).value().to_string())
                                     })
+                                    .filter(|(_, value)| !value.trim().is_empty())
                                     .collect();
+                                for line in additions.read(cx).value().lines().filter(|line| !line.trim().is_empty()) {
+                                    let Some((key, value)) = line.split_once(':') else {
+                                        *validation_error.borrow_mut() = "Use property: value for each additional property.".into();
+                                        window.refresh();
+                                        return;
+                                    };
+                                    if key.trim().is_empty() || value.trim().is_empty() {
+                                        *validation_error.borrow_mut() = "Give each additional property a name and value.".into();
+                                        window.refresh();
+                                        return;
+                                    }
+                                    properties.insert(key.trim().into(), value.trim().into());
+                                }
                                 window.close_dialog(cx);
                                 center.update(cx, |this, cx| {
                                     let Some(studio) = this.studio.as_ref() else {
@@ -930,6 +957,13 @@ impl CenterArea {
             "{} component recipes in this draft",
             record.draft.recipes.len()
         );
+        let missing = missing_system_tokens(&record.draft);
+        let unresolved = !missing.is_empty();
+        let validation = if unresolved {
+            format!("Before applying, add these source tokens or edit their recipe references in Library: {}", missing.into_iter().collect::<Vec<_>>().join(", "))
+        } else {
+            String::new()
+        };
         let linked = if impact.is_empty() {
             "No designs use this system yet.".into()
         } else {
@@ -946,9 +980,10 @@ impl CenterArea {
         window.open_dialog(cx,move|dialog,_,_|{
             let center=center.clone();let store=store.clone();let impact=impact.clone();let record=record.clone();let fingerprint=fingerprint.clone();
             dialog.title("Review system changes").child(system_comparison_images(&previews)).child(div().child(linked.clone()))
+                .when(unresolved, |dialog| dialog.child(div().child(validation.clone())))
                 .child(div().child("Only linked designs inherit these changes. Their local overrides remain in place."))
                 .child(div().id("system-review-scroll").max_h(px(320.)).overflow_y_scroll().child(v_flex().gap_3().child(div().child(changes.clone())).child(div().child(recipes.clone()))))
-                .footer(move|_,_,_,cx|{let center=center.clone();let store=store.clone();let impact=impact.clone();let fingerprint=fingerprint.clone();vec![style::dialog_neutral_button("system-review-cancel","Keep editing",cx).on_click(|_,window,cx|window.close_dialog(cx)),style::primary_button_compact("system-review-apply","Apply system",cx).disabled(record.archived||record.draft.tokens.is_empty()).on_click(move|_,window,cx|{
+                .footer(move|_,_,_,cx|{let center=center.clone();let store=store.clone();let impact=impact.clone();let fingerprint=fingerprint.clone();vec![style::dialog_neutral_button("system-review-cancel","Keep editing",cx).on_click(|_,window,cx|window.close_dialog(cx)),style::primary_button_compact("system-review-apply","Apply system",cx).disabled(record.archived||record.draft.tokens.is_empty()||unresolved).on_click(move|_,window,cx|{
                     window.close_dialog(cx);center.update(cx,|this,cx|this.publish_system_review(store.clone(),project,id,record.draft.revision,fingerprint.clone(),impact.clone(),cx));
                 })]})
         });

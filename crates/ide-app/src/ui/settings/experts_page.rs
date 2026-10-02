@@ -154,6 +154,7 @@ impl SettingsView {
             .w_full()
             .min_w(px(0.))
             .gap_3()
+            .child(self.render_delegation_settings(cx))
             .child(self.render_experts_toolbar(summary, cx))
             .when_some(self.experts_status.clone(), |page, notice| {
                 page.child(notice.render(cx))

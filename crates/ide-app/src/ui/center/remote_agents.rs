@@ -529,10 +529,6 @@ impl CenterArea {
                             "Stop or finish the active work before marking this agent Done",
                         ));
                     }
-                    if status == AgentStatus::Done {
-                        self.workspace
-                            .update(cx, |w, cx| w.set_agent_pinned(agent_id, false, cx));
-                    }
                     self.agents
                         .update(cx, |a, cx| a.update_status(agent_id, status, cx));
                 }

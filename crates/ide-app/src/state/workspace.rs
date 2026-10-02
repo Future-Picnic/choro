@@ -181,9 +181,11 @@ impl Workspace {
             theme_name,
             git_status_view: config.git_status_view,
             git_status_group: config.git_status_group,
-            conversation_layout: config.conversation_layout,
-            sidebar_style: config.sidebar_style,
-            separator_style: config.separator_style,
+            // Opinionated, not preferences: earlier builds let users pick these,
+            // so saved values are ignored and the next save writes these back.
+            conversation_layout: ConversationLayout::Classic,
+            sidebar_style: SidebarStyle::Flat,
+            separator_style: SeparatorStyle::Soft,
             notifications: config.notifications,
             companion_enabled: config.companion_enabled,
             companion_music: config.companion_music,
@@ -258,33 +260,6 @@ impl Workspace {
             return;
         }
         self.git_status_group = group;
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    pub fn set_conversation_layout(&mut self, layout: ConversationLayout, cx: &mut Context<Self>) {
-        if self.conversation_layout == layout {
-            return;
-        }
-        self.conversation_layout = layout;
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    pub fn set_sidebar_style(&mut self, style: SidebarStyle, cx: &mut Context<Self>) {
-        if self.sidebar_style == style {
-            return;
-        }
-        self.sidebar_style = style;
-        self.schedule_save(cx);
-        cx.notify();
-    }
-
-    pub fn set_separator_style(&mut self, style: SeparatorStyle, cx: &mut Context<Self>) {
-        if self.separator_style == style {
-            return;
-        }
-        self.separator_style = style;
         self.schedule_save(cx);
         cx.notify();
     }

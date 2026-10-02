@@ -73,6 +73,35 @@ Commercial Terms also apply to products offered to end users. Review those
 terms and the bundled SDK package for the release; this notice does not claim
 Anthropic's endorsement or approval of Choro.
 
+## Google Antigravity ACP agent (Gemini)
+
+Choro's Gemini chat integration starts Google's unmodified Antigravity ACP
+server locally. The provider installer currently selects version 1.2.1 from
+Google's download host using the distribution published in the
+[ACP registry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json).
+The Google executable and its sidecar are downloaded on first use into the
+user's local provider cache; they are not included in the Choro installer.
+
+The registry identifies this agent as proprietary software from Google LLC,
+governed by the [Google Antigravity terms](https://antigravity.google/terms).
+It is separate from the Apache-2.0 Gemini CLI project and is excluded from
+Choro's Apache-2.0 license grant. Choro's own integration code remains covered
+by Choro's license.
+
+Google's agent handles Google sign-in and its authentication state in the
+local provider directory, `data/providers/google`, under Choro's configuration
+directory. Choro's integration does not extract OAuth tokens, implement a
+replacement Google authentication client, or proxy model requests through a
+Choro-operated server. Users supply their own eligible Google account and
+remain subject to Google's terms, availability, quotas, and privacy settings.
+Google may receive prompts, project context, tool results, and service metadata;
+local execution does not mean that model processing takes place on the Mac.
+
+Google documents this ACP agent's subscription authentication for
+[Zed](https://antigravity.google/docs/ide/extensions/zed/).
+This notice describes Choro's implementation and the applicable provider
+terms; it does not claim Google endorsement or a separate approval of Choro.
+
 ## Fonts and icon libraries
 
 | Asset | License | Source |
@@ -100,7 +129,8 @@ license grant, and no endorsement is implied.
 
 ## Product and provider marks
 
-The Asana, Anthropic/Claude, Atlassian/Jira, ClickUp, Figma, Linear, OpenAI,
+The Asana, Anthropic/Claude, Atlassian/Jira, ClickUp, Figma, Google/Gemini/
+Antigravity, Linear, OpenAI,
 and other product names and logos are used only to identify compatible
 integrations or upstream software.
 They are excluded from Choro's Apache-2.0 license grant and remain subject to

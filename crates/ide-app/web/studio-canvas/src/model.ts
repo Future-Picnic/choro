@@ -17,7 +17,26 @@ export type Layout = {
   viewport: Camera;
   positions: Record<string, Point>;
   selected_screen_id: string | null;
+  selected_section_id?: string | null;
 };
+/** Host-authored section metadata and authoritative geometry (canvas units). */
+export type Section = {
+  id: string;
+  name: string;
+  direction: "horizontal" | "vertical";
+  gap: number;
+  title_style: "left_title" | "full_width_header";
+  header_alignment: "left" | "center";
+  screen_ids: string[];
+  active_screen_ids: string[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  header_height: number;
+};
+export type Arrangement = "stacked" | "side_by_side";
+export type Rect = { x: number; y: number; width: number; height: number };
 export type Request = { screen_id: string; content_key: string; tier: number };
 export const IMAGE_BUDGET = 64 * 1024 * 1024;
 export const TIERS = [256, 512, 1024, 2048];
@@ -123,6 +142,152 @@ export function validCamera(v: Camera) {
     v.zoom >= 0.02 &&
     v.zoom <= 2
   );
+}
+
+/** Section titles stay readable independent of artboard scale: ~16–30 display px. */
+export const LABEL_MIN_PX = 16;
+export const LABEL_MAX_PX = 30;
+const LINE = 1.35;
+/** Mirrors the Rust board constants. */
+const SECTION_SPACING = 160;
+const CAPTION = 44;
+export function labelPixels(zoom: number) {
+  return Math.max(LABEL_MIN_PX, Math.min(LABEL_MAX_PX, 40 * Math.sqrt(Math.max(zoom, 0))));
+}
+export type LabelPlan = {
+  /** Display pixels; divide by zoom for canvas units. */
+  size: number;
+  mode: "full" | "short" | "hidden";
+  /** Character limit for a shortened title. */
+  chars?: number;
+  /** Room for the title in canvas units; longer titles truncate with an ellipsis. */
+  maxWidth: number;
+};
+function overlaps(a: Rect, b: Rect) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+/** Space between a title and its section surface, in display pixels. */
+export const TITLE_GAP_PX = 6;
+/** A title sits at the bottom of its reserved band, just above the surface,
+ * and grows upward below the minimum label zoom. Stacked sections may use the
+ * board's width for a title; side-by-side titles stop short of the next one.
+ * At extreme zoom, collisions resolve in priority order: the selected
+ * section keeps its full title; others shorten, then hide. */
+export function sectionLabels(
+  sections: Section[],
+  zoom: number,
+  selected: string | null | undefined,
+  arrangement: Arrangement = "stacked",
+): Record<string, LabelPlan> {
+  const size = labelPixels(zoom);
+  const board = Math.max(0, ...sections.map((s) => s.width));
+  const room = (s: Section) => (arrangement === "stacked" ? Math.max(s.width, board) : s.width + SECTION_SPACING * 0.75);
+  // Normal zoom: titles fit their reserved bands, so collision testing is unnecessary.
+  if (sections.every((s) => (size * LINE + TITLE_GAP_PX) / zoom <= s.header_height))
+    return Object.fromEntries(sections.map((s) => [s.id, { size, mode: "full", maxWidth: room(s) }]));
+  const order = [...sections].sort((a, b) => (b.id === selected ? 1 : 0) - (a.id === selected ? 1 : 0));
+  const placed: Rect[] = [];
+  const plans: Record<string, LabelPlan> = {};
+  const rect = (s: Section, px: number, chars: number) => {
+    const height = (px * LINE) / zoom;
+    const width = Math.min(room(s), (chars * px * 0.6 + 32) / zoom);
+    const bottom = s.y + s.header_height - TITLE_GAP_PX / zoom;
+    return { x: s.x, y: bottom - height, width, height };
+  };
+  for (const section of order) {
+    const others = sections.filter((s) => s.id !== section.id);
+    const free = (r: Rect) => !placed.some((p) => overlaps(p, r)) && !others.some((s) => overlaps(s, r));
+    const maxWidth = room(section);
+    const full = rect(section, size, section.name.length);
+    if (section.id === selected || free(full)) {
+      plans[section.id] = { size, mode: "full", maxWidth };
+      placed.push(full);
+      continue;
+    }
+    // Shorten: the largest size that fits the band and the spacing above it.
+    const fit = Math.min(size, ((section.header_height + SECTION_SPACING) * zoom - TITLE_GAP_PX) / LINE - 1);
+    const chars = Math.min(section.name.length, 14);
+    const short = rect(section, fit, chars);
+    if (fit >= 9 && free(short)) {
+      plans[section.id] = { size: fit, mode: "short", chars, maxWidth };
+      placed.push(short);
+    } else plans[section.id] = { size, mode: "hidden", maxWidth };
+  }
+  return plans;
+}
+export function shortTitle(name: string, plan: LabelPlan) {
+  return plan.mode === "short" && plan.chars && name.length > plan.chars ? name.slice(0, plan.chars - 1) + "…" : name;
+}
+/** Bounds of every section, including title bands. */
+export function boardBounds(sections: Section[], zoom?: number): Rect | null {
+  if (!sections.length) return null;
+  const x = Math.min(...sections.map((s) => s.x));
+  const y = Math.min(...sections.map((s) => zoom ? Math.min(s.y, s.y + s.header_height - (labelPixels(zoom) * LINE + TITLE_GAP_PX) / zoom) : s.y));
+  return {
+    x,
+    y,
+    width: Math.max(...sections.map((s) => s.x + s.width)) - x,
+    height: Math.max(...sections.map((s) => s.y + s.height)) - y,
+  };
+}
+export type DropTarget = {
+  section_id: string | null;
+  before_screen_id: string | null;
+  /** Insertion marker in canvas units, or the whole content area when empty. */
+  marker?: Rect;
+};
+/** Mirrors the host's insertion rule: the first other member whose midpoint
+ * lies after the pointer along the section direction. */
+export function dropTarget(
+  sections: Section[],
+  screens: Screen[],
+  positions: Record<string, Point>,
+  dragged: string,
+  point: Point,
+  size: ReadonlyMap<string, Screen> = new Map(screens.map((s) => [s.id, s])),
+): DropTarget {
+  const section = sections.find(
+    (s) => point.x >= s.x && point.y >= s.y && point.x <= s.x + s.width && point.y <= s.y + s.height,
+  );
+  if (!section) return { section_id: null, before_screen_id: null };
+  const horizontal = section.direction === "horizontal";
+  const members = section.active_screen_ids.filter((id) => id !== dragged && positions[id] && size.get(id));
+  const contentTop = section.y + section.header_height;
+  if (!members.length)
+    return {
+      section_id: section.id,
+      before_screen_id: null,
+      marker: { x: section.x, y: contentTop, width: section.width, height: section.height - section.header_height },
+    };
+  const before =
+    members.find((id) => {
+      const p = positions[id], s = size.get(id)!;
+      return horizontal ? point.x < p.x + s.width / 2 : point.y < p.y + s.height / 2;
+    }) ?? null;
+  const thickness = 8;
+  let marker: Rect;
+  if (horizontal) {
+    const anchor = before ?? members[members.length - 1];
+    const p = positions[anchor], s = size.get(anchor)!;
+    const x = before ? p.x - section.gap / 2 : p.x + s.width + section.gap / 2;
+    marker = { x: x - thickness / 2, y: contentTop, width: thickness, height: section.y + section.height - contentTop };
+  } else {
+    const anchor = before ?? members[members.length - 1];
+    const p = positions[anchor], s = size.get(anchor)!;
+    // Each screen has a caption band above it; mark the middle of the gap.
+    const y = before ? p.y - CAPTION - section.gap / 2 : p.y + s.height + section.gap / 2;
+    marker = { x: section.x, y: y - thickness / 2, width: section.width, height: thickness };
+  }
+  return { section_id: section.id, before_screen_id: before, marker };
+}
+/** True when dropping would leave the screen exactly where it already is. */
+export function sameSlot(sections: Section[], dragged: string, target: DropTarget) {
+  const current = sections.find((s) => s.screen_ids.includes(dragged));
+  if (!current || current.id !== target.section_id) return false;
+  const active = current.active_screen_ids;
+  const index = active.indexOf(dragged);
+  const next = index >= 0 && index + 1 < active.length ? active[index + 1] : null;
+  return target.before_screen_id === next;
 }
 
 /** Choose a decode that fits now; retain blocked work and release large images first. */

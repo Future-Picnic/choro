@@ -52,7 +52,32 @@ pub(super) enum Action {
         requests: Vec<PreviewRequest>,
     },
     Flushed,
+    SelectSection {
+        section_id: Option<Uuid>,
+    },
+    /// A drag or menu move; carries the interaction-start revision.
+    MoveScreen {
+        screen_id: Uuid,
+        section_id: Option<Uuid>,
+        before_screen_id: Option<Uuid>,
+        position: Option<StudioCanvasPoint>,
+        revision: u64,
+        fingerprint: String,
+    },
+    ReorderSections {
+        section_ids: Vec<Uuid>,
+        revision: u64,
+        fingerprint: String,
+    },
+    /// A canvas context-menu command for exactly one screen or section.
+    ContextAction {
+        screen_id: Option<Uuid>,
+        section_id: Option<Uuid>,
+        action: String,
+    },
 }
+const SCREEN_ACTIONS: [&str; 6] = ["rename", "duplicate", "archive", "up", "down", "new-section"];
+const SECTION_ACTIONS: [&str; 7] = ["rename", "add-screen", "earlier", "later", "fit", "ungroup", "edit"];
 #[derive(Debug, Deserialize)]
 pub(super) struct Message {
     pub session: Uuid,
@@ -94,6 +119,19 @@ pub(super) fn enqueue(raw: &str, session: Uuid) -> bool {
                     .all(|r| [256, 512, 1024, 2048].contains(&r.tier) && r.content_key.len() <= 128)
         }
         Action::Failed { error } | Action::EditorFailed { error, .. } => error.len() <= 2048,
+        Action::MoveScreen { position, fingerprint, before_screen_id, screen_id, .. } => {
+            fingerprint.len() <= 128
+                && position.is_none_or(|p| p.validate().is_ok())
+                && *before_screen_id != Some(*screen_id)
+        }
+        Action::ReorderSections { section_ids, fingerprint, .. } => {
+            section_ids.len() <= MAX_SECTIONS && fingerprint.len() <= 128
+        }
+        Action::ContextAction { screen_id, section_id, action } => match (screen_id, section_id) {
+            (Some(_), None) => SCREEN_ACTIONS.contains(&action.as_str()),
+            (None, Some(_)) => SECTION_ACTIONS.contains(&action.as_str()),
+            _ => false,
+        },
         _ => true,
     };
     if !valid {
@@ -191,6 +229,7 @@ pub(super) struct Runtime {
     pub html: Option<String>,
     pub ready: bool,
     pub focus_screen: Option<Uuid>,
+    pub pending_fit_section: Option<Uuid>,
     fit_all_requested: bool,
     visible: bool,
     flush_request: Option<Uuid>,
@@ -217,7 +256,7 @@ impl Runtime {
         let (mut layout,notice,corrupt)=match store.canvas_state(design.manifest.id){Ok(s)=>(s,None,false),Err(e)=>(Default::default(),Some(format!("Saved canvas layout could not be read; using a temporary layout. Arrange can recover it while preserving the original. {e}")),true)};
         let initial = layout.positions.is_empty();
         // New workspaces open on Canvas; retain each design's explicit view choice.
-        layout.reconcile(&design.manifest.screens);
+        layout.reconcile_design(&design.manifest);
         (
             Self {
                 layout,
@@ -225,6 +264,7 @@ impl Runtime {
                 html: None,
                 ready: false,
                 focus_screen: None,
+                pending_fit_section: None,
                 fit_all_requested: false,
                 visible: false,
                 flush_request: None,
@@ -305,6 +345,37 @@ fn metadata(
 ) -> Value {
     json!(design.manifest.screens.iter().map(|s|json!({"id":s.id,"name":s.name,"width":s.width,"height":s.height,"archived":s.archived,"content_key":content_key(store,design,s.id),"activity":activity.get(&s.id).map(|state|state.as_str())})).collect::<Vec<_>>())
 }
+/// Authoritative section metadata and geometry, in sidebar order.
+fn sections_value(manifest: &StudioDesignManifest, board: &StudioBoardGeometry) -> Value {
+    json!(board.sections.iter().filter_map(|b| {
+        let section = manifest.section(b.id)?;
+        Some(json!({"id":section.id,"name":section.name,"direction":section.direction,"gap":section.gap,
+            "title_style":section.title_style,"header_alignment":section.header_alignment,
+            "screen_ids":section.screen_ids,"active_screen_ids":b.active_screen_ids,
+            "x":b.x,"y":b.y,"width":b.width,"height":b.height,"header_height":b.header_height}))
+    }).collect::<Vec<_>>())
+}
+/// Personal layout with grouped screens at their derived board positions.
+fn layout_value(layout: &StudioCanvasState, manifest: &StudioDesignManifest) -> (Value, Value) {
+    let board = layout.board(manifest);
+    let mut value = serde_json::to_value(layout).unwrap_or_default();
+    value["positions"] = json!(layout.effective_positions(&board));
+    value["selected_section_id"] = json!(layout.selected_section_id);
+    (value, sections_value(manifest, &board))
+}
+fn resize_result(s: &super::studio::StudioWorkspace, request: Uuid, screen: Uuid, error: Option<String>) -> Value {
+    let mut reply = move_result(s, request, error);
+    reply["type"] = json!("resize-result");
+    reply["screen_id"] = json!(screen);
+    reply
+}
+pub(super) fn move_result(s: &super::studio::StudioWorkspace, request: Uuid, error: Option<String>) -> Value {
+    let (layout, sections) = layout_value(&s.canvas.layout, &s.design.manifest);
+    json!({"session":s.canvas.session,"type":"move-result","request_id":request,"error":error,
+        "revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,
+        "screens":screens_value(&s.store,&s.design),"sections":sections,"positions":layout["positions"],
+        "arrangement":s.design.manifest.section_layout.direction})
+}
 fn document(bootstrap: Value) -> String {
     let data = bootstrap
         .to_string()
@@ -314,6 +385,14 @@ fn document(bootstrap: Value) -> String {
     format!("<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src choro-canvas-image: data:; font-src data:; connect-src 'none'; frame-src about: data:; base-uri 'none'; form-action 'none'\"><style>{}</style></head><body><div id=\"root\"></div><script>window.__CHORO_CANVAS__={};{}</script></body></html>",include_str!("../../../web/studio-canvas/dist/canvas.css"),data,include_str!("../../../web/studio-canvas/dist/canvas.js").replace("</script","<\\/script"))
 }
 impl CenterArea {
+    /// Selection changes never read documents or regenerate screen preview keys.
+    pub(super) fn studio_canvas_selection(&self, cx: &App) {
+        let Some(s) = self.studio.as_ref() else { return; };
+        if !s.canvas.ready { return; }
+        self.web_host.read(cx).canvas_reply(&json!({"session":s.canvas.session,
+            "type":"selection","screen_id":s.canvas.layout.selected_screen_id,
+            "section_id":s.canvas.layout.selected_section_id}));
+    }
     pub(super) fn focus_studio_canvas_screen(&mut self, cx: &App) {
         let Some(s) = self.studio.as_mut() else { return; };
         let Some(screen) = s.canvas.focus_screen else { return; };
@@ -360,8 +439,10 @@ impl CenterArea {
         {
             return;
         }
-        s.canvas.layout.reconcile(&s.design.manifest.screens);
+        s.canvas.layout.reconcile_design(&s.design.manifest);
         let screens = metadata(&s.store, &s.design, &designing);
+        let (layout, sections) = layout_value(&s.canvas.layout, &s.design.manifest);
+        let arrangement = s.design.manifest.section_layout.direction;
         s.canvas.keys = screens
             .as_array()
             .into_iter()
@@ -376,12 +457,12 @@ impl CenterArea {
         if s.canvas.html.is_none() {
             let theme = super::studio_editor::web_theme(cx);
             s.canvas.html = Some(document(
-                json!({"session":s.canvas.session,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"layout":s.canvas.layout,"theme":theme,"fit_initial":s.canvas.initial}),
+                json!({"session":s.canvas.session,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"sections":sections,"arrangement":arrangement,"layout":layout,"theme":theme,"fit_initial":s.canvas.initial}),
             ));
             s.canvas.initial = false;
             s.canvas.opened = std::time::Instant::now();
         } else if s.canvas.ready {
-            let value = json!({"session":s.canvas.session,"type":"state","revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"layout":s.canvas.layout,"theme":theme});
+            let value = json!({"session":s.canvas.session,"type":"state","revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"sections":sections,"arrangement":arrangement,"layout":layout,"theme":theme});
             self.web_host.read(cx).canvas_reply(&value);
         }
         s.canvas.fingerprint = s.design.fingerprint.clone();
@@ -394,7 +475,7 @@ impl CenterArea {
         };
         if command == "fit-all" && !s.canvas.ready {s.canvas.fit_all_requested=true;return;}
         if command == "arrange" {
-            s.canvas.layout.arrange(&s.design.manifest.screens);
+            s.canvas.layout.arrange_design(&s.design.manifest);
             let result = if s.canvas.corrupt {
                 s.store
                     .recover_canvas_state(s.design.manifest.id, &s.canvas.layout)
@@ -431,9 +512,10 @@ impl CenterArea {
             if s.canvas.layout.overview_mode == mode { return; }
             s.canvas.layout.overview_mode = mode;
             if mode == StudioOverviewMode::Focus {
-                s.canvas.layout.selected_screen_id = s.inline_screen
+                let screen = s.inline_screen
                     .or(s.canvas.layout.selected_screen_id)
                     .or_else(|| s.design.manifest.screens.iter().find(|p| !p.archived).map(|p| p.id));
+                s.canvas.layout.select_screen(screen);
             }
             s.canvas.invalidate_metadata();
             if let Err(e) = s.canvas.save(&s.store, s.design.manifest.id) { s.error = Some(e.to_string()); }
@@ -501,7 +583,7 @@ impl CenterArea {
             s.canvas.leave();
         }
     }
-    pub(super) fn process_studio_canvas(&mut self, visible: bool, cx: &mut Context<Self>) {
+    pub(super) fn process_studio_canvas(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(s) = self.studio.as_mut() {
             if visible && !s.canvas.visible && s.canvas.ready {
                 let value =
@@ -547,6 +629,7 @@ impl CenterArea {
                     self.refresh_studio_canvas(cx);
                     if self.studio.as_ref().is_some_and(|s|s.inline_screen.is_some()) {self.rebuild_studio_editor(cx);}
                     if fit_all {self.studio_canvas_command("fit-all",cx);}
+                    self.studio_canvas_fit_pending(cx);
                 }
                 Action::Failed { error } => {
                     s.error = Some(format!("Canvas unavailable; showing Grid. {error}"));
@@ -555,12 +638,61 @@ impl CenterArea {
                 }
                 Action::Select { screen_id } => {
                     if screen_id.as_ref().is_none_or(known)
-                        && s.canvas.layout.selected_screen_id != screen_id
+                        && (s.canvas.layout.selected_screen_id != screen_id
+                            || s.canvas.layout.selected_section_id.is_some())
                     {
-                        s.canvas.layout.selected_screen_id = screen_id;
+                        // Screen and section selection are exclusive.
+                        s.canvas.layout.select_screen(screen_id);
+                        if screen_id.is_none() { s.canvas.layout.select_section(None); }
                         if let Err(e) = s.canvas.save(&s.store, s.design.manifest.id) {
                             s.error = Some(e.to_string());
                         }
+                        s.section_name_input = None;
+                        self.studio_canvas_selection(cx);
+                    }
+                }
+                Action::SelectSection { section_id } => {
+                    if section_id.is_none_or(|id| s.design.manifest.section(id).is_some()) {
+                        self.studio_select_section(section_id, cx);
+                    }
+                }
+                Action::MoveScreen { screen_id, section_id, before_screen_id, position, revision, fingerprint } => {
+                    let request = Some((m.session, m.request_id));
+                    if !known(&screen_id) || section_id.is_some_and(|id| s.design.manifest.section(id).is_none()) {
+                        self.studio_canvas_move_result(request, Some("The screen or section no longer exists.".into()), cx);
+                        continue;
+                    }
+                    let grouped = s.design.manifest.section_of(screen_id).is_some();
+                    if section_id.is_none() && !grouped && before_screen_id.is_none() {
+                        // Free screens moving on the canvas are personal layout only.
+                        if let Some(position) = position { s.canvas.layout.positions.insert(screen_id, position); }
+                        if let Err(e) = s.canvas.save(&s.store, s.design.manifest.id) { s.error = Some(e.to_string()); }
+                        self.studio_canvas_move_result(request, None, cx);
+                        continue;
+                    }
+                    let effect = super::studio_sections::GroupingEffect {
+                        unsectioned: if section_id.is_none() && position.is_none() { vec![screen_id] } else { vec![] },
+                        drop: section_id.is_none().then_some(position).flatten().map(|p| (screen_id, p)),
+                        canvas_request: request,
+                        ..Default::default()
+                    };
+                    let operation = StudioOperation::MoveScreenToSection { screen_id, section_id, before_screen_id };
+                    self.studio_group(vec![operation], effect, Some((revision, fingerprint)), cx);
+                }
+                Action::ReorderSections { section_ids, revision, fingerprint } => {
+                    let effect = super::studio_sections::GroupingEffect { canvas_request: Some((m.session, m.request_id)), ..Default::default() };
+                    self.studio_group(vec![StudioOperation::ReorderSections { section_ids }], effect, Some((revision, fingerprint)), cx);
+                }
+                Action::ContextAction { screen_id, section_id, action } => {
+                    if let Some(id) = screen_id.filter(|id| s.design.manifest.screens.iter().any(|p| p.id == *id)) {
+                        let name = s.design.manifest.screens.iter().find(|p| p.id == id).map(|p| p.name.clone()).unwrap_or_default();
+                        match action.as_str() {
+                            "rename" => self.studio_name_dialog("Rename screen", &name, super::studio::NameAction::Screen(Some(id)), window, cx),
+                            "new-section" => self.studio_new_section_with(id, window, cx),
+                            action => self.studio_screen_menu_action(id, action, cx),
+                        }
+                    } else if let Some(id) = section_id {
+                        self.studio_section_menu_action(id, &action, window, cx);
                     }
                 }
                 Action::Open { screen_id } => {
@@ -592,7 +724,9 @@ impl CenterArea {
                     screen_id,
                     position,
                 } => {
+                    // Grouped screens are positioned by their section, never freely.
                     if known(&screen_id)
+                        && s.design.manifest.section_of(screen_id).is_none()
                         && s.canvas.layout.positions.get(&screen_id) != Some(&position)
                     {
                         s.canvas.layout.positions.insert(screen_id, position);
@@ -766,14 +900,14 @@ impl CenterArea {
             .find(|screen| screen.id == id && !screen.archived)
             .cloned()
         else {
-            let reply = json!({"session":s.canvas.session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens_value(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":"This screen was archived or removed while resizing."});
+            let reply = resize_result(s, request, id, Some("This screen was archived or removed while resizing.".into()));
             self.web_host
                 .update(cx, |host, _| host.canvas_reply(&reply));
             return;
         };
-        if s.saving || revision != s.design.manifest.revision || fingerprint != s.design.fingerprint
+        if s.saving || s.grouping.is_some() || revision != s.design.manifest.revision || fingerprint != s.design.fingerprint
         {
-            let reply = json!({"session":s.canvas.session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens_value(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":"Screen changed while resizing. Try again after the current edit finishes."});
+            let reply = resize_result(s, request, id, Some("Screen changed while resizing. Try again after the current edit finishes.".into()));
             self.web_host
                 .update(cx, |host, _| host.canvas_reply(&reply));
             return;
@@ -797,8 +931,9 @@ impl CenterArea {
             let result=cx.background_executor().spawn(async move{let result=store.apply(&scope,&tx);let latest=store.load(design_id);(result,latest)}).await;
             let _=this.update(cx,|this,cx|{
                 let Some(s)=this.studio.as_mut().filter(|s|s.design.manifest.id==design_id) else{return;};s.saving=false;
-                let error=match result.0{Ok(design)=>{s.design=design;s.redo=false;s.canvas.layout.positions.insert(id,position);s.canvas.save(&s.store,design_id).err().map(|e|e.to_string())},Err(e)=>{if let Ok(design)=result.1{s.design=design;}Some(e.to_string())}};
-                if s.canvas.session==session{let reply=json!({"session":session,"type":"resize-result","request_id":request,"screen_id":id,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens_value(&s.store,&s.design),"positions":s.canvas.layout.positions,"error":error});this.web_host.update(cx,|host,_|host.canvas_reply(&reply));}
+                // A grouped screen's section reflows around its new size instead.
+                let error=match result.0{Ok(design)=>{s.design=design;s.redo=false;if s.design.manifest.section_of(id).is_none(){s.canvas.layout.positions.insert(id,position);}s.canvas.save(&s.store,design_id).err().map(|e|e.to_string())},Err(e)=>{if let Ok(design)=result.1{s.design=design;}Some(e.to_string())}};
+                if s.canvas.session==session{let reply=resize_result(s,request,id,error.clone());this.web_host.update(cx,|host,_|host.canvas_reply(&reply));}
                 if let Some(error)=error{s.error=Some(error);}
                 let navigation=if s.canvas.navigation_ready{s.canvas.navigation_ready=false;s.inline_screen=None;s.inline_flush=None;s.editor_html=None;s.dirty=false;s.canvas.leave();s.pending_navigation.take()}else{None};
                 this.refresh_studio_canvas(cx);if let Some(action)=navigation{action(this,cx);}cx.notify();
@@ -849,6 +984,44 @@ mod tests {
             ),
             session
         ));
+    }
+    #[test]
+    fn section_messages_are_validated_before_queueing() {
+        let session = Uuid::new_v4();
+        let (screen, section) = (Uuid::new_v4(), Uuid::new_v4());
+        let wrap = |action: Value| {
+            let mut v = json!({"session":session,"request_id":Uuid::new_v4()});
+            v.as_object_mut().unwrap().extend(action.as_object().unwrap().clone());
+            v.to_string()
+        };
+        assert!(enqueue(&wrap(json!({"type":"select-section","section_id":section})), session));
+        assert!(enqueue(&wrap(json!({"type":"select-section","section_id":null})), session));
+        let moving = json!({"type":"move-screen","screen_id":screen,"section_id":section,"before_screen_id":null,"position":null,"revision":3,"fingerprint":"abc"});
+        assert!(enqueue(&wrap(moving.clone()), session));
+        // Drag-out positions are bounded like every canvas coordinate.
+        let mut out = moving.clone();
+        out["section_id"] = Value::Null;
+        out["position"] = json!({"x":1e9,"y":0});
+        assert!(!enqueue(&wrap(out), session));
+        let mut itself = moving.clone();
+        itself["before_screen_id"] = json!(screen);
+        assert!(!enqueue(&wrap(itself), session), "a screen cannot precede itself");
+        let mut forged = moving;
+        forged["operations"] = json!([]);
+        assert!(!enqueue(&wrap(forged), session), "unknown fields are rejected");
+        let order = (0..=MAX_SECTIONS).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+        assert!(!enqueue(&wrap(json!({"type":"reorder-sections","section_ids":order,"revision":1,"fingerprint":"a"})), session));
+        assert!(enqueue(&wrap(json!({"type":"context-action","screen_id":screen,"section_id":null,"action":"duplicate"})), session));
+        assert!(enqueue(&wrap(json!({"type":"context-action","screen_id":null,"section_id":section,"action":"ungroup"})), session));
+        for (screen_id, section_id, action) in [
+            (json!(screen), json!(section), "rename"),
+            (Value::Null, Value::Null, "rename"),
+            (json!(screen), Value::Null, "ungroup"),
+            (Value::Null, json!(section), "write-screen"),
+        ] {
+            assert!(!enqueue(&wrap(json!({"type":"context-action","screen_id":screen_id,"section_id":section_id,"action":action})), session));
+        }
+        MESSAGES.get_or_init(Default::default).lock().unwrap().clear();
     }
     #[test]
     fn image_keys_are_session_scoped_and_encoded_cache_is_bounded() {
