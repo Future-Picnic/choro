@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 38;
+const STORE_SCHEMA_VERSION: u32 = 39;
 const EXPORT_FORMAT_VERSION: u32 = 9;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -773,6 +773,7 @@ struct ExportChecksum {
 
 mod agents;
 mod agent_changes;
+mod code_review;
 mod api;
 mod archive;
 mod brain;

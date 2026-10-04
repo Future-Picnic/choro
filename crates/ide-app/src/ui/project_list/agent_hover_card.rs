@@ -313,7 +313,10 @@ impl ProjectList {
             .read(cx)
             .session(agent_id)
             .map(|s| s.status);
-        let (activity, accent) = if agent.status.is_finished() {
+        let reviewing = self.agent_chats.read(cx).review_blocks_writing(agent_id);
+        let (activity, accent) = if reviewing {
+            ("Reviewing code", design::teal(cx))
+        } else if agent.status.is_finished() {
             (
                 agent.status.label(),
                 agent_status_style::status_accent(agent.status, cx),

@@ -162,6 +162,13 @@ impl CenterArea {
         ) {
             return Err(RemoteError::conflict("a ship is already in progress"));
         }
+        let activity = self.shared_ship_activity(agent_id, cx)
+            .ok_or_else(|| RemoteError::conflict("Could not check active agents. Try Ship again."))?;
+        if !activity.is_empty() {
+            return Err(RemoteError::conflict(
+                "Other agents are still working on this project's shared files. Wait for them to finish, or use Ship on your Mac to confirm continuing anyway.",
+            ));
+        }
         let source = self.remote_ship_source(&agent, cx)?;
         if request.protocol_version >= 11 {
             if request.expected_branch.as_deref() != source.branch.as_deref() {return Err(RemoteError::conflict("The branch changed. Refresh Ship and confirm the target again."));}
@@ -239,53 +246,74 @@ impl CenterArea {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let preparation_repo = repo.clone();
+            let preparation_branch = current_branch.clone();
+            let preparation_files = files.clone();
+            let preparation_base = pr_base_branch.clone();
+            let preparation = cx
                 .background_executor()
                 .spawn(async move {
-                    let preparation = prepare_agent_ship_content(
+                    prepare_agent_ship_content(
                         &generation_agent,
-                        &repo,
-                        current_branch.as_deref(),
+                        &preparation_repo,
+                        preparation_branch.as_deref(),
                         create_branch,
                         "",
                         &agent_title,
-                        &files,
+                        &preparation_files,
                         "",
-                        &pr_base_branch,
+                        &preparation_base,
                         "",
                         "",
-                        action,
-                    )?;
-                    let resolved_branch = preparation.branch_name.as_deref().unwrap_or("");
-                    let resolved_pr_title = preparation
-                        .pr
-                        .as_ref()
-                        .map(|pr| pr.title.as_str())
-                        .unwrap_or("");
-                    let resolved_pr_body = preparation
-                        .pr
-                        .as_ref()
-                        .map(|pr| pr.body.as_str())
-                        .unwrap_or("");
-                    run_agent_ship_operation(
-                        &repo,
-                        agent_id,
-                        project_id,
-                        current_branch.as_deref(),
-                        create_branch,
-                        resolved_branch,
-                        needs_upstream,
-                        scope,
-                        &files,
-                        &preparation.commit_message,
-                        &pr_base_branch,
-                        resolved_pr_title,
-                        resolved_pr_body,
-                        None,
                         action,
                     )
                 })
                 .await;
+            let result = match preparation {
+                Err(error) => Err(AgentShipOperationFailure::before_commit(error)),
+                Ok(preparation) => {
+                    let safe = this.update(cx, |center, cx| {
+                        center.shared_ship_activity(agent_id, cx)
+                            .is_some_and(|activity| activity.is_empty())
+                    }).unwrap_or(false);
+                    if !safe {
+                        Err(AgentShipOperationFailure::before_commit(anyhow::anyhow!(
+                            "Other agents started working while Ship was preparing. Wait for them to finish, or use Ship on your Mac to confirm continuing anyway."
+                        )))
+                    } else {
+                        cx.background_executor().spawn(async move {
+                            let resolved_branch = preparation.branch_name.as_deref().unwrap_or("");
+                            let resolved_pr_title = preparation
+                                .pr
+                                .as_ref()
+                                .map(|pr| pr.title.as_str())
+                                .unwrap_or("");
+                            let resolved_pr_body = preparation
+                                .pr
+                                .as_ref()
+                                .map(|pr| pr.body.as_str())
+                                .unwrap_or("");
+                            run_agent_ship_operation(
+                                &repo,
+                                agent_id,
+                                project_id,
+                                current_branch.as_deref(),
+                                create_branch,
+                                resolved_branch,
+                                needs_upstream,
+                                scope,
+                                &files,
+                                &preparation.commit_message,
+                                &pr_base_branch,
+                                resolved_pr_title,
+                                resolved_pr_body,
+                                None,
+                                action,
+                            )
+                        }).await
+                    }
+                }
+            };
 
             this.update(cx, |center, cx| {
                 match result {

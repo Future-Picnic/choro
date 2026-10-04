@@ -67,7 +67,16 @@ pub(super) async fn upsert_timeline_event_async(
             let existing_payload_json: String = row.get(2)?;
             let existing_created_at = i64_to_u64(row.get(3)?)?;
             drop(rows);
-            let keep_existing_payload = should_keep_existing_message_payload(
+            let stale_plan = if kind == "proposed_plan" {
+                let existing = serde_json::from_str::<serde_json::Value>(&existing_payload_json).unwrap_or_default();
+                let incoming = serde_json::from_str::<serde_json::Value>(&payload_json).unwrap_or_default();
+                let existing_revision = existing["revision"].as_u64().unwrap_or(0);
+                let incoming_revision = incoming["revision"].as_u64().unwrap_or(0);
+                existing_revision > incoming_revision
+                    || existing_revision == incoming_revision
+                        && !existing["implemented_at"].is_null() && incoming["implemented_at"].is_null()
+            } else { false };
+            let keep_existing_payload = stale_plan || should_keep_existing_message_payload(
                 kind.as_str(),
                 event_key.as_deref(),
                 &existing_payload_json,

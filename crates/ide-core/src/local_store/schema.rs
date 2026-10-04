@@ -27,6 +27,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_turso_fts_storage(conn).await?;
     if current == STORE_SCHEMA_VERSION {
         super::agent_changes::ensure_schema(conn).await?;
+        super::code_review::ensure_schema(conn).await?;
         // Development and preview builds can share the same local database while
         // independently assigning a schema version. If another build recorded
         // version 19 before the Penpot tables existed, the version alone is not
@@ -603,6 +604,13 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             super::agent_changes::ensure_schema(conn).await?;
             ensure_chat_file_ledger_schema_inner(conn).await?;
             record_schema_version(conn, 38).await?;
+            Ok(())
+        })).await?;
+    }
+    if current < 39 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            super::code_review::ensure_schema(conn).await?;
+            record_schema_version(conn, 39).await?;
             Ok(())
         })).await?;
     }

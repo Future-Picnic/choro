@@ -907,6 +907,43 @@ impl LocalStore {
         })
     }
 
+    /// Conversation artifacts must not depend on the currently loaded chat page.
+    pub fn load_timeline_events_by_kind(
+        &self,
+        agent_id: Uuid,
+        kind: &str,
+    ) -> Result<Vec<StoredTimelineEvent>> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            let mut rows = conn.query(
+                "SELECT id, agent_id, kind, event_key, payload_json, sequence, created_at
+                 FROM chat_timeline_events WHERE agent_id = ?1 AND kind = ?2
+                 ORDER BY sequence ASC",
+                params![agent_id.to_string(), kind],
+            ).await?;
+            timeline_events_from_rows(&mut rows).await
+        })
+    }
+
+    pub fn load_latest_timeline_event(
+        &self,
+        agent_id: Uuid,
+        kind: &str,
+    ) -> Result<Option<StoredTimelineEvent>> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            let mut rows = conn.query(
+                "SELECT id, agent_id, kind, event_key, payload_json, sequence, created_at
+                 FROM chat_timeline_events WHERE agent_id = ?1 AND kind = ?2
+                 ORDER BY CASE WHEN kind = 'proposed_plan' AND json_valid(payload_json)
+                    THEN COALESCE(CAST(json_extract(payload_json, '$.revision') AS INTEGER), 0)
+                    ELSE 0 END DESC, sequence DESC LIMIT 1",
+                params![agent_id.to_string(), kind],
+            ).await?;
+            Ok(timeline_events_from_rows(&mut rows).await?.pop())
+        })
+    }
+
     pub fn replace_chat_file_ledger(
         &self,
         agent_id: Uuid,

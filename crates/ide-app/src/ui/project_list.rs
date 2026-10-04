@@ -65,6 +65,8 @@ struct RowInfo {
     agents_working: bool,
     /// Work in progress only because Experts are busy on a lead's behalf.
     agents_delegating: bool,
+    /// An independent code review holds at least one conversation.
+    agents_reviewing: bool,
     /// Agents waiting for user attention.
     agents_waiting: usize,
     /// Agents included by the selected view (the In progress lane in All agents).
@@ -925,6 +927,7 @@ impl ProjectList {
                     scripts: totals.scripts,
                     agents_working: totals.working > 0,
                     agents_delegating: totals.delegating > 0,
+                    agents_reviewing: totals.reviewing > 0,
                     agents_waiting: totals.waiting,
                     agent_count: in_progress_agents.len(),
                     in_progress_agents,
@@ -1072,23 +1075,29 @@ impl ProjectList {
         project_collapsed: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if row.agents_waiting > 0 {
-            return div()
+        use delegation_rows::{project_indicator, ProjectIndicator};
+        match project_indicator(
+            row.agents_waiting > 0,
+            row.agents_working,
+            row.agents_reviewing,
+            row.agents_delegating,
+            project_collapsed,
+        ) {
+            ProjectIndicator::Waiting => div()
                 .flex_none()
                 .size(px(6.))
                 .rounded_full()
                 .bg(crate::ui::design::amber(cx))
-                .into_any_element();
-        }
-
-        if row.agents_working && project_collapsed {
-            if row.agents_delegating {
-                return self.activity_anchors.placeholder(16., Some(crate::ui::design::amber(cx)));
+                .into_any_element(),
+            ProjectIndicator::Review => {
+                self.review_indicator(("project-reviewing", row.id.0.as_u128() as u64), cx)
             }
-            return self.activity_anchors.placeholder(16., None);
+            ProjectIndicator::Bandmates => self
+                .activity_anchors
+                .placeholder(16., Some(crate::ui::design::amber(cx))),
+            ProjectIndicator::Working => self.activity_anchors.placeholder(16., None),
+            ProjectIndicator::Empty => div().into_any_element(),
         }
-
-        div().into_any_element()
     }
 
     /// The provider's own runtime, overlaid with application-owned delegation
@@ -1249,23 +1258,12 @@ impl ProjectList {
             .when(hovered, |row| {
                 row.child(self.render_agent_actions(agent_id, pinned, cx))
             })
-            .when(has_delegations, |row| {
-                row.child(self.render_delegation_toggle(
-                    agent_id,
-                    self.delegation_activity_for(agent_id, cx),
-                    runtime == ProjectAgentRuntime::Working,
-                    hovered,
-                    cx,
-                ))
-            })
-            .when(
-                !has_delegations && !hovered && runtime == ProjectAgentRuntime::Working,
-                |row| {
-                    row.child(div().flex_none().w(px(34.)).flex().justify_end().child(
-                        self.activity_anchors.placeholder(16., None),
-                    ))
-                },
-            )
+            .children(self.render_agent_row_indicator(
+                agent,
+                runtime == ProjectAgentRuntime::Working,
+                hovered,
+                cx,
+            ))
             .when(!has_delegations && !hovered && waiting, |row| {
                 row.child(
                     div()
@@ -1485,7 +1483,6 @@ impl ProjectList {
             .find(|candidate| candidate.id == project)
             .and_then(|candidate| candidate.icon_image_path.clone());
 
-        let has_delegations = agent.has_delegations;
         let finished = agent.status.is_finished();
         let row = h_flex()
             .id(("pinned-agent-row", agent_id.as_u128() as u64))
@@ -1545,23 +1542,12 @@ impl ProjectList {
             .when(hovered, |row| {
                 row.child(self.render_agent_actions(agent_id, true, cx))
             })
-            .when(has_delegations, |row| {
-                row.child(self.render_delegation_toggle(
-                    agent_id,
-                    self.delegation_activity_for(agent_id, cx),
-                    runtime == ProjectAgentRuntime::Working,
-                    hovered,
-                    cx,
-                ))
-            })
-            .when(
-                !has_delegations && !hovered && runtime == ProjectAgentRuntime::Working,
-                |row| {
-                    row.child(div().flex_none().w(px(34.)).flex().justify_end().child(
-                        self.activity_anchors.placeholder(16., None),
-                    ))
-                },
-            )
+            .children(self.render_agent_row_indicator(
+                agent,
+                runtime == ProjectAgentRuntime::Working,
+                hovered,
+                cx,
+            ))
             .when(!hovered, |row| {
                 row.child(
                     div()

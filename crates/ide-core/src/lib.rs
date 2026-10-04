@@ -3,6 +3,7 @@ pub mod agent_navigation;
 pub mod agents;
 pub mod blocking_guard;
 pub mod branding;
+pub mod code_review;
 pub mod config;
 pub mod db;
 mod db_http;

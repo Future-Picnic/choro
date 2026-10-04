@@ -37,7 +37,19 @@ pub(crate) fn load_history_from_store(
     Ok(timeline)
 }
 
-pub(crate) fn hydrate(session: &mut AgentChatSession, mut timeline: Vec<AgentChatTimelineItem>) {
+pub(crate) fn hydrate(session: &mut AgentChatSession, timeline: Vec<AgentChatTimelineItem>) {
+    let files = load_persisted_file_ledger(session.agent_id);
+    let plan = LocalStore::open_default().ok()
+        .and_then(|store| load_latest_plan_from_store(&store, session.agent_id).ok().flatten());
+    hydrate_with_artifacts(session, timeline, files, plan);
+}
+
+pub(crate) fn hydrate_with_artifacts(
+    session: &mut AgentChatSession,
+    mut timeline: Vec<AgentChatTimelineItem>,
+    saved_files: Option<ChangedFilesSummary>,
+    saved_plan: Option<ProposedPlan>,
+) {
     place_change_receipts(&mut timeline);
     let mut changed_files = ChangedFilesSummary::default();
     session.messages.clear();
@@ -54,9 +66,21 @@ pub(crate) fn hydrate(session: &mut AgentChatSession, mut timeline: Vec<AgentCha
             _ => (),
         }
     }
-    session.changed_files = load_persisted_file_ledger(session.agent_id)
+    let restored = saved_files
         .filter(|s| s.ledger_revision >= changed_files.ledger_revision)
         .unwrap_or(changed_files);
+    if restored.ledger_revision >= session.changed_files.ledger_revision {
+        session.changed_files = restored;
+    }
+    // A plan is a conversation artifact, not a pending decision or a chat row.
+    // Loading an older page must not replace a newer plan held in memory.
+    if session.latest_plan.is_none() {
+        session.latest_plan = saved_plan
+            .or_else(|| timeline.iter().rev().find_map(|item| match item {
+                AgentChatTimelineItem::ProposedPlan(plan) => Some(plan.clone()),
+                _ => None,
+            }));
+    }
     session.proposed_plan = None;
     session.timeline = timeline;
 }
@@ -74,6 +98,7 @@ pub(crate) fn dispatch_loaded(
     studio_request: Option<StudioChatRequest>,
     cx: &mut Context<AgentChatState>,
 ) -> Result<()> {
+    ensure!(!chats.review_blocks_writing(agent_id), "Code review is active in this conversation. Cancel review before sending new work.");
     let title = display_text.as_deref().unwrap_or(&text).to_owned();
     if let Some(request) = &studio_request {
         request.validate()?;

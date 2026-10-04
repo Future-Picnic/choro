@@ -73,6 +73,7 @@ impl CodeReviewFinding {
 /// review markdown, the parsed findings, and expand/collapse + fix flags.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeReview {
+    pub structured: Option<ide_core::code_review::ReviewRun>,
     pub id: String,
     pub markdown: String,
     pub findings: Vec<CodeReviewFinding>,
@@ -84,6 +85,7 @@ impl CodeReview {
         let markdown = markdown.into();
         let findings = parse_code_review_findings(&markdown);
         Self {
+            structured: None,
             id: id.into(),
             markdown,
             findings,
@@ -93,6 +95,7 @@ impl CodeReview {
 
     /// Missing findings alone say nothing about whether the review finished.
     pub fn is_clean(&self) -> bool {
+        if let Some(run) = &self.structured { return run.is_clean(); }
         self.findings.is_empty() && self.coverage_complete()
     }
 
@@ -110,6 +113,11 @@ impl CodeReview {
     }
 
     pub fn coverage_complete(&self) -> bool {
+        if let Some(run) = &self.structured {
+            return run.state == ide_core::code_review::ReviewRunState::Complete
+                && run.freshness == ide_core::code_review::ReviewFreshness::Current && run.limitations.is_empty()
+                && !run.files.is_empty() && run.completed_files() == run.total_files();
+        }
         self.coverage().is_some_and(|coverage| {
             let statuses = coverage
                 .lines()

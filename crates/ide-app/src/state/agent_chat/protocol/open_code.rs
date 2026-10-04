@@ -100,7 +100,7 @@ pub(super) fn spawn_open_code_acp(
     Ok(())
 }
 
-fn run_open_code_acp(
+pub(super) fn run_open_code_acp(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     command_rx: Receiver<ChatBackendCommand>,
@@ -141,6 +141,7 @@ fn run_open_code_acp(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(agent.runtime_path());
+    if agent.review_run_id.is_some() { super::review::configure_open_code(&mut command, &agent)?; }
     #[cfg(unix)]
     command.process_group(0);
 
@@ -228,15 +229,24 @@ fn run_open_code_acp(
             .to_string()
     };
     runtime.session_id = Some(session_id.clone());
+    if runtime.agent.review_run_id.is_some() {
+        let config = runtime.question_bridge.client
+            .get(format!("{}/config", runtime.question_bridge.base_url))
+            .basic_auth(&runtime.question_bridge.username, Some(&runtime.question_bridge.password))
+            .query(&[("directory", runtime.agent.runtime_path().to_string_lossy().to_string())])
+            .timeout(Duration::from_secs(10)).send()?.error_for_status()?.text()?;
+        let config: Value = serde_json::from_str(&config)?;
+        super::review::validate_open_code_config(&config)?;
+    }
     // Start polling only after the ACP session id is known. Otherwise a
     // question observed during startup can be marked as seen before it can be
     // matched to this runtime, which would make it disappear from Choro.
-    spawn_open_code_question_poller(
+    if runtime.agent.review_run_id.is_none() { spawn_open_code_question_poller(
         runtime.question_bridge.clone(),
         question_tx,
         runtime.shutdown.clone(),
         runtime.turn_active.clone(),
-    );
+    ); }
     runtime
         .events
         .send_blocking(ChatBackendEvent::SessionReady {
@@ -420,7 +430,7 @@ impl OpenCodeRuntime {
         self.assistant_stream.reset(&self.events);
         self.assistant_buffer.clear();
         self.active_turn_id = turn_id;
-        self.read_only_turn = read_only;
+        self.read_only_turn = read_only || self.agent.review_run_id.is_some();
 
         self.tool_updates.clear();
         self.interaction_mode = mode;
@@ -428,19 +438,23 @@ impl OpenCodeRuntime {
         self.events
             .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
             .ok();
-        let mode = match mode {
+        let mode = if self.agent.review_run_id.is_some() { "choro-review" } else { match mode {
             AgentInteractionMode::Default => "build",
             AgentInteractionMode::Plan => "plan",
-        };
+        } };
         // OpenCode exposes Build/Plan as a session config option. Older ACP
         // builds may not expose it, so a failed mode switch must not block chat.
-        let _ = self.set_config_option("mode", mode.to_string());
+        if self.agent.review_run_id.is_some() { self.set_config_option("mode", mode.to_string())?; }
+        else { let _ = self.set_config_option("mode", mode.to_string()); }
+        let prompt = if self.agent.review_run_id.is_some() { text } else {
+            format!("{}\n\n{text}",ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS)
+        };
         self.turn_active.store(true, Ordering::SeqCst);
         let result = self.request(
             "session/prompt",
             json!({
                 "sessionId": session_id,
-                "prompt": [{ "type": "text", "text": format!("{}\n\n{text}",ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS) }]
+                "prompt": [{ "type": "text", "text": prompt }]
             }),
         );
         self.turn_active.store(false, Ordering::SeqCst);
@@ -918,8 +932,9 @@ impl OpenCodeRuntime {
         let allow_once = option(&["allow_once"]);
         let allow_always = option(&["allow_always"]);
         let reject = option(&["reject_once", "reject_always"]);
-        let automatic = if self.read_only_turn
+        let automatic = if self.agent.review_run_id.is_some() || (self.read_only_turn
             && matches!(tool_kind, "execute" | "edit" | "delete" | "move")
+        )
         {
             return self.respond_permission(jsonrpc_id, reject);
         } else {

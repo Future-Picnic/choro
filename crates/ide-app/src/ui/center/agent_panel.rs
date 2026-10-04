@@ -7,6 +7,7 @@ mod detail_section;
 mod multi_repo_ship;
 mod operations;
 mod remote_ship;
+mod ship_activity;
 mod render;
 mod task_actions;
 
@@ -80,6 +81,7 @@ struct MultiRepoShipDialog {
     busy: bool,
     prepared: bool,
     summary_maintenance_started: bool,
+    ship_activity_consent: ship_activity::ShipActivityConsent,
     error: Option<String>,
 }
 
@@ -120,6 +122,7 @@ struct AgentShipDialog {
     status: Option<String>,
     pending_commit: Option<AgentShipPendingCommit>,
     summary_maintenance_started: bool,
+    ship_activity_consent: ship_activity::ShipActivityConsent,
     /// `(project_root, lane_path)` when shipping a Solo from its lane. PR
     /// tracking then keys on the project root (the lane folder is disposable),
     /// and a successful PR packs the lane up.
@@ -273,6 +276,15 @@ impl AgentShipDialog {
     }
 
     fn prepare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prepare_content(None, window, cx);
+    }
+
+    fn prepare_content(
+        &mut self,
+        ship_after: Option<AgentShipAction>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy {
             return;
         }
@@ -304,14 +316,16 @@ impl AgentShipDialog {
         let repo = self.repo_path.clone();
         let current_branch = self.branch.clone();
         let create_branch = self.create_branch;
-        let branch_name = self.branch_name.read(cx).value().trim().to_string();
-        let commit_message = self.commit_message.read(cx).value().trim().to_string();
+        let branch_name = self.pending_commit.as_ref().map(|p| p.branch.clone())
+            .unwrap_or_else(|| self.branch_name.read(cx).value().trim().to_string());
+        let commit_message = self.pending_commit.as_ref().map(|p| p.commit_message.clone())
+            .unwrap_or_else(|| self.commit_message.read(cx).value().trim().to_string());
         let pr_base_branch = self.pr_base_branch.trim().to_string();
         let pr_title = self.pr_title.read(cx).value().trim().to_string();
         let pr_description = self.pr_description.read(cx).value().trim().to_string();
         let agent_title = self.agent_title.clone();
         let generation_agent = self.generation_agent.clone();
-        let action = self.current_action();
+        let action = ship_after.unwrap_or_else(|| self.current_action());
         let branch_input = self.branch_name.clone();
         let commit_input = self.commit_message.clone();
         let pr_title_input = self.pr_title.clone();
@@ -351,7 +365,7 @@ impl AgentShipDialog {
                 })
                 .await;
 
-            this.update(cx, |dialog, cx| {
+            let should_run = this.update(cx, |dialog, cx| {
                 dialog.busy = false;
                 match result {
                     Ok(preparation) => {
@@ -400,8 +414,14 @@ impl AgentShipDialog {
                     }
                 }
                 cx.notify();
+                ship_after.is_some() && dialog.prepared
             })
-            .ok();
+            .unwrap_or(false);
+            if should_run {
+                window_handle.update(cx, |_, window, cx| {
+                    this.update(cx, |dialog, cx| dialog.run(action, window, cx)).ok();
+                }).ok();
+            }
         })
         .detach();
     }
@@ -440,6 +460,15 @@ impl AgentShipDialog {
             return;
         }
 
+        if ship_activity::confirm_if_needed(
+            &self.center, self.agent_id, &self.ship_activity_consent, window, cx,
+            move |dialog: &mut Self, consent, window, cx| {
+                dialog.ship_activity_consent = consent;
+                dialog.run(action, window, cx);
+            },
+        ) {
+            return;
+        }
         self.start_summary_maintenance(cx);
 
         if self.onboarding_demo {
@@ -704,200 +733,18 @@ impl AgentShipDialog {
         if self.busy {
             return;
         }
-        if self.branch.is_none() && !self.create_branch {
-            self.error = Some("Current Git HEAD is not on a branch. Create a branch first.".into());
-            cx.notify();
+        if ship_activity::confirm_if_needed(
+            &self.center, self.agent_id, &self.ship_activity_consent, window, cx,
+            move |dialog: &mut Self, consent, window, cx| {
+                dialog.ship_activity_consent = consent;
+                dialog.run_auto(action, window, cx);
+            },
+        ) {
             return;
         }
-        let files = self.included_files();
-        if files.is_empty() {
-            self.error = Some("No files selected for this scope.".into());
-            cx.notify();
-            return;
-        }
-        let staged_outside = self.staged_outside_scope();
-        if !staged_outside.is_empty() {
-            self.error = Some(format!(
-                "Unstage files outside this scope before shipping: {}",
-                staged_outside
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-            cx.notify();
-            return;
-        }
-
-        self.start_summary_maintenance(cx);
-
-        let repo = self.repo_path.clone();
-        // PR status polling must outlive the lane: a Solo's disposable folder
-        // can't be the key, the project root can (same GitHub repo).
-        let tracked_repo = self
-            .solo_lane
-            .as_ref()
-            .map(|(project_root, _)| project_root.clone())
-            .unwrap_or_else(|| self.repo_path.clone());
-        let current_branch = self.branch.clone();
-        let needs_upstream = self.needs_upstream;
-        let create_branch = self.create_branch;
-        let branch_name = self
-            .pending_commit
-            .as_ref()
-            .map(|p| p.branch.clone())
-            .unwrap_or_else(|| self.branch_name.read(cx).value().trim().to_string());
-        let commit_message = self
-            .pending_commit
-            .as_ref()
-            .map(|p| p.commit_message.clone())
-            .unwrap_or_else(|| self.commit_message.read(cx).value().trim().to_string());
-        let pr_base_branch = self.pr_base_branch.trim().to_string();
-        let pr_title = self.pr_title.read(cx).value().trim().to_string();
-        let pr_description = self.pr_description.read(cx).value().trim().to_string();
-        let agent_title = self.agent_title.clone();
-        let generation_agent = self.generation_agent.clone();
-        let pending_commit = self.pending_commit.clone();
-        let scope = self.scope;
-        let agent_id = self.agent_id;
-        let project_id = self.project_id;
-        let center = self.center.clone();
-        let git = self.git.clone();
-        let window_handle = window.window_handle();
-
-        self.busy = true;
-        self.prepared = false;
-        self.error = None;
-        self.status = Some(match action {
-            AgentShipAction::Commit => "Generating content and committing…".to_string(),
-            AgentShipAction::CommitPush => {
-                "Generating content, committing, and pushing…".to_string()
-            }
-            AgentShipAction::CommitPushPr => {
-                "Generating content, committing, pushing, and preparing PR…".to_string()
-            }
-        });
-        cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let preparation = prepare_agent_ship_content(
-                        &generation_agent,
-                        &repo,
-                        current_branch.as_deref(),
-                        create_branch,
-                        &branch_name,
-                        &agent_title,
-                        &files,
-                        &commit_message,
-                        &pr_base_branch,
-                        &pr_title,
-                        &pr_description,
-                        action,
-                    )?;
-                    let resolved_branch = preparation
-                        .branch_name
-                        .as_deref()
-                        .unwrap_or(branch_name.trim());
-                    let resolved_pr_title = preparation
-                        .pr
-                        .as_ref()
-                        .map(|pr| pr.title.as_str())
-                        .unwrap_or(pr_title.trim());
-                    let resolved_pr_body = preparation
-                        .pr
-                        .as_ref()
-                        .map(|pr| pr.body.as_str())
-                        .unwrap_or(pr_description.trim());
-                    run_agent_ship_operation(
-                        &repo,
-                        agent_id,
-                        project_id,
-                        current_branch.as_deref(),
-                        create_branch,
-                        resolved_branch,
-                        needs_upstream,
-                        scope,
-                        &files,
-                        &preparation.commit_message,
-                        &pr_base_branch,
-                        resolved_pr_title,
-                        resolved_pr_body,
-                        pending_commit,
-                        action,
-                    )
-                })
-                .await;
-
-            this.update(cx, |dialog, cx| {
-                dialog.busy = false;
-                match result {
-                    Ok(outcome) => {
-                        dialog.pending_commit = None;
-                        crate::ui::onboarding::emit_for_project(
-                            project_id,
-                            crate::ui::onboarding::OnboardingEvent::ShipCompleted,
-                            cx,
-                        );
-                        dialog.status = Some(outcome.message.clone());
-                        dialog.error = None;
-                        if let Some(center) = center.upgrade() {
-                            center.update(cx, |center, cx| {
-                                center.attach_ship_commit_to_changed_files(
-                                    agent_id,
-                                    outcome.snapshot_id,
-                                    outcome.commit_sha.clone(),
-                                    cx,
-                                );
-                                center.append_agent_ship_result(agent_id, None, &outcome, cx);
-                                if let Some(branch) = outcome.tracked_pr_branch.clone() {
-                                    center.track_agent_ship_pr_branch(
-                                        agent_id,
-                                        tracked_repo.clone(),
-                                        branch,
-                                        cx,
-                                    );
-                                }
-                                // A Solo's PR is its work leaving home — pack
-                                // the lane up (branch and chat survive).
-                                if outcome.pr_url.is_some() {
-                                    center.finish_solo_ship(agent_id, cx);
-                                }
-                            });
-                        }
-                        git.update(cx, |git, cx| {
-                            git.last_message = Some(outcome.message);
-                            git.last_error = None;
-                            git.refresh(cx);
-                        });
-                        let pr_url = outcome.pr_url.clone();
-                        window_handle
-                            .update(cx, |_, window, cx| {
-                                window.close_dialog(cx);
-                                if let Some(url) = pr_url {
-                                    crate::ui::git::git_panel::open_url(&url);
-                                }
-                            })
-                            .ok();
-                    }
-                    Err(error) => {
-                        dialog.pending_commit = error.pending_commit.clone();
-                        dialog.error = Some(error.to_string());
-                        dialog.status = None;
-                        git.update(cx, |git, cx| {
-                            git.last_error = Some(error.to_string());
-                            git.last_error_from_refresh = false;
-                            git.refresh(cx);
-                        });
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        // Generate first, then return to the UI thread and recheck activity in
+        // run() before branch, staging, commit or push operations begin.
+        self.prepare_content(Some(action), window, cx);
     }
 
     fn ship_label(text: &'static str, cx: &mut Context<Self>) -> impl IntoElement {

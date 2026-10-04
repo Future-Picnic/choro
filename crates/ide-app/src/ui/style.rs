@@ -1578,6 +1578,17 @@ pub fn composer_frame(cx: &App) -> Div {
         .pb_3()
 }
 
+/// The composer's footprint while an independent review holds the
+/// conversation: the same plane, radius and minimum height as
+/// [`composer_frame`] so the transcript never jumps, with a teal edge naming
+/// who holds it.
+pub fn review_panel_frame(cx: &App) -> Div {
+    composer_frame(cx)
+        .justify_center()
+        .gap_2()
+        .border_color(design::teal(cx).opacity(0.55))
+}
+
 /// A shorter composer for lightweight assistants with a single control row.
 /// The input region claims any spare height so the controls stay pinned to the
 /// lower edge, while attachments and validation messages can still grow it.

@@ -159,6 +159,7 @@ impl CodexRuntime {
         let mode = super::managed::interaction_mode(&self.agent, mode);
         let consultation = super::managed::consultation(&self.agent);
         let read_only = read_only
+            || self.agent.review_run_id.is_some()
             || consultation
             || (self.agent.delegation.is_some() && mode == AgentInteractionMode::Plan);
         let Some(thread_id) = self.thread_id.clone() else {
@@ -192,13 +193,15 @@ impl CodexRuntime {
             AgentInteractionMode::Default => CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
             AgentInteractionMode::Plan => CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
         };
-        let developer_instructions = codex_developer_instructions(
+        let developer_instructions = if self.agent.review_run_id.is_some() {
+            ide_core::code_review::REVIEW_INSTRUCTIONS.to_string()
+        } else { codex_developer_instructions(
             mode_instructions,
             self.visualization_dir.as_deref(),
             self.agent
                 .hidden_doc_assistant
                 .then_some(self.agent.doc.as_str()),
-        );
+        ) };
         let developer_instructions =
             super::managed::instructions(developer_instructions, &self.agent)?;
         let mut sandbox_policy = if read_only || self.agent.studio_context.is_some() {
@@ -212,6 +215,7 @@ impl CodexRuntime {
         // authorizes each call against this run's conversation and memory scope.
         allow_pocketcomet_chat_network(&mut sandbox_policy, self.agent.origin.as_ref());
         let approval_policy = if self.agent.studio_context.is_some()
+            || self.agent.review_run_id.is_some()
             || consultation
         {
             "never"
@@ -219,9 +223,7 @@ impl CodexRuntime {
             self.access_mode.codex_approval_policy()
         };
         self.turn_control.begin();
-        let result = self.request(
-            "turn/start",
-            json!({
+        let mut params = json!({
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": text}],
                 "approvalPolicy": approval_policy,
@@ -236,8 +238,9 @@ impl CodexRuntime {
                         "developer_instructions": developer_instructions
                     }
                 }
-            }),
-        )?;
+            });
+        if self.agent.review_run_id.is_some() { params["environments"] = json!([]); }
+        let result = self.request("turn/start", params)?;
         // Normally turn/started supplies the id while the request is pending.
         // Also accept the response, without resurrecting an already completed turn.
         if self.turn_control.starting {
@@ -824,6 +827,15 @@ impl CodexRuntime {
         let request_key = jsonrpc_id_key(&id_value);
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let params = message.get("params").cloned().unwrap_or(Value::Null);
+        if self.agent.review_run_id.is_some() {
+            let result = match method {
+                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => json!({"decision":"decline"}),
+                "item/permissions/requestApproval" => json!({"permissions":{},"scope":"turn"}),
+                "item/tool/requestUserInput" => json!({"answers":{}}),
+                _ => return self.write_json(&json!({"jsonrpc":"2.0","id":id_value,"error":{"code":-32601,"message":"Internal reviewer has no native tool authority"}})),
+            };
+            return self.write_json(&json!({"jsonrpc":"2.0","id":id_value,"result":result}));
+        }
         match method {
             "item/tool/requestUserInput" => {
                 let pending = pending_user_input_from_codex_request(request_key, &params);
@@ -956,6 +968,21 @@ mod interruption_tests {
             visualization_dir: None,
         };
         (runtime, event_rx)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn review_denies_native_approval_requests_without_asking_the_user() {
+        let (mut runtime, events) = echo_runtime();
+        runtime.agent.review_run_id = Some(uuid::Uuid::new_v4());
+        for method in ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "item/tool/requestUserInput", "item/tool/call"] {
+            runtime.handle_server_request(json!({"jsonrpc":"2.0","id":17,"method":method,"params":{}})).unwrap();
+            let reply = runtime.messages.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(reply.get("error").is_some() || reply["result"]["decision"] == "decline"
+                || reply["result"]["permissions"] == json!({}) || reply["result"]["answers"] == json!({}));
+        }
+        assert!(runtime.pending_approvals.is_empty() && runtime.pending_user_inputs.is_empty());
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

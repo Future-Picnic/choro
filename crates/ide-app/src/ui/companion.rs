@@ -14,6 +14,7 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex, Disableable, IconName, Root,
 };
+use ide_core::code_review::{ReviewRun, ReviewRunState};
 use ide_core::{AgentRecord, AgentRuntimeKind, ProjectId};
 use uuid::Uuid;
 
@@ -319,8 +320,23 @@ struct CompanionItem {
     project_name: String,
     status: String,
     animation: CompanionAnimation,
+    reviewing: bool,
     created_at: u64,
     acknowledge_on_open: bool,
+}
+
+impl CompanionItem {
+    fn priority(&self) -> u8 {
+        // Urgent attention still comes first; a live review comes before old
+        // Done notices so the avatar and preview both communicate activity.
+        if self.reviewing {
+            1
+        } else if self.animation == CompanionAnimation::NeedsAttention {
+            0
+        } else {
+            self.animation.priority() + 1
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -856,9 +872,8 @@ impl CompanionView {
         let chats = self.agent_chats.read(cx);
         let mut items = Vec::new();
 
-        // Running agents are live state, not unread attention. Sending a chat
-        // turn sets this status synchronously, so the companion responds before
-        // the backend has produced its first event.
+        // Coding and review workers are live activity, not unread attention.
+        // Review owns a separate controller and leaves coding status idle/done.
         for agent in &records {
             let Some(project_name) = project_names.get(&agent.project_id) else {
                 continue;
@@ -873,35 +888,33 @@ impl CompanionView {
             let Some(session) = chats.session(agent.id) else {
                 continue;
             };
-            if session.hidden_from_notifications
-                || !matches!(
-                    session.status,
-                    AgentChatStatus::Running | AgentChatStatus::Cancelling
-                )
-            {
+            if session.hidden_from_notifications {
                 continue;
             }
-            let animation = CompanionAnimation::Working;
-            items.push(CompanionItem {
-                project_id: agent.project_id,
-                agent_id: agent.id,
-                title: agent.title.clone(),
-                project_name: project_name.clone(),
-                status: match session.status {
-                    AgentChatStatus::Cancelling => "Wrapping up".to_string(),
-                    _ => "Working".to_string(),
-                },
-                animation,
-                created_at: session
+            let active_review = chats
+                .review_run(agent.id)
+                .filter(|_| chats.review_blocks_writing(agent.id));
+            if let Some(item) = chat_activity_item(
+                agent,
+                project_name,
+                session.status,
+                session
                     .started_running_at
                     .unwrap_or(session.last_activity_at),
-                acknowledge_on_open: false,
-            });
+                active_review,
+            ) {
+                items.push(item);
+            }
         }
 
         // Attention is coordinator-owned and remains here until the exact
         // conversation is opened or the underlying event becomes stale.
         for attention in crate::notifications::companion_attention() {
+            // A coding-turn Done notice must not duplicate or outrank this
+            // conversation's live review. Leave the notice unacknowledged.
+            if chats.review_blocks_writing(attention.agent_id) {
+                continue;
+            }
             let changed_file_count = chats
                 .session(attention.agent_id)
                 .map(|session| current_turn_changed_file_count(&session.timeline))
@@ -926,15 +939,15 @@ impl CompanionView {
                 project_name: attention.project_name,
                 status,
                 animation,
+                reviewing: false,
                 created_at: attention.created_at,
                 acknowledge_on_open: true,
             });
         }
 
         items.sort_by(|a, b| {
-            a.animation
-                .priority()
-                .cmp(&b.animation.priority())
+            a.priority()
+                .cmp(&b.priority())
                 .then_with(|| b.created_at.cmp(&a.created_at))
                 .then_with(|| a.title.cmp(&b.title))
         });
@@ -949,6 +962,7 @@ impl CompanionView {
         let status = SharedString::from(item.status);
         let project_name = SharedString::from(item.project_name);
         let working = item.animation == CompanionAnimation::Working;
+        let reviewing = item.reviewing;
         let needs_attention = item.animation == CompanionAnimation::NeedsAttention;
         let attention_color = crate::ui::design::amber(cx);
         let tooltip = SharedString::from(format!("{title}\n{status} · {project_name}"));
@@ -988,7 +1002,15 @@ impl CompanionView {
                         .text_size(crate::ui::design::text_ui())
                         .line_height(gpui::relative(1.2))
                         .text_color(crate::ui::design::t1_soft(cx))
-                        .when(working, |row| {
+                        .when(reviewing, |row| {
+                            row.child(crate::ui::logo_spinner::review_spinner(
+                                12.,
+                                "companion-reviewing",
+                                agent_id.as_u128() as usize,
+                                crate::ui::design::teal(cx),
+                            ))
+                        })
+                        .when(working && !reviewing, |row| {
                             row.child(crate::ui::logo_spinner::logo_spinner(
                                 12.,
                                 "companion-working",
@@ -1006,6 +1028,9 @@ impl CompanionView {
                         .child(
                             div()
                                 .flex_none()
+                                .when(reviewing, |label| {
+                                    label.text_color(crate::ui::design::teal(cx))
+                                })
                                 .when(needs_attention, |label| label.text_color(attention_color))
                                 .child(status),
                         )
@@ -1684,7 +1709,44 @@ fn terminal_working_item(
         project_name: project_name.to_string(),
         status: "Working".to_string(),
         animation: CompanionAnimation::Working,
+        reviewing: false,
         created_at: agent.updated_at,
+        acknowledge_on_open: false,
+    })
+}
+
+fn chat_activity_item(
+    agent: &AgentRecord,
+    project_name: &str,
+    status: AgentChatStatus,
+    activity_at: u64,
+    active_review: Option<&ReviewRun>,
+) -> Option<CompanionItem> {
+    let (label, created_at) = if let Some(run) = active_review {
+        let label = match run.state {
+            ReviewRunState::Preparing => "Preparing review",
+            ReviewRunState::Cancelling => "Cancelling review",
+            state if state.terminal() => "Finishing review",
+            _ => "Reviewing code",
+        };
+        (label, run.started_at)
+    } else {
+        let label = match status {
+            AgentChatStatus::Running => "Working",
+            AgentChatStatus::Cancelling => "Wrapping up",
+            _ => return None,
+        };
+        (label, activity_at)
+    };
+    Some(CompanionItem {
+        project_id: agent.project_id,
+        agent_id: agent.id,
+        title: agent.title.clone(),
+        project_name: project_name.to_string(),
+        status: label.to_string(),
+        animation: CompanionAnimation::Working,
+        reviewing: active_review.is_some(),
+        created_at,
         acknowledge_on_open: false,
     })
 }
@@ -1752,8 +1814,8 @@ fn primary_animation(
 ) -> CompanionAnimation {
     items
         .iter()
+        .min_by_key(|item| item.priority())
         .map(|item| item.animation)
-        .min_by_key(|animation| animation.priority())
         .unwrap_or_else(|| music_animation.unwrap_or(CompanionAnimation::Idle))
 }
 
@@ -1792,6 +1854,7 @@ mod tests {
             project_name: "Project".to_string(),
             status: "State".to_string(),
             animation,
+            reviewing: false,
             created_at: 1,
             acknowledge_on_open: animation != CompanionAnimation::Working,
         }
@@ -1850,6 +1913,66 @@ mod tests {
             Some(AgentNavigationRuntime::Ended),
         ] {
             assert!(terminal_working_item(&agent, "Project", runtime).is_none());
+        }
+    }
+
+    #[test]
+    fn independent_review_keeps_an_idle_chat_working_until_the_reviewer_stops() {
+        let provider = ide_core::AgentKind::Codex;
+        let model = ide_core::AgentModel::default_for(provider);
+        let agent = AgentRecord::new(
+            ProjectId::new(),
+            "/in-memory/companion".into(),
+            "Review parent",
+            "",
+            provider,
+            model,
+            model.default_effort(),
+            Default::default(),
+        );
+        let mut run = ReviewRun::new(
+            agent.project_id.0, agent.id, "Codex".into(), "model".into(), "High".into(), 20,
+        );
+        // Review never changes the coding session from Idle to Running.
+        assert!(chat_activity_item(&agent, "Project", AgentChatStatus::Idle, 1, None).is_none());
+        for (state, label) in [
+            (ReviewRunState::Preparing, "Preparing review"),
+            (ReviewRunState::Running, "Reviewing code"),
+            (ReviewRunState::Cancelling, "Cancelling review"),
+            // Terminal metadata can arrive before the provider has stopped.
+            (ReviewRunState::Complete, "Finishing review"),
+            (ReviewRunState::Partial, "Finishing review"),
+            (ReviewRunState::Cancelled, "Finishing review"),
+            (ReviewRunState::Failed, "Finishing review"),
+            (ReviewRunState::Interrupted, "Finishing review"),
+        ] {
+            run.state = state;
+            let active = chat_activity_item(&agent, "Project", AgentChatStatus::Idle, 1, Some(&run))
+                .expect("a live independent reviewer must appear even when its parent is idle");
+            assert!(active.reviewing, "review activity must use the teal indicator");
+            assert_eq!(active.status, label);
+            assert_eq!(active.agent_id, agent.id);
+            assert_eq!(active.created_at, run.started_at);
+            assert!(!active.acknowledge_on_open);
+            let done = item(CompanionAnimation::Done);
+            assert!(active.priority() < done.priority());
+            assert_eq!(primary_animation(&[done, active.clone()], None), CompanionAnimation::Working);
+            assert_eq!(
+                primary_animation(&[active, item(CompanionAnimation::NeedsAttention)], None),
+                CompanionAnimation::NeedsAttention,
+            );
+            // Once the controller releases writing, even its retained terminal
+            // run must no longer produce a live activity item.
+            assert!(chat_activity_item(&agent, "Project", AgentChatStatus::Idle, 1, None).is_none());
+        }
+        for (status, label) in [
+            (AgentChatStatus::Running, "Working"),
+            (AgentChatStatus::Cancelling, "Wrapping up"),
+        ] {
+            let coding = chat_activity_item(&agent, "Project", status, 30, None).unwrap();
+            assert_eq!(coding.status, label);
+            assert!(!coding.reviewing);
+            assert_eq!(coding.created_at, 30);
         }
     }
 

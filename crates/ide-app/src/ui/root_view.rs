@@ -371,6 +371,7 @@ impl RootView {
         let terminals = cx.new(|_| TerminalManager::new());
         let agents = cx.new(|_| AgentRecords::load());
         let agent_chats = cx.new(|_| AgentChatState::new());
+        agent_chats.update(cx, |state,cx| state.recover_reviews_on_startup(cx));
         if ide_core::delegation::enabled() {
             crate::state::delegation::DelegationCoordinator::start(
                 agents.clone(),

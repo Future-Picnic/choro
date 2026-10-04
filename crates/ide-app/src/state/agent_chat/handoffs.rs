@@ -11,7 +11,7 @@ impl AgentChatState {
     /// Outgoing teammate requests share FIFO ordering with ordinary messages.
     /// They are transport operations, never prompts for the source backend.
     pub fn handoff_must_wait(&self, agent_id: Uuid) -> bool {
-        self.has_queued_work(agent_id)
+        self.review_blocks_writing(agent_id) || self.has_queued_work(agent_id)
             || self.session(agent_id).is_some_and(|session| {
                 !matches!(
                     session.status,
@@ -27,6 +27,7 @@ impl AgentChatState {
         handoff: QueuedAgentHandoff,
         cx: &mut Context<Self>,
     ) {
+        if self.review_blocks_writing(agent_id) { return; }
         let Some(session) = self.sessions.get_mut(&agent_id) else {
             return;
         };
@@ -60,6 +61,7 @@ impl AgentChatState {
         turn: QueuedChatTurn,
         cx: &mut Context<Self>,
     ) {
+        if self.review_blocks_writing(agent_id) { return; }
         let Some(handoff) = turn.handoff.clone() else {
             return;
         };

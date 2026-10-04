@@ -13,6 +13,7 @@ mod persistence;
 mod proposed_plan;
 pub(crate) mod protocol;
 mod review_checklist;
+mod review_controller;
 mod search;
 mod studio_request;
 mod timeline;
@@ -31,6 +32,7 @@ use uuid::Uuid;
 
 pub(crate) use changed_files::bounded_line_diff_counts;
 pub(crate) use changed_files::VisualizationArtifactFilter;
+pub(crate) use persistence::{load_file_ledger_from_store, load_latest_plan_from_store};
 pub use changed_files::{ChangedFilesSummary, FileChangeActivity, FileChangeStat};
 pub use code_review::{split_code_review, CodeReview, CodeReviewFinding, CodeReviewSeverity};
 pub use pending_approval::{PendingApproval, PendingApprovalKind};
@@ -97,6 +99,9 @@ pub struct AgentChatState {
     current_event_received_at: Option<std::time::Instant>,
     pub(crate) sessions: HashMap<Uuid, AgentChatSession>,
     controllers: HashMap<Uuid, ChatBackendController>,
+    pub(crate) review_controllers: HashMap<Uuid, review_controller::ReviewController>,
+    review_recovery: HashSet<Uuid>,
+    review_startup_pending: bool,
     stopping_backends: HashMap<Uuid, ChatBackendStopSignal>,
     backend_generations: HashMap<Uuid, u64>,
     finished_file_turns: HashSet<(Uuid, String)>,
@@ -127,6 +132,8 @@ pub struct AgentChatSession {
     pub pending_user_input: Option<PendingUserInput>,
     pub pending_approval: Option<PendingApproval>,
     pub proposed_plan: Option<ProposedPlan>,
+    /// Latest saved plan remains accessible after approval, dismissal or paging.
+    pub latest_plan: Option<ProposedPlan>,
     pub changed_files: ChangedFilesSummary,
     pub usage: Option<ConversationUsage>,
     pub started_running_at: Option<u64>,
@@ -134,6 +141,13 @@ pub struct AgentChatSession {
 }
 
 impl AgentChatSession {
+    fn remember_plan(&mut self, mut plan: ProposedPlan) -> ProposedPlan {
+        plan.revision = self.latest_plan.as_ref().map_or(1, |latest| latest.revision.saturating_add(1));
+        self.latest_plan = Some(plan.clone());
+        self.proposed_plan = Some(plan.clone());
+        plan
+    }
+
     pub(crate) fn set_status(&mut self, status: AgentChatStatus) {
         self.status = status;
         self.is_compacting = false;
@@ -468,11 +482,15 @@ enum StoredTimelinePayload {
         markdown: String,
         expanded: bool,
         implemented_at: Option<u64>,
+        #[serde(default)]
+        revision: u64,
     },
     CodeReview {
         id: String,
         markdown: String,
         expanded: bool,
+        #[serde(default)]
+        structured: Option<ide_core::code_review::ReviewRun>,
     },
     Verification {
         id: String,
@@ -695,7 +713,7 @@ impl AgentChatState {
     }
 
     pub(crate) fn safe_for_delegation(&self, agent_id: Uuid) -> bool {
-        !self.background_reserved(agent_id)
+        !self.review_blocks_writing(agent_id) && !self.background_reserved(agent_id)
             && !self.paused_queues.contains(&agent_id)
             && !self.handoffs_sending.contains(&agent_id)
             && self.session(agent_id).is_none_or(|s| {
@@ -765,12 +783,16 @@ impl AgentChatState {
                 pending_user_input: None,
                 pending_approval: None,
                 proposed_plan: None,
+                latest_plan: None,
                 changed_files: ChangedFilesSummary::default(),
                 usage: None,
                 started_running_at: None,
                 last_activity_at: now,
             });
-        if inserted { self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx); }
+        if inserted {
+            self.recover_reviews(agent_id, cx);
+            self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
+        }
         self.sessions.get_mut(&agent_id).unwrap()
     }
 
@@ -904,6 +926,7 @@ impl AgentChatState {
         title: String,
         cx: &mut Context<Self>,
     ) {
+        if self.review_blocks_writing(agent_id) { return; }
         let turn_id = self.anchor_change_turn(agent_id, cx);
         if let Some(controller) = self.controllers.get(&agent_id) {
             let command = match studio_request {
@@ -936,6 +959,7 @@ impl AgentChatState {
         mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) {
+        if self.review_blocks_writing(agent_id) { return; }
         let turn_id = self.anchor_change_turn(agent_id, cx);
         if let Some(controller) = self.controllers.get(&agent_id) {
             let _ = controller.send(ChatBackendCommand::SendTurn {
@@ -1045,6 +1069,7 @@ impl AgentChatState {
         cx: &mut Context<Self>,
     ) -> Uuid {
         let id = Uuid::new_v4();
+        if self.review_blocks_writing(agent_id) { return id; }
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             session.queued_turns.push(QueuedChatTurn {
                 id,
@@ -1079,7 +1104,7 @@ impl AgentChatState {
     }
 
     fn can_drain_queue(&self, agent_id: Uuid) -> bool {
-        !self.background_reserved(agent_id)
+        !self.review_blocks_writing(agent_id) && !self.background_reserved(agent_id)
             && !self.paused_queues.contains(&agent_id)
             && !self.handoffs_sending.contains(&agent_id)
             && self.sessions.get(&agent_id).is_some_and(|session| {
@@ -1218,6 +1243,7 @@ impl AgentChatState {
         studio_request: Option<StudioChatRequest>,
         cx: &mut Context<Self>,
     ) {
+        if self.review_blocks_writing(agent_id) { return; }
         let title = display_text.as_deref().unwrap_or(&text).to_owned();
         if let Some(session) = self.sessions.get_mut(&agent_id) {
             let message = AgentChatMessage::User {
@@ -1731,6 +1757,7 @@ impl AgentChatState {
                 session.started_running_at = None;
             }
             ChatBackendEvent::ProposedPlan(plan) => {
+                let plan = session.remember_plan(plan);
                 remove_proposed_plan_blocks(&mut session.messages);
                 remove_proposed_plan_blocks_from_timeline(&mut session.timeline);
                 upsert_timeline_proposed_plan(&mut session.timeline, plan.clone());
@@ -1739,7 +1766,6 @@ impl AgentChatState {
                     AgentChatTimelineItem::ProposedPlan(plan.clone()),
                     cx,
                 );
-                session.proposed_plan = Some(plan);
                 session.set_status(AgentChatStatus::PlanReady);
                 session.interaction_mode = AgentInteractionMode::Plan;
                 session.started_running_at = None;
@@ -1950,6 +1976,7 @@ impl AgentChatState {
                 pending_user_input: None,
                 pending_approval: None,
                 proposed_plan: None,
+                latest_plan: None,
                 changed_files: ChangedFilesSummary::default(),
                 usage: None,
                 started_running_at: None,
@@ -2088,6 +2115,9 @@ fn apply_changed_files_summary(
     if summary.is_empty() {
         return None;
     }
+    if summary.receipt_identity().is_some_and(|id| session.changed_files.applied_receipts.contains(&id)) {
+        return None;
+    }
     if summary.turn_id.is_some()
         && session.timeline.iter().any(|item| {
             let AgentChatTimelineItem::ChangedFiles(previous) = item else {
@@ -2115,14 +2145,8 @@ fn apply_changed_files_summary(
     let mut receipt = summary;
     receipt.ledger_revision = revision;
     append_timeline_changed_files(&mut session.timeline, receipt.clone());
-    let mut merged = ChangedFilesSummary::default();
-    for item in &session.timeline {
-        if let AgentChatTimelineItem::ChangedFiles(turn) = item {
-            merged.merge_turn(turn);
-        }
-    }
-    merged.ledger_revision = revision;
-    session.changed_files = merged;
+    session.changed_files.merge_turn(&receipt);
+    session.changed_files.ledger_revision = revision;
     Some((receipt, session.changed_files.clone()))
 }
 
@@ -2183,6 +2207,7 @@ mod retirement_tests {
             pending_user_input: None,
             pending_approval: None,
             proposed_plan: None,
+            latest_plan: None,
             changed_files: ChangedFilesSummary::default(),
             usage: None,
             started_running_at: None,
@@ -2202,6 +2227,54 @@ mod retirement_tests {
         assert!(apply_changed_files_summary(&mut session, receipt).is_none());
         assert_eq!(session.changed_files.files[0].additions, 2);
         assert_eq!(session.changed_files.ledger_revision, 1);
+    }
+
+    #[test]
+    fn paginated_chat_keeps_earlier_files_and_folds_repeated_edits_to_the_final_result() {
+        let mut session = retirable_session();
+        let edit = |turn: &str, path: &str, before: &str, after: &str| {
+            ChangedFilesSummary::attributed(turn, vec![FileChangeStat::new(path, 1, 1)
+                .with_content_projection(Some(before.into()), Some(after.into()))], vec![])
+        };
+        let first = edit("first", "first.rs", "original\n", "intermediate\n");
+        apply_changed_files_summary(&mut session, first.clone()).unwrap();
+        // The first edit is outside the visible page after reopening a long chat.
+        session.timeline.clear();
+        apply_changed_files_summary(&mut session, edit("second", "second.rs", "old\n", "new\n")).unwrap();
+        apply_changed_files_summary(&mut session, edit("third", "first.rs", "intermediate\n", "final\n")).unwrap();
+        assert_eq!(session.changed_files.files.len(), 2);
+        let file = session.changed_files.files.iter().find(|f| f.path == PathBuf::from("first.rs")).unwrap();
+        assert_eq!(file.baseline_content.as_deref(), Some("original\n"));
+        assert_eq!(file.result_content.as_deref(), Some("final\n"));
+        assert_eq!((file.additions, file.deletions), (1, 1));
+        assert!(apply_changed_files_summary(&mut session, first).is_none());
+        assert_eq!(session.changed_files.files.len(), 2);
+    }
+
+    #[test]
+    fn paging_and_pending_plan_clear_do_not_hide_the_latest_plan() {
+        let mut session = retirable_session();
+        let latest = ProposedPlan::new("latest", "# Latest plan\nBuild the agreed feature");
+        crate::state::chat_dispatch::hydrate_with_artifacts(&mut session, vec![], None, Some(latest.clone()));
+        assert_eq!(session.latest_plan.as_ref(), Some(&latest));
+        assert!(session.proposed_plan.is_none());
+        let older = ProposedPlan::new("older", "# Old plan");
+        crate::state::chat_dispatch::hydrate_with_artifacts(&mut session,
+            vec![AgentChatTimelineItem::ProposedPlan(older.clone())], None, Some(older));
+        assert_eq!(session.latest_plan.as_ref(), Some(&latest));
+    }
+
+    #[test]
+    fn newer_plan_replaces_the_saved_plan_even_after_pending_actions_are_cleared() {
+        let mut session = retirable_session();
+        let first = session.remember_plan(ProposedPlan::new("plan", "# First contents"));
+        session.proposed_plan = None;
+        let revised = session.remember_plan(ProposedPlan::new("plan", "# Revised contents"));
+        assert!(revised.revision > first.revision);
+        assert_eq!(session.latest_plan.as_ref(), Some(&revised));
+        let next = session.remember_plan(ProposedPlan::new("next", "# New plan"));
+        assert!(next.revision > revised.revision);
+        assert_eq!(session.latest_plan.as_ref(), Some(&next));
     }
 
     #[test]

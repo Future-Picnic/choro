@@ -27,6 +27,9 @@ pub(crate) struct SidebarAgent {
     pub runtime: AgentNavigationRuntime,
     pub delegation: DelegationActivity,
     pub has_delegations: bool,
+    /// An independent reviewer process holds this conversation (including
+    /// while it cancels). Takes precedence over every provider state.
+    pub reviewing: bool,
     pub pocketcomet: bool,
     pub solo: bool,
 }
@@ -34,6 +37,118 @@ pub(crate) struct SidebarAgent {
 #[cfg(all(test, feature = "ui-layout-tests"))]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn review_status_wins_until_the_reviewer_stops_without_rebuilding_on_progress(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use ide_core::code_review::{ReviewRun, ReviewRunState};
+        use std::{cell::Cell, rc::Rc};
+        let (model, chats, id, done_id, project) = cx.update(|cx| {
+            let project = ide_core::Project::from_path("/in-memory/review".into());
+            let mut config = ide_core::AppConfig::default();
+            config.projects.push(project.clone());
+            let workspace = cx.new(|_| Workspace::in_memory(config));
+            let provider = ide_core::AgentKind::Claude;
+            let model = ide_core::AgentModel::default_for(provider);
+            let make = |title: &str| {
+                let mut agent = AgentRecord::new(
+                    project.id,
+                    project.path.clone(),
+                    title,
+                    "",
+                    provider,
+                    model,
+                    model.default_effort(),
+                    Default::default(),
+                );
+                agent.runtime = ide_core::AgentRuntimeKind::Chat;
+                agent
+            };
+            let agent = make("Reviewed");
+            let mut done = make("Finished");
+            done.status = AgentStatus::Done;
+            let (id, done_id) = (agent.id, done.id);
+            let records = cx.new(|_| AgentRecords::in_memory(vec![agent, done]));
+            let chats = cx.new(|_| AgentChatState::new());
+            let terminals = cx.new(|_| TerminalManager::new());
+            let activity = cx.new(|_| {
+                AgentActivityCache::in_memory(records.clone(), chats.clone(), terminals.clone())
+            });
+            let git = cx.new(|_| GitStates::in_memory(workspace.clone()));
+            let model = SidebarModel::new(
+                workspace, records, chats.clone(), activity, terminals, git, cx,
+            );
+            (model, chats, id, done_id, project.id)
+        });
+        let changes = Rc::new(Cell::new(0usize));
+        let _counter = cx.update(|cx| {
+            let changes = changes.clone();
+            cx.subscribe(&model, move |_, _: &SidebarChange, _| changes.set(changes.get() + 1))
+        });
+        let review = |parent: Uuid, state: ReviewRunState, revision: u64| {
+            let mut run = ReviewRun::new(
+                Uuid::new_v4(),
+                parent,
+                "Claude".into(),
+                "model".into(),
+                "effort".into(),
+                1,
+            );
+            run.state = state;
+            run.revision = revision;
+            run
+        };
+        let set = |cx: &mut gpui::TestAppContext, run: ReviewRun, active: bool, navigation: bool| {
+            chats.update(cx, |chats, cx| {
+                chats.set_review_fixture(run, active, navigation, cx)
+            });
+            cx.run_until_parked();
+        };
+        let idle_runtime = cx.update(|cx| model.read(cx).agents[&id].runtime);
+        assert!(cx.update(|cx| !model.read(cx).agents[&id].reviewing));
+
+        set(cx, review(id, ReviewRunState::Running, 1), true, true);
+        set(cx, review(done_id, ReviewRunState::Preparing, 1), true, true);
+        cx.update(|cx| {
+            let model = model.read(cx);
+            for agent in [id, done_id] {
+                assert!(model.agents[&agent].reviewing);
+                assert_eq!(model.agents[&agent].runtime, AgentNavigationRuntime::Working);
+            }
+            assert_eq!(
+                model.projects[&project].reviewing,
+                2,
+                "a reviewed Done conversation keeps the collapsed project teal"
+            );
+            assert_eq!(model.projects[&project].working, 2);
+        });
+
+        let before = changes.get();
+        for revision in 2..40 {
+            set(cx, review(id, ReviewRunState::Running, revision), true, false);
+        }
+        assert_eq!(changes.get(), before, "progress packets never rebuild the sidebar");
+
+        for state in [ReviewRunState::Cancelling, ReviewRunState::Cancelled] {
+            set(cx, review(id, state, 50), true, true);
+            assert!(
+                cx.update(|cx| model.read(cx).agents[&id].reviewing),
+                "{state:?}: the reviewer process still holds the conversation"
+            );
+        }
+        set(cx, review(id, ReviewRunState::Cancelled, 51), false, true);
+        cx.update(|cx| {
+            let model = model.read(cx);
+            assert!(!model.agents[&id].reviewing);
+            assert_eq!(model.agents[&id].runtime, idle_runtime);
+            assert_eq!(
+                model.projects[&project].reviewing,
+                1,
+                "only the Done conversation is still under review"
+            );
+        });
+    }
 
     #[gpui::test]
     fn legacy_activity_expires_without_an_unrelated_redraw(cx: &mut gpui::TestAppContext) {
@@ -130,6 +245,7 @@ pub(crate) struct SidebarProject {
     pub scripts: Vec<gpui::SharedString>,
     pub working: usize,
     pub delegating: usize,
+    pub reviewing: usize,
     pub waiting: usize,
 }
 
@@ -332,8 +448,10 @@ impl SidebarModel {
             self.terminals.read(cx),
             now,
         );
-        let runtime = if record.status.is_finished() || provider == AgentNavigationRuntime::Waiting
-        {
+        let reviewing = chats.review_blocks_writing(record.id);
+        let runtime = if reviewing {
+            AgentNavigationRuntime::Working
+        } else if record.status.is_finished() || provider == AgentNavigationRuntime::Waiting {
             provider
         } else {
             match delegation {
@@ -352,6 +470,7 @@ impl SidebarModel {
             runtime,
             delegation,
             has_delegations,
+            reviewing,
             pocketcomet: record.origin.as_ref().is_some_and(|o| o.is_pocketcomet()),
             solo: record.is_active_solo(),
         })
@@ -521,13 +640,17 @@ impl SidebarModel {
             for agent in self
                 .agents
                 .values()
-                .filter(|a| a.project_id == project.id && !a.status.is_finished())
+                // A finished conversation under review is live work again.
+                .filter(|a| {
+                    a.project_id == project.id && (!a.status.is_finished() || a.reviewing)
+                })
             {
                 match agent.runtime {
                     AgentNavigationRuntime::Working => {
                         next.working += 1;
                         next.delegating +=
                             usize::from(agent.delegation == DelegationActivity::Working);
+                        next.reviewing += usize::from(agent.reviewing);
                     }
                     AgentNavigationRuntime::Waiting => next.waiting += 1,
                     _ => {}

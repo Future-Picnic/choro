@@ -8,6 +8,9 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        if let Some(run) = &review.structured {
+            return self.render_structured_review_card(agent_id, review, run, window, cx);
+        }
         let collapsible = review.should_collapse();
         let show_all = review.expanded || !collapsible;
         let total = review.findings.len();
@@ -86,24 +89,7 @@ impl CenterArea {
                 .w_full()
                 .px(crate::ui::design::chat_card_body_pad_x())
                 .pb(crate::ui::design::chat_card_body_pad_y())
-                .child(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .gap_2()
-                        .py(crate::ui::design::chat_card_body_pad_y())
-                        .text_size(crate::ui::design::text_label())
-                        .text_color(crate::ui::design::t3(cx))
-                        .child(div().flex_none().w(crate::ui::design::icon()))
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(gpui::relative(REVIEW_ISSUE_COL))
-                                .child("Issue"),
-                        )
-                        .child(div().flex_1().min_w(px(0.)).child("What happens"))
-                        .child(div().flex_1().min_w(px(0.)).child("Suggested fix")),
-                )
+                .child(review_findings_header(cx))
                 .children(
                     review
                         .findings
@@ -131,7 +117,24 @@ impl CenterArea {
         let fix_id = review.id.clone();
         let fix_all_id = review.id.clone();
         let toggle_id = review.id.clone();
-        card.when(has_pending || collapsible, |card| {
+        let fix_notice = self
+            .agent_review_ui
+            .fix_notices
+            .get(&(agent_id, review.id.clone()))
+            .cloned();
+        card.when_some(fix_notice, |card, notice| {
+            card.child(
+                div()
+                    .px(crate::ui::design::chat_card_body_pad_x())
+                    .pt(crate::ui::design::chat_card_head_pad_y())
+                    .border_t_1()
+                    .border_color(crate::ui::design::line(cx))
+                    .text_size(crate::ui::design::text_ui())
+                    .text_color(crate::ui::design::amber(cx))
+                    .child(notice),
+            )
+        })
+        .when(has_pending || collapsible, |card| {
             card.child(
                 h_flex()
                     .w_full()
@@ -155,7 +158,7 @@ impl CenterArea {
                             .icon(IconName::Replace)
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.request_agent_code_review_fix(
+                                    this.request_validated_code_review_fix(
                                         agent_id,
                                         fix_id.clone(),
                                         selected > 0,
@@ -172,7 +175,7 @@ impl CenterArea {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.request_agent_code_review_fix(
+                                        this.request_validated_code_review_fix(
                                             agent_id,
                                             fix_all_id.clone(),
                                             false,
@@ -339,6 +342,26 @@ impl CenterArea {
             )
             .into_any_element()
     }
+}
+
+/// Column labels above finding rows, shared by legacy and structured cards.
+pub(super) fn review_findings_header(cx: &App) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap_2()
+        .py(crate::ui::design::chat_card_body_pad_y())
+        .text_size(crate::ui::design::text_label())
+        .text_color(crate::ui::design::t3(cx))
+        .child(div().flex_none().w(crate::ui::design::icon()))
+        .child(
+            div()
+                .flex_none()
+                .w(gpui::relative(REVIEW_ISSUE_COL))
+                .child("Issue"),
+        )
+        .child(div().flex_1().min_w(px(0.)).child("What happens"))
+        .child(div().flex_1().min_w(px(0.)).child("Suggested fix"))
 }
 
 /// Fraction of the row given to the issue column (severity, title, location);

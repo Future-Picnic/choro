@@ -98,7 +98,9 @@ impl ClaudeBridgeRuntime {
     ) -> anyhow::Result<()> {
         let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
-        let system_prompt = if self.agent.hidden_doc_assistant {
+        let system_prompt = if self.agent.review_run_id.is_some() {
+            ide_core::code_review::REVIEW_INSTRUCTIONS.to_owned()
+        } else if self.agent.hidden_doc_assistant {
             format!(
                 "{}\n\n{}",
                 self.agent.doc,
@@ -108,10 +110,12 @@ impl ClaudeBridgeRuntime {
             super::CHORO_NATIVE_TOOL_INSTRUCTIONS.to_string()
         };
         let system_prompt = super::managed::instructions(system_prompt, &self.agent)?;
-        let system_prompt = super::append_choro_visualization_instructions(
+        let system_prompt = if self.agent.review_run_id.is_some() {
+            system_prompt
+        } else { super::append_choro_visualization_instructions(
             system_prompt,
             self.visualization_dir.as_deref(),
-        );
+        ) };
         self.studio_review
             .begin(self.agent.studio_context.is_some());
         self.assistant_stream.reset(&self.events);
@@ -140,6 +144,7 @@ impl ClaudeBridgeRuntime {
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
             "studioAssistant": self.agent.studio_context.is_some(),
+            "reviewAssistant": self.agent.review_run_id.is_some(),
             "readOnly": read_only,
         }))
     }

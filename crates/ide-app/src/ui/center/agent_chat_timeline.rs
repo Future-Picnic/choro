@@ -295,6 +295,7 @@ impl CenterArea {
                     pending_user_input: None,
                     pending_approval: None,
                     proposed_plan: None,
+                    latest_plan: None,
                     changed_files: Default::default(),
                     usage: None,
                     started_running_at: None,
@@ -451,6 +452,39 @@ impl CenterArea {
             session.status,
             AgentChatStatus::Running | AgentChatStatus::Cancelling
         );
+        let review_hold = self.render_agent_review_hold(
+            agent.id,
+            super::agent_chat_review_panel::HeldDraft {
+                text: has_draft,
+                attachments: attached_files.len(),
+            },
+            &input,
+            window,
+            cx,
+        );
+        let reviewing = review_hold.is_some();
+        let review_error = if reviewing {
+            None
+        } else {
+            self.render_agent_review_error(agent.id, cx)
+        };
+        let has_active_delegation = cx
+            .try_global::<crate::state::delegation::DelegationHandle>()
+            .is_some_and(|handle| {
+                handle
+                    .0
+                    .read(cx)
+                    .runs
+                    .iter()
+                    .any(|run| run.parent_agent_id == agent.id && !run.status.terminal())
+            });
+        let review_unavailable = super::agent_chat_review_panel::review_unavailable_reason(
+            self.agent_chats.read(cx),
+            &session,
+            agent.id,
+            has_composer_decision,
+            has_active_delegation,
+        );
         let chat_view = cx.entity().clone();
         let has_saved_session = session.chat_session_id.is_some()
             || session.cli_session_id.is_some()
@@ -552,7 +586,20 @@ impl CenterArea {
                                 .child(band),
                         )
                     })
-                    .child(
+                    .when_some(review_error, |wrap, error| wrap.child(error))
+                    // An independent reviewer holds the conversation: the
+                    // panel takes the composer's place while the draft,
+                    // attachments and focus wait in their per-agent state.
+                    .when_some(review_hold, |wrap, panel| {
+                        wrap.child(
+                            div()
+                                .w_full()
+                                .max_w(crate::ui::design::agent_chat_content_max_w())
+                                .mx_auto()
+                                .child(panel),
+                        )
+                    })
+                    .when(!reviewing, |wrap| wrap.child(
                         crate::ui::style::composer_frame(cx)
                             .relative()
                             .flex_shrink_0()
@@ -1243,11 +1290,14 @@ impl CenterArea {
                                                     cx,
                                                 )
                                             }
-                                            .tooltip("Ask the agent to review the changed files")
+                                            .disabled(review_unavailable.is_some())
+                                            .tooltip(review_unavailable.unwrap_or(
+                                                "Review this conversation's changes in a separate, read-only session",
+                                            ))
                                             .on_click(cx.listener({
                                                 let agent_id = agent.id;
-                                                move |this, _, _, cx| {
-                                                    this.request_agent_code_review(agent_id, cx);
+                                                move |this, _, window, cx| {
+                                                    this.start_agent_review(agent_id, window, cx);
                                                 }
                                             })),
                                         )
@@ -1433,7 +1483,7 @@ impl CenterArea {
                                         .inset_0(),
                                     ),
                             )),
-                    ),
+                    )),
             );
 
         if searchable {

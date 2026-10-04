@@ -16,6 +16,7 @@ mod tools;
 
 fn main() {
     let mut studio = false;
+    let mut review_run = None;
     let mut project_id = None;
     let mut agent_id = None;
     let mut data_root = None;
@@ -23,6 +24,11 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--review-run" => {
+                review_run = Some(args.next().and_then(|value| uuid::Uuid::parse_str(&value).ok()).unwrap_or_else(|| {
+                    eprintln!("ide-mcp: --review-run requires a valid run ID"); std::process::exit(2);
+                }));
+            }
             "--studio" => studio = true,
             "--project-id" => {
                 project_id = args
@@ -67,6 +73,7 @@ fn main() {
     }
     let mut server = mcp::Server::new(project_id, agent_id, data_root);
     server.set_studio(studio);
+    server.set_review_run(review_run);
     if let Err(error) = server.run() {
         eprintln!("ide-mcp: fatal: {error:#}");
         std::process::exit(1);

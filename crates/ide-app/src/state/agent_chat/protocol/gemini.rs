@@ -71,10 +71,14 @@ fn start_runtime(
     events: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<GeminiRuntime> {
-    let executable =
-        google_runtime::executable().context("Could not prepare Google's Gemini provider")?;
+    let reviewing = agent.review_run_id.is_some();
+    let executable = if reviewing {
+        google_runtime::cached_executable().context("Start a Gemini coding session to initialize its provider, then retry Review")?
+    } else { google_runtime::executable().context("Could not prepare Google's Gemini provider")? };
     anyhow::ensure!(!shutdown.load(Ordering::SeqCst), "Gemini stopped");
-    let mut command = google_runtime::command(&executable)?;
+    let mut command = if agent.review_run_id.is_some() {
+        google_runtime::review_command(&executable, agent.runtime_path())?
+    } else { google_runtime::command(&executable)? };
     command
         .current_dir(agent.runtime_path())
         .stdin(Stdio::piped())
@@ -110,11 +114,11 @@ fn start_runtime(
         agent,
         session_modes: Value::Null,
         deadline: None,
-        deny_all_tools: false,
+        deny_all_tools: reviewing,
     })
 }
 
-fn run(
+pub(super) fn run(
     agent: AgentRecord,
     initial_mode: AgentInteractionMode,
     commands: Receiver<ChatBackendCommand>,
@@ -123,7 +127,7 @@ fn run(
 ) -> anyhow::Result<()> {
     let mut runtime = start_runtime(agent, initial_mode, commands, events, shutdown)?;
     let resumed = runtime.agent.cli_session_id.is_some();
-    runtime.initialize_session(true, choro_acp_mcp_servers_json(&runtime.agent))?;
+    runtime.initialize_session(runtime.agent.review_run_id.is_none(), choro_acp_mcp_servers_json(&runtime.agent))?;
     let session_id = runtime
         .session_id
         .clone()
@@ -135,7 +139,7 @@ fn run(
         let _ = runtime
             .events
             .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Idle));
-    } else {
+    } else if runtime.agent.review_run_id.is_none() {
         runtime.send_turn(
             runtime.agent.doc.clone(),
             initial_mode,
@@ -308,7 +312,7 @@ impl GeminiRuntime {
             .clone()
             .context("Gemini session unavailable")?;
         self.interaction_mode = mode;
-        self.read_only_turn = read_only || mode == AgentInteractionMode::Plan;
+        self.read_only_turn = read_only || mode == AgentInteractionMode::Plan || self.agent.review_run_id.is_some();
         self.active_turn_id = turn_id;
         self.assistant_buffer.clear();
         self.assistant_stream.reset(&self.events);
@@ -320,14 +324,20 @@ impl GeminiRuntime {
         // Never let the CLI's auto-approval modes bypass Choro's controls.
         self.request(
             "session/set_mode",
-            json!({"sessionId":session, "modeId":session_mode(&self.session_modes, self.read_only_turn)?}),
+            // The review host, isolated Ask rules and deny-all ACP callback
+            // enforce read-only access. Google's subscription server need not
+            // advertise a Plan mode for a tool-free reasoning session.
+            json!({"sessionId":session, "modeId":session_mode(&self.session_modes, self.read_only_turn && self.agent.review_run_id.is_none())?}),
         )?;
         let _ = self
             .events
             .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running));
+        let prompt = if self.agent.review_run_id.is_some() { text } else {
+            format!("{}\n\n{text}", ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS)
+        };
         let result = self.request(
             "session/prompt",
-            json!({"sessionId":session,"prompt":[{"type":"text","text":format!("{}\n\n{text}", ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS)}]}),
+            json!({"sessionId":session,"prompt":[{"type":"text","text":prompt}]}),
         );
         self.assistant_stream.flush(&self.events);
         let _ = self.events.send_blocking(ChatBackendEvent::ChangedFiles(
@@ -558,7 +568,7 @@ impl GeminiRuntime {
         let allow_once = option(&["allow_once"]);
         let allow_always = option(&["allow_always"]);
         let reject = option(&["reject_once", "reject_always"]);
-        let automatic = if self.deny_all_tools
+        let automatic = if self.deny_all_tools || self.agent.review_run_id.is_some()
             || (self.read_only_turn && !matches!(tool_kind, "read" | "search" | "think"))
         {
             return self.respond_permission(jsonrpc_id, reject);
@@ -872,6 +882,18 @@ mod tests {
             .handle_server_request(permission("execute"))
             .unwrap();
         assert_eq!(runtime.pending_permissions.len(), 1);
+    }
+
+    #[test]
+    fn review_rejects_reads_services_and_writes_even_with_full_coding_access() {
+        let (mut runtime, mut reader, events) = runtime(AgentAccessMode::FullAccess);
+        runtime.agent.review_run_id = Some(uuid::Uuid::new_v4());
+        for kind in ["read", "search", "think", "execute", "edit", "other"] {
+            runtime.handle_server_request(permission(kind)).unwrap();
+            assert_eq!(response(&mut reader)["result"]["outcome"]["optionId"], "deny");
+        }
+        assert!(runtime.pending_permissions.is_empty());
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

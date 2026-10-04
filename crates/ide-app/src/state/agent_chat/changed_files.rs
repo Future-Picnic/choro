@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use uuid::Uuid;
@@ -59,6 +60,9 @@ pub struct ChangedFilesSummary {
     pub ledger_revision: u64,
     pub snapshot_id: Option<Uuid>,
     pub commit_sha: Option<String>,
+    /// Receipt identities restored independently of paginated chat history.
+    /// Replayed provider events must not apply the same edit twice.
+    pub(crate) applied_receipts: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -130,6 +134,23 @@ impl FileChangeActivity {
 }
 
 impl ChangedFilesSummary {
+    pub(crate) fn receipt_identity(&self) -> Option<String> {
+        let turn = self.turn_id.as_ref()?;
+        let payload = serde_json::to_vec(&(
+            self.files
+                .iter()
+                .map(FileChangeStat::metadata)
+                .collect::<Vec<_>>(),
+            self.observed_files
+                .iter()
+                .map(FileChangeStat::metadata)
+                .collect::<Vec<_>>(),
+            self.snapshot_id,
+        ))
+        .ok()?;
+        Some(format!("{turn}:{:x}", Sha256::digest(payload)))
+    }
+
     /// The single boundary for user-facing conversation changes. Observations
     /// and legacy receipts without ownership evidence cannot establish authorship.
     pub fn conversation_files(&self) -> impl Iterator<Item = &FileChangeStat> {
@@ -268,6 +289,11 @@ impl ChangedFilesSummary {
     /// provides content hashes, returning to the first baseline removes the
     /// cumulative entry while the historical receipt remains untouched.
     pub fn merge_turn(&mut self, turn: &Self) {
+        if let Some(identity) = turn.receipt_identity() {
+            if !self.applied_receipts.insert(identity) {
+                return;
+            }
+        }
         self.ledger_revision = if turn.ledger_revision == 0 {
             self.ledger_revision.saturating_add(1)
         } else {

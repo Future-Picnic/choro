@@ -339,6 +339,9 @@ impl AgentChatState {
             }
         }
         if let Some(plan) = persist_plan {
+            if session.latest_plan.as_ref().is_some_and(|latest| latest.id == plan.id) {
+                session.latest_plan = Some(plan.clone());
+            }
             persist_timeline_item(agent_id, AgentChatTimelineItem::ProposedPlan(plan), cx);
         }
         session.last_activity_at = unix_now();
@@ -490,12 +493,14 @@ impl AgentChatState {
         review_id: &str,
         only_selected: bool,
     ) -> Vec<String> {
+        if self.review_blocks_writing(agent_id) { return vec![]; }
         let Some(session) = self.sessions.get(&agent_id) else {
             return Vec::new();
         };
         for item in session.timeline.iter().rev() {
             if let AgentChatTimelineItem::CodeReview(review) = item {
                 if review.id == review_id {
+                    if review.structured.as_ref().is_some_and(|r| !r.can_fix()) { return vec![]; }
                     return review
                         .findings_to_fix(only_selected)
                         .iter()
@@ -587,6 +592,7 @@ impl AgentChatState {
             session.interaction_mode = AgentInteractionMode::Plan;
         } else {
             plan.mark_implemented();
+            session.latest_plan = Some(plan.clone());
             persist_timeline_item(
                 agent_id,
                 AgentChatTimelineItem::ProposedPlan(plan.clone()),
@@ -648,13 +654,13 @@ impl AgentChatState {
         cx: &mut Context<Self>,
     ) {
         if let Some(session) = self.sessions.get_mut(&agent_id) {
+            let plan = session.remember_plan(plan);
             upsert_timeline_proposed_plan(&mut session.timeline, plan.clone());
             persist_timeline_item(
                 agent_id,
                 AgentChatTimelineItem::ProposedPlan(plan.clone()),
                 cx,
             );
-            session.proposed_plan = Some(plan);
             session.set_status(AgentChatStatus::PlanReady);
             session.started_running_at = None;
             session.last_activity_at = unix_now();

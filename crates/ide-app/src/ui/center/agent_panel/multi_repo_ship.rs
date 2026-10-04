@@ -350,6 +350,15 @@ impl MultiRepoShipDialog {
             cx.notify();
             return;
         }
+        if ship_activity::confirm_if_needed(
+            &self.center, self.agent_id, &self.ship_activity_consent, window, cx,
+            move |dialog: &mut Self, consent, window, cx| {
+                dialog.ship_activity_consent = consent;
+                dialog.run(action, window, cx);
+            },
+        ) {
+            return;
+        }
         self.start_summary_maintenance(cx);
         let requests = self.run_requests(cx);
         let total = requests.len();

@@ -56,6 +56,7 @@ fn fixture() -> (tempfile::TempDir, ServerContext, Uuid, ExpertProfile) {
         .authorize_experts(parent.id, source, "Delegate to Builder", &[], false)
         .unwrap();
     let ctx = ServerContext {
+        review_run: None,
         studio: false,
         project_id: Some(project.id.0),
         agent_id: Some(parent.id),
@@ -403,6 +404,7 @@ fn child_scope_cannot_read_sibling_or_operate_as_lead_and_stale_result_is_reject
     let run = store.load_delegation(run_id).unwrap();
     let task = run.tasks[0].id;
     let childctx = ServerContext {
+        review_run: None,
         studio: false,
         project_id: ctx.project_id,
         agent_id: Some(child),

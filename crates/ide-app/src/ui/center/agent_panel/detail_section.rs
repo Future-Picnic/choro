@@ -125,7 +125,7 @@ impl CenterArea {
                 self.agent_chats
                     .read(cx)
                     .session(agent.id)
-                    .and_then(|session| session.proposed_plan.clone())
+                    .and_then(|session| session.latest_plan.clone())
             })
             .flatten();
         let diff_drawer = (detail_tab == AgentDetailTab::Diff)

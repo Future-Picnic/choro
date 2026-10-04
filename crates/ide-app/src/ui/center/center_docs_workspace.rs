@@ -818,7 +818,7 @@ impl CenterArea {
                 .agent_chats
                 .read(cx)
                 .session(agent_id)
-                .and_then(|session| session.proposed_plan.as_ref())
+                .and_then(|session| session.latest_plan.as_ref())
                 .is_some();
         let has_diff = self.agent_diff_drawers.contains_key(&agent_id);
         crate::ui::style::agent_detail_tabs()

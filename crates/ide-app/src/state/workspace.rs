@@ -514,6 +514,10 @@ impl Workspace {
         }
     }
 
+    #[allow(
+        dead_code,
+        reason = "the independent reviewer reports through review_report; kept for saved config"
+    )]
     pub fn effective_code_review_output_instructions(&self) -> &str {
         if self.code_review_output_instructions.trim().is_empty() {
             ide_core::config::DEFAULT_CODE_REVIEW_OUTPUT_INSTRUCTIONS

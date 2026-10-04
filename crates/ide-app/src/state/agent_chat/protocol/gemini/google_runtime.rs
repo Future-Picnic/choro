@@ -142,3 +142,41 @@ pub(super) fn command(executable: &Path) -> anyhow::Result<Command> {
     command.arg("--uid=");
     Ok(command)
 }
+
+/// Separate provider settings and conversation history; reuse only account
+/// configuration. No user hooks, MCP servers or auto-approval rules survive.
+pub(super) fn review_command(executable: &Path, runtime: &Path) -> anyhow::Result<Command> {
+    let profile = runtime.join("google-review-profile");
+    let directory = profile.join("antigravity-acp");
+    fs::create_dir_all(&directory)?;
+    let mut settings = json!({"permissions":{"ask":["read_file(*)","write_file(*)","command(*)","unsandboxed(*)","mcp(*)","execute_url(*)","read_url(*)"]}});
+    let existing = profile_root().join("antigravity-acp/settings.json");
+    if existing.is_file() {
+        let original: Value = serde_json::from_slice(&fs::read(existing)?)?;
+        for key in ["auth", "gcp"] {
+            if let Some(value) = original.get(key) { settings[key] = value.clone(); }
+        }
+    }
+    let mut options = fs::OpenOptions::new(); options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))?;
+    }
+    let mut file = options.open(directory.join("settings.json"))?;
+    serde_json::to_writer(&mut file, &settings)?;
+    file.sync_all()?;
+    // Google keeps OAuth credentials outside the per-session settings/history;
+    // preserve an existing file-backed login if the installation uses one.
+    for name in ["oauth_creds.json", "google_accounts.json"] {
+        let original = profile_root().join(name);
+        if original.is_file() { fs::copy(original, profile.join(name))?; }
+    }
+    let mut command = Command::new(executable);
+    command.env("GEMINI_HOME", profile).env("PATH", command_path_env())
+        .env_remove("GEMINI_API_KEY").env_remove("GOOGLE_API_KEY");
+    #[cfg(target_os = "linux")]
+    command.arg("--uid=");
+    Ok(command)
+}

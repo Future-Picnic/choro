@@ -411,7 +411,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
-        let mut exact_files = std::collections::BTreeMap::<PathBuf, (usize, usize)>::new();
+        let mut exact_files = std::collections::BTreeMap::<PathBuf, (usize, usize, bool)>::new();
         if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
             let reconciled = session
                 .changed_files
@@ -421,7 +421,7 @@ impl CenterArea {
                 .conversation_files()
                 .filter(|file| !filter.is_artifact(&file.path))
             {
-                exact_files.insert(file.path.clone(), (file.additions, file.deletions));
+                exact_files.insert(file.path.clone(), (file.additions, file.deletions, file.counts_unavailable));
             }
         }
         let exact_rows = exact_files.into_iter().collect::<Vec<_>>();
@@ -482,9 +482,9 @@ impl CenterArea {
             .when(!exact_rows.is_empty(), |list| {
                 list.child(agent_files_section_label("Edited in this chat", cx))
                     .children(exact_rows.into_iter().enumerate().map(
-                        |(index, (path, (add, del)))| {
+                        |(index, (path, (add, del, counts_unavailable)))| {
                             self.render_agent_file_ledger_row(
-                                project, agent, index, path, add, del, cx,
+                                project, agent, index, path, add, del, counts_unavailable, cx,
                             )
                         },
                     ))
@@ -510,6 +510,7 @@ impl CenterArea {
         path: PathBuf,
         add: usize,
         del: usize,
+        counts_unavailable: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
@@ -529,12 +530,12 @@ impl CenterArea {
             .cursor_pointer()
             .hover(|row| row.bg(crate::ui::design::surface_2(cx).opacity(0.24)))
             .on_click(cx.listener(move |this, _, _, cx| {
-                let snapshots = this
+                let (snapshots, ledger_revision) = this
                     .agent_chats
                     .read(cx)
                     .session(agent_id)
                     .map(|session| {
-                        conversation_file_snapshots(&repo_path, &path, &session.timeline)
+                        (conversation_file_snapshots(&repo_path, &path, &session.timeline), session.changed_files.ledger_revision)
                     })
                     .unwrap_or_default();
                 this.open_agent_diff_drawer(
@@ -542,6 +543,8 @@ impl CenterArea {
                     project,
                     DiffKind::ConversationFileHistory {
                         repo_path: repo_path.clone(),
+                        agent_id,
+                        ledger_revision,
                         path: path.clone(),
                         snapshots,
                     },
@@ -569,16 +572,19 @@ impl CenterArea {
                     .gap_1p5()
                     .text_size(crate::ui::design::text_ui())
                     .font_family(crate::ui::design::FONT_MONO)
-                    .child(
-                        div()
-                            .text_color(crate::ui::design::sage(cx))
-                            .child(format!("+{add}")),
-                    )
-                    .child(
-                        div()
-                            .text_color(crate::ui::design::rose(cx))
-                            .child(format!("-{del}")),
-                    ),
+                    .when(counts_unavailable, |row| row.child("—"))
+                    .when(!counts_unavailable, |row| {
+                        row.child(
+                            div()
+                                .text_color(crate::ui::design::sage(cx))
+                                .child(format!("+{add}")),
+                        )
+                        .child(
+                            div()
+                                .text_color(crate::ui::design::rose(cx))
+                                .child(format!("-{del}")),
+                        )
+                    }),
             )
             .child(
                 crate::ui::style::ghost_button_compact(

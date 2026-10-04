@@ -970,6 +970,7 @@ mod tests {
             pending_user_input: None,
             pending_approval: None,
             proposed_plan: None,
+            latest_plan: None,
             changed_files: Default::default(),
             usage: None,
             started_running_at: None,

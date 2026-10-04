@@ -13,7 +13,10 @@ mod agent_chat_render_helpers;
 mod agent_chat_resume;
 mod agent_chat_reveal;
 mod agent_chat_review;
+mod agent_chat_review_card;
 mod agent_chat_review_checklist;
+mod agent_chat_review_panel;
+mod agent_chat_review_status;
 mod agent_chat_runtime;
 pub(crate) mod agent_chat_search;
 mod agent_chat_ship;
@@ -2145,6 +2148,9 @@ pub struct CenterArea {
     hovered_doc_title: bool,
     agent_title_edit: Option<AgentTitleEdit>,
     agent_start_errors: HashMap<Uuid, String>,
+    /// Independent review presentation: held composers, panel focus, start
+    /// errors and in-flight Fix freshness checks. Run state lives in AgentChatState.
+    agent_review_ui: agent_chat_review_panel::ReviewUiState,
     /// Live "Preparing lane" state per Solo agent; entries disappear once
     /// setup fully succeeds and stay visible on failure (with retry).
     lane_setups: HashMap<Uuid, agent_lane::LaneSetup>,

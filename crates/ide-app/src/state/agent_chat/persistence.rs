@@ -29,10 +29,26 @@ pub fn persist_timeline_snapshot(
 }
 
 pub fn load_persisted_file_ledger(agent_id: Uuid) -> Option<ChangedFilesSummary> {
-    let ledger = LocalStore::open_default()
-        .ok()?
-        .load_chat_file_ledger(agent_id)
-        .ok()??;
+    let store = LocalStore::open_default().ok()?;
+    load_file_ledger_from_store(&store, agent_id).ok()
+}
+
+/// Load the durable projection and its receipt identities independently of
+/// chat paging. Older builds may have saved a projection missing earlier paths;
+/// recover those paths from confirmed receipts without observing Git dirtiness.
+pub(crate) fn load_file_ledger_from_store(
+    store: &LocalStore,
+    agent_id: Uuid,
+) -> anyhow::Result<ChangedFilesSummary> {
+    let mut history = ChangedFilesSummary::default();
+    for event in store.load_timeline_events_by_kind(agent_id, "changed_files")? {
+        if let Some(AgentChatTimelineItem::ChangedFiles(receipt)) = timeline_item_from_store_event(&event) {
+            history.merge_turn(&receipt);
+        }
+    }
+    let Some(ledger) = store.load_chat_file_ledger(agent_id)? else {
+        return Ok(history);
+    };
     let mut summary = ChangedFilesSummary::default();
     summary.attribution_version = 1;
     summary.ledger_revision = ledger.revision;
@@ -49,7 +65,36 @@ pub fn load_persisted_file_ledger(agent_id: Uuid) -> Option<ChangedFilesSummary>
         }
     }
     summary.remove_provider_private_artifacts();
-    Some(summary)
+    for mut file in history.files {
+        if let Some(saved) = summary.files.iter_mut().find(|saved| saved.path == file.path) {
+            // An older truncated projection can also have lost the first
+            // baseline for a path that still appears in Files. Do not present
+            // its last few edits as the whole conversation's net change.
+            if saved.baseline_hash != file.baseline_hash && saved.result_hash == file.result_hash {
+                file.result_content = saved.result_content.clone();
+                if file.baseline_content.is_none() { file.counts_unavailable = true; }
+                *saved = file;
+            }
+        } else {
+            summary.files.push(file);
+        }
+    }
+    for file in history.observed_files {
+        if !summary.files.iter().chain(&summary.observed_files).any(|saved| saved.path == file.path) {
+            summary.observed_files.push(file);
+        }
+    }
+    summary.applied_receipts = history.applied_receipts;
+    summary.ledger_revision = summary.ledger_revision.max(history.ledger_revision);
+    Ok(summary)
+}
+
+pub(crate) fn load_latest_plan_from_store(store: &LocalStore, agent_id: Uuid) -> anyhow::Result<Option<ProposedPlan>> {
+    Ok(store.load_latest_timeline_event(agent_id, "proposed_plan")?
+        .as_ref().and_then(timeline_item_from_store_event).and_then(|item| match item {
+            AgentChatTimelineItem::ProposedPlan(plan) => Some(plan),
+            _ => None,
+        }))
 }
 
 pub(super) fn persist_changed_files_turn(
@@ -304,8 +349,10 @@ impl StoredTimelinePayload {
                 markdown: plan.markdown.clone(),
                 expanded: plan.expanded,
                 implemented_at: plan.implemented_at,
+                revision: plan.revision,
             }),
             AgentChatTimelineItem::CodeReview(review) => Some(Self::CodeReview {
+                structured: review.structured.clone(),
                 id: review.id.clone(),
                 markdown: review.markdown.clone(),
                 expanded: review.expanded,
@@ -552,18 +599,27 @@ impl StoredTimelinePayload {
                 markdown,
                 expanded,
                 implemented_at,
+                revision,
             } => {
                 let mut plan = ProposedPlan::new(id, markdown);
                 plan.expanded = expanded;
                 plan.implemented_at = implemented_at;
+                plan.revision = revision;
                 Some(AgentChatTimelineItem::ProposedPlan(plan))
             }
             Self::CodeReview {
                 id,
                 markdown,
                 expanded,
+                structured,
             } => {
                 let mut review = CodeReview::new(id, markdown);
+                if let Some(mut run) = structured {
+                    if run.freshness == ide_core::code_review::ReviewFreshness::Current {
+                        run.freshness = ide_core::code_review::ReviewFreshness::Uncertain("Revalidating saved review source and ownership".into());
+                    }
+                    review = CodeReview::from_run(run);
+                }
                 review.expanded = expanded;
                 Some(AgentChatTimelineItem::CodeReview(review))
             }
@@ -627,6 +683,7 @@ impl StoredTimelinePayload {
                     }
                 }
                 Some(AgentChatTimelineItem::ChangedFiles(ChangedFilesSummary {
+                    applied_receipts: Default::default(),
                     files,
                     observed_files,
                     turn_id,
@@ -919,6 +976,82 @@ pub(super) fn work_log_kind_label(kind: WorkLogEntryKind) -> &'static str {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn reopening_recovers_old_files_and_keeps_latest_contents_and_receipt_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let project = ide_core::Project::from_path(dir.path().join("project"));
+        let mut agent = AgentRecord::new(project.id, project.path.clone(), "Saved artifacts", "",
+            ide_core::AgentKind::Codex, AgentModel::CodexDefault, AgentEffort::Medium, ide_core::agents::AgentAccessMode::FullAccess);
+        agent.runtime = ide_core::AgentRuntimeKind::Chat;
+        let mut config = ide_core::AppConfig::default();
+        config.projects = vec![project];
+        store.save_workspace_config(&config).unwrap();
+        store.save_agents(std::slice::from_ref(&agent)).unwrap();
+        let receipt = |turn: &str, path: &str, before: &str, after: &str, revision| {
+            let mut summary = ChangedFilesSummary::attributed(turn,
+                vec![FileChangeStat::new(path, 1, 1)
+                    .with_content_hashes(Some(before.into()), Some(after.into()))
+                    .with_content_projection(Some(before.into()), Some(after.into()))], vec![]);
+            summary.ledger_revision = revision;
+            summary
+        };
+        let old = receipt("old", "old.rs", "before\n", "after\n", 1);
+        let earlier = receipt("earlier", "recent.rs", "first baseline\n", "original\n", 2);
+        let recent = receipt("recent", "recent.rs", "original\n", "final\n", 3);
+        for summary in [&old, &earlier, &recent] {
+            let (kind, key, payload, at) = stored_timeline_event_parts(&AgentChatTimelineItem::ChangedFiles(summary.clone())).unwrap();
+            store.upsert_timeline_event(agent.id, kind, key, payload, at).unwrap();
+        }
+        // Reproduce the old bug's saved projection: the earlier path is absent.
+        let saved = ide_core::local_store::StoredChatFileLedgerEntry {
+            agent_id: agent.id, path: "recent.rs".into(), observed: false,
+            additions: 1, deletions: 1, counts_unavailable: false, segments_json: "[]".into(),
+            baseline_hash: Some("original\n".into()), result_hash: Some("final\n".into()),
+            baseline_content: Some("original\n".into()), result_content: Some("final\n".into()), updated_at: 2,
+        };
+        store.replace_chat_file_ledger(agent.id, 3, &[saved]).unwrap();
+        let plan = ProposedPlan::new("plan", "# Latest saved plan");
+        let (kind, key, payload, at) = stored_timeline_event_parts(&AgentChatTimelineItem::ProposedPlan(plan.clone())).unwrap();
+        store.upsert_timeline_event(agent.id, kind, key, payload, at).unwrap();
+        for i in 0..205 {
+            store.upsert_timeline_event(agent.id, "message", Some(format!("message:{i}")), "message", 4 + i).unwrap();
+        }
+        drop(store);
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        assert!(store.load_timeline_events_page(agent.id, None, 200).unwrap().events.iter().all(|event| event.kind == "message"));
+        let mut restored = load_file_ledger_from_store(&store, agent.id).unwrap();
+        assert_eq!(restored.conversation_files().count(), 2);
+        let recent_file = restored.files.iter().find(|file| file.path == PathBuf::from("recent.rs")).unwrap();
+        assert_eq!(recent_file.baseline_hash.as_deref(), Some("first baseline\n"));
+        assert!(recent_file.baseline_content.is_none());
+        assert!(recent_file.counts_unavailable);
+        assert_eq!(recent_file.result_content.as_deref(), Some("final\n"));
+        let before_replay = restored.clone();
+        restored.merge_turn(&old);
+        restored.merge_turn(&recent);
+        assert_eq!(restored, before_replay);
+        assert_eq!(load_latest_plan_from_store(&store, agent.id).unwrap(), Some(plan));
+    }
+
+    #[test]
+    fn restored_structured_reviews_need_source_validation_before_looking_current() {
+        use ide_core::code_review::*;
+        let mut run=ReviewRun::new(Uuid::new_v4(),Uuid::new_v4(),"Claude".into(),"model".into(),"effort".into(),review_now());
+        run.state=ReviewRunState::Complete;run.freshness=ReviewFreshness::Current;
+        run.files.push(ReviewFile {id:"owned".into(),path:"owned.rs".into(),change_kind:"Modified".into(),attributed_ranges:vec![],before_hash:Some("a".repeat(64)),after_hash:Some("b".repeat(64)),diff_pages:1,consumed_pages:[0].into_iter().collect(),status:ReviewFileStatus::Complete,skip_reason:None});
+        assert!(run.is_clean());
+        let stored=StoredTimelinePayload::CodeReview {id:run.id.to_string(),markdown:String::new(),expanded:false,structured:Some(run)};
+        let AgentChatTimelineItem::CodeReview(restored)=stored.into_timeline_item().unwrap() else {panic!("Expected review card");};
+        assert!(!restored.is_clean());
+        assert!(!restored.expanded);
+        assert!(matches!(restored.structured.unwrap().freshness,ReviewFreshness::Uncertain(_)));
+        let legacy=StoredTimelinePayload::CodeReview {id:"legacy".into(),markdown:"Existing Markdown review".into(),expanded:true,structured:None};
+        let AgentChatTimelineItem::CodeReview(restored)=legacy.into_timeline_item().unwrap() else {panic!("Expected legacy review card");};
+        assert_eq!(restored.markdown,"Existing Markdown review");
+        assert!(restored.structured.is_none());
+    }
 
     #[test]
     fn disconnected_segments_survive_restore_and_a_later_local_revert() {
