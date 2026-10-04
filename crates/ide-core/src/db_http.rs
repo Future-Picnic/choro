@@ -563,6 +563,10 @@ mod tests {
                         Err(error) => panic!("fixture accept: {error}"),
                     }
                 };
+                // macOS can inherit the listener's nonblocking mode. Read the
+                // accepted request with the bounded blocking timeout below,
+                // rather than racing the client's first write with WouldBlock.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
