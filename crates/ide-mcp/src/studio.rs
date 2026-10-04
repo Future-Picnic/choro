@@ -437,7 +437,7 @@ mod tests {
         let agent = uuid::Uuid::new_v4();
         let role = StudioAgentContext { target: StudioAgentTarget::DesignSystemImport, design_id: import.id, conversation_id: import.id };
         store.prepare_code_import(agent, &role).unwrap();
-        let ctx = ServerContext { studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
+        let ctx = ServerContext { review_run: None, studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
         let registry = ToolRegistry::default();
         let read = registry.call(&ctx, &json!({"name":"studio_project_read","arguments":{"path":"theme.css"}}));
         assert_ne!(read["isError"], true);
@@ -509,7 +509,7 @@ mod tests {
             &serde_json::to_vec(&StudioAgentContext { target: StudioAgentTarget::Design, design_id: design.manifest.id, conversation_id: uuid::Uuid::new_v4() }).unwrap(),
         )
         .unwrap();
-        let ctx = ServerContext { studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
+        let ctx = ServerContext { review_run: None, studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
         (temp, ctx, store, design, section)
     }
 
@@ -594,6 +594,7 @@ mod tests {
     #[test]
     fn role_restrictions_fail_closed_even_without_a_project_store() {
         let ctx = ServerContext {
+            review_run: None,
             studio: true,
             delegation_scope: None,
             project_id: None,

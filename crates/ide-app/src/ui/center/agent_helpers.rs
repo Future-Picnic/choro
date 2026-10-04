@@ -260,6 +260,13 @@ pub(super) fn agent_chat_rows(
                     rows.push(AgentChatRow::TimelineItem(index));
                     index += 1;
                 }
+                AgentChatTimelineItem::CodeReview(review) if review.structured.is_some() => {
+                    // Independent reviews are started from the composer, not
+                    // by a new coding turn. Their progress and outcomes must
+                    // survive the preceding hidden checklist-maintenance turn.
+                    rows.push(AgentChatRow::TimelineItem(index));
+                    index += 1;
+                }
                 AgentChatTimelineItem::AgentSummary(_) if hidden_background_summary_turn => {
                     // A completed conversation keeps its Brain summary as the
                     // durable completion signal. Ship already has a stronger
@@ -455,6 +462,13 @@ pub(super) fn agent_chat_row_fingerprint(
                     + u64::from(checklist.expanded).wrapping_mul(4);
                 mix(7, *index, geometry)
             }
+            Some(AgentChatTimelineItem::CodeReview(review)) if review.structured.is_some() => {
+                // Reports can add findings, limitations or a terminal notice
+                // without changing the row count or any user action. Remeasure
+                // this one card so new content is not clipped by its old height.
+                let revision = review.structured.as_ref().unwrap().revision;
+                mix(8, *index, revision.wrapping_mul(2) + u64::from(review.expanded))
+            }
             // Cards only change height through an explicit user action (expand,
             // collapse, apply), and every one of those paths already calls
             // `remeasure_agent_chat_list`.
@@ -545,6 +559,7 @@ mod tests {
             pending_user_input: None,
             pending_approval: None,
             proposed_plan: None,
+            latest_plan: None,
             changed_files: ChangedFilesSummary::default(),
             usage: None,
             started_running_at: None,
@@ -778,6 +793,46 @@ mod tests {
                 [AgentChatRow::TimelineItem(1), AgentChatRow::TimelineItem(4)]
             ));
         }
+    }
+
+    #[test]
+    fn independent_review_outcomes_survive_hidden_checklist_turns() {
+        use ide_core::code_review::{ReviewRun, ReviewRunState};
+        for state in [ReviewRunState::Running, ReviewRunState::Complete,
+            ReviewRunState::Partial, ReviewRunState::Failed, ReviewRunState::Cancelled] {
+            let mut run = ReviewRun::new(Uuid::new_v4(), Uuid::new_v4(),
+                "Codex".into(), "model".into(), "High".into(), 1);
+            run.state = state;
+            let session = session_with_timeline(vec![
+                user_row(REVIEW_CHECKLIST_REQUEST_MARKER),
+                AgentChatTimelineItem::Message(AgentChatMessage::Assistant {
+                    message_id: None, text: "Hidden maintenance output".into(), created_at: 2,
+                }),
+                AgentChatTimelineItem::CodeReview(
+                    crate::state::agent_chat::CodeReview::from_run(run)),
+            ]);
+            let filter = VisualizationArtifactFilter::new(Uuid::nil(), Path::new("/tmp/project"));
+            assert!(matches!(agent_chat_rows(&session, false, false, &filter).as_slice(),
+                [AgentChatRow::TimelineItem(2)]), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn structured_review_updates_remeasure_the_card_without_new_rows() {
+        use ide_core::code_review::ReviewRun;
+        let run = ReviewRun::new(Uuid::new_v4(), Uuid::new_v4(),
+            "Codex".into(), "model".into(), "High".into(), 1);
+        let mut session = session_with_timeline(vec![AgentChatTimelineItem::CodeReview(
+            crate::state::agent_chat::CodeReview::from_run(run))]);
+        let row = AgentChatRow::TimelineItem(0);
+        let before = agent_chat_row_fingerprint(&row, &session, None);
+        let AgentChatTimelineItem::CodeReview(card) = &mut session.timeline[0] else { unreachable!() };
+        let run = card.structured.as_mut().unwrap();
+        run.revision += 1;
+        run.limitations.push("Provider startup failed".into());
+        let after = agent_chat_row_fingerprint(&row, &session, None);
+        assert_ne!(before, after);
+        assert_eq!(session.timeline.len(), 1);
     }
 
     #[test]

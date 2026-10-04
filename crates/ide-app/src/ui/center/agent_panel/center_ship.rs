@@ -426,9 +426,35 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_agent_ship_dialog_with_consent(
+            agent, git, ship_activity::ShipActivityConsent::default(), window, cx,
+        );
+    }
+
+    fn open_agent_ship_dialog_with_consent(
+        &mut self,
+        agent: AgentRecord,
+        git: Entity<GitState>,
+        consent: ship_activity::ShipActivityConsent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next_agent = agent.id;
+        let next_git = git.clone();
+        if ship_activity::confirm_activity(
+            self.shared_ship_activity(agent.id, cx), &consent, window, cx,
+            move |center: &mut Self, consent, window, cx| {
+                let agent = center.agents.read(cx).agent(next_agent).cloned();
+                if let Some(agent) = agent {
+                    center.open_agent_ship_dialog_with_consent(agent, next_git.clone(), consent, window, cx);
+                }
+            },
+        ) {
+            return;
+        }
         if agent.repository_path.is_none()
             && !agent.is_active_solo()
-            && self.open_multi_repo_ship_dialog(&agent, window, cx)
+            && self.open_multi_repo_ship_dialog(&agent, consent.clone(), window, cx)
         {
             return;
         }
@@ -717,6 +743,7 @@ impl CenterArea {
                 status: None,
                 pending_commit: None,
                 summary_maintenance_started: false,
+                ship_activity_consent: consent,
                 solo_lane: solo_dialog_lane,
             }
         });
@@ -739,6 +766,7 @@ impl CenterArea {
     fn open_multi_repo_ship_dialog(
         &mut self,
         agent: &AgentRecord,
+        consent: ship_activity::ShipActivityConsent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -922,6 +950,7 @@ impl CenterArea {
                 busy: false,
                 prepared: false,
                 summary_maintenance_started: false,
+                ship_activity_consent: consent,
                 error: None,
             }
         });

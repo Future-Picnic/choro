@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 mod delegation_tools;
 #[path = "studio.rs"]
 mod studio_tools;
+#[path = "code_review.rs"]
+mod review_tools;
 
 use ide_core::local_store::{LocalStore, OrbitRecordInput};
 use ide_core::{
@@ -36,6 +38,7 @@ const MAX_STORED_PREVIEW_SNAPSHOTS_PER_AGENT: usize = 20;
 /// Shared state handed to every tool call. Holds the project scope and an open
 /// handle to the local store; credentials read from it never leave this process.
 pub struct ServerContext {
+    pub(crate) review_run: Option<uuid::Uuid>,
     pub(crate) studio: bool,
     pub(crate) delegation_scope: Option<ide_core::delegation::DelegationBinding>,
     pub(crate) project_id: Option<uuid::Uuid>,
@@ -78,6 +81,7 @@ impl ServerContext {
                 .delegation
         });
         Self {
+            review_run: None,
             studio: false,
             delegation_scope,
             project_id,
@@ -254,6 +258,7 @@ impl Default for ToolRegistry {
             tools.extend(delegation_tools::tools());
         }
         tools.extend(studio_tools::tools());
+        tools.extend(review_tools::tools());
         Self { tools }
     }
 }
@@ -485,20 +490,29 @@ impl ToolRegistry {
     }
 
     pub fn list_for(&self, ctx: &ServerContext) -> Vec<Value> {
+        if ctx.review_run.is_some() {
+            if review_tools::binding(ctx).is_err() { return vec![]; }
+            return self.list().into_iter().filter(|tool| review_tools::allowed(tool["name"].as_str().unwrap_or_default())).collect();
+        }
         let studio = studio_tools::is_studio(ctx);
         self.list()
             .into_iter()
             .filter(|tool| {
-                !studio || studio_tools::allowed(tool["name"].as_str().unwrap_or_default())
+                !review_tools::allowed(tool["name"].as_str().unwrap_or_default()) && (!studio || studio_tools::allowed(tool["name"].as_str().unwrap_or_default()))
             })
             .collect()
     }
 
     pub fn call(&self, ctx: &ServerContext, params: &Value) -> Value {
+        if let Some(replay)=review_tools::finalization_replay(ctx,params) {return replay;}
         let name = params
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if ctx.review_run.is_some() && (!review_tools::allowed(name) || review_tools::binding(ctx).is_err())
+            || ctx.review_run.is_none() && review_tools::allowed(name) {
+            return json!({"content":[text_content("Tool is unavailable in this review scope")],"isError":true});
+        }
         if studio_tools::is_studio(ctx) && !studio_tools::allowed(name) {
             return json!({"content":[text_content("This tool is unavailable to the Studio design agent")],"isError":true});
         }
@@ -2812,6 +2826,7 @@ mod tests {
     #[test]
     fn coordinate_preview_clicks_require_the_matching_snapshot_token() {
         let ctx = ServerContext {
+            review_run: None,
             studio: false,
             delegation_scope: None,
             project_id: None,
@@ -2829,6 +2844,7 @@ mod tests {
         let schema = MemorySaveTool.input_schema();
         assert!(schema["properties"].get("scope").is_none());
         let ctx = ServerContext {
+            review_run: None,
             studio: false,
             delegation_scope: None,
             project_id: None,
@@ -2941,6 +2957,7 @@ mod tests {
     #[test]
     fn unknown_tool_reports_error() {
         let ctx = ServerContext {
+            review_run: None,
             studio: false,
             delegation_scope: None,
             project_id: None,

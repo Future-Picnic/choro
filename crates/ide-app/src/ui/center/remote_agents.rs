@@ -641,7 +641,8 @@ impl CenterArea {
                         }
                     }
                 });
-                self.request_agent_code_review_fix(agent_id, review_id, true, cx);
+                // Structured reviews dispatch only after freshness validation.
+                self.request_validated_code_review_fix(agent_id, review_id, true, cx);
             }
             Action::Summary => {
                 self.authorize_remote_agent_control(agent_id, permission, cx)?;

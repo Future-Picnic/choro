@@ -6,6 +6,7 @@ pub(crate) mod gemini;
 pub(crate) mod managed;
 mod open_code;
 mod process;
+pub(super) mod review;
 #[cfg(test)]
 mod worktree_changes;
 
@@ -94,6 +95,7 @@ Choro can render one interactive visualization at a time inside the conversation
 }
 
 fn agent_visualization_dir(agent: &AgentRecord) -> Option<PathBuf> {
+    if agent.review_run_id.is_some() { return None; }
     LocalStore::open_default().ok().and_then(|store| {
         let path = store.agent_artifacts_dir(agent.id).join("visualizations");
         fs::create_dir_all(&path).ok().map(|_| path)
@@ -422,12 +424,18 @@ pub(super) fn spawn_chat_backend_after_stop(
     ChatBackendController,
     async_channel::Receiver<ChatBackendEvent>,
 )> {
-    agent.doc.push_str("\n\n");
-    agent
-        .doc
-        .push_str(ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS);
-    agent.doc =
-        prompt_with_connected_context(&agent.doc, &agent, &AgentConnectedContextExtras::default());
+    if let Some(run_id) = agent.review_run_id {
+        anyhow::ensure!(agent.chat_session_id.is_none() && agent.cli_session_id.is_none() && agent.delegation.is_none() && agent.studio_context.is_none() && agent.design_context.is_none(), "Reviewer must have a fresh isolated role and session");
+        choro_mcp_binary_path().context("Build or install Choro MCP before reviewing code")?;
+        let store = LocalStore::open_default()?;
+        let run = store.load_review_run(run_id)?;
+        ide_core::code_review::authorize_review(&run, agent.project_id.0, agent.id, run_id, ide_core::code_review::review_now())?;
+        anyhow::ensure!(agent.runtime_path().starts_with(store.review_storage(run_id)), "Reviewer must start outside the repository in its private app-data directory");
+    } else {
+        agent.doc.push_str("\n\n");
+        agent.doc.push_str(ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS);
+        agent.doc = prompt_with_connected_context(&agent.doc, &agent, &AgentConnectedContextExtras::default());
+    }
     anyhow::ensure!(agent.design_context.is_none(),
         "This legacy design conversation is retired. Open Design Studio to continue.");
     if let Some(context) = agent.studio_context.as_ref() {
@@ -451,7 +459,14 @@ pub(super) fn spawn_chat_backend_after_stop(
     if let Some(id) = initial_turn_id { event_tx.initial_turn_id = id; }
     let (output, event_rx) = async_channel::unbounded();
     let timing = Arc::new(ide_core::agent_changes::DispatchTiming::default());
-    change_tracking::route(agent.clone(), provider_rx, output.into(), timing.clone());
+    if agent.review_run_id.is_some() {
+        // No mutation receipt router, connected context or parent session.
+        std::thread::spawn(move || {
+            while let Ok(event) = provider_rx.recv_blocking() {
+                if output.send_blocking(event).is_err() { break; }
+            }
+        });
+    } else { change_tracking::route(agent.clone(), provider_rx, output.into(), timing.clone()); }
     let shutdown = Arc::new(AtomicBool::new(false));
     let stopped = Arc::new(AtomicBool::new(false));
     match agent.provider {
@@ -735,12 +750,14 @@ fn run_claude_bridge(
     let claude_path = find_executable("claude").ok_or_else(|| {
         anyhow!("Claude Code executable was not found. Install Claude Code or add it to a standard location.")
     })?;
-    ensure_claude_bridge_dependencies(bridge_dir, &npm_path, &event_tx)?;
-    if agent.studio_context.is_some() {
+    if agent.review_run_id.is_some() {
+        anyhow::ensure!(bridge_dir.join("node_modules/@anthropic-ai/claude-agent-sdk").exists(), "Review requires the existing bundled Claude bridge. Start a Claude coding session to initialize it, then Review again.");
+    } else { ensure_claude_bridge_dependencies(bridge_dir, &npm_path, &event_tx)?; }
+    if agent.studio_context.is_some() || agent.review_run_id.is_some() {
         let sdk: Value = serde_json::from_slice(&fs::read(
             bridge_dir.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"),
         )?)?;
-        let output = Command::new(&claude_path).arg("--help").env("PATH",command_path_env()).output()
+        let output = ide_core::process::output_with_timeout(Command::new(&claude_path).arg("--help").env("PATH",command_path_env()), Duration::from_secs(10))
             .context("Studio compatibility check could not start Claude. Repair Claude Code, then reconnect.")?;
         anyhow::ensure!(
             output.status.success(),
@@ -856,6 +873,7 @@ fn agent_choro_mcp_scope_args(agent: &AgentRecord) -> Vec<String> {
     if agent.studio_context.is_some() {
         args.push("--studio".into());
     }
+    if let Some(run_id) = agent.review_run_id { args.extend(["--review-run".into(), run_id.to_string()]); }
     args
 }
 
@@ -895,7 +913,7 @@ fn configured_codex_mcp_names(
     cwd: &Path,
     path_env: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let output = Command::new(codex_path)
+    let output = ide_core::process::output_with_timeout(Command::new(codex_path)
         .args([
             "-c",
             "features.plugins=false",
@@ -906,8 +924,7 @@ fn configured_codex_mcp_names(
             "--json",
         ])
         .env("PATH", path_env)
-        .current_dir(cwd)
-        .output()
+        .current_dir(cwd), Duration::from_secs(10))
         .context("failed to inspect the resolved Codex MCP configuration")?;
     if !output.status.success() {
         return Err(anyhow!(
@@ -1046,6 +1063,9 @@ fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
 /// as a list (rather than the named object used by Claude), but it launches the
 /// same project- and chat-scoped Choro server.
 fn choro_acp_mcp_servers_json(agent: &AgentRecord) -> Value {
+    // ACP reviewers receive tool results through Choro's bounded host protocol;
+    // no provider-owned native MCP connector receives the snapshot directory.
+    if agent.review_run_id.is_some() { return json!([]); }
     let servers = match choro_mcp_binary_path() {
         Some(mcp) => choro_acp_mcp_servers_json_at(
             &mcp,
@@ -1189,7 +1209,9 @@ fn run_codex_app_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(agent.runtime_path());
-    if agent.studio_context.is_some() {
+    if agent.review_run_id.is_some() {
+        review::configure_codex(&mut command, &codex_path, &agent, &path_env)?;
+    } else if agent.studio_context.is_some() {
         configure_codex_studio(&mut command, &codex_path, &agent, &path_env)?;
     } else {
         if let Some(mcp) = choro_mcp_binary_path() {
@@ -1292,7 +1314,7 @@ fn run_codex_app_server(
         }),
     )?;
     runtime.notify("initialized", Value::Null)?;
-    let design_assistant = agent.studio_context.is_some();
+    let design_assistant = agent.studio_context.is_some() || agent.review_run_id.is_some();
     let approval_policy = if design_assistant {
         "never"
     } else {
@@ -1303,12 +1325,18 @@ fn run_codex_app_server(
     } else {
         runtime.access_mode.codex_sandbox()
     };
-    let start_params = json!({
+    let mut start_params = json!({
         "cwd": agent.runtime_path(),
         "approvalPolicy": approval_policy,
         "sandbox": sandbox,
         "model": runtime.model,
     });
+    if agent.review_run_id.is_some() {
+        start_params["environments"] = json!([]);
+        start_params["ephemeral"] = json!(true);
+        start_params["developerInstructions"] = json!(ide_core::code_review::REVIEW_INSTRUCTIONS);
+        start_params["baseInstructions"] = json!(ide_core::code_review::REVIEW_INSTRUCTIONS);
+    }
     let existing_thread_id = agent
         .chat_session_id
         .as_deref()
@@ -1344,6 +1372,7 @@ fn run_codex_app_server(
     } else {
         runtime.request("thread/start", start_params)?
     };
+    if agent.review_run_id.is_some() { review::validate_codex_session(&thread)?; }
     runtime.thread_id = thread
         .get("thread")
         .and_then(|thread| thread.get("id"))

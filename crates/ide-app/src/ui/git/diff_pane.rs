@@ -35,6 +35,8 @@ pub enum DiffKind {
     /// None marks a turn whose historical evidence is unavailable.
     ConversationFileHistory {
         repo_path: PathBuf,
+        agent_id: Uuid,
+        ledger_revision: u64,
         path: PathBuf,
         snapshots: Vec<Option<Uuid>>,
     },
@@ -55,10 +57,12 @@ impl DiffKind {
             }
             DiffKind::ConversationFileHistory {
                 repo_path,
+                agent_id,
+                ledger_revision,
                 path,
                 snapshots,
             } => {
-                format!("conversation-history:{repo_path:?}:{path:?}:{snapshots:?}")
+                format!("conversation-history:{repo_path:?}:{agent_id}:{ledger_revision}:{path:?}:{snapshots:?}")
             }
         }
     }
@@ -175,8 +179,8 @@ impl DiffPane {
                             }
                         }
                         DiffKind::ConversationFileHistory {
-                            path, snapshots, ..
-                        } => load_conversation_file_history(&repo, &path, &snapshots),
+                            agent_id, ledger_revision, path, snapshots, ..
+                        } => load_saved_conversation_file(&repo, agent_id, ledger_revision, &path, &snapshots),
                     }
                 })
                 .await;
@@ -522,6 +526,48 @@ fn filter_conversation_diffs(
         .collect()
 }
 
+fn load_saved_conversation_file(
+    repo: &Path,
+    agent_id: Uuid,
+    expected_revision: u64,
+    path: &Path,
+    live_snapshots: &[Option<Uuid>],
+) -> anyhow::Result<Vec<FileDiff>> {
+    use crate::state::agent_chat::{load_file_ledger_from_store, timeline_item_from_store_event, AgentChatTimelineItem};
+    let store = ide_core::local_store::LocalStore::open_default()?;
+    let ledger = load_file_ledger_from_store(&store, agent_id)?.reconciled_final_files(repo);
+    if let Some(file) = ledger.conversation_files().find(|file| file.path == path && ledger.ledger_revision >= expected_revision) {
+        if let Some(diff) = final_conversation_file_diff(file) {
+            return Ok(vec![diff?]);
+        }
+    }
+    // Missing content or another writer's intervening changes prevent proving
+    // a net diff. Retain attributed historical patches, including off-page ones.
+    let mut snapshots = Vec::new();
+    let mut seen = HashSet::new();
+    for event in store.load_timeline_events_by_kind(agent_id, "changed_files")? {
+        if let Some(AgentChatTimelineItem::ChangedFiles(receipt)) = timeline_item_from_store_event(&event) {
+            if receipt.reconciled_final_files(repo).conversation_files().any(|file| file.path == path)
+                && receipt.snapshot_id.is_none_or(|id| seen.insert(id)) {
+                snapshots.push(receipt.snapshot_id);
+            }
+        }
+    }
+    for snapshot in live_snapshots {
+        if snapshot.is_none_or(|id| seen.insert(id)) {
+            snapshots.push(*snapshot);
+        }
+    }
+    load_conversation_file_history(repo, path, &snapshots)
+}
+
+fn final_conversation_file_diff(file: &crate::state::agent_chat::FileChangeStat) -> Option<anyhow::Result<FileDiff>> {
+    if !file.prior_segments.is_empty() { return None; }
+    let before = file.baseline_content.as_deref()?;
+    let after = file.result_content.as_deref()?;
+    Some(ide_core::git::diff::diff_from_contents(&file.path, before, after))
+}
+
 fn load_conversation_file_history(
     repo: &Path,
     path: &Path,
@@ -578,6 +624,26 @@ fn collect_conversation_file_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_file_diff_shows_the_final_change_and_does_not_fold_shared_segments() {
+        use crate::state::agent_chat::FileChangeStat;
+        let mut file = FileChangeStat::new("ours.rs", 1, 1)
+            .with_content_projection(Some("original\n".into()), Some("final\n".into()));
+        let diff = final_conversation_file_diff(&file).unwrap().unwrap();
+        assert_eq!(diff.hunks.iter().flat_map(|h| &h.lines).filter(|line| line.origin == LineOrigin::Add).count(), 1);
+        assert_eq!(diff.hunks.iter().flat_map(|h| &h.lines).filter(|line| line.origin == LineOrigin::Remove).count(), 1);
+        let removed = diff.hunks.iter().flat_map(|h| &h.lines).find(|line| line.origin == LineOrigin::Remove).unwrap();
+        let added = diff.hunks.iter().flat_map(|h| &h.lines).find(|line| line.origin == LineOrigin::Add).unwrap();
+        assert_eq!(removed.text.trim(), "original");
+        assert_eq!(added.text.trim(), "final");
+        // A different writer between our edits must keep separate receipts.
+        file.prior_segments.push(FileChangeStat::new("ours.rs", 2, 0));
+        assert!(final_conversation_file_diff(&file).is_none());
+        file.prior_segments.clear();
+        file.baseline_content = None;
+        assert!(final_conversation_file_diff(&file).is_none());
+    }
 
     #[test]
     fn file_history_preserves_saved_edits_and_excludes_other_files() {
@@ -753,7 +819,7 @@ impl Render for DiffPane {
                         .py_2()
                         .text_size(crate::ui::design::text_ui())
                         .text_color(crate::ui::design::t3(cx))
-                        .child("Saved edits in this chat, oldest first. Counts below include each edit."),
+                        .child("Saved changes from this conversation."),
                 )
             })
             // Pane toolbar: file count, +/- totals, expand/collapse all.

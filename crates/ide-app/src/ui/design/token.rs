@@ -11,7 +11,7 @@
 //! - text tiers:   [`t1`] · [`t2`] · [`t3`] · [`t4`]
 //! - lines:        [`line`] · [`line_2`]
 //! - accent:       [`accent`] · [`accent_2`] · [`on_accent`] · [`accent_soft`] · [`accent_line`]
-//! - semantics:    [`amber`] · [`sage`] · [`rose`] · [`sky`] (+ `*_soft` for controls)
+//! - semantics:    [`amber`] · [`sage`] · [`rose`] · [`sky`] · [`teal`] (+ `*_soft` for controls)
 
 use gpui::{App, Hsla, Rgba};
 use gpui_component::ActiveTheme;
@@ -464,6 +464,56 @@ pub fn rose(cx: &App) -> Hsla {
 pub fn sky(cx: &App) -> Hsla {
     cx.theme().info
 }
+/// Independent code review — the review panel, its spinner and the sidebar's
+/// "Reviewing code" state. Themes carry no teal, so the hue is fixed and the
+/// lightness is solved against the theme's base plane, keeping it distinct
+/// from the accent (working) and amber (Bandmates) on every palette.
+pub fn teal(cx: &App) -> Hsla {
+    review_teal_color(base(cx), accent(cx), cx.theme().is_dark())
+}
+/// Soft review tint for the review panel's status mark.
+pub fn teal_soft(cx: &App) -> Hsla {
+    semantic_soft(teal(cx), cx)
+}
+
+const REVIEW_TEAL_HUE: f32 = 174.0 / 360.0;
+/// Minimum hue separation from a saturated accent (Mint's accent is green-teal).
+const REVIEW_ACCENT_HUE_GAP: f32 = 0.07;
+
+fn hue_distance(a: f32, b: f32) -> f32 {
+    let d = (a - b).abs();
+    d.min(1.0 - d)
+}
+
+/// Pure form of [`teal`]: start from a mid teal, turn it away from an accent
+/// that already sits near teal, then step lightness away from the plane until
+/// glyphs and labels clear AA on it.
+fn review_teal_color(plane: Hsla, accent: Hsla, is_dark: bool) -> Hsla {
+    let hue = if accent.s >= 0.12 && hue_distance(REVIEW_TEAL_HUE, accent.h) < REVIEW_ACCENT_HUE_GAP
+    {
+        let away = if REVIEW_TEAL_HUE >= accent.h { 1.0 } else { -1.0 };
+        (accent.h + away * REVIEW_ACCENT_HUE_GAP).rem_euclid(1.0)
+    } else {
+        REVIEW_TEAL_HUE
+    };
+    let mut color = Hsla {
+        h: hue,
+        s: if is_dark { 0.55 } else { 0.72 },
+        l: if is_dark { 0.50 } else { 0.36 },
+        a: 1.0,
+    };
+    for _ in 0..80 {
+        if contrast(color, plane) >= 4.5 {
+            break;
+        }
+        color.l = if is_dark {
+            (color.l + 0.01).min(1.0)
+        } else {
+            (color.l - 0.01).max(0.0)
+        };
+    }
+    color
+}
 
 /// Soft semantic fills are reserved for compact state controls. The solid
 /// semantic color remains the border/glyph, so meaning survives on every theme.
@@ -680,6 +730,26 @@ mod tests {
                 ink_gap >= 1.25 || fill_gap >= 1.25,
                 "{}: ship is invisible as a tier — fill {fill_gap:.3}:1 from the \
                  neutral and ink {ink_gap:.3}:1 from ordinary text",
+                t.name
+            );
+        }
+    }
+
+    /// The review teal labels a state in text, so it must read on the chat
+    /// plane and stay a visible glyph on the sidebar, without collapsing into
+    /// the accent that already means "working".
+    #[test]
+    fn review_teal_reads_on_every_theme_and_stays_distinct_from_the_accent() {
+        for t in themes() {
+            let teal = review_teal_color(t.base, t.accent, t.is_dark);
+            let on_base = contrast(teal, t.base);
+            assert!(on_base >= AA, "{}: review teal is {on_base:.2}:1 on base", t.name);
+            let on_nav = contrast(teal, t.nav);
+            assert!(on_nav >= 3.0, "{}: review teal is {on_nav:.2}:1 on the sidebar", t.name);
+            let hue_gap = hue_distance(teal.h, t.accent.h);
+            assert!(
+                t.accent.s < 0.12 || hue_gap >= REVIEW_ACCENT_HUE_GAP - 0.001,
+                "{}: review teal hue sits on the accent hue",
                 t.name
             );
         }

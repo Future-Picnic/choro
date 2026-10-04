@@ -899,6 +899,7 @@ impl CenterArea {
                 hovered_doc_title: false,
                 agent_title_edit: None,
                 agent_start_errors: HashMap::new(),
+                agent_review_ui: Default::default(),
                 lane_setups: HashMap::new(),
                 solo_docs_refresh_generation: 0,
                 lane_exit_pending: HashSet::new(),

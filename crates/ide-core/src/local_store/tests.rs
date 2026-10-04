@@ -374,6 +374,66 @@ fn changed_file_receipt_and_ledger_commit_together() {
 }
 
 #[test]
+fn latest_plan_and_file_receipts_are_available_outside_the_loaded_chat_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let other = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(&[agent.clone(), other.clone()]).unwrap();
+    store.upsert_timeline_event(agent.id, "changed_files", Some("files:first".into()), "files", 1).unwrap();
+    store.upsert_timeline_event(agent.id, "proposed_plan", Some("plan:first".into()), "old plan", 2).unwrap();
+    store.upsert_timeline_event(agent.id, "proposed_plan", Some("plan:latest".into()), "latest plan", 3).unwrap();
+    for i in 0..205 {
+        store.upsert_timeline_event(agent.id, "message", Some(format!("message:{i}")), "message", 4 + i).unwrap();
+    }
+    // Updating an older card must not promote it above a newer plan.
+    store.upsert_timeline_event(agent.id, "proposed_plan", Some("plan:first".into()), "expanded old plan", 300).unwrap();
+    store.upsert_timeline_event(agent.id, "proposed_plan", Some("plan:latest".into()), "revised latest plan", 301).unwrap();
+    store.upsert_timeline_event(other.id, "proposed_plan", Some("other".into()), "other agent plan", 302).unwrap();
+    drop(store);
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let page = store.load_timeline_events_page(agent.id, None, 200).unwrap();
+    assert!(page.has_more);
+    assert!(page.events.iter().all(|event| event.kind == "message"));
+    assert_eq!(store.load_latest_timeline_event(agent.id, "proposed_plan").unwrap().unwrap().payload_json, "revised latest plan");
+    let receipts = store.load_timeline_events_by_kind(agent.id, "changed_files").unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].payload_json, "files");
+}
+
+#[test]
+fn newer_plan_survives_late_older_persistence_and_old_plan_updates() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let write = |key: &str, revision, markdown: &str, implemented_at| {
+        store.upsert_timeline_event(agent.id, "proposed_plan", Some(key.into()),
+            serde_json::json!({"revision":revision,"markdown":markdown,"implemented_at":implemented_at}).to_string(), 10).unwrap();
+    };
+    write("new-plan", 2, "Latest contents", None);
+    write("old-plan", 1, "Late old plan", None);
+    write("new-plan", 1, "Late old version", None);
+    write("new-plan", 2, "Latest contents", Some(20));
+    write("new-plan", 2, "Latest contents", None);
+    drop(store);
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let latest = store.load_latest_timeline_event(agent.id, "proposed_plan").unwrap().unwrap();
+    let value: serde_json::Value = serde_json::from_str(&latest.payload_json).unwrap();
+    assert_eq!(latest.event_key.as_deref(), Some("new-plan"));
+    assert_eq!(value["markdown"], "Latest contents");
+    assert_eq!(value["implemented_at"], 20);
+}
+
+#[test]
 fn migrates_v29_to_chat_file_ledger_schema() {
     let dir = tempfile::tempdir().unwrap();
     {

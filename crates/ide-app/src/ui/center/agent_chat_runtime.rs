@@ -852,45 +852,41 @@ impl CenterArea {
         }
     }
 
-    /// Ask the active agent to review changes belonging to this conversation,
-    /// including committed work established by its tool history.
-    pub(super) fn request_agent_code_review(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
+    /// Start an independent, read-only review of this conversation's changes.
+    /// The coding agent never reviews itself: the configured review prompt is
+    /// passed only as supplementary guidance to Choro's internal reviewer.
+    /// Errors are kept beside the composer, which retains its draft.
+    pub(super) fn request_agent_code_review(
+        &mut self,
+        agent_id: Uuid,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
-            return;
+            return false;
         };
-        let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
-        let (mode, summary) = {
-            let chats = self.agent_chats.read(cx);
-            let Some(session) = chats.session(agent_id) else {
-                return;
-            };
-            (
-                session.interaction_mode,
-                session
-                    .changed_files
-                    .reconciled_final_files(agent.runtime_path()),
-            )
+        let guidance = self
+            .workspace
+            .read(cx)
+            .effective_code_review_prompt()
+            .to_string();
+        self.agent_review_ui.errors.remove(&agent_id);
+        let started = self
+            .agent_chats
+            .update(cx, |chats, cx| chats.start_review(agent, guidance, cx));
+        let ok = match started {
+            Ok(()) => {
+                self.acknowledge_agent_chat_seen(agent_id, cx);
+                true
+            }
+            Err(error) => {
+                self.agent_review_ui
+                    .errors
+                    .insert(agent_id, format!("{error:#}"));
+                false
+            }
         };
-        let attributed_files = summary
-            .conversation_files()
-            .filter(|file| !filter.is_artifact(&file.path))
-            .map(|file| file.path.to_string_lossy().into_owned())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let (review_prompt, output_instructions) = {
-            let workspace = self.workspace.read(cx);
-            (
-                workspace.effective_code_review_prompt().to_string(),
-                workspace
-                    .effective_code_review_output_instructions()
-                    .to_string(),
-            )
-        };
-        let scope = code_review_feature_scope_prompt(&attributed_files);
-        let prompt = format!("{AGENT_CODE_REVIEW_REQUEST_MARKER}\n{review_prompt}\n\n{output_instructions}\n\n{scope}");
-        self.dispatch_agent_chat_submission(agent_id, prompt, mode, cx);
-        self.acknowledge_agent_chat_seen(agent_id, cx);
+        cx.notify();
+        ok
     }
 
     /// Ask the agent to apply fixes for a review's findings: the ticked ones when
@@ -3917,6 +3913,7 @@ mod startup_retry_tests {
             pending_user_input: None,
             pending_approval: None,
             proposed_plan: None,
+            latest_plan: None,
             changed_files: Default::default(),
             usage: None,
             started_running_at: None,

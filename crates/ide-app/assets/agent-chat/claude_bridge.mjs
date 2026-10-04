@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, readdir, lstat, readlink, open } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import readline from "node:readline";
+import {spawn} from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
@@ -31,6 +32,7 @@ let pendingMutationTasks = new Set();
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
 let currentStudioAssistant = false;
+let currentReviewAssistant = false;
 let currentManagedDelegation = false;
 let currentManagedChild = false;
 let currentManagedConsultation = false;
@@ -282,6 +284,9 @@ function createPromptController() {
 }
 
 async function ensureRuntime(command) {
+  const requestedReviewAssistant = Boolean(command.reviewAssistant);
+  if (runtime && currentReviewAssistant !== requestedReviewAssistant) throw new Error("Review role changed; reconnect with a fresh reviewer.");
+  currentReviewAssistant = requestedReviewAssistant;
   currentAccessMode = command.accessMode || "bypassPermissions";
   const requestedStudioAssistant = Boolean(command.studioAssistant);
   if (runtime && currentStudioAssistant !== requestedStudioAssistant) throw new Error("Studio role changed. Reconnect before continuing.");
@@ -304,6 +309,7 @@ async function ensureRuntime(command) {
     requestedResumeSessionId,
     currentSessionId,
   );
+  if (currentReviewAssistant && resumeSessionId) throw new Error("Independent review cannot resume a previous session.");
   if (runtime) {
     if (typeof runtime.setPermissionMode === "function") {
       await runtime.setPermissionMode(currentStudioAssistant ? "default" : permissionModeFor(command.mode, command.accessMode, currentManagedChild));
@@ -329,15 +335,16 @@ async function ensureRuntime(command) {
       effort: command.effort || undefined,
       ...managedDelegationOptions(currentManagedDelegation, currentManagedChild, currentManagedConsultation),
       ...(currentStudioAssistant ? {tools: ["Read", "Glob", "Grep", "AskUserQuestion"], disallowedTools: ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", ...MANAGED_SPAWN_TOOLS]} : {}),
-      permissionMode: currentStudioAssistant ? "default" : permissionModeFor(command.mode, command.accessMode, currentManagedChild),
-      allowDangerouslySkipPermissions: true,
+      ...(currentReviewAssistant ? reviewRuntimeOptions() : {}),
+      permissionMode: currentStudioAssistant || currentReviewAssistant ? "default" : permissionModeFor(command.mode, command.accessMode, currentManagedChild),
+      allowDangerouslySkipPermissions: !currentReviewAssistant,
       includePartialMessages: true,
       canUseTool,
-      hooks: fileAttributionHooks(),
+      hooks: currentReviewAssistant ? undefined : fileAttributionHooks(),
       mcpServers: command.mcpServers || undefined,
-      strictMcpConfig: currentStudioAssistant,
-      settingSources: currentStudioAssistant ? [] : undefined,
-      systemPrompt: {
+      strictMcpConfig: currentStudioAssistant || currentReviewAssistant,
+      settingSources: currentStudioAssistant || currentReviewAssistant ? [] : undefined,
+      systemPrompt: currentReviewAssistant ? command.systemPrompt : {
         type: "preset",
         preset: "claude_code",
         append: command.systemPrompt || undefined,
@@ -346,10 +353,83 @@ async function ensureRuntime(command) {
   });
 
   void consumeRuntime(runtime);
+  if (currentReviewAssistant) {
+    try { await preflightReviewRuntime(runtime, Object.keys(command.mcpServers || {})); }
+    catch (error) { await closeRuntimeForPlanBoundary(); throw error; }
+  }
   if (currentStudioAssistant) {
     try { await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {})); }
     catch (error) { await closeRuntimeForPlanBoundary(); throw error; }
   }
+}
+
+export function reviewRuntimeOptions() {
+  return {
+    tools: [],
+    disallowedTools: ["Bash", "Read", "Glob", "Grep", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", ...MANAGED_SPAWN_TOOLS],
+    settings: {disableAllHooks: true, disableAgentView: true, disableRemoteControl: true, disableWorkflows: true,
+      autoMemoryEnabled: false, autoDreamEnabled: false, channelsEnabled: false,
+      claudeMdExcludes: ["**/CLAUDE.md", "**/.claude/rules/**"],
+      permissions: {ask: ["mcp__choro__*", "mcp__ide__*"]}},
+    plugins: [],
+    strictMcpConfig: true,
+    settingSources: [],
+    permissionMode: "default",
+    allowDangerouslySkipPermissions: false,
+    spawnClaudeCodeProcess: options => {
+      validateReviewSpawn(options.args);
+      return spawn(options.command, options.args, {cwd:options.cwd,env:options.env,signal:options.signal,stdio:["pipe","pipe","inherit"],windowsHide:true});
+    },
+  };
+}
+
+export function validateReviewSpawn(args) {
+  const value = flag => {
+    const values=args.flatMap((arg,i)=>arg===flag?[args[i+1]]:arg.startsWith(`${flag}=`)?[arg.slice(flag.length+1)]:[]);
+    return values.length===1 ? values[0] : undefined;
+  };
+  const settings = value("--settings");
+  let parsed;
+  try {parsed=JSON.parse(settings);} catch {}
+  if (value("--tools") !== "" || value("--setting-sources") !== "" || value("--permission-mode") !== "default"
+      || !args.includes("--strict-mcp-config")
+      || ["--resume","--continue","--agent","--dangerously-skip-permissions","--allow-dangerously-skip-permissions"].some(flag=>args.some(arg=>arg===flag||arg.startsWith(`${flag}=`)))
+      || parsed?.disableAllHooks !== true || parsed?.autoMemoryEnabled !== false || parsed?.disableRemoteControl !== true) {
+    throw new Error("Review tool restrictions were not passed to Claude Code; source was not sent.");
+  }
+}
+
+export async function preflightReviewRuntime(candidate, expectedServers, { timeoutMs = 30000, pollIntervalMs = 100 } = {}) {
+  if (typeof candidate?.initializationResult !== "function" || typeof candidate?.mcpServerStatus !== "function" || typeof candidate?.getContextUsage !== "function") throw new Error("Claude cannot verify the scoped review runtime; update Choro.");
+  if (expectedServers.length !== 1 || !["choro", "ide"].includes(expectedServers[0])) throw new Error("Review requires exactly one first-party tool server.");
+  let timer, finished = false;
+  try {
+    await Promise.race([(async () => {
+      await candidate.initializationResult();
+      while (!finished) {
+        const servers = await candidate.mcpServerStatus();
+        if (!Array.isArray(servers) || servers.length > 1 || servers.some(s => !expectedServers.includes(s.name))) throw new Error("Review found an unrelated MCP server; source was not sent.");
+        if (servers.some(s => !["connected", "pending"].includes(s.status))) throw new Error("Review tools could not connect.");
+        if (servers.length === 1 && servers[0].status === "connected") {
+          const names = (servers[0].tools || []).map(t => t.name);
+          const required = ["review_context", "review_read", "review_search", "review_report"];
+          if (names.length !== 4 || required.some(n => !names.includes(n))) throw new Error("Review tool restrictions could not be verified; source was not sent.");
+          const context = await candidate.getContextUsage();
+          // SDK 0.3.170 omits the optional systemTools field when no built-ins
+          // exist. Nonempty built-ins/deferred tools are always rejected.
+          if (!context || (context.systemTools !== undefined && !Array.isArray(context.systemTools)) || !Array.isArray(context.memoryFiles) || !Array.isArray(context.mcpTools)
+            || (context.systemTools || []).some(t => toolPolicyDenial(t.name, {review:true}))
+            || (context.deferredBuiltinTools || []).length || context.memoryFiles.length
+            || (context.skills?.includedSkills || 0) > 0
+            || context.mcpTools.some(t => t.serverName !== expectedServers[0] || !required.includes(t.name.replace(/^mcp__(?:choro|ide)__/,"")))) {
+            throw new Error(`Review found inherited tools or memory; source was not sent. Built-ins: ${context?.systemTools?.length ?? "unverified"}; deferred: ${context?.deferredBuiltinTools?.length ?? 0}; memory: ${context?.memoryFiles?.length ?? "unverified"}; loaded skills: ${context?.skills?.includedSkills ?? 0}.`);
+          }
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      }
+    })(), new Promise((_, reject) => {timer = setTimeout(() => reject(new Error("Review tool verification timed out.")), timeoutMs);})]);
+  } finally {finished = true; clearTimeout(timer);}
 }
 
 export async function preflightStudioRuntime(candidate, expectedServers, { timeoutMs = 30000, pollIntervalMs = 100 } = {}) {
@@ -415,6 +495,10 @@ export function isChoroCoordinationTool(toolName) {
 }
 
 async function canUseTool(toolName, input, options) {
+  if (currentReviewAssistant) {
+    const denial = toolPolicyDenial(toolName, {review: true});
+    return denial ? {behavior:"deny",message:denial} : {behavior:"allow",updatedInput:input};
+  }
   if (currentStudioAssistant) {
     if (toolName === "AskUserQuestion") return handleAskUserQuestion(input, options);
     const denial = toolPolicyDenial(toolName, { studio: true });
@@ -763,10 +847,12 @@ async function finishCancelledTurn(capturePending, flushChanges, finish) {
 
 function currentToolPolicy() {
   return { managed: currentManagedDelegation, child: currentManagedChild,
-    consultation: currentManagedConsultation, readOnly: currentReadOnly, studio: currentStudioAssistant };
+    consultation: currentManagedConsultation, readOnly: currentReadOnly, studio: currentStudioAssistant, review: currentReviewAssistant };
 }
 
 export function toolPolicyDenial(toolName, policy) {
+  if (policy.review) return /^mcp__(?:choro|ide)__review_(?:context|read|search|report)$/.test(toolName)
+    ? null : "Independent review permits only Choro's four scoped review tools.";
   // Keep in sync with ide-mcp's studio::allowed; the server validates the bound role and scope.
   if (policy.studio && !["Read", "Glob", "Grep", "AskUserQuestion"].includes(toolName) && !/^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read|import_propose)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) {
     return "Studio permits only context reads and host-scoped design operations.";

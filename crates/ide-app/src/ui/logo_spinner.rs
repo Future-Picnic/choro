@@ -66,7 +66,8 @@ fn stroke_circle(window: &mut Window, cx: f32, cy: f32, r: f32, w: f32, bg: impl
 }
 
 /// The colours one spinner paints with. The brand ramp is fixed lavender; the
-/// delegation ramp is derived from the theme's amber so it tracks every theme.
+/// delegation (amber) and review (teal) ramps derive from their semantic
+/// tokens so they track every theme.
 #[derive(Clone, Copy)]
 struct SpinnerRamp {
     track: Hsla,
@@ -182,18 +183,33 @@ pub fn delegation_spinner(
     seed: usize,
     amber: Hsla,
 ) -> AnyElement {
+    semantic_spinner(diameter, namespace, seed, amber)
+}
+
+/// Teal spinner for an independent code review; pass `design::teal(cx)`.
+pub fn review_spinner(
+    diameter: f32,
+    namespace: &'static str,
+    seed: usize,
+    teal: Hsla,
+) -> AnyElement {
+    semantic_spinner(diameter, namespace, seed, teal)
+}
+
+/// A spinner shaded from one semantic colour. Reduce Motion freezes the arc.
+fn semantic_spinner(diameter: f32, namespace: &'static str, seed: usize, color: Hsla) -> AnyElement {
     #[cfg(target_os = "macos")]
     if objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
         return canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
-                paint_spinner_with(bounds, 0., SpinnerRamp::from_semantic(amber), window)
+                paint_spinner_with(bounds, 0., SpinnerRamp::from_semantic(color), window)
             },
         )
         .size(px(diameter))
         .into_any_element();
     }
-    spinner_with_ramp(diameter, namespace, seed, SpinnerRamp::from_semantic(amber))
+    spinner_with_ramp(diameter, namespace, seed, SpinnerRamp::from_semantic(color))
 }
 
 fn spinner_with_ramp(

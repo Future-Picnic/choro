@@ -694,6 +694,10 @@ pub struct AgentRecord {
     pub design_context: Option<AgentDesignContext>,
     #[serde(default)]
     pub studio_context: Option<crate::studio::StudioAgentContext>,
+    /// Runtime-only capability, created by the host review controller. Saved
+    /// agents and user-authored JSON cannot acquire reviewer authority.
+    #[serde(skip)]
+    pub review_run_id: Option<Uuid>,
     #[serde(default)]
     pub cli_session_id: Option<String>,
     #[serde(default)]
@@ -784,6 +788,7 @@ impl AgentRecord {
             hidden_doc_assistant: false,
             design_context: None,
             studio_context: None,
+            review_run_id: None,
             cli_session_id: None,
             chat_session_id: None,
             ship_pr_repo_path: None,
@@ -1883,6 +1888,7 @@ mod tests {
             hidden_doc_assistant: false,
             design_context: None,
             studio_context: None,
+            review_run_id: None,
             cli_session_id: None,
             chat_session_id: None,
             ship_pr_repo_path: None,

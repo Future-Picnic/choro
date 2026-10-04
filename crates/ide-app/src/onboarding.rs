@@ -186,18 +186,26 @@ pub fn prepare() -> Result<()> {
         manifest().version.to_string(),
     )?;
 
-    let manifest = manifest();
     let store = LocalStore::open_default()?;
     let existing = store.load_workspace_config(AppConfig::load())?;
+    prepare_playground(&root, &store, existing, initialize_git_repository)
+}
+
+fn prepare_playground(
+    root: &Path,
+    store: &LocalStore,
+    existing: AppConfig,
+    initialize_git: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     if !existing.projects.is_empty() {
         return Ok(());
     }
 
+    let manifest = manifest();
     let project_root = root.join("playground").join(&manifest.project.folder);
     write_playground(&project_root)?;
-    initialize_git_repository(&project_root)?;
 
-    let mut project = Project::from_path(project_root);
+    let mut project = Project::from_path(project_root.clone());
     project.name = manifest.project.name.clone();
     project.icon = manifest.project.icon.clone();
     project.icon_color = manifest.project.icon_color.clone();
@@ -214,7 +222,7 @@ pub fn prepare() -> Result<()> {
     config.active_project = Some(project_id);
     config.expanded_projects.push(project_id);
     store.save_workspace_config(&config)?;
-    config.save()?;
+    config.save_to(&root.join("config.json"))?;
 
     store.create_project_reference(
         project_id,
@@ -229,6 +237,15 @@ pub fn prepare() -> Result<()> {
         manifest.starter_task.title.clone(),
         manifest.starter_task.description.clone(),
     )?;
+
+    // The welcome screen needs this registered project, not a working Git
+    // installation. In particular, a fresh Mac may not have command-line
+    // developer tools yet. Never drop the entire tour because Git setup fails.
+    if let Err(error) = initialize_git(&project_root) {
+        eprintln!(
+            "Choro Playground Git setup is unavailable; onboarding remains enabled: {error:#}"
+        );
+    }
 
     Ok(())
 }
@@ -366,6 +383,69 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(ONBOARDING_VERSION_FILE), "1").unwrap();
         fs::write(dir.path().join(ONBOARDING_COMPLETED_FILE), "1").unwrap();
+        assert!(!should_start_for_normal_install(dir.path()));
+    }
+
+    #[test]
+    fn fresh_install_registers_playground_even_when_git_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(should_start_for_normal_install(dir.path()));
+        fs::write(dir.path().join(ONBOARDING_VERSION_FILE), "1").unwrap();
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let expected_root = dir
+            .path()
+            .join("playground")
+            .join(&manifest().project.folder);
+
+        prepare_playground(dir.path(), &store, AppConfig::default(), |root| {
+            assert_eq!(root, expected_root);
+            assert!(root.join("index.html").exists());
+            anyhow::bail!("Git is not installed")
+        })
+        .unwrap();
+
+        let config = AppConfig::load_from(&dir.path().join("config.json"));
+        let config = store.load_workspace_config(config).unwrap();
+        assert_eq!(config.projects.len(), 1);
+        assert_eq!(config.projects[0].path, expected_root);
+        assert_eq!(config.active_project, Some(config.projects[0].id));
+        assert!(!dir.path().join(ONBOARDING_COMPLETED_FILE).exists());
+        // A relaunch still resumes the tour despite newly created app data.
+        assert!(should_start_for_normal_install(dir.path()));
+    }
+
+    #[test]
+    fn existing_workspace_is_not_replaced_by_playground_preparation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let mut existing = AppConfig::default();
+        existing
+            .projects
+            .push(Project::from_path(dir.path().join("real-project")));
+        existing.active_project = Some(existing.projects[0].id);
+        existing.save_to(&dir.path().join("config.json")).unwrap();
+        store.save_workspace_config(&existing).unwrap();
+
+        prepare_playground(dir.path(), &store, existing.clone(), |_| {
+            panic!("an existing installation must not initialize the playground")
+        })
+        .unwrap();
+
+        let config = AppConfig::load_from(&dir.path().join("config.json"));
+        let config = store.load_workspace_config(config).unwrap();
+        assert_eq!(config.projects.len(), 1);
+        assert_eq!(config.projects[0].id, existing.projects[0].id);
+        assert_eq!(config.active_project, existing.active_project);
+        assert!(!dir.path().join("playground").exists());
+        assert!(!should_start_for_normal_install(dir.path()));
+    }
+
+    #[test]
+    fn completed_install_stays_completed_when_app_is_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        // Completion is per user data directory, not per application version.
+        fs::write(dir.path().join(ONBOARDING_COMPLETED_FILE), "older-version").unwrap();
+        fs::write(dir.path().join(ONBOARDING_VERSION_FILE), "newer-version").unwrap();
         assert!(!should_start_for_normal_install(dir.path()));
     }
 

@@ -39,6 +39,7 @@ impl Server {
     pub fn set_studio(&mut self, studio: bool) {
         self.ctx.studio = studio;
     }
+    pub fn set_review_run(&mut self, run: Option<uuid::Uuid>) { self.ctx.review_run = run; }
 
     pub fn run(&mut self) -> Result<()> {
         let stdin = std::io::stdin();
@@ -109,7 +110,7 @@ impl Server {
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
-            "instructions": format!("{}\n\n{}",CHORO_NATIVE_TOOL_INSTRUCTIONS,ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS),
+            "instructions": if self.ctx.review_run.is_some() { ide_core::code_review::REVIEW_INSTRUCTIONS.to_owned() } else { format!("{}\n\n{}",CHORO_NATIVE_TOOL_INSTRUCTIONS,ide_core::agent_changes::AGENT_CHANGE_INSTRUCTIONS) },
             "serverInfo": {
                 "name": "ide-mcp",
                 "version": env!("CARGO_PKG_VERSION"),
@@ -142,6 +143,7 @@ mod tests {
     fn initialize_scopes_choro_native_creation_instructions() {
         let server = Server {
             ctx: ServerContext {
+                review_run: None,
                 studio: false,
                 delegation_scope: None,
                 project_id: None,

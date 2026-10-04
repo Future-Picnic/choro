@@ -7,6 +7,7 @@ pub struct ProposedPlan {
     pub markdown: String,
     pub expanded: bool,
     pub implemented_at: Option<u64>,
+    pub revision: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,6 +25,7 @@ impl ProposedPlan {
             markdown,
             expanded: false,
             implemented_at: None,
+            revision: 0,
         }
     }
 
