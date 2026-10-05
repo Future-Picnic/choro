@@ -614,6 +614,13 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             Ok(())
         })).await?;
     }
+    if current < 40 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            ensure_chat_file_ledger_schema_inner(conn).await?;
+            record_schema_version(conn, 40).await?;
+            Ok(())
+        })).await?;
+    }
 
     Ok(())
 }
@@ -732,6 +739,12 @@ async fn ensure_chat_file_ledger_schema_inner(conn: &Connection) -> Result<()> {
             (),
         )
         .await?;
+    }
+    if !column_exists(conn, "chat_file_ledgers", "projection_version").await? {
+        conn.execute(
+            "ALTER TABLE chat_file_ledgers ADD COLUMN projection_version INTEGER NOT NULL DEFAULT 0",
+            (),
+        ).await?;
     }
     for (column, definition) in [
         ("baseline_content", "TEXT"),

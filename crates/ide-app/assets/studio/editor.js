@@ -8,6 +8,62 @@
   let source = {...structuredClone(boot.document),overrides:structuredClone(boot.overrides||{})}, clean, selectedId = null, mode = !boot.thumbnail && boot.mode==='preview' ? 'preview' : 'edit';
   let revision = boot.revision, fingerprint = boot.fingerprint, pending = false, dirty = false, timer, saveId = null, savedText = JSON.stringify(source), inFlightText, flushRequest = null;
   let frame = $('screen'), scale = 1, textEditBefore = null;
+  let commenting = false, commentScroll = { x: 0, y: 0 }, commentFocus = null;
+  const commentAvailable = !boot.thumbnail && !boot.system_specimen;
+  function installCommentInput(doc, emit) {
+    const win = doc.defaultView;
+    let enabled = false;
+    const report = focus => { if (enabled) emit({ type: 'studio-comment-scroll', x: win.scrollX, y: win.scrollY, ...(typeof focus === 'string' ? { focus } : {}) }); };
+    doc.addEventListener('keydown', event => {
+      if (!event.defaultPrevented && !event.repeat && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'c'
+          && !event.target.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) {
+        event.preventDefault(); event.stopPropagation(); emit({ type: 'studio-comment-toggle' });
+      }
+    }, true);
+    win.addEventListener('message', event => {
+      if (event.source !== win.parent) return;
+      if (event.data?.type === 'studio-comments-state') { enabled = !!event.data.enabled; report(); }
+      if (enabled && event.data?.type === 'studio-comment-wheel' && [event.data.dx, event.data.dy].every(Number.isFinite)) {
+        win.scrollBy({ left: Math.max(-2000, Math.min(2000, event.data.dx)), top: Math.max(-2000, Math.min(2000, event.data.dy)), behavior: 'instant' }); report();
+      }
+      if (enabled && event.data?.type === 'studio-comment-focus' && [event.data.x, event.data.y].every(Number.isFinite)) {
+        win.scrollTo({ left: Math.max(0, event.data.x - win.innerWidth / 2), top: Math.max(0, event.data.y - win.innerHeight / 2), behavior: 'instant' }); report(event.data.focus);
+      }
+    });
+    doc.addEventListener('scroll', report, true);
+  }
+  function commentGeometry() {
+    const r = frame.getBoundingClientRect(), area = $('canvas').getBoundingClientRect();
+    return { screen_id: boot.screen_id, name: boot.screens.find(s => s.id === boot.screen_id)?.name || 'Screen',
+      x: r.left - area.left, y: r.top - area.top, width: boot.width, height: boot.authored_height || boot.height,
+      visibleWidth: r.width, visibleHeight: r.height, zoom: scale, scrollX: commentScroll.x, scrollY: commentScroll.y };
+  }
+  window.choroCommentGeometry = commentGeometry;
+  window.choroCommentFocus = pin => {
+    if (!boot.prototype || pin.screen_id !== boot.screen_id || ![pin.x, pin.y].every(Number.isFinite)) return;
+    const focus = uuid();
+    commentFocus = { ...pin, focus };
+    frame.contentWindow?.postMessage({ type: 'studio-comment-focus', x: pin.x * boot.width, y: pin.y * (boot.authored_height || boot.height), focus }, '*');
+  };
+  function revealComment(pin) {
+    const area = $('canvas').getBoundingClientRect(), rect = frame.getBoundingClientRect();
+    const sidebar = document.querySelector('.comments-panel')?.getBoundingClientRect();
+    const right = sidebar && sidebar.left > area.left && sidebar.left < area.right ? sidebar.left : area.right;
+    const x = rect.left + (pin.x * boot.width - commentScroll.x) * scale;
+    const y = rect.top + (pin.y * (boot.authored_height || boot.height) - commentScroll.y) * scale;
+    if (x >= area.left + 12 && x <= right - 44 && y >= area.top + 44 && y <= area.bottom - 12) return;
+    // Reveal the actual scrolled pin in the uncovered stage without changing
+    // the zoom or remounting the running prototype.
+    camera.mode = 'free';
+    camera.x += (x - (area.left + right) / 2) / scale;
+    camera.y += (y - (area.top + area.bottom) / 2) / scale;
+    cameraChanged();
+  }
+  window.choroCommentWheel = event => {
+    if (event.ctrlKey || event.metaKey) cameraInput({ kind: 'zoom', x: event.clientX, y: event.clientY, dx: 0, dy: event.deltaY });
+    else frame.contentWindow?.postMessage({ type: 'studio-comment-wheel', dx: event.deltaX, dy: event.deltaY }, '*');
+  };
+  const publishCommentGeometry = () => { if (commenting) window.dispatchEvent(new Event('studio-comment-geometry')); };
   if(boot.draft){source=boot.draft.document;revision=boot.draft.revision;fingerprint=boot.draft.fingerprint;dirty=true;}
   const parse = html => new DOMParser().parseFromString(html,'text/html');
   const send = payload => {
@@ -86,6 +142,11 @@
       const script=doc.createElement('script');
       script.textContent=source.js+'\n;document.addEventListener("click",e=>{const a=e.target.closest("[data-studio-screen]");if(a){e.preventDefault();parent.postMessage({type:"studio-navigate",screen_id:a.dataset.studioScreen},"*")}});';
       doc.body.append(script);
+      if (commentAvailable) {
+        const comments = doc.createElement('script');
+        comments.textContent = '(' + installCommentInput.toString() + ')(document,value=>parent.postMessage(value,"*"));';
+        doc.head.append(comments);
+      }
       if(cameraEnabled){
         const controls=doc.createElement('script');
         controls.textContent='('+installCameraInput.toString()+')(document,input=>parent.postMessage({type:"studio-camera",input},"*"),()=>true,false,'+!!boot.prototype+');';
@@ -271,7 +332,7 @@
     // Backstop for the same chaining, for engines that do not honour overscroll
     // containment across a frame boundary. A player's own wheel gestures arrive
     // as messages, never as host events over the screen.
-    installCameraInput(document,cameraInput,event=>!!event.target.closest?.('#canvas')&&!(event.type==='wheel'&&mode==='preview'&&!boot.system_specimen&&event.target.closest?.('#frame-wrap')));
+    installCameraInput(document,cameraInput,event=>!!event.target.closest?.('#canvas')&&!event.target.closest?.('.screen-comment-capture')&&!(event.type==='wheel'&&mode==='preview'&&!boot.system_specimen&&event.target.closest?.('#frame-wrap')));
     window.addEventListener('pagehide',persistCamera);
   }
   function size() {
@@ -290,7 +351,7 @@
         Object.assign(frame.style,{width:boot.width+'px',height:boot.height+'px'});
       }
       if(Vvveb.WysiwygEditor.isActive)outline();
-      publishInlineLayout();return;
+      publishInlineLayout();publishCommentGeometry();return;
     }
     const area=$('canvas'), style=getComputedStyle(area);
     const availableWidth=area.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight);
@@ -305,7 +366,7 @@
     Object.assign($('frame-wrap').style,{width:(boot.width*scale)+'px',height:(boot.height*scale)+'px'});
     Object.assign($('frame-surface').style,{width:boot.width+'px',height:boot.height+'px',transform:'scale('+scale+')'});
     Object.assign(frame.style,{width:boot.width+'px',height:boot.height+'px'});
-    outline();publishInlineLayout();
+    outline();publishInlineLayout();publishCommentGeometry();
   }
   function syncInspector() {
     const editing=mode==='edit'&&!boot.system_specimen&&!boot.thumbnail;
@@ -338,6 +399,7 @@
     size();
     frame.addEventListener('load',()=>{
       size();
+      frame.contentWindow?.postMessage({ type: 'studio-comments-state', enabled: commenting }, '*');
       if(boot.thumbnail){
         const doc=frame.contentDocument;
         Promise.race([Promise.all([doc.fonts.ready,...[...doc.images].map(image=>image.decode().catch(()=>{}))]),new Promise(resolve=>setTimeout(resolve,1500))]).then(()=>setTimeout(()=>send({type:'thumbnail-ready'}),100));
@@ -353,6 +415,10 @@
       }
       if(mode!=='edit')return;
       const doc=frame.contentDocument;
+      if (commentAvailable) installCommentInput(doc, value => {
+        if (value.type === 'studio-comment-toggle') send({ type: 'comment-toggle', request_id: uuid() });
+        else { commentScroll = value; publishCommentGeometry(); }
+      });
       installCameraInput(doc,input=>cameraInput(input,true));
       doc.addEventListener('keydown',historyShortcut,true);
       window.FrameDocument=doc;window.FrameWindow=frame.contentWindow;
@@ -483,6 +549,29 @@
   function sendFlushed(){send({type:'flushed',request_id:flushRequest});flushRequest=null;}
   window.choroStudioReply=reply=>{
     if(reply.session!==boot.session)return;
+    if (reply.type === 'comment-mode' && commentAvailable) {
+      commenting = !!reply.enabled;
+      if (!commenting) commentFocus = null;
+      window.choroCommentsEnabled = commenting;
+      window.choroCommentSelection = reply.selected ?? null;
+      if (commenting && mode === 'edit') { finishText(); flush(); }
+      frame.contentWindow?.postMessage({ type: 'studio-comments-state', enabled: commenting }, '*');
+      if (boot.inline) { frame.style.pointerEvents = commenting ? 'none' : ''; }
+      else {
+        if (commenting && !window.choroCommentsLoaded) {
+          const bundle = $('studio-comments-bundle');
+          if (bundle?.textContent.trim()) {
+            window.choroCommentsLoaded = true;
+            const script = document.createElement('script'); script.textContent = bundle.textContent; document.body.append(script);
+          }
+        }
+        window.dispatchEvent(new CustomEvent('studio-comment-mode', { detail: { enabled: commenting } }));
+      }
+      publishCommentGeometry(); return;
+    }
+    if (reply.type === 'comments-result' && commenting) {
+      window.dispatchEvent(new CustomEvent('choro-canvas-comment', { detail: reply })); return;
+    }
     // Only the trusted host can invoke these controls; authored screens never
     // reach this reply channel. Keep one implementation of each editor action.
     if(reply.type==='toolbar-command'&&boot.native_toolbar&&mode==='edit'){
@@ -596,8 +685,23 @@
   window.addEventListener('resize',size);
   new ResizeObserver(size).observe($('canvas'));
   window.addEventListener('message',event=>{if(event.source===frame.contentWindow&&event.data?.type==='studio-camera')cameraInput(event.data.input,true);});
-  window.addEventListener('message',event=>{if(event.source===frame.contentWindow&&event.data?.type==='studio-navigate'&&boot.screens.some(s=>s.id===event.data.screen_id))send({type:'navigate',screen_id:event.data.screen_id});});
+  window.addEventListener('message', event => {
+    if (event.source !== frame.contentWindow) return;
+    if (event.data?.type === 'studio-comment-toggle' && commentAvailable) send({ type: 'comment-toggle', request_id: uuid() });
+    if (commenting && event.data?.type === 'studio-comment-scroll' && [event.data.x, event.data.y].every(Number.isFinite)) {
+      commentScroll = event.data;
+      if (commentFocus && commentFocus.focus === event.data.focus) { const pin = commentFocus; commentFocus = null; revealComment(pin); }
+      publishCommentGeometry();
+    }
+  });
+  window.addEventListener('message',event=>{if(!commenting&&event.source===frame.contentWindow&&event.data?.type==='studio-navigate'&&boot.screens.some(s=>s.id===event.data.screen_id))send({type:'navigate',screen_id:event.data.screen_id});});
   window.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key==='s'){event.preventDefault();flush();}});
+  if (commentAvailable && !boot.inline) window.addEventListener('keydown', event => {
+    if (!event.defaultPrevented && !event.repeat && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'c'
+        && !event.target.closest?.('input,textarea,select,[contenteditable]:not([contenteditable="false"])')) {
+      event.preventDefault(); send({ type: 'comment-toggle', request_id: uuid() });
+    }
+  });
   if(boot.theme)for(const [key,value] of Object.entries(boot.theme))document.documentElement.style.setProperty('--'+key,value);
   for(const node of [document.documentElement,document.body])node.dataset.bsTheme=scheme;
   document.body.classList.toggle('native-toolbar',!!boot.native_toolbar);

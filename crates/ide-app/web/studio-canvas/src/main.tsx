@@ -33,6 +33,8 @@ import {
 import "./style.css";
 import {createInlineEditor} from "./inline-editor";
 import { SectionBoard, CanvasMenu, type SectionNode, type MenuState } from "./sections";
+import { CanvasComments } from "./canvas-comments";
+import { COMMENT_EVENT, commentAnchor } from "./comments-model";
 type Boot = {
   session: string;
   revision: number;
@@ -43,6 +45,7 @@ type Boot = {
   layout: Layout;
   theme: Record<string, string>;
   test?: boolean;
+  comment_mode?: boolean;
 };
 type Preview = { key: string; content_key: string; tier: number; width: number; height: number; url: string; image: HTMLImageElement; screenWidth:number;screenHeight:number };
 type Data = {
@@ -51,6 +54,7 @@ type Data = {
   error?: string;
   pending: boolean;
   editing: boolean;
+  commentMode: boolean;
   /** False once the artboard is too small to read, as for its preview image. */
   legible: boolean;
   begin: () => void;
@@ -176,7 +180,7 @@ const Artboard = memo(function Artboard({
       </div>
       <NodeResizer
         isVisible={
-          !!selected && !data.pending && !data.editing && !data.screen.activity
+          !!selected && !data.pending && !data.editing && !data.commentMode && !data.screen.activity
         }
         minWidth={240}
         maxWidth={3840}
@@ -230,6 +234,9 @@ const Artboard = memo(function Artboard({
 const nodeTypes = { artboard: Artboard, section: SectionBoard };
 function Canvas() {
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
+  const [commentMode, setCommentMode] = useState(boot.comment_mode ?? false);
+  const commenting = useRef(boot.comment_mode ?? false);
+  const canvasArea = useRef<HTMLDivElement>(null);
   const inline = useRef<ReturnType<typeof createInlineEditor> | null>(null);
   const screens = useRef(boot.screens),
     sections = useRef<Section[]>(boot.sections ?? []),
@@ -285,7 +292,7 @@ function Canvas() {
   const activation = useRef<{screen:string;x:number;y:number} | null>(null);
   const fitRects = (rects: Rect[], boards: Section[] = []) => {
     const f=flow.current;if(!f||(!rects.length&&!boards.length))return;
-    const target=inline.current?.area??{x:0,y:0,width:innerWidth,height:innerHeight};
+    const target=inline.current?.area??{x:0,y:0,width:canvasArea.current?.clientWidth ?? innerWidth,height:canvasArea.current?.clientHeight ?? innerHeight};
     let v = { x: 0, y: 0, zoom: 1 };
     // Recompute the display-sized title extents at the resulting fit zoom.
     for (let pass = 0; pass < 4; pass++) {
@@ -383,7 +390,7 @@ function Canvas() {
             dragHandle: ".artboard-title",
             hidden: layout.current.overview_mode === "focus" && layout.current.selected_screen_id !== screen.id,
             selected: layout.current.selected_screen_id === screen.id,
-            draggable: layout.current.overview_mode !== "focus" && !pending.current.has(screen.id) && !moved,
+            draggable: !commenting.current && layout.current.overview_mode !== "focus" && !pending.current.has(screen.id) && !moved,
             data: {
               screen,
               legible,
@@ -391,6 +398,7 @@ function Canvas() {
               error: failures.current.get(screen.id),
               pending: pending.current.has(screen.id) || !!moved,
               editing: inline.current?.screen===screen.id,
+              commentMode: commenting.current,
               begin: () => {
                 resize.current = {
                   id: screen.id,
@@ -456,6 +464,7 @@ function Canvas() {
             previous.draggable === n.draggable &&
             previous.data.pending === n.data.pending &&
             previous.data.editing === n.data.editing &&
+            previous.data.commentMode === n.data.commentMode &&
             previous.data.error === n.data.error &&
             previous.position.x === n.position.x &&
             previous.position.y === n.position.y &&
@@ -505,8 +514,8 @@ function Canvas() {
       screens.current.filter(s=>s.id!==inline.current?.screen && (layout.current.overview_mode!=="focus"||s.id===layout.current.selected_screen_id)),
       layout.current.positions,
       v,
-      innerWidth,
-      innerHeight,
+      canvasArea.current?.clientWidth ?? innerWidth,
+      canvasArea.current?.clientHeight ?? innerHeight,
       devicePixelRatio,
       layout.current.selected_screen_id,
       performance.now() - lastMotion.current < 150,
@@ -672,7 +681,7 @@ function Canvas() {
       if(!screen||!p)return;
       if(input.kind==='sync'){positionEditor();return;}
       if(input.kind==='end'){flushCamera();return;}
-      const target=area??{x:0,y:0,width:innerWidth,height:innerHeight};
+      const target=area??{x:0,y:0,width:canvasArea.current?.clientWidth ?? innerWidth,height:canvasArea.current?.clientHeight ?? innerHeight};
       if(input.kind==='fit-screen'||input.kind==='fit-selection'){
         const r=input.kind==='fit-selection'?input.rect:{x:0,y:0,width:screen.width,height:screen.height};
         if(!r||![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<=0||r.height<=0)return;
@@ -695,8 +704,22 @@ function Canvas() {
     window.choroStudioReply=value=>inline.current?.reply(value);
     window.choroCanvasReply = (message) => {
       if (message.session !== boot.session) return;
-      if (message.type === "state") {
+      if (message.type === "comment-mode") {
+        commenting.current = !!message.enabled;
+        setCommentMode(commenting.current);
+        inline.current?.commentMode(commenting.current);
+        setMenu(null);
+        syncNodes();
+      } else if (message.type === "comments-result") {
+        if (commenting.current) dispatchEvent(new CustomEvent(COMMENT_EVENT, { detail: message }));
+      } else if (message.type === "state") {
         if(message.revision<revision.current.revision)return;
+        if (typeof message.comment_mode === "boolean" && message.comment_mode !== commenting.current) {
+          commenting.current = message.comment_mode;
+          setCommentMode(commenting.current);
+          inline.current?.commentMode(commenting.current);
+          setMenu(null);
+        }
         if(message.theme){for(const [key,value] of Object.entries(message.theme))document.documentElement.style.setProperty(`--${key}`,String(value));inline.current?.theme(message.theme);}
         revision.current = {
           revision: message.revision,
@@ -733,6 +756,7 @@ function Canvas() {
         schedulePreviews();
       } else if (message.type === "editor") {
         inline.current?.open(message.screen_id?message:null);
+        inline.current?.commentMode(commenting.current);
         const point=activation.current;
         if (point && point.screen === message.screen_id) {
           inline.current?.activate(point.x,point.y);
@@ -833,6 +857,10 @@ function Canvas() {
       iframes: document.querySelectorAll("iframe").length,
     });
     const onKey = (event: KeyboardEvent) => {
+      if (!event.defaultPrevented && !event.repeat && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey
+          && event.key.toLowerCase() === "c" && !(event.target as HTMLElement | null)?.closest?.("input,textarea,select,[contenteditable]:not([contenteditable='false'])")) {
+        event.preventDefault(); send("comment-toggle"); return;
+      }
       if (event.key === "Escape" && resize.current) {
         resize.current.cancelled = true;
         syncNodes();
@@ -844,10 +872,11 @@ function Canvas() {
       }
       if (event.key === "Escape") setMenu(null);
       if (
+        !commenting.current &&
         event.key === "Enter" &&
         layout.current.selected_screen_id &&
         !resize.current &&
-        !(event.target as HTMLElement | null)?.closest?.(".canvas-menu")
+        !(event.target as HTMLElement | null)?.closest?.(".canvas-menu,input,textarea,select,[contenteditable]")
       ) {
         flushCamera();
         send("open", { screen_id: layout.current.selected_screen_id });
@@ -857,6 +886,8 @@ function Canvas() {
     const onResize = () => schedulePreviews();
     addEventListener("keydown", onKey);
     addEventListener("resize", onResize);
+    const canvasResize = new ResizeObserver(onResize);
+    if (canvasArea.current) canvasResize.observe(canvasArea.current);
     return () => {
       flushCamera();
       alive.current = false;
@@ -869,11 +900,13 @@ function Canvas() {
       decodeQueue.current = [];
       removeEventListener("keydown", onKey);
       removeEventListener("resize", onResize);
+      canvasResize.disconnect();
     };
   }, [syncNodes, schedulePreviews, decodeNext, flushCamera, planPreviews]);
   const onChanges = useCallback((changes: NodeChange<CanvasNode>[]) => {
     const accepted = changes.filter(
       (c) =>
+        !(commenting.current && c.type === "position") &&
         !(
           resize.current?.cancelled &&
           "id" in c &&
@@ -993,7 +1026,8 @@ function Canvas() {
       void flow.current?.fitView({ padding: 0.12, minZoom: 0.02, maxZoom: 1 });
   }, [ready]);
   return (
-    <>
+    <div className={`canvas-workspace ${commentMode ? "commenting" : ""}`}>
+      <div className="canvas-viewport" ref={canvasArea}>
       <ReactFlow<CanvasNode>
         nodes={nodes}
         edges={[]}
@@ -1042,7 +1076,16 @@ function Canvas() {
           positionEditor();
           schedulePreviews();
         }}
-        onNodeClick={(_, n) => {
+        onNodeClick={(event, n) => {
+          if (commenting.current) {
+            if (n.type !== "artboard" || !flow.current) return;
+            const point = flow.current.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            const anchor = commentAnchor(point, { ...n.position, width: n.width ?? 0, height: n.height ?? 0 });
+            if (anchor) dispatchEvent(new CustomEvent(COMMENT_EVENT, { detail: {
+              type: "place", draft: { id: requestId(), screen_id: n.id, ...anchor },
+            } }));
+            return;
+          }
           if (n.type === "section") {
             const id = n.id.slice(SECTION_PREFIX.length);
             layout.current.selected_section_id = id;
@@ -1060,10 +1103,12 @@ function Canvas() {
         }}
         onNodeContextMenu={(event, n) => {
           event.preventDefault();
+          if (commenting.current) return;
           const section = n.type === "section";
           setMenu({ x: event.clientX, y: event.clientY, kind: section ? "section" : "screen", id: section ? n.id.slice(SECTION_PREFIX.length) : n.id, ...revision.current });
         }}
         onNodeDoubleClick={(event, n) => {
+          if (commenting.current) return;
           if (n.type === "section") { fitSection(n.id.slice(SECTION_PREFIX.length)); return; }
           const v=flow.current!.getViewport();
           activation.current={screen:n.id,x:(event.clientX-v.x)/v.zoom-n.position.x,y:(event.clientY-v.y)/v.zoom-n.position.y};
@@ -1071,6 +1116,7 @@ function Canvas() {
           send("open", { screen_id: n.id });
         }}
         onPaneClick={() => {
+          if (commenting.current) return;
           if(inline.current?.screen){inline.current.reply({session:inline.current.session,type:"deselect"});return;}
           if(layout.current.overview_mode === "focus")return;
           layout.current.selected_screen_id = null;
@@ -1116,7 +1162,9 @@ function Canvas() {
           }}
         />
       )}
-    </>
+      </div>
+      {commentMode && <CanvasComments send={send} requestId={requestId} canvas={canvasArea} />}
+    </div>
   );
 }
 for (const [key, value] of Object.entries(boot.theme ?? {}))

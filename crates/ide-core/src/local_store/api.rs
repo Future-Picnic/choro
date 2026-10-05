@@ -280,6 +280,33 @@ impl LocalStore {
         })
     }
 
+    /// Register the durable parent for a Studio/Docs conversation without
+    /// replacing the ordinary agent snapshot or overwriting newer metadata.
+    /// Project removal and parent registration share the write transaction.
+    pub fn ensure_assistant_chat_agent(&self, agent: &AgentRecord) -> Result<()> {
+        anyhow::ensure!(agent.hidden_doc_assistant, "expected a Studio/Docs assistant");
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            execute_transaction(&conn, |conn| Box::pin(async move {
+                let mut rows = conn.query(
+                    "SELECT project_id, hidden_doc_assistant FROM agents WHERE id = ?1",
+                    [agent.id.to_string()],
+                ).await?;
+                if let Some(row) = rows.next().await? {
+                    anyhow::ensure!(row.get::<String>(0)? == agent.project_id.0.to_string()
+                        && row.get::<i64>(1)? != 0, "conversation identity belongs to another agent");
+                    return Ok(());
+                }
+                drop(rows);
+                let project_id = agent.project_id.0.to_string();
+                let mut rows = conn.query("SELECT id FROM projects WHERE id = ?1", [project_id.clone()]).await?;
+                anyhow::ensure!(rows.next().await?.is_some(), "assistant project no longer exists");
+                drop(rows);
+                upsert_agents_async(conn, std::slice::from_ref(agent), &HashSet::from([project_id])).await
+            })).await
+        })
+    }
+
     pub fn upsert_project_preview(
         &self,
         project_id: ProjectId,

@@ -12,8 +12,24 @@ pub(super) async fn save_agents_async(conn: &Connection, agents: &[AgentRecord])
         project_ids.insert(row.get::<String>(0)?);
     }
     drop(rows);
-    let ids: HashSet<String> = agents.iter().map(|agent| agent.id.to_string()).collect();
+    let mut ids: HashSet<String> = agents.iter().map(|agent| agent.id.to_string()).collect();
+    // Studio/Docs own these records outside the ordinary agent snapshot.
+    // A snapshot captured before an assistant was registered must not delete
+    // its parent row and cascade away its saved Files ledger.
+    let mut rows = conn.query("SELECT id FROM agents WHERE hidden_doc_assistant = 1", ()).await?;
+    while let Some(row) = rows.next().await? {
+        ids.insert(row.get::<String>(0)?);
+    }
+    drop(rows);
     delete_missing(conn, "agents", &ids).await?;
+    upsert_agents_async(conn, agents, &project_ids).await
+}
+
+pub(super) async fn upsert_agents_async(
+    conn: &Connection,
+    agents: &[AgentRecord],
+    project_ids: &HashSet<String>,
+) -> Result<()> {
     for agent in agents
         .iter()
         .filter(|agent| project_ids.contains(&agent.project_id.0.to_string()))

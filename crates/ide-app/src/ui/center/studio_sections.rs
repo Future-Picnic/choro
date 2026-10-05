@@ -395,7 +395,7 @@ impl CenterArea {
     /// Native inspector for a selected section. It replaces the screen inspector.
     pub(super) fn render_studio_section_inspector(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let s = self.studio.as_ref()?;
-        if s.prototype || s.editing_screen().is_some() || s.design.manifest.system_workspace { return None; }
+        if s.prototype || s.comment_mode || s.editing_screen().is_some() || s.design.manifest.system_workspace { return None; }
         let section = s.design.manifest.section(s.canvas.layout.selected_section_id?)?.clone();
         let busy = s.saving || s.grouping.is_some();
         let id = section.id;

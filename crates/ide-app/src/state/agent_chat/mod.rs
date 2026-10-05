@@ -4,6 +4,7 @@
 )]
 
 mod changed_files;
+mod artifacts;
 mod code_review;
 mod handoffs;
 mod interactions;
@@ -31,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub(crate) use changed_files::bounded_line_diff_counts;
+pub(crate) use artifacts::restore_saved_artifacts;
 pub(crate) use changed_files::VisualizationArtifactFilter;
 pub(crate) use persistence::{load_file_ledger_from_store, load_latest_plan_from_store};
 pub use changed_files::{ChangedFilesSummary, FileChangeActivity, FileChangeStat};
@@ -98,6 +100,7 @@ pub struct AgentChatState {
     change_tracker: changes::ChatChangeTracker,
     current_event_received_at: Option<std::time::Instant>,
     pub(crate) sessions: HashMap<Uuid, AgentChatSession>,
+    artifact_loads: HashMap<Uuid, artifacts::ArtifactLoad>,
     controllers: HashMap<Uuid, ChatBackendController>,
     pub(crate) review_controllers: HashMap<Uuid, review_controller::ReviewController>,
     review_recovery: HashSet<Uuid>,
@@ -818,6 +821,12 @@ impl AgentChatState {
             return Ok(());
         }
 
+        // Assistant records live in doc-assistants.json. Their Files ledger
+        // still needs a durable parent before the provider can emit writes.
+        if agent.hidden_doc_assistant {
+            LocalStore::open_default()?.ensure_assistant_chat_agent(&agent)?;
+        }
+
         let generation = self.next_backend_generation(agent.id);
         let initial_turn_id = (agent.cli_session_id.is_none() && agent.delegation.is_none() && !agent.hidden_doc_assistant)
             .then(|| self.anchor_change_turn(agent.id, cx));
@@ -1341,6 +1350,7 @@ impl AgentChatState {
     pub fn reset_session(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
         let _ = self.hard_stop_backend(agent_id, true, cx);
         self.sessions.remove(&agent_id);
+        self.artifact_loads.remove(&agent_id);
         self.cancellation_requested.remove(&agent_id);
         self.paused_queues.remove(&agent_id);
         self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
@@ -2262,6 +2272,137 @@ mod retirement_tests {
         crate::state::chat_dispatch::hydrate_with_artifacts(&mut session,
             vec![AgentChatTimelineItem::ProposedPlan(older.clone())], None, Some(older));
         assert_eq!(session.latest_plan.as_ref(), Some(&latest));
+    }
+
+    #[test]
+    fn saved_artifacts_update_without_resuming_or_clearing_composer_and_decisions() {
+        let mut session = retirable_session();
+        session.cli_session_id = None; // Browsing does not require a provider session.
+        session.composer_text = "Keep my draft".into();
+        session.pending_user_input = Some(PendingUserInput::new("question", vec![]));
+        let pending = ProposedPlan::new("pending", "# Still awaiting approval");
+        session.proposed_plan = Some(pending.clone());
+        let mut saved_files = ChangedFilesSummary::attributed("saved", vec![FileChangeStat::new("early.rs", 3, 1)], vec![]);
+        saved_files.ledger_revision = 5;
+        let mut plan = ProposedPlan::new("latest", "# Latest saved plan");
+        plan.revision = 8;
+        restore_saved_artifacts(&mut session, Some(saved_files.clone()), Some(plan.clone()));
+        assert_eq!(session.changed_files, saved_files);
+        assert_eq!(session.latest_plan.as_ref(), Some(&plan));
+        assert_eq!(session.composer_text, "Keep my draft");
+        assert_eq!(session.proposed_plan.as_ref(), Some(&pending));
+        assert_eq!(session.pending_user_input.as_ref().unwrap().request_id, "question");
+        assert!(session.timeline.is_empty());
+        assert_eq!(session.status, AgentChatStatus::Idle);
+        assert!(session.cli_session_id.is_none());
+        // Loading an older page cannot replace the saved DB projection.
+        let mut page = ChangedFilesSummary::attributed("page", vec![FileChangeStat::new("page.rs", 90, 0)], vec![]);
+        page.ledger_revision = 99;
+        crate::state::chat_dispatch::hydrate_with_artifacts(&mut session,
+            vec![AgentChatTimelineItem::ChangedFiles(page)], Some(saved_files.clone()), Some(plan.clone()));
+        assert_eq!(session.changed_files, saved_files);
+        assert_eq!(session.latest_plan.as_ref(), Some(&plan));
+        let mut next = plan.clone();
+        next.revision += 1;
+        next.markdown = "# Updated saved plan".into();
+        restore_saved_artifacts(&mut session, None, Some(next.clone()));
+        assert_eq!(session.latest_plan.as_ref(), Some(&next));
+    }
+
+    #[test]
+    fn delayed_saved_artifacts_cannot_roll_back_new_edits_or_plan_approval() {
+        let mut session = retirable_session();
+        session.changed_files.ledger_revision = 12; // A newer net revert is still an update.
+        let mut current = ProposedPlan::new("plan", "# Current plan");
+        current.revision = 10;
+        current.implemented_at = Some(42);
+        session.latest_plan = Some(current.clone());
+        let mut old_files = ChangedFilesSummary::attributed("old", vec![FileChangeStat::new("reverted.rs", 5, 1)], vec![]);
+        old_files.ledger_revision = 11;
+        let mut older = current.clone();
+        older.implemented_at = None;
+        restore_saved_artifacts(&mut session, Some(old_files), Some(older));
+        assert!(session.changed_files.files.is_empty());
+        assert_eq!(session.changed_files.ledger_revision, 12);
+        assert_eq!(session.latest_plan.as_ref(), Some(&current));
+    }
+
+    #[test]
+    fn edits_arriving_during_artifact_loading_are_updates_to_the_saved_baseline() {
+        let mut session = retirable_session();
+        let edit = |id: &str, path: &str, before: &str, after: &str| {
+            ChangedFilesSummary::attributed(id, vec![FileChangeStat::new(path, 1, 1)
+                .with_content_projection(Some(before.into()), Some(after.into()))], vec![])
+        };
+        let mut saved = ChangedFilesSummary::default();
+        let earlier = edit("earlier", "shared.rs", "original\n", "saved\n");
+        saved.merge_turn(&earlier);
+        saved.merge_turn(&edit("other", "other.rs", "before\n", "after\n"));
+        saved.ledger_revision = 10;
+        // A freshly opened session hasn't received its saved baseline yet.
+        apply_changed_files_summary(&mut session, edit("new", "shared.rs", "saved\n", "latest\n")).unwrap();
+        let updates = artifacts::fold_pending_artifact_updates(&mut session, &mut saved);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(saved.ledger_revision, 11);
+        restore_saved_artifacts(&mut session, Some(saved.clone()), None);
+        assert_eq!(session.changed_files.files.len(), 2);
+        let shared = session.changed_files.files.iter().find(|file| file.path == PathBuf::from("shared.rs")).unwrap();
+        assert_eq!(shared.baseline_content.as_deref(), Some("original\n"));
+        assert_eq!(shared.result_content.as_deref(), Some("latest\n"));
+        assert!(artifacts::fold_pending_artifact_updates(&mut session, &mut saved).is_empty());
+        assert!(apply_changed_files_summary(&mut session, earlier).is_none());
+    }
+
+    #[cfg(feature = "ui-layout-tests")]
+    #[gpui::test]
+    fn artifact_loads_ignore_late_results_after_reset_and_preserve_saved_data_on_failure(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext;
+        let chats = cx.new(|_| AgentChatState::new());
+        chats.update(cx, |state, cx| {
+            let session = retirable_session();
+            let id = session.agent_id;
+            state.sessions.insert(id, session);
+            let old_token = Uuid::new_v4();
+            state.artifact_loads.insert(id, artifacts::ArtifactLoad::Loading(old_token, None));
+            state.reset_session(id, cx);
+            state.finish_artifact_load(id, old_token, Ok((ChangedFilesSummary::default(), None)), cx);
+            assert!(state.session(id).is_none());
+            assert!(!state.artifact_loads.contains_key(&id));
+
+            let mut replacement = retirable_session();
+            replacement.agent_id = id;
+            replacement.cli_session_id = None;
+            replacement.composer_text = "Unsent draft".into();
+            let plan = ProposedPlan::new("saved", "# Already displayed");
+            replacement.latest_plan = Some(plan.clone());
+            state.sessions.insert(id, replacement);
+            let current_token = Uuid::new_v4();
+            state.artifact_loads.insert(id, artifacts::ArtifactLoad::Loading(current_token, Some(plan.clone())));
+            state.finish_artifact_load(id, old_token, Err(anyhow::anyhow!("late failure")), cx);
+            assert!(state.saved_artifacts_loading(id));
+            state.finish_artifact_load(id, current_token, Err(anyhow::anyhow!("database unavailable")), cx);
+            assert!(!state.saved_artifacts_loading(id));
+            assert!(state.saved_artifacts_error(id).unwrap().contains("database unavailable"));
+            assert_eq!(state.session(id).unwrap().latest_plan.as_ref(), Some(&plan));
+            assert_eq!(state.session(id).unwrap().composer_text, "Unsent draft");
+            assert!(!state.has_backend(id));
+            let retry_token = Uuid::new_v4();
+            state.artifact_loads.insert(id, artifacts::ArtifactLoad::Loading(retry_token, Some(plan.clone())));
+            let mut saved = ChangedFilesSummary::attributed("saved", vec![FileChangeStat::new("old.rs", 2, 1)], vec![]);
+            saved.ledger_revision = 4;
+            let mut latest = ProposedPlan::new("latest", "# Latest persisted plan");
+            latest.revision = 2;
+            state.finish_artifact_load(id, retry_token, Ok((saved.clone(), Some(latest.clone()))), cx);
+            assert!(state.saved_artifacts_error(id).is_none());
+            assert!(!state.saved_artifacts_loading(id));
+            let session = state.session(id).unwrap();
+            assert_eq!(session.changed_files, saved);
+            assert_eq!(session.latest_plan.as_ref(), Some(&latest));
+            assert_eq!(session.composer_text, "Unsent draft");
+            assert!(session.messages.is_empty());
+            assert!(session.chat_session_id.is_none() && session.cli_session_id.is_none());
+            assert!(!state.has_backend(id));
+        });
     }
 
     #[test]

@@ -3107,6 +3107,11 @@ pub fn design_workspace_identity() -> Div {
     h_flex().flex_1().min_w(px(180.)).items_center().gap_2()
 }
 
+/// Studio's mode choices and project actions wrap within a narrow workspace.
+pub fn design_workspace_actions() -> Div {
+    design::header::actions().max_w_full().flex_wrap().justify_end()
+}
+
 /// The flexible identity half of a stage header. On narrow stages the action
 /// group wraps as a unit; long screen names truncate inside this boundary.
 pub fn stage_header_context() -> Div {

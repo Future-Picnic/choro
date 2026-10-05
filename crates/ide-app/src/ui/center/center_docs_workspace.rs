@@ -349,88 +349,39 @@ impl CenterArea {
         project_path: &Path,
         cx: &mut Context<Self>,
     ) {
-        // Initialize cheap session metadata once. Transcript I/O runs on the
-        // background executor; submissions wait in the existing hydration queue.
-        if self
-            .agent_chats
-            .read(cx)
-            .session(record.chat_agent_id)
-            .is_some_and(|session| session.hidden_from_notifications)
+        // Artifact loading can create a hidden session before history loads.
+        // Being hidden is notification metadata, not a hydration receipt.
+        if self.agent_chat_hydration_generations.contains_key(&record.chat_agent_id)
+            || self.agent_chats.read(cx).session(record.chat_agent_id)
+                .is_some_and(|session| !session.messages.is_empty())
         {
             return;
         }
-        let session_id = record
-            .chat_session_id
-            .as_deref()
-            .or(record.cli_session_id.as_deref())
-            .map(str::to_string);
         let effective_chat_session_id = record.chat_session_id.clone().or_else(|| {
             (record.provider == AgentKind::Codex)
                 .then(|| record.cli_session_id.clone())
                 .flatten()
         });
-        let needs_history = self.agent_chats.update(cx, |chats, cx| {
+        self.agent_chats.update(cx, |chats, cx| {
             let agent_id = record.chat_agent_id;
             let owner = cx.entity().downgrade();
             cx.defer(move |cx| { let _ = owner.update(cx, |chats, cx| chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx)); });
             let session = chats.ensure_session(record.chat_agent_id, record.title(), cx);
             session.hidden_from_notifications = true;
             session.interaction_mode = AgentInteractionMode::Default;
-            session.proposed_plan = None;
-            session
-                .timeline
-                .retain(|item| !matches!(item, AgentChatTimelineItem::ProposedPlan(_)));
-            if session.status == AgentChatStatus::PlanReady {
-                session.set_status(AgentChatStatus::Idle);
-            }
             if session.chat_session_id.is_none() {
                 session.chat_session_id = effective_chat_session_id.clone();
             }
             if session.cli_session_id.is_none() {
                 session.cli_session_id = record.cli_session_id.clone();
             }
-            session.messages.is_empty() && session_id.is_some()
         });
-        if !needs_history { return; }
-        let agent_id = record.chat_agent_id;
-        let generation = self.agent_chat_hydration_generations.entry(agent_id)
-            .and_modify(|generation| *generation = generation.wrapping_add(1)).or_insert(1);
-        let generation = *generation;
-        self.agent_chat_hydrating.insert(agent_id);
-        let provider = record.provider;
-        let project_path = project_path.to_path_buf();
-        let agent = Self::doc_assistant_agent_record(record, project_path.clone());
-        let session_id = session_id.unwrap();
-        cx.spawn(async move |this, cx| {
-            let messages = cx.background_executor().spawn(async move {
-                doc_assistant::read_chat_messages(provider, &project_path, &session_id)
-            }).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.agent_chat_hydration_generations.get(&agent_id).copied() != Some(generation) { return; }
-                this.agent_chat_hydrating.remove(&agent_id);
-                this.agent_chats.update(cx, |chats, cx| {
-                    let Some(session) = chats.sessions.get_mut(&agent_id) else { return; };
-                    if session.messages.is_empty() {
-                        let created_at = unix_now_secs();
-                        session.messages = messages.into_iter().map(|message| match message.role {
-                            DocAssistantRole::User => AgentChatMessage::User {
-                                text: message.text, display_text: None, tags: vec![], created_at,
-                            },
-                            DocAssistantRole::Assistant => AgentChatMessage::Assistant {
-                                message_id: None, text: message.text, created_at,
-                            },
-                        }).collect();
-                        session.timeline = session.messages.iter().cloned().map(AgentChatTimelineItem::Message).collect();
-                    }
-                    chats.publish_change(agent_id, crate::state::agent_chat::ChatChangeCategories::CONTENT, cx);
-                });
-                for submission in this.agent_chat_post_hydration_submissions.remove(&agent_id).unwrap_or_default() {
-                    this.dispatch_agent_chat_submission_inner(agent_id, submission.text, submission.display_text,
-                        submission.tags, submission.mode, Some(agent.clone()), submission.read_only, cx);
-                }
-                if this.rendered_chat_agents.contains(&agent_id) { cx.notify(); }
-            });
-        }).detach();
+        // Use durable Choro history even without a provider resume id. The
+        // shared loader restores timeline cards, older-page cursors and queued
+        // Studio submissions, with provider transcripts as a legacy fallback.
+        self.schedule_agent_chat_hydration(
+            Self::doc_assistant_agent_record(record, project_path.to_path_buf()), cx,
+        );
     }
 
     pub(super) fn ensure_doc_assistant_chat_backend(

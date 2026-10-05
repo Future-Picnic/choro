@@ -2,6 +2,10 @@
 mod systems;
 #[path = "code_import.rs"]
 mod code_import;
+#[path = "comments.rs"]
+mod comments;
+#[path = "lifecycle.rs"]
+mod lifecycle;
 use super::*;
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
@@ -13,6 +17,7 @@ use std::{
 };
 pub use systems::*;
 pub use code_import::*;
+pub use comments::*;
 
 const MAX_FILE: usize = 4 * 1024 * 1024;
 const MAX_BUNDLE: usize = 64 * 1024 * 1024;
@@ -539,6 +544,10 @@ impl StudioStore {
         ensure!(
             !tx.operations.is_empty() && tx.operations.len() <= 200,
             "Expected 1–200 operations"
+        );
+        ensure!(
+            !self.path(&format!("{DESIGNS_DIR}/.trash/{}", tx.design_id))?.exists(),
+            "This design is in Trash. Restore it before editing."
         );
         let journal_path = self
             .cache

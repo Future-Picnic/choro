@@ -124,10 +124,11 @@ pub(super) async fn replace_chat_file_ledger_async(
         .map_or_else(unix_now, |entry| entry.updated_at);
     let applied = conn
         .execute(
-            "INSERT INTO chat_file_ledgers (agent_id, revision, updated_at)
-         VALUES (?1, ?2, ?3)
+            "INSERT INTO chat_file_ledgers (agent_id, revision, updated_at, projection_version)
+         VALUES (?1, ?2, ?3, 1)
          ON CONFLICT(agent_id) DO UPDATE SET
              revision = excluded.revision,
+             projection_version = excluded.projection_version,
              updated_at = excluded.updated_at
          WHERE excluded.revision >= chat_file_ledgers.revision",
             (
@@ -177,7 +178,7 @@ pub(super) async fn load_chat_file_ledger_async(
 ) -> Result<Option<StoredChatFileLedger>> {
     let mut ledger_rows = conn
         .query(
-            "SELECT revision, updated_at FROM chat_file_ledgers WHERE agent_id = ?1 LIMIT 1",
+            "SELECT revision, updated_at, projection_version FROM chat_file_ledgers WHERE agent_id = ?1 LIMIT 1",
             [agent_id.to_string()],
         )
         .await?;
@@ -186,6 +187,7 @@ pub(super) async fn load_chat_file_ledger_async(
     };
     let revision = i64_to_u64(ledger_row.get(0)?)?;
     let updated_at = i64_to_u64(ledger_row.get(1)?)?;
+    let projection_version = i64_to_u64(ledger_row.get(2)?)?;
     drop(ledger_rows);
     let mut rows = conn
         .query(
@@ -217,6 +219,7 @@ pub(super) async fn load_chat_file_ledger_async(
     Ok(Some(StoredChatFileLedger {
         agent_id,
         revision,
+        projection_version,
         updated_at,
         entries,
     }))

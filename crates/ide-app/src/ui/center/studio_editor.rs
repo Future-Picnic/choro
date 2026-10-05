@@ -188,7 +188,7 @@ pub fn document_for_surface(
         (screen.width, screen.height)
     };
     let bootstrap = json!({"native_toolbar":!thumbnail && !design.manifest.system_workspace && !matches!(surface,EditorSurface::Screen),"inline":matches!(surface,EditorSurface::Canvas),"prototype":matches!(surface,EditorSurface::Prototype),"system_specimen":design.manifest.system_workspace,"draft":draft,"session":session,"document":design.documents.get(&screen_id),"revision":design.manifest.revision,"fingerprint":design.fingerprint,
-        "screen_id":screen_id,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":width,"height":height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme});
+        "screen_id":screen_id,"authored_height":screen.height,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":width,"height":height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme});
     // Bootstrap is data, never executable HTML supplied by a design.
     let bootstrap = serde_json::to_string(&bootstrap)?
         .replace('<', "\\u003c")
@@ -233,7 +233,9 @@ pub fn document_for_surface(
         .replace(
             "/*STUDIO_EDITOR*/",
             include_str!("../../../assets/studio/editor.js"),
-        ))
+        )
+        .replace("/*STUDIO_COMMENTS_CSS*/", if !thumbnail && !design.manifest.system_workspace && !matches!(surface, EditorSurface::Canvas) { include_str!("../../../web/studio-canvas/dist/comments-overlay.css") } else { "" })
+        .replace("/*STUDIO_COMMENTS*/", if !thumbnail && !design.manifest.system_workspace && !matches!(surface, EditorSurface::Canvas) { include_str!("../../../web/studio-canvas/dist/comments-overlay.js") } else { "" }))
 }
 
 // One trusted editor session per canvas. Only its parent canvas may relay mutations.
@@ -252,7 +254,7 @@ pub fn enqueue_inline(canvas: Uuid, raw: &str) -> bool {
     let Some(editor) = entries.get(&canvas) else { return false; };
     let message = &value["message"];
     if message["session"].as_str().and_then(|s|s.parse::<Uuid>().ok()) != Some(*editor)
-        || !matches!(message["type"].as_str(), Some("ready" | "dirty" | "save" | "recover" | "asset" | "selection" | "render-error" | "flushed" | "toolbar-state")) { return false; }
+        || !matches!(message["type"].as_str(), Some("ready" | "dirty" | "save" | "recover" | "asset" | "selection" | "render-error" | "flushed" | "toolbar-state" | "comment-toggle")) { return false; }
     enqueue(message.clone()); true
 }
 
