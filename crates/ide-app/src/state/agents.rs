@@ -86,6 +86,10 @@ impl AgentRecords {
                 legacy
             }
         };
+        // Studio/Docs own their current provider and resume metadata. These
+        // DB rows only anchor durable chat artifacts; loading them here would
+        // make dispatch prefer stale metadata over the assistant's record.
+        records.retain(|agent| !agent.hidden_doc_assistant);
         for agent in &mut records {
             if agent.model == AgentModel::CodexDefault {
                 agent.model = AgentModel::default_for(AgentKind::Codex);

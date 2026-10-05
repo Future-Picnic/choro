@@ -12,6 +12,59 @@ Bootstrap and `state` carry host-authored `sections` (metadata plus authoritativ
 
 Session-scoped messages: `select-section`, `move-screen {screen_id, section_id, before_screen_id, position?, revision, fingerprint}` (revision/fingerprint captured at drag start), `reorder-sections`, and `context-action` (whitelisted actions for exactly one screen or section). Rust validates bounds and shapes before queueing. `move-result` is correlated by request ID and carries authoritative screens, sections and positions; uncorrelated or older results are ignored. A dropped screen stays at its drop position, non-draggable, until the result arrives. Escape cancels a drag back to its authoritative position. `dropTarget`/`sameSlot` mirror the Rust insertion rule. Fixture hooks (`begin`, `hover`, `finish`, `drop`, `escape`) exist only when `boot.test` is set.
 
+## Comments
+
+Comments is an independent tool over Design or Prototype. The native Comments
+button lives in the bottom stage toolbar; `C` toggles it from the canvas, editor or authored
+prototype, except while typing in a field. It preserves the underlying mode,
+live iframe and camera. Grid temporarily displays the canvas and returns to Grid
+when the tool closes. There is one Comments control, with no duplicate web or
+top-header button. The cursor becomes a comment bubble over the design.
+Click a screen to place a pin and compose beside it. A saved pin opens the same
+canvas popover for reading, Resolve and Send to agent. The docked right sidebar
+is an index of every open note on active screens, without composers or actions.
+Selecting a row centers its pin and opens that popover; in Prototype it opens
+the note's screen first. The canvas reserves the list's width; popovers flip
+and clamp to the available stage, avoiding the sidebar. Collapse the list to
+free canvas space while retaining the open popover and unsent draft. Clicking
+a pin does not move the camera or expand a collapsed list.
+Closing the tool unmounts its comment layer. Standalone screens defer evaluating
+the separate React overlay bundle until first activation. There are no
+replies, cloud services, new npm dependencies, or background comment polling.
+Screen dragging, resizing, editor opening, and design context menus are disabled
+while commenting. Closing Comments restores the previous Canvas/Grid/Focus
+view. Typed drafts must be posted or cancelled, and pending requests must finish,
+before leaving.
+
+Next to Resolve, Send to agent submits the persisted note to the current design
+assistant using the existing provider and queue. Its frozen target is the pinned
+screen, independent of canvas selection or a running turn. The note stays open
+for manual resolution; errors keep it retryable, and accepted submissions are
+disabled while the current comment layer remains mounted.
+
+Pins use fractions of screen dimensions and retain their position through
+layout changes, resizing, and zooming. The host atomically saves
+`choro_designs/<design-id>/comments.json`, separately from design revisions,
+undo history, preview keys, and exports. Reads and writes run off the UI thread;
+revision conflicts return current comments and preserve the draft. Corrupt or
+future-version files are preserved. Resolved notes remain saved and disappear
+from open comments. Archived screens retain their notes but have no visible pins.
+
+The offscreen WebKit fixture covers posting, resolving, sidebar collapse, failed-save draft
+recovery, request correlation, mode isolation, preview reuse, pin positioning,
+multiple-screen navigation, long lists, draft restoration, and popover geometry:
+`python3 crates/ide-app/assets/studio/canvas.test.py --protocol`.
+Add `--comments` for a showcase capture of a selected note.
+Add `--width=560 --height=720` for a compact capture or `--light` for a light theme.
+Fixture screenshots contain synthetic screens and notes. They do not control the
+live app or establish production frame pacing.
+`python3 crates/ide-app/assets/studio/editor.test.py --comments` and
+`--comments --prototype-mobile` cover screen-local pins, shortcut exclusions,
+handoff failures, retry, Resolve, cross-screen index selection and preservation of the live screen. The player
+fixture also covers scrolling under the comment surface. Agent handoffs are
+mocked and never start real provider turns. `inline.test.py` verifies the same
+live editor remains mounted when toggling the tool on the canvas.
+
 ## Rendering and isolation
 
 The separate `StudioCanvas` webview intent uses validated, session-scoped messages and a read-only image protocol with opaque, host-issued keys. Its CSP blocks network connections, frames, forms, and external navigation. Canvas cannot send editor-save messages.

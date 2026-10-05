@@ -60,6 +60,9 @@ impl CenterArea {
                 .into_any_element();
         };
 
+        if agent.runtime == AgentRuntimeKind::Chat {
+            self.agent_chats.update(cx, |chats, cx| chats.ensure_saved_artifacts(&agent, cx));
+        }
         let detail_tab = *self
             .agent_detail_tabs
             .entry(agent.id)

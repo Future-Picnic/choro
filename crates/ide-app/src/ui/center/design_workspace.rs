@@ -469,6 +469,7 @@ impl CenterArea {
                     )
                     .child(
                         crate::ui::design::header::actions()
+                            .child(self.studio_trash_menu(project, cx))
                             .child(
                                 style::ghost_button_compact("design-hub-systems", "Design systems")
                                     .icon(IconName::Palette)

@@ -33,20 +33,51 @@ pub fn load_persisted_file_ledger(agent_id: Uuid) -> Option<ChangedFilesSummary>
     load_file_ledger_from_store(&store, agent_id).ok()
 }
 
-/// Load the durable projection and its receipt identities independently of
-/// chat paging. Older builds may have saved a projection missing earlier paths;
-/// recover those paths from confirmed receipts without observing Git dirtiness.
+/// Load the durable projection independently of chat paging. Old projections
+/// get one recovery pass, persisted back to the DB; current projections are
+/// authoritative, including an empty ledger after a revert.
 pub(crate) fn load_file_ledger_from_store(
     store: &LocalStore,
     agent_id: Uuid,
 ) -> anyhow::Result<ChangedFilesSummary> {
+    // Receipt and projection reads use separate queries. Reject a capture
+    // straddling a write instead of marking newer receipts as already applied
+    // to an older projection.
+    for _ in 0..3 {
+        let ledger = store.load_chat_file_ledger(agent_id)?;
+        let receipts = store.load_timeline_events_by_kind(agent_id, "changed_files")?;
+        if ledger == store.load_chat_file_ledger(agent_id)? {
+            return load_file_ledger_projection(store, agent_id, ledger, receipts);
+        }
+    }
+    anyhow::bail!("Saved files are still changing. Retry after the agent finishes its current edit.")
+}
+
+fn load_file_ledger_projection(
+    store: &LocalStore,
+    agent_id: Uuid,
+    ledger: Option<ide_core::local_store::StoredChatFileLedger>,
+    receipts: Vec<StoredTimelineEvent>,
+) -> anyhow::Result<ChangedFilesSummary> {
+    // Fresh Studio/doc assistants can be viewed before an agent row exists.
+    // With no projection or receipts there is nothing to recover or persist.
+    if ledger.is_none() && receipts.is_empty() {
+        return Ok(ChangedFilesSummary::default());
+    }
+    let needs_recovery = ledger.as_ref().is_none_or(|ledger| ledger.projection_version == 0);
     let mut history = ChangedFilesSummary::default();
-    for event in store.load_timeline_events_by_kind(agent_id, "changed_files")? {
-        if let Some(AgentChatTimelineItem::ChangedFiles(receipt)) = timeline_item_from_store_event(&event) {
+    let mut identities = std::collections::BTreeSet::new();
+    for event in receipts {
+        let Some(AgentChatTimelineItem::ChangedFiles(receipt)) = timeline_item_from_store_event(&event) else {
+            anyhow::bail!("Saved file receipt {} is unreadable", event.id);
+        };
+        if let Some(identity) = receipt.receipt_identity() { identities.insert(identity); }
+        if needs_recovery {
             history.merge_turn(&receipt);
         }
     }
-    let Some(ledger) = store.load_chat_file_ledger(agent_id)? else {
+    let Some(ledger) = ledger else {
+        store.replace_chat_file_ledger(agent_id, history.ledger_revision, &file_ledger_entries(agent_id, &history))?;
         return Ok(history);
     };
     let mut summary = ChangedFilesSummary::default();
@@ -65,6 +96,10 @@ pub(crate) fn load_file_ledger_from_store(
         }
     }
     summary.remove_provider_private_artifacts();
+    if !needs_recovery {
+        summary.applied_receipts = identities;
+        return Ok(summary);
+    }
     for mut file in history.files {
         if let Some(saved) = summary.files.iter_mut().find(|saved| saved.path == file.path) {
             // An older truncated projection can also have lost the first
@@ -86,15 +121,32 @@ pub(crate) fn load_file_ledger_from_store(
     }
     summary.applied_receipts = history.applied_receipts;
     summary.ledger_revision = summary.ledger_revision.max(history.ledger_revision);
+    summary.files.sort_by(|a, b| a.path.cmp(&b.path));
+    summary.observed_files.sort_by(|a, b| a.path.cmp(&b.path));
+    store.replace_chat_file_ledger(agent_id, summary.ledger_revision, &file_ledger_entries(agent_id, &summary))?;
     Ok(summary)
 }
 
 pub(crate) fn load_latest_plan_from_store(store: &LocalStore, agent_id: Uuid) -> anyhow::Result<Option<ProposedPlan>> {
-    Ok(store.load_latest_timeline_event(agent_id, "proposed_plan")?
-        .as_ref().and_then(timeline_item_from_store_event).and_then(|item| match item {
-            AgentChatTimelineItem::ProposedPlan(plan) => Some(plan),
-            _ => None,
-        }))
+    let Some(event) = store.load_latest_timeline_event(agent_id, "proposed_plan")? else { return Ok(None) };
+    match timeline_item_from_store_event(&event) {
+        Some(AgentChatTimelineItem::ProposedPlan(plan)) => Ok(Some(plan)),
+        _ => anyhow::bail!("Saved plan {} is unreadable", event.id),
+    }
+}
+
+fn file_ledger_entries(agent_id: Uuid, ledger: &ChangedFilesSummary) -> Vec<ide_core::local_store::StoredChatFileLedgerEntry> {
+    let updated_at = unix_now();
+    ledger.files.iter().map(|file| (file, false))
+        .chain(ledger.observed_files.iter().map(|file| (file, true)))
+        .map(|(file, observed)| ide_core::local_store::StoredChatFileLedgerEntry {
+            agent_id, path: file.path.clone(), observed,
+            additions: file.additions, deletions: file.deletions,
+            counts_unavailable: file.counts_unavailable,
+            segments_json: serde_json::to_string(&file.prior_segments.iter().map(FileChangeStat::metadata).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into()),
+            baseline_hash: file.baseline_hash.clone(), result_hash: file.result_hash.clone(),
+            baseline_content: file.baseline_content.clone(), result_content: file.result_content.clone(), updated_at,
+        }).collect()
 }
 
 pub(super) fn persist_changed_files_turn(
@@ -109,36 +161,7 @@ pub(super) fn persist_changed_files_turn(
         return;
     };
     let revision = ledger.ledger_revision;
-    let updated_at = unix_now();
-    let entries = ledger
-        .files
-        .iter()
-        .map(|file| (file, false))
-        .chain(ledger.observed_files.iter().map(|file| (file, true)))
-        .map(
-            |(file, observed)| ide_core::local_store::StoredChatFileLedgerEntry {
-                agent_id,
-                path: file.path.clone(),
-                observed,
-                additions: file.additions,
-                deletions: file.deletions,
-                counts_unavailable: file.counts_unavailable,
-                segments_json: serde_json::to_string(
-                    &file
-                        .prior_segments
-                        .iter()
-                        .map(FileChangeStat::metadata)
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_else(|_| "[]".into()),
-                baseline_hash: file.baseline_hash.clone(),
-                result_hash: file.result_hash.clone(),
-                baseline_content: file.baseline_content.clone(),
-                result_content: file.result_content.clone(),
-                updated_at,
-            },
-        )
-        .collect::<Vec<_>>();
+    let entries = file_ledger_entries(agent_id, &ledger);
     cx.spawn(async move |_, cx| {
         cx.background_executor()
             .spawn(async move {
@@ -978,6 +1001,55 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn fresh_assistant_loads_empty_artifacts_without_creating_a_file_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let project = ide_core::Project::from_path(dir.path().join("project"));
+        // Studio's assistant record exists before its first provider turn has
+        // registered an agent row. Merely viewing it must remain a read.
+        let assistant = ide_core::DocAssistantRecord::new(project.id, PathBuf::from("design.choro"));
+        let id = assistant.chat_agent_id;
+        assert!(store.load_agents().unwrap().is_empty());
+        assert_eq!(load_file_ledger_from_store(&store, id).unwrap(), ChangedFilesSummary::default());
+        assert!(load_latest_plan_from_store(&store, id).unwrap().is_none());
+        assert!(store.load_chat_file_ledger(id).unwrap().is_none());
+        assert!(store.load_agents().unwrap().is_empty());
+    }
+
+    #[test]
+    fn studio_legacy_receipts_recover_after_registering_the_conversation_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let project = ide_core::Project::from_path(dir.path().join("project"));
+        let mut config = ide_core::AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        let mut agent = AgentRecord::new(project.id, project.path.clone(), "Studio Agent", "",
+            ide_core::AgentKind::Codex, AgentModel::CodexDefault, AgentEffort::Medium,
+            ide_core::agents::AgentAccessMode::FullAccess);
+        agent.hidden_doc_assistant = true;
+        agent.runtime = ide_core::AgentRuntimeKind::Chat;
+        let receipt = ChangedFilesSummary {
+            files: vec![FileChangeStat::new("src/design.rs", 5, 2)],
+            turn_id: Some("studio-legacy-parent-turn".into()),
+            attribution_version: 1,
+            ledger_revision: 1,
+            ..Default::default()
+        };
+        let (kind, key, json, at) = stored_timeline_event_parts(&AgentChatTimelineItem::ChangedFiles(receipt)).unwrap();
+        // Legacy Studio writes allowed timeline events without an agent row,
+        // but reconstructing their ledger fails its foreign-key constraint.
+        store.upsert_timeline_event(agent.id, kind, key, json, at).unwrap();
+        assert!(format!("{:#}", load_file_ledger_from_store(&store, agent.id).unwrap_err()).contains("FOREIGN KEY"));
+        store.ensure_assistant_chat_agent(&agent).unwrap();
+        let recovered = load_file_ledger_from_store(&store, agent.id).unwrap();
+        assert_eq!(recovered.files[0].path, PathBuf::from("src/design.rs"));
+        assert_eq!(recovered.files[0].additions, 5);
+        store.save_agents(&[]).unwrap();
+        assert_eq!(load_file_ledger_from_store(&store, agent.id).unwrap(), recovered);
+    }
+
+    #[test]
     fn reopening_recovers_old_files_and_keeps_latest_contents_and_receipt_identities() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
@@ -1021,7 +1093,10 @@ mod tests {
         drop(store);
         let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
         assert!(store.load_timeline_events_page(agent.id, None, 200).unwrap().events.iter().all(|event| event.kind == "message"));
-        let mut restored = load_file_ledger_from_store(&store, agent.id).unwrap();
+        let mut legacy_ledger = store.load_chat_file_ledger(agent.id).unwrap().unwrap();
+        legacy_ledger.projection_version = 0;
+        let mut restored = load_file_ledger_projection(&store, agent.id, Some(legacy_ledger),
+            store.load_timeline_events_by_kind(agent.id, "changed_files").unwrap()).unwrap();
         assert_eq!(restored.conversation_files().count(), 2);
         let recent_file = restored.files.iter().find(|file| file.path == PathBuf::from("recent.rs")).unwrap();
         assert_eq!(recent_file.baseline_hash.as_deref(), Some("first baseline\n"));
@@ -1033,6 +1108,15 @@ mod tests {
         restored.merge_turn(&recent);
         assert_eq!(restored, before_replay);
         assert_eq!(load_latest_plan_from_store(&store, agent.id).unwrap(), Some(plan));
+        assert_eq!(store.load_chat_file_ledger(agent.id).unwrap().unwrap().projection_version, 1);
+        assert_eq!(load_file_ledger_from_store(&store, agent.id).unwrap(), restored);
+        // A current ledger is the source of truth: historical receipts must
+        // never resurrect a deliberately removed path or a reverted file.
+        store.replace_chat_file_ledger(agent.id, 4, &[]).unwrap();
+        let empty = load_file_ledger_from_store(&store, agent.id).unwrap();
+        assert!(empty.files.is_empty());
+        assert_eq!(empty.ledger_revision, 4);
+        assert!(!empty.applied_receipts.is_empty());
     }
 
     #[test]

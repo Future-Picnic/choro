@@ -20,6 +20,54 @@ fn sample_project() -> Project {
 }
 
 #[test]
+fn studio_conversation_parent_and_artifacts_survive_ordinary_agent_snapshots() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+    let ordinary = sample_agent(&project);
+    store.save_agents(std::slice::from_ref(&ordinary)).unwrap();
+    let mut assistant = sample_agent(&project);
+    assistant.hidden_doc_assistant = true;
+    assistant.title = "Studio conversation".into();
+    store.ensure_assistant_chat_agent(&assistant).unwrap();
+    store.replace_chat_file_ledger(assistant.id, 7, &[]).unwrap();
+    store.upsert_timeline_event(assistant.id, "proposed_plan", Some("saved-plan".into()),
+        "{\"revision\":7}", 1).unwrap();
+    store.append_chat_message(assistant.id, "user", "Keep the complete Studio history", 1, None).unwrap();
+
+    // A queued ordinary snapshot lacks this independently owned conversation.
+    store.save_agents(std::slice::from_ref(&ordinary)).unwrap();
+    // Reopening must not reset metadata that a newer save already captured.
+    let mut stale = assistant.clone();
+    stale.title = "Stale title".into();
+    store.ensure_assistant_chat_agent(&stale).unwrap();
+    let second = AgentRecord { id: Uuid::new_v4(), ..assistant.clone() };
+    store.ensure_assistant_chat_agent(&second).unwrap();
+    store.replace_chat_file_ledger(second.id, 1, &[]).unwrap();
+    drop(store);
+
+    let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(reopened.load_agents().unwrap().iter().find(|a| a.id == assistant.id).unwrap().title,
+        "Studio conversation");
+    assert_eq!(reopened.load_chat_file_ledger(assistant.id).unwrap().unwrap().revision, 7);
+    assert_eq!(reopened.load_chat_file_ledger(second.id).unwrap().unwrap().revision, 1);
+    assert_eq!(reopened.load_chat_messages(assistant.id).unwrap()[0].text,
+        "Keep the complete Studio history");
+    assert!(reopened.load_latest_timeline_event(assistant.id, "proposed_plan").unwrap().is_some());
+    assert!(reopened.load_agents().unwrap().iter().any(|a| a.id == ordinary.id));
+
+    // Project removal must still cascade assistants; opening a stale record
+    // must never resurrect a removed project.
+    config.projects.clear();
+    reopened.save_workspace_config(&config).unwrap();
+    assert!(reopened.ensure_assistant_chat_agent(&assistant).unwrap_err().to_string().contains("project no longer exists"));
+    assert!(reopened.load_chat_file_ledger(assistant.id).unwrap().is_none());
+}
+
+#[test]
 fn stale_agents_from_removed_projects_do_not_block_new_chats() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
@@ -154,6 +202,7 @@ fn chat_file_ledger_round_trips_exact_and_observed_entries() {
     expected.sort_by(|left, right| left.path.cmp(&right.path));
     let ledger = store.load_chat_file_ledger(agent_id).unwrap().unwrap();
     assert_eq!(ledger.revision, 1);
+    assert_eq!(ledger.projection_version, 1);
     assert_eq!(ledger.entries, expected);
 }
 
@@ -463,6 +512,46 @@ fn migrates_v29_to_chat_file_ledger_schema() {
             Ok::<_, anyhow::Error>(())
         })
         .unwrap();
+}
+
+#[test]
+fn migrating_v39_preserves_legacy_file_projections_until_they_are_recovered() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    {
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let mut config = AppConfig::default();
+        config.projects = vec![project];
+        store.save_workspace_config(&config).unwrap();
+        store.save_agents(std::slice::from_ref(&agent)).unwrap();
+        store.replace_chat_file_ledger(agent.id, 7, &[]).unwrap();
+        store.rt.block_on(async {
+            let conn = store.connect().await?;
+            // Simulate the metadata of an existing pre-versioned projection.
+            conn.execute("UPDATE chat_file_ledgers SET projection_version = 0 WHERE agent_id = ?1", [agent.id.to_string()]).await?;
+            conn.execute("DELETE FROM schema_migrations WHERE version > 39", ()).await?;
+            Ok::<_, anyhow::Error>(())
+        }).unwrap();
+    }
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let legacy = store.load_chat_file_ledger(agent.id).unwrap().unwrap();
+    assert_eq!(legacy.revision, 7);
+    assert_eq!(legacy.projection_version, 0);
+    assert!(legacy.entries.is_empty());
+    let archive = dir.path().join("legacy-export.zip");
+    store.export_workspace(&archive).unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let imported = LocalStore::open(destination.path().to_path_buf()).unwrap();
+    imported.import_workspace_replace(&archive).unwrap();
+    assert_eq!(imported.load_chat_file_ledger(agent.id).unwrap().unwrap(), legacy);
+    store.replace_chat_file_ledger(agent.id, 7, &[]).unwrap();
+    drop(store);
+    let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let saved = reopened.load_chat_file_ledger(agent.id).unwrap().unwrap();
+    assert_eq!(saved.projection_version, 1);
+    assert_eq!(saved.revision, 7);
+    assert!(saved.entries.is_empty());
 }
 
 #[test]

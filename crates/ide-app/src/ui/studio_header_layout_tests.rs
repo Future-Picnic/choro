@@ -12,7 +12,7 @@ impl Render for StudioHeaders {
                     .child(header_icon_button("back", IconName::ArrowLeft, cx))
                     .child(design::header::title_col(cx).child(design::header::title(
                         "Common Ground — Coworking Operations with a very long project name", cx))))
-                .child(design::header::actions().ml_auto().debug_selector(|| "project-actions".into())
+                .child(design_workspace_actions().ml_auto().debug_selector(|| "project-actions".into())
                     .child(stage_bar_choices(cx).debug_selector(|| "project-track".into())
                         .child(stage_bar_choice("design", "Design", true, "Design", cx))
                         .child(stage_bar_choice("prototype", "Prototype", false, "Prototype", cx)))
@@ -30,12 +30,13 @@ impl Render for StudioHeaders {
                     .child(stage_header_status("Unsaved", design::amber(cx), cx))
                     .child(context_panel_action_button("inspector", IconName::PanelRight, "Inspector", cx))))
             .child(div().flex_1())
-            .child(stage_bar(cx)
+            .child(stage_bar(cx).h_auto().min_h(px(44.)).flex_wrap().debug_selector(|| "bottom-bar".into())
                 .child(stage_bar_choices(cx).debug_selector(|| "view-track".into())
                     .child(stage_bar_choice("canvas", "Canvas", true, "Canvas", cx))
                     .child(stage_bar_choice("grid", "Grid", false, "Grid", cx))
                     .child(stage_bar_choice("focus", "Focus", false, "Focus", cx)))
-                .child(stage_bar_readout("100%", cx).debug_selector(|| "zoom".into())))
+                .child(stage_bar_readout("100%", cx).debug_selector(|| "zoom".into()))
+                .child(ghost_button_compact("comments", "Comments · C").debug_selector(|| "comments-tool".into())))
     }
 }
 
@@ -54,7 +55,7 @@ fn studio_header_groups_keep_intrinsic_width_and_never_overlap(cx: &mut gpui::Te
         let track = cx.debug_bounds("project-track").unwrap();
         let compare = cx.debug_bounds("compare").unwrap();
         assert!(track.size.width > px(140.), "choice group collapsed: {track:?}");
-        assert!(track.right() <= compare.left(), "choices overlap Compare at {width}");
+        assert!(track.right() <= compare.left() || track.bottom() <= compare.top(), "choices overlap Compare at {width}");
         assert!(actions.right() <= project.right() && actions.bottom() <= project.bottom(), "project actions clipped at {width}");
         let header = cx.debug_bounds("screen-header").unwrap();
         let context = cx.debug_bounds("screen-context").unwrap();
@@ -65,6 +66,11 @@ fn studio_header_groups_keep_intrinsic_width_and_never_overlap(cx: &mut gpui::Te
         let views = cx.debug_bounds("view-track").unwrap();
         let zoom = cx.debug_bounds("zoom").unwrap();
         assert!(views.size.width > px(170.) && views.right() <= zoom.left(), "view track overlaps zoom at {width}");
+        let comments = cx.debug_bounds("comments-tool").unwrap();
+        let bottom = cx.debug_bounds("bottom-bar").unwrap();
+        assert!(comments.right() <= bottom.right() && comments.bottom() <= bottom.bottom(), "Comments clipped at {width}");
+        assert!(zoom.right() <= comments.left() || zoom.bottom() <= comments.top(), "Comments overlaps zoom at {width}");
+        assert!(comments.top() >= header.bottom(), "Comments must be in the bottom toolbar");
     }
 }
 

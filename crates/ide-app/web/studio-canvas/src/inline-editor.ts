@@ -74,6 +74,10 @@ export function createInlineEditor(
     get screen(){return descriptor?.screen_id;},
     get session(){return descriptor?.editor_session;},
     get area(){return area;},
+    commentMode(enabled:boolean){
+      if(frame){frame.style.pointerEvents=enabled?'none':'';if(enabled){frame.blur();document.body.tabIndex=-1;document.body.focus();}}
+      if(descriptor)reply({session:descriptor.editor_session,type:'comment-mode',enabled});
+    },
     focus,
     activate(x:number,y:number){
       if(descriptor&&Number.isFinite(x)&&Number.isFinite(y)){activation={x,y};activate();}

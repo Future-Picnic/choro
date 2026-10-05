@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 39;
+const STORE_SCHEMA_VERSION: u32 = 40;
 const EXPORT_FORMAT_VERSION: u32 = 9;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -76,6 +76,9 @@ pub struct StoredChatFileLedgerEntry {
 pub struct StoredChatFileLedger {
     pub agent_id: Uuid,
     pub revision: u64,
+    /// Zero identifies projections saved before durable artifact recovery.
+    #[serde(default)]
+    pub projection_version: u64,
     pub updated_at: u64,
     pub entries: Vec<StoredChatFileLedgerEntry>,
 }

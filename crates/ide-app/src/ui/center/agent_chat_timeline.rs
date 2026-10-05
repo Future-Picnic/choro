@@ -253,6 +253,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         self.rendered_chat_agents.insert(agent.id);
+        self.agent_chats.update(cx, |chats, cx| chats.ensure_saved_artifacts(agent, cx));
         let _slow_operation = crate::ui::performance::UiOperationTimer::start("agent_chat.render");
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
@@ -503,6 +504,26 @@ impl CenterArea {
             .size_full()
             .min_w(px(0.))
             .bg(crate::ui::design::base(cx))
+            .when(self.agent_chats.read(cx).saved_artifacts_loading(agent.id), |layout| {
+                layout.child(div().flex_none().mx_2().my_2()
+                    .text_size(crate::ui::design::text_ui())
+                    .text_color(crate::ui::design::t3(cx))
+                    .child("Loading saved Files and Plan…"))
+            })
+            .when_some(self.agent_chats.read(cx).saved_artifacts_error(agent.id).map(str::to_owned), |layout, error| {
+                layout.child(v_flex().flex_none().mx_2().my_2().gap_2()
+                    .text_size(crate::ui::design::text_ui())
+                    .text_color(crate::ui::design::rose(cx))
+                    .child(error)
+                    .child(crate::ui::style::dialog_neutral_button(
+                        SharedString::from(format!("retry-saved-artifacts-{}", agent.id)), "Retry", cx,
+                    ).on_click(cx.listener({
+                        let agent = agent.clone();
+                        move |this, _, _, cx| {
+                            this.agent_chats.update(cx, |chats, cx| chats.retry_saved_artifacts(&agent, cx));
+                        }
+                    }))))
+            })
             .when_some(
                 self.agent_start_errors.get(&agent.id).cloned().filter(|_| agent.studio_context.is_some()),
                 |layout, error| layout.child(

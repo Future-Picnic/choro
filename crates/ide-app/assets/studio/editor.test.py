@@ -9,13 +9,19 @@ checks = r'''
  Object.defineProperty(window,"__testPhase",{set(value){window.ipc.postMessage(JSON.stringify({type:"phase",phase:value}));}});window.__testPhase="start";
  window.testErrors=[];window.addEventListener("error",e=>{window.testErrors.push(e.message);e.stopImmediatePropagation();},true);
  // MessageChannel avoids background timer throttling in the offscreen test window.
- const wait=async(predicate,label)=>{window.__testPhase=label;const start=performance.now();while(performance.now()-start<8000){if(predicate())return;await new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});}throw Error('Timed out: '+label+'; '+JSON.stringify(window.testErrors));};
+ const wait=async(predicate,label)=>{window.__testPhase=label;const start=performance.now();while(performance.now()-start<(window.__CHORO_STUDIO__.testComments?1500:8000)){if(predicate())return;await new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});}throw Error('Timed out: '+label+'; '+JSON.stringify(window.testErrors));};
  const assert=(condition,label)=>{if(!condition)throw Error(label);};
  window.addEventListener('unhandledrejection',e=>window.ipc.postMessage(JSON.stringify({type:'render-error',error:String(e.reason)})));
  const originalSend=window.ipc.postMessage;
  const messages=[];let autoAck=true;
  window.ipc.postMessage=raw=>{const value=JSON.parse(raw);messages.push(value);if(value.type==='save'&&autoAck)queueMicrotask(()=>window.choroStudioReply({session:'test',id:value.id,revision:value.revision+1,fingerprint:'next'}));else if(value.type!=='save')originalSend(raw);};
  const frame=()=>document.getElementById('screen');
+ if(window.__CHORO_STUDIO__.testComments){
+   let loaded=false;window.addEventListener('message',event=>{if(event.source===frame().contentWindow&&event.data?.type==='prototype-result')loaded=true;});
+   await wait(()=>window.__CHORO_STUDIO__.prototype?loaded:Vvveb.Builder.iframe===frame()&&frame().contentDocument?.querySelector('h1'),'comment fixture document');
+   await wait(()=>frame().getBoundingClientRect().width>0,'comment fixture screen');
+   await window.runScreenCommentsTest({wait,assert,messages,originalSend});return;
+ }
  const close=(left,right)=>Math.abs(left-right)<1;
  const assertFrameBounds=(width,height,label)=>{
    const wrapper=document.getElementById('frame-wrap').getBoundingClientRect(), screen=frame().getBoundingClientRect();
@@ -561,6 +567,11 @@ if boot['testSemanticText']:
       <input value="Search invoices" />
     </section></body>''')
 boot['mode'] = 'preview' if '--preview-start' in sys.argv or boot['prototype'] else 'edit'
+boot['testComments'] = '--comments' in sys.argv
+boot['testCommentsShowcase'] = '--comments-showcase' in sys.argv
+boot['authored_height'] = 2400 if boot.get('testMobilePrototype') else boot['height']
+if boot['testComments']:
+    boot['document']['js'] += '\nwindow.addEventListener("message",event=>{if(event.data==="test-comment-key")document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"c",bubbles:true}));});'
 boot['document']['css'] += '/* </style><script>parent.__editEscaped=true</script> */'
 encoded=json.dumps(boot).replace('<','\\u003c').replace('>','\\u003e')
 def bundle(boot):
@@ -572,7 +583,12 @@ def bundle(boot):
     storage=seed if boot.get('prototype',False) else stub if '--camera-state' in sys.argv else ''
     vendor=storage+'window.__CHORO_STUDIO__='+encoded+';\n'+'\n'.join((root/'vendor'/name).read_text() for name in names)
     css='\n'.join((root/'vendor'/name).read_text() for name in ['upstream/editor.css','fonts.css','upstream/coloris.min.css'])
-    return (root/'editor.html').read_text().replace('/*STUDIO_VENDOR_CSS*/',css).replace('<!--STUDIO_RIGHT_PANEL-->',(root/'vendor/upstream/right-panel.html').read_text()).replace('<!--STUDIO_INLINE_TOOLBAR-->',(root/'vendor/upstream/inline-toolbar.html').read_text()).replace('/*STUDIO_VENDOR*/',vendor.replace('</script','<\\/script')).replace('/*STUDIO_EDITOR*/',(root/'editor.js').read_text())
+    dist=root.parents[1]/'web/studio-canvas/dist'
+    html=(root/'editor.html').read_text().replace('/*STUDIO_VENDOR_CSS*/',css).replace('<!--STUDIO_RIGHT_PANEL-->',(root/'vendor/upstream/right-panel.html').read_text()).replace('<!--STUDIO_INLINE_TOOLBAR-->',(root/'vendor/upstream/inline-toolbar.html').read_text()).replace('/*STUDIO_VENDOR*/',vendor.replace('</script','<\\/script')).replace('/*STUDIO_EDITOR*/',(root/'editor.js').read_text()).replace('/*STUDIO_COMMENTS_CSS*/',(dist/'comments-overlay.css').read_text()).replace('/*STUDIO_COMMENTS*/',(dist/'comments-overlay.js').read_text())
+    if boot.get('testComments'):
+        head,tail=html.rsplit('</body>',1)
+        html=head+'<script>'+(root/'screen-comments.test.js').read_text()+'</script></body>'+tail
+    return html
 specimen_file=next((arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--specimen-fixture=')),None)
 if specimen_file:
     boot.update(json.loads(pathlib.Path(specimen_file).read_text()))
@@ -585,7 +601,7 @@ assert result.returncode==0, result.stderr
 response=json.loads(result.stdout.strip())
 assert response.get('error') is None, (response,result.stderr)
 assert output.stat().st_size>1000
-print('PASS: the prototype player opens every screen fitted and stores no camera' if boot['prototype'] else 'PASS: keyboard undo/redo through 12 saved edits, active typing, property changes, redo branching and input/Preview exclusions' if boot['testHistoryShortcuts'] else 'PASS: semantic text double-click, focus, inline toolbar, typed saves, undo/redo and intact neighbors' if boot['testSemanticText'] else 'PASS: system specimen isolation and disabled screen editing' if boot['system_specimen'] else 'PASS: local image selection, clean asset paths, and revisioned native upload/assignment' if boot['testAssets'] else 'PASS: upstream controls, focus preservation, custom-token undo, partial-text formatting and inline undo/redo' if boot['testProperties'] else 'PASS: text, tokens, autosave, undo/redo, correlated Implement flush, failed-save recovery, Edit isolation, Preview sandbox and clean source round trip')
+print('PASS: Comments shortcut, typing exclusion, posting, handoff error/retry, Resolve and live screen preservation'+(' with prototype scrolling' if boot['prototype'] else '') if boot['testComments'] else 'PASS: the prototype player opens every screen fitted and stores no camera' if boot['prototype'] else 'PASS: keyboard undo/redo through 12 saved edits, active typing, property changes, redo branching and input/Preview exclusions' if boot['testHistoryShortcuts'] else 'PASS: semantic text double-click, focus, inline toolbar, typed saves, undo/redo and intact neighbors' if boot['testSemanticText'] else 'PASS: system specimen isolation and disabled screen editing' if boot['system_specimen'] else 'PASS: local image selection, clean asset paths, and revisioned native upload/assignment' if boot['testAssets'] else 'PASS: upstream controls, focus preservation, custom-token undo, partial-text formatting and inline undo/redo' if boot['testProperties'] else 'PASS: text, tokens, autosave, undo/redo, correlated Implement flush, failed-save recovery, Edit isolation, Preview sandbox and clean source round trip')
 print('Screenshot:',output)
 
 if '--export' in sys.argv:

@@ -23,6 +23,7 @@ window.addEventListener('message',async e=>{
   if(e.data.action==='edit'){title.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));title.textContent='Changed';title.dispatchEvent(new Event('input',{bubbles:true}));}
   if(['retry','undo','redo','inspector'].includes(e.data.action))window.choroStudioReply({session:window.__CHORO_STUDIO__.session,type:'toolbar-command',command:e.data.action});
   if(e.data.action==='pan')doc.body.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaX:60,deltaY:80,clientX:100,clientY:100}));
+  if(e.data.action==='comment-key')doc.body.dispatchEvent(new KeyboardEvent('keydown',{key:'c',bubbles:true}));
   if(e.data.action==='zoom')doc.body.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,deltaY:-40,clientX:100,clientY:100}));
   const r=frame.getBoundingClientRect();
   parent.postMessage({type:'fixture-result',request:e.data.request,text:title.textContent,editing:!!Vvveb.WysiwygEditor.isActive,width:doc.documentElement.clientWidth,height:doc.documentElement.clientHeight,sameDocument:doc===window.fixtureDocument,frame:{x:r.x,y:r.y,width:r.width,height:r.height},error:document.getElementById('error').textContent},'*');
@@ -70,6 +71,7 @@ addEventListener('message',e=>{if(e.source!==document.querySelector('.inline-edi
 window.ipc.postMessage=raw=>{
  const m=JSON.parse(raw);messages.push(m);
  if(m.type==='open')queueMicrotask(()=>openEditor(m.screen_id));
+ if(m.type==='comments-read')queueMicrotask(()=>window.choroCanvasReply({session:'fixture',type:'comments-result',request_id:m.request_id,comments:{schema_version:1,revision:0,pins:[]}}));
  if(m.type==='failed'||m.type==='editor-failed'||m.type==='render-error')nativeSend(JSON.stringify({type:'render-error',error:m.error}));
  if(m.type==='inline-editor'&&m.message.type==='save'){
   const v=m.message;
@@ -92,6 +94,18 @@ async function run(){try{
  assert(detail.width===800&&detail.height===600,'Authored viewport is independent of canvas zoom');
  assert(close(detail.frame.x,70)&&close(detail.frame.y,120)&&close(detail.frame.width,520),'Live editor exactly covers the artboard');
  const overlay=document.querySelector('.inline-editor');
+ await command('comment-key');
+ await wait(()=>messages.some(m=>m.type==='inline-editor'&&m.message.type==='comment-toggle'),'C inside the authored screen');
+ const beforeComments=f.getViewport();
+ window.choroCanvasReply({session:'fixture',type:'comment-mode',enabled:true});
+ await wait(()=>document.querySelector('.comments-panel'),'comment overlay');
+ assert(document.querySelector('.inline-editor')===overlay&&overlay.style.pointerEvents==='none','Comments keeps the live editor beneath a click-through layer');
+ assert((await command('inspect')).sameDocument,'Comments preserves the authored document');
+ window.choroCanvasReply({session:'fixture',type:'editor',screen_id:'a',editor_session:'editor-a',document:window.__FIXTURE_EDITORS__['/fixture/editor-a']});
+ assert(document.querySelector('.inline-editor')===overlay,'Authoritative editor refresh keeps its iframe while commenting');
+ window.choroCanvasReply({session:'fixture',type:'comment-mode',enabled:false});
+ await wait(()=>!document.querySelector('.comments-panel'),'leave comment overlay');
+ assert(document.querySelector('.inline-editor')===overlay&&overlay.style.pointerEvents===''&&f.getViewport().zoom===beforeComments.zoom,'Leaving Comments restores editing and keeps camera zoom');
  const toolbarState=()=>messages.filter(m=>m.type==='inline-editor'&&m.message.type==='toolbar-state').at(-1)?.message;
  await wait(()=>!!toolbarState(),'native toolbar state');
  assert(getComputedStyle(overlay.contentDocument.getElementById('studio-toolbar')).display==='none','Native screen header replaces the whole web toolbar');

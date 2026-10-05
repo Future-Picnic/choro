@@ -11,10 +11,17 @@ visible='--visible' in sys.argv
 protocol='--protocol' in sys.argv
 unsectioned='--unsectioned' in sys.argv
 dense='--dense' in sys.argv
-swift=(root/'thumbnail.swift').read_text().replace('deadline:.now()+10','deadline:.now()+30')
+comments_only='--comments' in sys.argv
+capture_width=int(next((arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--width=')),1400))
+capture_height=int(next((arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--height=')),900))
+light='--light' in sys.argv
+swift=(root/'thumbnail.swift').read_text().replace('deadline:.now()+10','deadline:.now()+60')
 swift=swift.replace('window.addEventListener(\\"error\\",e=>window.ipc.postMessage(JSON.stringify({type:\\"render-error\\",error:e.message})));', '')
 swift=swift.replace('baseURL:nil','baseURL:URL(string:"https://canvas.invalid/")').replace('url == "about:blank"','url == "https://canvas.invalid/" || url == "about:blank"')
 swift=swift.replace('if type == "render-error"', 'if type == "canvas-metrics" { fputs(raw+"\\n",stderr);return }\n        if type == "render-error"')
+# Drive fixture waits from the native run loop. An occluded WKWebView can suspend
+# MessageChannel and animation tasks even while the thumbnail deadline runs.
+swift=swift.replace('let config = WKWebViewConfiguration()', 'Timer.scheduledTimer(withTimeInterval:0.02,repeats:true) { [weak self] _ in self?.view?.evaluateJavaScript("window.choroFixtureTick?.()",completionHandler:nil) }\n        let config = WKWebViewConfiguration()')
 if visible:
  swift=swift.replace('x:-10000,y:-10000','x:120,y:120').replace('window.orderBack(nil)','window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)').replace('setActivationPolicy(.prohibited)','setActivationPolicy(.regular)')
 if protocol:
@@ -61,7 +68,7 @@ def board(screens,sections,stacked):
   else: x+=w+SPACING
  return boxes,positions
 results=[]
-for count in ([200] if dense else [10,50,100,200]):
+for count in ([10] if comments_only else [200] if dense else [10,50,100,200]):
  screens=[dict(id=str(i),name=f'Screen {i+1}',width=1440 if i%3 else 390,height=960,archived=False,content_key=str(i)) for i in range(count)]
  grouped=count-2 if dense else int(count*.6)
  members_per_section=2 if dense else 4
@@ -74,14 +81,17 @@ for count in ([200] if dense else [10,50,100,200]):
  if unsectioned:
   boxes=[]
   positions={str(i):dict(x=(i%4)*1560,y=(i//4)*1080) for i in range(count)}
- boot=dict(session='fixture',revision=1,fingerprint='fixture',screens=screens,sections=boxes,arrangement='stacked' if count!=100 else 'side_by_side',layout=dict(schema_version=1,overview_mode='canvas',viewport=dict(x=30,y=50,zoom=.35),positions=positions,selected_screen_id=None),theme={},test=True,dense=dense,visible_benchmark=visible,protocol_mode=protocol)
+ boot=dict(session='fixture',revision=1,fingerprint='fixture',screens=screens,sections=boxes,arrangement='stacked' if count!=100 else 'side_by_side',layout=dict(schema_version=1,overview_mode='canvas',viewport=dict(x=30,y=50,zoom=.35),positions=positions,selected_screen_id=None),theme={},test=True,dense=dense,visible_benchmark=visible,protocol_mode=protocol,comments_showcase=comments_only)
+ if light: boot['theme']=dict(bg='#f7f5fa',stage='#efedf2',surface='#ffffff',raised='#eeebf3',text='#242128',muted='#5b5561',line2='#d0cad6',ink='#484277',scheme='light')
  harness=r'''
  const nativeSend=window.ipc.postMessage;
  const messages=[];const started=performance.now();let readyAt=0,observerDeferrals=0;
  nativeSend(JSON.stringify({type:'canvas-metrics',event:'harness'}));
  window.addEventListener('error',e=>{e.stopImmediatePropagation();if(e.message==='ResizeObserver loop completed with undelivered notifications.'){observerDeferrals++;return;}nativeSend(JSON.stringify({type:'render-error',error:JSON.stringify({message:e.message,stack:e.error?.stack,file:e.filename,line:e.lineno,column:e.colno})}));},true);
  window.addEventListener('unhandledrejection',e=>nativeSend(JSON.stringify({type:'render-error',error:String(e.reason)})));
- const tick=()=>new Promise(r=>{const c=new MessageChannel();c.port1.onmessage=()=>{c.port1.close();c.port2.close();r();};c.port2.postMessage(0);});
+ const ticks=[];
+ window.choroFixtureTick=()=>{for(const resolve of ticks.splice(0))resolve();};
+ const tick=()=>new Promise(r=>ticks.push(r));
  const sleep=async ms=>{const start=performance.now();while(performance.now()-start<ms)await tick();};
  window.ipc.postMessage=raw=>{const m=JSON.parse(raw);messages.push(m);
   if(m.type==='failed'){nativeSend(JSON.stringify({type:'render-error',error:m.error}));return;}
@@ -94,7 +104,7 @@ for count in ([200] if dense else [10,50,100,200]):
  };
  async function run(){try{
   await sleep(400);
-  if(window.__CHORO_CANVAS__.screens.length===10){
+  if(window.__CHORO_CANVAS__.screens.length===10&&!window.__CHORO_CANVAS__.comments_showcase){
    const f=window.choroCanvasTest.flow;
    const assert=(value,label)=>{if(!value)throw Error(label);};
    const warm=f.getNode('1').data.preview;
@@ -212,10 +222,13 @@ for count in ([200] if dense else [10,50,100,200]):
    await f.setViewport({x:30,y:50,zoom:.35});await sleep(120);
    }
   }
+  const progress=event=>nativeSend(JSON.stringify({type:'canvas-metrics',event,elapsed_ms:performance.now()-started}));
+  if(window.__CHORO_CANVAS__.screens.length===10){progress('comments-start');await window.runCanvasCommentsTest({sleep,messages,progress});progress('comments-done');}
   if(document.querySelector('iframe'))throw Error('Live HTML mounted in overview');
   const flow=window.choroCanvasTest.flow,frames=[];let prev=0;
   const frame=fn=>window.__CHORO_CANVAS__.visible_benchmark?requestAnimationFrame(fn):tick().then(()=>fn(performance.now()));
   await new Promise(resolve=>{let n=0;function step(t){if(prev)frames.push(t-prev);prev=t;
+   if(n%30===0)nativeSend(JSON.stringify({type:'canvas-metrics',event:'gesture-progress',step:n}));
    flow.setViewport({x:30-(n%90)*(window.__CHORO_CANVAS__.dense?4:12),y:50-(n%60)*4,zoom:.35+(n%60)*.001});
    if(++n<90)frame(step);else resolve();}frame(step);});
   await sleep(250);const stats=window.choroCanvasStats();frames.sort((a,b)=>a-b);
@@ -225,18 +238,30 @@ for count in ([200] if dense else [10,50,100,200]):
   nativeSend(JSON.stringify({type:'canvas-metrics',count:window.__CHORO_CANVAS__.screens.length,ready_ms:readyAt,observer_deferrals:observerDeferrals,protocol_mode:window.__CHORO_CANVAS__.protocol_mode,display_scale:devicePixelRatio,visible_benchmark:window.__CHORO_CANVAS__.visible_benchmark,p95_frame_ms:window.__CHORO_CANVAS__.visible_benchmark?frames[Math.floor(frames.length*.95)]:null,max_frame_ms:window.__CHORO_CANVAS__.visible_benchmark?Math.max(...frames):null,...stats}));
   // Save a useful overview after recording the gesture/resource metrics.
   window.choroCanvasReply({session:'fixture',type:'command',command:'fit-all'});await sleep(300);
+  if(window.__CHORO_CANVAS__.comments_showcase){
+   window.choroCanvasReply({session:'fixture',type:'comment-mode',enabled:true});await sleep(60);
+   const read=messages.filter(m=>m.type==='comments-read').at(-1);
+   const n=flow.getNode('1');await flow.setViewport({x:60-n.position.x*.65,y:100-n.position.y*.65,zoom:.65});await sleep(80);
+   window.choroCanvasReply({session:'fixture',type:'comments-result',request_id:read.request_id,comments:{schema_version:1,revision:1,pins:[
+    {id:'showcase',screen_id:'1',x:.25,y:.45,body:'Make this action easier to find.',resolved:false,created_at:1791140000},
+    {id:'showcase-secondary',screen_id:'1',x:.65,y:.7,body:'Give the secondary action a clearer label.',resolved:false,created_at:1791140040},
+    {id:'showcase-navigation',screen_id:'8',x:.5,y:.4,body:'Check the navigation on this screen.',resolved:false,created_at:1791140080}
+   ]}});await sleep(60);
+   document.querySelector('.comment-pin').click();await sleep(60);
+  }
   nativeSend(JSON.stringify({type:'thumbnail-ready'}));
  }catch(e){nativeSend(JSON.stringify({type:'render-error',error:String(e)}));}}
  '''
- html='<!doctype html><html><head><style>'+css+'</style></head><body><div id="root"></div><script>window.__CHORO_CANVAS__='+json.dumps(boot)+';'+harness+'</script><script>'+js+'</script></body></html>'
- job=dict(html=html,output=str(work/f'canvas-{count}.png'),width=1400,height=900,output_width=1400,output_height=900)
- run=subprocess.run([str(work/'probe')],input=json.dumps(job)+'\n',text=True,capture_output=True,timeout=40)
+ comment_tests=(root/'canvas-comments.test.js').read_text()
+ html='<!doctype html><html><head><style>'+css+'</style></head><body><div id="root"></div><script>window.__CHORO_CANVAS__='+json.dumps(boot)+';'+comment_tests+harness+'</script><script>'+js+'</script></body></html>'
+ job=dict(html=html,output=str(work/f'canvas-{count}.png'),width=capture_width,height=capture_height,output_width=capture_width,output_height=capture_height)
+ run=subprocess.run([str(work/'probe')],input=json.dumps(job)+'\n',text=True,capture_output=True,timeout=70)
  responses=[json.loads(line) for line in run.stdout.splitlines()];assert responses and all(r.get('error') is None for r in responses),(responses,run.stderr)
  metrics=next(json.loads(line) for line in run.stderr.splitlines() if line.startswith('{"type":"canvas-metrics","count"'))
  metrics['machine']=subprocess.check_output(['sysctl','-n','hw.model'],text=True).strip()
  metrics['os']=platform.platform()
  results.append(metrics);print(json.dumps(metrics),flush=True)
- png=(work/f'canvas-{count}.png').read_bytes();assert int.from_bytes(png[16:20],'big')==1400 and int.from_bytes(png[20:24],'big')==900
+ png=(work/f'canvas-{count}.png').read_bytes();assert int.from_bytes(png[16:20],'big')==capture_width and int.from_bytes(png[20:24],'big')==capture_height
  assert metrics['observer_deferrals']<30,metrics
  if not unsectioned: assert metrics['sections_mounted']>=1,metrics
  assert metrics['ready_ms']<1000,metrics

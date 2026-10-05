@@ -95,7 +95,7 @@ impl CenterArea {
     pub(super) fn render_studio_screens_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(studio) = self.studio.as_ref() else { return div().into_any_element(); };
         let manifest = studio.design.manifest.clone();
-        let dirty = studio.dirty || studio.saving || studio.grouping.is_some();
+        let dirty = studio.dirty || studio.saving || studio.grouping.is_some() || studio.comment_mode;
         let redo = studio.redo;
         let selected_screen = studio.editing_screen().or(studio.canvas.layout.selected_screen_id);
         let selected_section = studio.canvas.layout.selected_section_id;

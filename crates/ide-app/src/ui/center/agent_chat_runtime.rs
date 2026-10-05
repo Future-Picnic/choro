@@ -2296,7 +2296,8 @@ impl CenterArea {
                 .is_some_and(agent_has_backend_resume_id)
                 || self.agent_chats.read(cx).session(agent_id).is_some_and(|session|
                     session.chat_session_id.is_some() || session.cli_session_id.is_some());
-            if should_defer_agent_chat_submission_for_resume(
+            let assistant_history_loading = fallback_agent.as_ref().is_some_and(|agent| agent.hidden_doc_assistant);
+            if assistant_history_loading || should_defer_agent_chat_submission_for_resume(
                 has_resume_id,
                 has_backend,
                 true,

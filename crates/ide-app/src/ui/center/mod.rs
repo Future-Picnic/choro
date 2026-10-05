@@ -57,6 +57,7 @@ mod markdown;
 mod new_agent;
 mod new_agent_recents;
 mod design_workspace;
+mod studio_design_actions;
 mod pocketcomet;
 pub mod preset_bar;
 mod preview_control_ipc;
@@ -1931,6 +1932,9 @@ pub struct CenterArea {
     studio_code_imports: HashMap<ProjectId, studio_code_import::StudioCodeImportUi>,
     studio_system_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioSystemRecord>>,
     studio_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioDesignManifest>>,
+    studio_trash_catalog: HashMap<ProjectId, Vec<ide_core::studio::StudioDesignManifest>>,
+    studio_design_mutations: HashSet<ProjectId>,
+    studio_catalog_generation: HashMap<ProjectId, u64>,
     studio_catalog_refreshing: HashSet<ProjectId>,
     studio_catalog_refreshed: HashMap<ProjectId, std::time::Instant>,
     studio_catalog_implementors: HashMap<ProjectId, HashMap<Uuid, Vec<Uuid>>>,

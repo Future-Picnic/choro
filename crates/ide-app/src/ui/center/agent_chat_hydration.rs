@@ -149,6 +149,8 @@ impl CenterArea {
                 .sessions
                 .iter()
                 .filter(|(id, _)| only.is_none_or(|only| only == **id))
+                .filter(|(id, _)| !sessions.saved_artifacts_loading(**id)
+                    && sessions.saved_artifacts_error(**id).is_none())
                 .map(|(agent_id, session)| {
                     let files = session
                         .changed_files
@@ -193,7 +195,20 @@ impl CenterArea {
     }
 
     pub(super) fn load_chat_session_hydration(agent: &AgentRecord) -> Option<AgentChatHydration> {
-        if let Ok(store) = ide_core::local_store::LocalStore::open_default() {
+        let store = ide_core::local_store::LocalStore::open_default().ok();
+        Self::load_chat_session_hydration_with_store(agent, store.as_ref())
+    }
+
+    fn load_chat_session_hydration_with_store(
+        agent: &AgentRecord,
+        store: Option<&ide_core::local_store::LocalStore>,
+    ) -> Option<AgentChatHydration> {
+        if let Some(store) = store {
+            if agent.hidden_doc_assistant {
+                if let Err(error) = store.ensure_assistant_chat_agent(agent) {
+                    eprintln!("failed to register assistant history: {error:#}");
+                }
+            }
             if let Ok(page) =
                 store.load_timeline_events_page(agent.id, None, AGENT_CHAT_HISTORY_PAGE_SIZE)
             {
@@ -996,7 +1011,16 @@ impl CenterArea {
     }
 
     pub(super) fn load_older_agent_chat_history(&mut self, agent_id: Uuid, cx: &mut Context<Self>) {
-        let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() else {
+        // Studio/Docs own their conversation records separately from the
+        // ordinary agent list. Resolve their current metadata for paging too.
+        let assistant = self.doc_assistants.read(cx).records().iter()
+            .find(|record| record.chat_agent_id == agent_id).cloned();
+        let agent = assistant.and_then(|record| {
+            self.workspace.read(cx).projects.iter()
+                .find(|project| project.id == record.project_id)
+                .map(|project| Self::doc_assistant_agent_record(&record, project.path.clone()))
+        }).or_else(|| self.agents.read(cx).agent(agent_id).cloned());
+        let Some(agent) = agent else {
             return;
         };
         let Some(history) = self.agent_chat_history.get_mut(&agent_id) else {
@@ -1219,6 +1243,48 @@ fn prefer_newest_hydrated_file_ledger(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn studio_history_without_provider_resume_id_restores_every_saved_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ide_core::local_store::LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let project = ide_core::Project::from_path(dir.path().join("project"));
+        let mut config = ide_core::AppConfig::default();
+        config.projects.push(project.clone());
+        store.save_workspace_config(&config).unwrap();
+        let record = DocAssistantRecord::new(project.id,
+            ide_core::studio::conversation_path(Uuid::new_v4(), Uuid::new_v4()));
+        let agent = CenterArea::doc_assistant_agent_record(&record, project.path);
+        assert!(agent.chat_session_id.is_none() && agent.cli_session_id.is_none());
+        let count = AGENT_CHAT_HISTORY_PAGE_SIZE * 2 + 17;
+        for index in 0..count {
+            let payload = serde_json::json!({
+                "type": "message", "role": "user", "text": format!("Studio turn {index}"),
+                "created_at": index + 1,
+            });
+            store.upsert_timeline_event(agent.id, "message", Some(format!("turn-{index}")),
+                payload.to_string(), (index + 1) as u64).unwrap();
+        }
+        drop(store);
+        let store = ide_core::local_store::LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let hydration = CenterArea::load_chat_session_hydration_with_store(&agent, Some(&store)).unwrap();
+        assert!(hydration.has_more);
+        let mut cursor = hydration.oldest_sequence;
+        let mut timeline = hydration.timeline;
+        loop {
+            let page = store.load_timeline_events_page(agent.id, cursor, AGENT_CHAT_HISTORY_PAGE_SIZE).unwrap();
+            let mut older = page.events.iter().filter_map(timeline_item_from_store_event).collect::<Vec<_>>();
+            older.append(&mut timeline);
+            timeline = older;
+            cursor = page.oldest_sequence;
+            if !page.has_more { break; }
+        }
+        let texts = timeline.iter().map(|item| match item {
+            AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => text.clone(),
+            _ => panic!("expected the saved user turn"),
+        }).collect::<Vec<_>>();
+        assert_eq!(texts, (0..count).map(|i| format!("Studio turn {i}")).collect::<Vec<_>>());
+    }
 
     #[test]
     fn prepending_history_shifts_only_the_target_agents_indices() {

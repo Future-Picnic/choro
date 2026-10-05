@@ -11,5 +11,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/main.tsx", "src/model.ts"]
+  "include": ["src/main.tsx", "src/model.ts", "src/screen-comments.tsx"]
 }

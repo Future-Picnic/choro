@@ -1,5 +1,6 @@
 //! Image overview with one session-scoped, isolated inline editor.
 use super::*;
+use anyhow::Context as _;
 use ide_core::studio::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -21,6 +22,12 @@ pub(super) struct PreviewRequest {
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Action {
     Ready,
+    CommentToggle,
+    CommentsRead,
+    CommentDraft { dirty: bool },
+    CommentEdit { revision: u64, operation: StudioCommentOperation },
+    CommentSend { id: Uuid, revision: u64 },
+    CommentFocus { id: Uuid },
     Failed {
         error: String,
     },
@@ -97,6 +104,8 @@ pub(super) fn enqueue(raw: &str, session: Uuid) -> bool {
         return false;
     }
     let valid = match &message.action {
+        Action::CommentEdit { operation, .. } => operation.validate().is_ok(),
+        Action::CommentSend { id, .. } | Action::CommentFocus { id } => !id.is_nil(),
         Action::Camera { viewport } => viewport.validate().is_ok(),
         Action::Position { position, .. } => position.validate().is_ok(),
         Action::Resize {
@@ -228,6 +237,9 @@ pub(super) struct Runtime {
     pub session: Uuid,
     pub html: Option<String>,
     pub ready: bool,
+    pub comment_draft: bool,
+    pub comments_busy: bool,
+    comment_request: Option<Uuid>,
     pub focus_screen: Option<Uuid>,
     pub pending_fit_section: Option<Uuid>,
     fit_all_requested: bool,
@@ -263,6 +275,9 @@ impl Runtime {
                 session: Uuid::new_v4(),
                 html: None,
                 ready: false,
+                comment_draft: false,
+                comments_busy: false,
+                comment_request: None,
                 focus_screen: None,
                 pending_fit_section: None,
                 fit_all_requested: false,
@@ -290,6 +305,19 @@ impl Runtime {
         )
     }
     pub fn invalidate_metadata(&mut self) { self.fingerprint.clear(); }
+    pub fn comment_surface_pending(&self) -> bool { self.comment_draft || self.comments_busy }
+    fn begin_comment_request(&mut self) -> Uuid {
+        let owner = Uuid::new_v4();
+        self.comment_request = Some(owner);
+        self.comments_busy = true;
+        owner
+    }
+    fn finish_comment_request(&mut self, owner: Uuid) -> bool {
+        if self.comment_request != Some(owner) { return false; }
+        self.comment_request = None;
+        self.comments_busy = false;
+        true
+    }
     pub fn navigation_pending(&self) -> bool { self.flush_request.is_some() }
     pub fn cancel_navigation(&mut self) { self.flush_request=None;self.navigation_ready=false; }
     pub fn active(&self) -> bool {
@@ -307,6 +335,9 @@ impl Runtime {
         self.session = Uuid::new_v4();
         self.html = None;
         self.ready = false;
+        self.comment_draft = false;
+        self.comments_busy = false;
+        self.comment_request = None;
         self.focus_screen = None;
         self.desired.clear();
         self.delivered.clear();
@@ -457,12 +488,12 @@ impl CenterArea {
         if s.canvas.html.is_none() {
             let theme = super::studio_editor::web_theme(cx);
             s.canvas.html = Some(document(
-                json!({"session":s.canvas.session,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"sections":sections,"arrangement":arrangement,"layout":layout,"theme":theme,"fit_initial":s.canvas.initial}),
+                json!({"session":s.canvas.session,"revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"sections":sections,"arrangement":arrangement,"layout":layout,"theme":theme,"fit_initial":s.canvas.initial,"comment_mode":s.comment_mode}),
             ));
             s.canvas.initial = false;
             s.canvas.opened = std::time::Instant::now();
         } else if s.canvas.ready {
-            let value = json!({"session":s.canvas.session,"type":"state","revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"sections":sections,"arrangement":arrangement,"layout":layout,"theme":theme});
+            let value = json!({"session":s.canvas.session,"type":"state","revision":s.design.manifest.revision,"fingerprint":s.design.fingerprint,"screens":screens,"sections":sections,"arrangement":arrangement,"layout":layout,"theme":theme,"comment_mode":s.comment_mode});
             self.web_host.read(cx).canvas_reply(&value);
         }
         s.canvas.fingerprint = s.design.fingerprint.clone();
@@ -504,6 +535,7 @@ impl CenterArea {
         mode: StudioOverviewMode,
         cx: &mut Context<Self>,
     ) {
+        if self.studio.as_ref().is_some_and(|s| s.comment_mode) { return; }
         // Canvas and Focus share one live editor. A view change must not flush,
         // reconstruct the iframe, or clear its selection and undo stack.
         let spatial_switch = self.studio_canvas_active() && mode != StudioOverviewMode::Grid;
@@ -561,6 +593,11 @@ impl CenterArea {
         action: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(s) = self.studio.as_mut().filter(|s| s.comment_mode && (s.canvas.comment_draft || s.canvas.comments_busy)) {
+            s.error = Some("Post or cancel your comment before leaving Comments. Wait for any pending save to finish.".into());
+            cx.notify();
+            return true;
+        }
         if !self.studio_canvas_active() {
             return false;
         }
@@ -614,6 +651,12 @@ impl CenterArea {
             if s.canvas.seen.len() > 512 {
                 s.canvas.seen.pop_front();
             }
+            if s.comment_mode && matches!(&m.action,
+                Action::Open { .. } | Action::Resize { .. } | Action::Position { .. }
+                | Action::MoveScreen { .. } | Action::ReorderSections { .. }
+                | Action::ContextAction { .. }) {
+                continue;
+            }
             let known = |id: &Uuid| {
                 s.design
                     .manifest
@@ -622,6 +665,20 @@ impl CenterArea {
                     .any(|screen| screen.id == *id && !screen.archived)
             };
             match m.action {
+                Action::CommentToggle => self.studio_comment_mode(cx),
+                Action::CommentFocus { .. } => {}, // Cross-screen navigation belongs to the standalone player.
+                Action::CommentSend { id, revision } => {
+                    if s.comment_mode { self.studio_send_comment(m.request_id, id, revision, false, cx); }
+                }
+                Action::CommentDraft { dirty } => {
+                    if s.comment_mode { s.canvas.comment_draft = dirty; }
+                }
+                Action::CommentsRead => {
+                    if s.comment_mode { self.studio_comments_request(m.request_id, None, false, cx); }
+                }
+                Action::CommentEdit { revision, operation } => {
+                    if s.comment_mode { self.studio_comments_request(m.request_id, Some((revision, operation)), false, cx); }
+                }
                 Action::Ready => {
                     s.canvas.ready = true;
                     s.canvas.fingerprint.clear();
@@ -633,6 +690,7 @@ impl CenterArea {
                 }
                 Action::Failed { error } => {
                     s.error = Some(format!("Canvas unavailable; showing Grid. {error}"));
+                    s.comment_mode = false;
                     s.canvas.failed = true;
                     s.canvas.leave();
                 }
@@ -696,7 +754,7 @@ impl CenterArea {
                     }
                 }
                 Action::Open { screen_id } => {
-                    if known(&screen_id) {
+                    if !s.comment_mode && known(&screen_id) {
                         s.canvas.focus_screen = None;
                         self.studio_inline_select(Some(screen_id), cx);
                     }
@@ -942,9 +1000,281 @@ impl CenterArea {
     }
 }
 
+impl CenterArea {
+    /// Disk access and the project lock stay off the render thread. Comment
+    /// results do not invalidate design metadata or demand new preview images.
+    fn studio_comments_request(&mut self, request: Uuid, edit: Option<(u64, StudioCommentOperation)>, editor: bool, cx: &mut Context<Self>) {
+        let Some(s) = self.studio.as_mut() else { return; };
+        if s.canvas.comments_busy {
+            self.studio_comment_result(request, editor, None, Some("A comment request is still running. Try again.".into()), false, cx);
+            return;
+        }
+        let owner = s.canvas.begin_comment_request();
+        let store = s.store.clone();
+        let design_id = s.design.manifest.id;
+        let session = if editor { s.editor_session } else { s.canvas.session };
+        cx.spawn(async move |this, cx| {
+            let (comments, error) = cx.background_executor().spawn(async move {
+                match edit {
+                    Some((revision, operation)) => match store.apply_comment(design_id, revision, &operation) {
+                        Ok(comments) => (Some(comments), None),
+                        Err(error) => (store.comments(design_id).ok(), Some(error.to_string())),
+                    },
+                    None => match store.comments(design_id) {
+                        Ok(comments) => (Some(comments), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    },
+                }
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(s) = this.studio.as_mut().filter(|s| s.design.manifest.id == design_id) else { return; };
+                if !s.canvas.finish_comment_request(owner) { return; }
+                // The operation owns the busy state even if its screen was rebuilt.
+                // Release it before dropping the reply for the old web session.
+                cx.notify();
+                if (if editor { s.editor_session } else { s.canvas.session }) != session { return; }
+                this.studio_comment_result(request, editor, comments, error, false, cx);
+                cx.notify();
+            });
+        }).detach();
+    }
+    fn studio_comment_result(&self, request: Uuid, editor: bool, comments: Option<StudioComments>, error: Option<String>, sent: bool, cx: &App) {
+        let Some(s) = self.studio.as_ref() else { return; };
+        let session = if editor { s.editor_session } else { s.canvas.session };
+        let reply = json!({"session":session,"type":"comments-result","request_id":request,"comments":comments,"error":error,"sent":sent});
+        if editor { self.web_host.read(cx).studio_reply(&reply); }
+        else { self.web_host.read(cx).canvas_reply(&reply); }
+    }
+    pub(super) fn studio_comment_action(&mut self, message: Message, editor: bool, cx: &mut Context<Self>) {
+        let Some(s) = self.studio.as_mut() else { return; };
+        if !s.comment_mode || message.request_id.is_nil() || message.session != if editor { s.editor_session } else { s.canvas.session } { return; }
+        if s.canvas.seen.contains(&message.request_id) { return; }
+        s.canvas.seen.push_back(message.request_id);
+        if s.canvas.seen.len() > 512 { s.canvas.seen.pop_front(); }
+        match message.action {
+            Action::CommentsRead => self.studio_comments_request(message.request_id, None, editor, cx),
+            Action::CommentDraft { dirty } => s.canvas.comment_draft = dirty,
+            Action::CommentEdit { revision, operation } if operation.validate().is_ok() => self.studio_comments_request(message.request_id, Some((revision, operation)), editor, cx),
+            Action::CommentSend { id, revision } if !id.is_nil() => self.studio_send_comment(message.request_id, id, revision, editor, cx),
+            Action::CommentFocus { id } if !id.is_nil() => self.studio_focus_comment(message.request_id, id, editor, cx),
+            _ => {}
+        }
+    }
+    fn studio_focus_comment(&mut self, request: Uuid, id: Uuid, editor: bool, cx: &mut Context<Self>) {
+        let Some(s) = self.studio.as_mut() else { return; };
+        if !editor { return; }
+        if s.canvas.comments_busy || s.canvas.comment_draft || s.dirty || s.saving {
+            self.studio_comment_result(request, true, None, Some("Post or cancel your draft and wait for pending saves before opening another screen.".into()), false, cx);
+            return;
+        }
+        let owner = s.canvas.begin_comment_request();
+        let session = s.editor_session;
+        let design = s.design.manifest.clone();
+        let design_id = design.id;
+        let store = s.store.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                let comments = store.comments(design.id)?;
+                let pin = comments.pins.into_iter().find(|pin| pin.id == id && !pin.resolved)
+                    .context("This comment is no longer open")?;
+                anyhow::ensure!(design.screens.iter().any(|screen| screen.id == pin.screen_id && !screen.archived), "This screen is no longer available");
+                Ok::<_, anyhow::Error>(pin)
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(s) = this.studio.as_mut().filter(|s| s.design.manifest.id == design_id) else { return; };
+                if !s.canvas.finish_comment_request(owner) { return; }
+                cx.notify();
+                if s.editor_session != session || !s.comment_mode { return; }
+                match result {
+                    Ok(pin) => {
+                        if s.dirty || s.saving || s.canvas.comment_draft {
+                            this.studio_comment_result(request, true, None, Some("Wait for the screen to finish saving before opening another comment.".into()), false, cx);
+                            return;
+                        }
+                        if !s.design.manifest.screens.iter().any(|screen| screen.id == pin.screen_id && !screen.archived) {
+                            this.studio_comment_result(request, true, None, Some("This screen is no longer available".into()), false, cx);
+                            return;
+                        }
+                        s.comment_selected = Some(pin.id);
+                        if s.prototype && s.screen != Some(pin.screen_id) {
+                            if let Some(previous) = s.screen { s.prototype_history.push(previous); }
+                        }
+                        if !s.prototype && s.screen.is_some() {
+                            s.screen = Some(pin.screen_id);
+                            s.viewing_size = None;
+                            this.rebuild_studio_editor(cx);
+                        } else {
+                            this.studio_select_screen(Some(pin.screen_id), cx);
+                        }
+                    }
+                    Err(error) => this.studio_comment_result(request, true, None, Some(format!("{error:#}")), false, cx),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+    fn studio_send_comment(&mut self, request: Uuid, id: Uuid, revision: u64, editor: bool, cx: &mut Context<Self>) {
+        let Some(s) = self.studio.as_mut() else { return; };
+        if s.canvas.comments_busy || s.dirty || s.saving {
+            self.studio_comment_result(request, editor, None, Some("Wait for the current save or comment request to finish before sending.".into()), false, cx); return;
+        }
+        let owner = s.canvas.begin_comment_request();
+        let store = s.store.clone(); let design_id = s.design.manifest.id;
+        let session = if editor { s.editor_session } else { s.canvas.session };
+        cx.spawn(async move |this, cx| {
+            // Read the persisted note, never client-supplied text or screen IDs.
+            let result = cx.background_executor().spawn(async move {
+                let comments = store.comments(design_id)?;
+                anyhow::ensure!(comments.revision == revision, "Comments changed. Reload comments before sending.");
+                let pin = comments.pins.iter().find(|pin| pin.id == id && !pin.resolved).cloned().ok_or_else(|| anyhow::anyhow!("This comment is no longer open."))?;
+                Ok::<_, anyhow::Error>((comments, pin))
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(s) = this.studio.as_mut().filter(|s| s.design.manifest.id == design_id) else { return; };
+                if !s.canvas.finish_comment_request(owner) { return; }
+                cx.notify();
+                if (if editor { s.editor_session } else { s.canvas.session }) != session || !s.comment_mode { return; }
+                let (comments, pin) = match result {
+                    Ok(value) => value,
+                    Err(error) => { this.studio_comment_result(request, editor, None, Some(error.to_string()), false, cx); return; }
+                };
+                let Some(screen) = s.design.manifest.screens.iter().find(|screen| screen.id == pin.screen_id && !screen.archived) else {
+                    this.studio_comment_result(request, editor, Some(comments), Some("This screen is no longer available.".into()), false, cx); return;
+                };
+                if s.dirty || s.saving {
+                    this.studio_comment_result(request, editor, Some(comments), Some("Wait for the screen to finish saving before sending.".into()), false, cx); return;
+                }
+                let screen_name = screen.name.clone();
+                let project = s.project; let root = s.store.project.clone(); let chat = s.relative_chat.clone(); let cache = s.store.cache.clone();
+                let record = this.doc_assistants.update(cx, |assistants, cx| assistants.ensure_record(project, chat, cx));
+                this.hydrate_doc_assistant_chat_session(&record, &root, cx);
+                let agent = Self::doc_assistant_agent_record(&record, root.clone());
+                let Some(context) = agent.studio_context.clone() else {
+                    this.studio_comment_result(request, editor, Some(comments), Some("Open a design assistant conversation before sending.".into()), false, cx); return;
+                };
+                let target = comment_agent_request(context, root, cache, &pin, screen_name.clone(), this.workspace.read(cx).studio.request_guidance());
+                let prompt = comment_agent_prompt(&pin, &screen_name);
+                let accepted = this.dispatch_agent_chat_submission_with_studio_request(agent.id, prompt, None, Vec::new(), AgentInteractionMode::Default, Some(agent), false, Some(target), cx);
+                if accepted {
+                    if let Some(s) = this.studio.as_mut() { s.tab = super::studio::StudioTab::Agent; s.sidebar_collapsed = false; }
+                }
+                let error = (!accepted).then(|| this.agent_start_errors.get(&record.chat_agent_id).cloned().unwrap_or_else(|| "Could not send to the design assistant. Check its provider setup and try again.".into()));
+                this.studio_comment_result(request, editor, Some(comments), error, accepted, cx);
+                cx.notify();
+            });
+        }).detach();
+    }
+}
+
+fn comment_agent_prompt(pin: &StudioCommentPin, screen: &str) -> String {
+    format!("Fix the feedback in this Studio comment on screen {screen:?} (screen ID {}, comment ID {}).\nPinned location: {:.1}% from the left, {:.1}% from the top.\n\n{}\n\nApply the fix to this screen using the existing design system. Leave the comment open for my review.", pin.screen_id, pin.id, pin.x * 100., pin.y * 100., pin.body)
+}
+
+fn comment_agent_request(context: StudioAgentContext, project: std::path::PathBuf, cache: std::path::PathBuf, pin: &StudioCommentPin, target_label: String, design_guidance: String) -> crate::state::agent_chat::StudioChatRequest {
+    crate::state::agent_chat::StudioChatRequest { context, project, cache, current_screen_id: Some(pin.screen_id), current_section_id: None, selected_element: None, design_guidance, target_label }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn comment_runtime() -> Runtime {
+        let root = std::env::temp_dir().join(format!("choro-comment-runtime-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        let store = StudioStore::new(root.join("project"), root.join("data")).unwrap();
+        let design = store.create("Comment request lifecycle").unwrap();
+        Runtime::new(&store, &design).0
+    }
+    #[test]
+    fn stale_comment_completion_releases_its_lock_without_unlocking_a_new_request() {
+        let mut runtime = comment_runtime();
+        let owner = runtime.begin_comment_request();
+        // A refreshed web surface has a new session, but the original operation
+        // still owns the workspace's busy state until its completion is handled.
+        runtime.session = Uuid::new_v4();
+        assert!(runtime.finish_comment_request(owner));
+        assert!(!runtime.comments_busy);
+        let stale = runtime.begin_comment_request();
+        runtime.leave();
+        let current = runtime.begin_comment_request();
+        assert!(!runtime.finish_comment_request(stale));
+        assert!(runtime.comments_busy);
+        assert!(runtime.finish_comment_request(current));
+        assert!(!runtime.comments_busy);
+    }
+    #[test]
+    fn comment_refresh_protection_lasts_until_posting_or_cancelling_and_requests_finish() {
+        let mut runtime = comment_runtime();
+        assert!(!runtime.comment_surface_pending());
+        runtime.comment_draft = true;
+        assert!(runtime.comment_surface_pending());
+        let post = runtime.begin_comment_request();
+        runtime.comment_draft = false;
+        assert!(runtime.comment_surface_pending(), "Clearing draft text must not allow refresh during its save");
+        assert!(runtime.finish_comment_request(post));
+        assert!(!runtime.comment_surface_pending(), "The next poll can apply the latest screen after posting");
+        runtime.comment_draft = true;
+        runtime.comment_draft = false;
+        assert!(!runtime.comment_surface_pending(), "Cancelling also allows the next refresh");
+    }
+    #[test]
+    fn comment_navigation_uses_only_a_saved_pin_in_the_current_session() {
+        let session = Uuid::new_v4();
+        let mut value = json!({"session":session,"request_id":Uuid::new_v4(),"type":"comment-focus","id":Uuid::new_v4()});
+        assert!(enqueue(&value.to_string(), session));
+        assert!(!enqueue(&value.to_string(), Uuid::new_v4()));
+        value["screen_id"] = json!(Uuid::new_v4());
+        assert!(!enqueue(&value.to_string(), session));
+        value.as_object_mut().unwrap().remove("screen_id");
+        value["body"] = json!("Forged note");
+        assert!(!enqueue(&value.to_string(), session));
+        value.as_object_mut().unwrap().remove("body");
+        value["id"] = json!(Uuid::nil());
+        assert!(!enqueue(&value.to_string(), session));
+    }
+    #[test]
+    fn comment_handoff_rejects_client_text_and_foreign_sessions() {
+        let session = Uuid::new_v4();
+        let mut value = json!({"session":session,"request_id":Uuid::new_v4(),"type":"comment-send","revision":1,"id":Uuid::new_v4()});
+        assert!(enqueue(&value.to_string(), session));
+        assert!(!enqueue(&value.to_string(), Uuid::new_v4()));
+        value["body"] = json!("Forged feedback");
+        assert!(!enqueue(&value.to_string(), session));
+        value.as_object_mut().unwrap().remove("body");
+        value["id"] = json!(Uuid::nil());
+        assert!(!enqueue(&value.to_string(), session));
+    }
+    #[test]
+    fn comment_handoff_activates_the_pinned_screen_without_an_element_target() {
+        let root = std::env::temp_dir().join(format!("choro-comment-handoff-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        let store = StudioStore::new(root.join("project"), root.join("data")).unwrap();
+        let design = store.create("Comment handoff").unwrap();
+        let pin = StudioCommentPin { id: Uuid::new_v4(), screen_id: design.manifest.screens[0].id, x: 0.25, y: 0.75, body: "Fix the action".into(), resolved: false, created_at: 1 };
+        let context = StudioAgentContext { target: StudioAgentTarget::Design, design_id: design.manifest.id, conversation_id: store.conversations(design.manifest.id).unwrap().selected };
+        let request = comment_agent_request(context, store.project.clone(), store.cache.clone(), &pin, "Pinned screen".into(), "Preserve the theme".into());
+        let agent = Uuid::new_v4();
+        request.activate(agent, &comment_agent_prompt(&pin, "Pinned screen")).unwrap();
+        let scope = store.scope(agent).unwrap();
+        assert_eq!(scope.current_screen_id, Some(pin.screen_id));
+        assert_eq!(scope.selected_element, None);
+        assert_eq!(scope.design_guidance, "Preserve the theme");
+        assert!(comment_agent_prompt(&pin, "Pinned screen").contains(&pin.body));
+    }
+    #[test]
+    fn comments_bridge_limits_text_and_coordinates_and_has_no_reply_operation() {
+        let session = Uuid::new_v4();
+        let screen = Uuid::new_v4();
+        let wrap = |operation: Value| json!({"session":session,"request_id":Uuid::new_v4(),"type":"comment-edit","revision":0,"operation":operation}).to_string();
+        let create = json!({"operation":"create","id":Uuid::new_v4(),"screen_id":screen,"x":0.25,"y":0.75,"body":"Move this button"});
+        assert!(enqueue(&wrap(create.clone()), session));
+        for (key, value) in [("x", json!(-0.1)), ("y", json!(1.1)), ("body", json!(" ")), ("body", json!("x".repeat(MAX_COMMENT_BODY + 1)))] {
+            let mut invalid = create.clone(); invalid[key] = value;
+            assert!(!enqueue(&wrap(invalid), session));
+        }
+        assert!(enqueue(&wrap(json!({"operation":"resolve","id":Uuid::new_v4()})), session));
+        assert!(!enqueue(&wrap(json!({"operation":"reply","id":Uuid::new_v4(),"body":"Extra"})), session));
+        assert!(!enqueue(&wrap(create), Uuid::new_v4()));
+    }
     #[test]
     fn bridge_rejects_forgery_editor_commands_and_unbounded_inputs() {
         let session = Uuid::new_v4();

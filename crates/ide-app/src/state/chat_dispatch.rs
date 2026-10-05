@@ -66,21 +66,14 @@ pub(crate) fn hydrate_with_artifacts(
             _ => (),
         }
     }
-    let restored = saved_files
-        .filter(|s| s.ledger_revision >= changed_files.ledger_revision)
-        .unwrap_or(changed_files);
-    if restored.ledger_revision >= session.changed_files.ledger_revision {
-        session.changed_files = restored;
-    }
-    // A plan is a conversation artifact, not a pending decision or a chat row.
-    // Loading an older page must not replace a newer plan held in memory.
-    if session.latest_plan.is_none() {
-        session.latest_plan = saved_plan
-            .or_else(|| timeline.iter().rev().find_map(|item| match item {
-                AgentChatTimelineItem::ProposedPlan(plan) => Some(plan.clone()),
-                _ => None,
-            }));
-    }
+    // Durable artifacts win over page projections. Page recovery is only for
+    // legacy conversations without a saved projection, never a newer version.
+    restore_saved_artifacts(session,
+        Some(saved_files.unwrap_or(changed_files)),
+        saved_plan.or_else(|| timeline.iter().rev().find_map(|item| match item {
+            AgentChatTimelineItem::ProposedPlan(plan) => Some(plan.clone()),
+            _ => None,
+        })));
     session.proposed_plan = None;
     session.timeline = timeline;
 }

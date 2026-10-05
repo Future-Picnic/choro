@@ -515,6 +515,12 @@ impl LocalStore {
                             &ledger.entries,
                         )
                         .await?;
+                        // Older archives need the same one-time artifact
+                        // recovery as an older local database.
+                        conn.execute(
+                            "UPDATE chat_file_ledgers SET projection_version = ?1 WHERE agent_id = ?2",
+                            (u64_to_i64(ledger.projection_version)?, ledger.agent_id.to_string()),
+                        ).await?;
                         if ledger.entries.is_empty() {
                             conn.execute(
                                 "UPDATE chat_file_ledgers SET updated_at = ?1 WHERE agent_id = ?2",
