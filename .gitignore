@@ -23,6 +23,12 @@ __pycache__/
 *.py[cod]
 *.tmp
 
+# Internal provider notes, design reviews, and scratch pages stay local.
+/GEMINI_PROVIDER.md
+/design-qa.md
+/lirantest34343.html
+/simplify-suggestions.md
+
 # Companion design sources and render intermediates stay local. Only the WebP
 # files embedded by app_assets.rs belong in version control.
 /crates/ide-app/assets/avatar/**
