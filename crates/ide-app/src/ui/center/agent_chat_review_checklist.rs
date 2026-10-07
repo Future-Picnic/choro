@@ -8,6 +8,18 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let key = checklist_key(agent_id, &checklist.id);
+        // Saved cards used to default to fully expanded. Start with a compact
+        // preview even for those records; showing all is a session-local choice.
+        let expansion_key = (agent_id, checklist.id.clone());
+        let expanded = self
+            .agent_chat_expanded_check_cards
+            .contains(&expansion_key);
+        let total = checklist.items.len();
+        let visible_count = if expanded {
+            total
+        } else {
+            total.min(CHAT_CARD_PREVIEW_LIMIT)
+        };
         let complete = checklist.is_complete();
         let accent = if complete {
             crate::ui::design::sage(cx)
@@ -53,41 +65,6 @@ impl CenterArea {
                             crate::ui::design::t3(cx)
                         })
                         .child(summary),
-                )
-                .when(
-                    checklist.status == ReviewChecklistStatus::Ready && !checklist.items.is_empty(),
-                    |head| {
-                        let checklist_id = checklist.id.clone();
-                        head.child(
-                            crate::ui::style::icon_button(
-                                ("review-checklist-disclosure", key),
-                                if checklist.expanded {
-                                    IconName::ChevronUp
-                                } else {
-                                    IconName::ChevronDown
-                                },
-                                cx,
-                            )
-                            .tooltip(if checklist.expanded {
-                                "Collapse checklist"
-                            } else {
-                                "Expand checklist"
-                            })
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.agent_chats.update(cx, |chats, cx| {
-                                        chats.toggle_review_checklist_expanded(
-                                            agent_id,
-                                            &checklist_id,
-                                            cx,
-                                        );
-                                    });
-                                    this.remeasure_agent_chat_list(agent_id);
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                    },
                 ),
         );
 
@@ -118,21 +95,19 @@ impl CenterArea {
                 .into_any_element();
         }
 
-        if checklist.status != ReviewChecklistStatus::Ready
-            || checklist.items.is_empty()
-            || !checklist.expanded
-        {
+        if checklist.status != ReviewChecklistStatus::Ready || checklist.items.is_empty() {
             return card.into_any_element();
         }
 
         let checklist_id = checklist.id.clone();
+        let preview_items = checklist.items.iter().take(visible_count);
         card = card.child(
             v_flex()
                 .w_full()
                 .px(crate::ui::design::chat_card_body_pad_x())
                 .py(crate::ui::design::chat_card_body_pad_y())
                 .gap_0p5()
-                .children(checklist.items.iter().enumerate().map(|(index, item)| {
+                .children(preview_items.enumerate().map(|(index, item)| {
                     let item_id = item.id.clone();
                     let checklist_id = checklist_id.clone();
                     let checked = item.checked;
@@ -213,7 +188,41 @@ impl CenterArea {
                         )
                 })),
         );
-        card.into_any_element()
+        card.when(total > CHAT_CARD_PREVIEW_LIMIT, |card| {
+            card.child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .px(crate::ui::design::chat_card_body_pad_x())
+                    .py(crate::ui::design::chat_card_head_pad_y())
+                    .border_t_1()
+                    .border_color(crate::ui::design::line(cx))
+                    .child(
+                        crate::ui::style::secondary_button_compact(
+                            ("review-checklist-toggle", key),
+                            if expanded {
+                                "Show less".to_string()
+                            } else {
+                                format!("Show all {total} checks")
+                            },
+                        )
+                        .icon(if expanded {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.agent_chat_expanded_check_cards.remove(&expansion_key) {
+                                this.agent_chat_expanded_check_cards
+                                    .insert(expansion_key.clone());
+                            }
+                            this.remeasure_agent_chat_list(agent_id);
+                            cx.notify();
+                        })),
+                    ),
+            )
+        })
+        .into_any_element()
     }
 }
 

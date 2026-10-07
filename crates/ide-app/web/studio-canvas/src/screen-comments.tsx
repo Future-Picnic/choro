@@ -9,7 +9,7 @@ import { COMMENT_EVENT, commentAnchor, type CommentPin } from "./comments-model"
 type Geometry = { screen_id: string; name: string; x: number; y: number; width: number; height: number; visibleWidth: number; visibleHeight: number; zoom: number; scrollX: number; scrollY: number };
 declare global {
   interface Window {
-    __CHORO_STUDIO__: { session: string; thumbnail?: boolean; inline?: boolean; system_specimen?: boolean; screens?: { id: string; name: string; width: number; height: number; archived?: boolean }[] };
+    __CHORO_STUDIO__: { session: string; screen_id: string; thumbnail?: boolean; inline?: boolean; system_specimen?: boolean; screens?: { id: string; name: string; width: number; height: number; archived?: boolean }[] };
     choroCommentGeometry: () => Geometry;
     choroCommentWheel: (event: WheelEvent) => void;
     choroCommentsEnabled?: boolean;
@@ -71,14 +71,14 @@ function ScreenLayer() {
   </>;
 }
 function ScreenComments() {
-  const [enabled, setEnabled] = useState(window.choroCommentsEnabled ?? false);
+  const [state, setState] = useState({ enabled: window.choroCommentsEnabled ?? false, screen: boot.screen_id });
   useEffect(() => {
-    const mode = (event: Event) => setEnabled((event as CustomEvent).detail.enabled);
+    const mode = (event: Event) => setState({ enabled: (event as CustomEvent).detail.enabled, screen: boot.screen_id });
     addEventListener("studio-comment-mode", mode);
-    setEnabled(window.choroCommentsEnabled ?? false);
+    setState({ enabled: window.choroCommentsEnabled ?? false, screen: boot.screen_id });
     return () => removeEventListener("studio-comment-mode", mode);
   }, []);
-  return enabled ? <ScreenLayer /> : null;
+  return state.enabled ? <ScreenLayer key={state.screen} /> : null;
 }
 if (boot && !boot.inline && !boot.thumbnail && !boot.system_specimen) {
   const root = document.createElement("div"); root.className = "screen-comments-root"; document.body.append(root);

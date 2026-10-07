@@ -127,6 +127,13 @@ pub fn document_for_surface(
     theme: Value,
     surface: EditorSurface,
 ) -> anyhow::Result<String> {
+    Ok(document_for_bootstrap(&bootstrap_for_surface(store, design, screen_id, session, thumbnail, preview_mode, theme, surface)?))
+}
+
+pub(super) fn bootstrap_for_surface(
+    store: &StudioStore, design: &StudioDesign, screen_id: Uuid, session: Uuid,
+    thumbnail: bool, preview_mode: bool, theme: Value, surface: EditorSurface,
+) -> anyhow::Result<Value> {
     use base64::Engine;
     let screen = design
         .manifest
@@ -187,10 +194,15 @@ pub fn document_for_surface(
     } else {
         (screen.width, screen.height)
     };
-    let bootstrap = json!({"native_toolbar":!thumbnail && !design.manifest.system_workspace && !matches!(surface,EditorSurface::Screen),"inline":matches!(surface,EditorSurface::Canvas),"prototype":matches!(surface,EditorSurface::Prototype),"system_specimen":design.manifest.system_workspace,"draft":draft,"session":session,"document":design.documents.get(&screen_id),"revision":design.manifest.revision,"fingerprint":design.fingerprint,
-        "screen_id":screen_id,"authored_height":screen.height,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":width,"height":height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme});
+    Ok(json!({"native_toolbar":!thumbnail && !design.manifest.system_workspace && !matches!(surface,EditorSurface::Screen),"inline":matches!(surface,EditorSurface::Canvas),"prototype":matches!(surface,EditorSurface::Prototype),"system_specimen":design.manifest.system_workspace,"draft":draft,"session":session,"document":design.documents.get(&screen_id),"revision":design.manifest.revision,"fingerprint":design.fingerprint,
+        "screen_id":screen_id,"authored_height":screen.height,"overrides":design.overrides.tokens,"tokens":design.tokens(),"tokens_css":design.tokens_css(),"screens":design.manifest.screens,"width":width,"height":height,"assets":assets,"thumbnail":thumbnail,"mode":if preview_mode && !thumbnail { "preview" } else { "edit" },"theme":theme}))
+}
+
+pub(super) fn document_for_bootstrap(bootstrap: &Value) -> String {
+    let thumbnail = bootstrap["thumbnail"] == true;
+    let comments = !thumbnail && bootstrap["system_specimen"] != true && bootstrap["inline"] != true;
     // Bootstrap is data, never executable HTML supplied by a design.
-    let bootstrap = serde_json::to_string(&bootstrap)?
+    let bootstrap = bootstrap.to_string()
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
         .replace('&', "\\u0026");
@@ -216,7 +228,7 @@ pub fn document_for_surface(
         include_str!("../../../assets/studio/vendor/upstream/coloris.min.css"),
     ]
     .join("\n");
-    Ok(include_str!("../../../assets/studio/editor.html")
+    include_str!("../../../assets/studio/editor.html")
         .replace("/*STUDIO_VENDOR_CSS*/", &css)
         .replace(
             "<!--STUDIO_RIGHT_PANEL-->",
@@ -234,8 +246,8 @@ pub fn document_for_surface(
             "/*STUDIO_EDITOR*/",
             include_str!("../../../assets/studio/editor.js"),
         )
-        .replace("/*STUDIO_COMMENTS_CSS*/", if !thumbnail && !design.manifest.system_workspace && !matches!(surface, EditorSurface::Canvas) { include_str!("../../../web/studio-canvas/dist/comments-overlay.css") } else { "" })
-        .replace("/*STUDIO_COMMENTS*/", if !thumbnail && !design.manifest.system_workspace && !matches!(surface, EditorSurface::Canvas) { include_str!("../../../web/studio-canvas/dist/comments-overlay.js") } else { "" }))
+        .replace("/*STUDIO_COMMENTS_CSS*/", if comments { include_str!("../../../web/studio-canvas/dist/comments-overlay.css") } else { "" })
+        .replace("/*STUDIO_COMMENTS*/", if comments { include_str!("../../../web/studio-canvas/dist/comments-overlay.js") } else { "" })
 }
 
 // One trusted editor session per canvas. Only its parent canvas may relay mutations.

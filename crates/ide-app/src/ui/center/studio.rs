@@ -57,6 +57,7 @@ pub(super) struct StudioWorkspace {
     pub inline_screen: Option<Uuid>,
     pub inline_flush: Option<(Uuid, Option<Uuid>)>,
     pub prototype: bool,
+    prototype_session: Option<Uuid>,
     pub comment_mode: bool,
     pub comment_selected: Option<Uuid>,
     comment_previous_view: Option<StudioOverviewMode>,
@@ -551,6 +552,7 @@ impl CenterArea {
                             inline_screen,
                             inline_flush: None,
                             prototype: false,
+                            prototype_session: None,
                             comment_mode: false,
                             comment_selected: None,
                             comment_previous_view: None,
@@ -764,6 +766,21 @@ impl CenterArea {
         .detach();
     }
     pub(super) fn rebuild_studio_editor(&mut self, cx: &App) {
+        if let Some(studio) = self.studio.as_mut().filter(|s| s.prototype && s.prototype_session == Some(s.editor_session) && s.editor_html.is_some()) {
+            if let Some(screen) = studio.screen {
+                use super::studio_editor::{bootstrap_for_surface, document_for_bootstrap, EditorSurface};
+                match bootstrap_for_surface(&studio.store, &studio.design, screen, studio.editor_session, false, true, super::studio_editor::web_theme(cx), EditorSurface::Prototype) {
+                    Ok(bootstrap) => {
+                        // Keep the native player mounted; retain a current document
+                        // for remounting after the user leaves the workspace.
+                        studio.editor_html = Some(document_for_bootstrap(&bootstrap));
+                        self.web_host.read(cx).studio_reply(&json!({"session":studio.editor_session,"type":"prototype-screen","bootstrap":bootstrap}));
+                    }
+                    Err(error) => studio.error = Some(format!("Could not load screen: {error:#}")),
+                }
+            }
+            return;
+        }
         if self.studio_canvas_active(){
             if let Some(s)=self.studio.as_mut(){
                 if s.inline_screen.is_some_and(|id|!s.design.manifest.screens.iter().any(|p|p.id==id&&!p.archived)) && !s.dirty && !s.saving {
@@ -790,6 +807,9 @@ impl CenterArea {
         studio.editor_toolbar = None;
         studio.selected_element = None;
         self.refresh_studio_bootstrap(cx);
+        if let Some(studio) = self.studio.as_mut() {
+            studio.prototype_session = (studio.prototype && studio.editor_html.is_some()).then_some(studio.editor_session);
+        }
     }
     fn refresh_studio_bootstrap(&mut self, cx: &App) {
         let Some(studio) = self.studio.as_mut() else {
@@ -935,6 +955,17 @@ impl CenterArea {
             }
             match message["type"].as_str().unwrap_or("") {
                 "ready" => { self.studio_comment_mode_reply(cx); }
+                "prototype-failed" if studio.prototype => {
+                    let target = message["screen_id"].as_str().and_then(|id| id.parse::<Uuid>().ok());
+                    let previous = message["previous_screen_id"].as_str().and_then(|id| id.parse::<Uuid>().ok());
+                    if target == studio.screen && previous.is_some_and(|id| studio.design.manifest.screens.iter().any(|screen| screen.id == id && !screen.archived)) {
+                        studio.screen = previous;
+                        studio.canvas.layout.select_screen(previous);
+                        if studio.prototype_history.last().copied() == previous { studio.prototype_history.pop(); }
+                        studio.error = Some("Could not open this prototype screen. Try again.".into());
+                        self.refresh_studio_bootstrap(cx);
+                    }
+                }
                 "comment-toggle" => self.studio_comment_mode(cx),
                 "comments-read" | "comment-edit" | "comment-draft" | "comment-send" | "comment-focus" => {
                     if let Ok(message) = serde_json::from_value::<super::studio_canvas::Message>(message.clone()) {

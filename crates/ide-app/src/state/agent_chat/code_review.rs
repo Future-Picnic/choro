@@ -1,5 +1,16 @@
 #![allow(dead_code, reason = "retained code-review presentation API")]
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+/// User actions belong to the card, not the reviewer's immutable findings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct CodeReviewFindingState {
+    pub key: String,
+    pub selected: bool,
+    pub fix_requested: bool,
+}
+
 /// Severity of a single code-review finding. Ordered highest-first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeReviewSeverity {
@@ -78,6 +89,8 @@ pub struct CodeReview {
     pub markdown: String,
     pub findings: Vec<CodeReviewFinding>,
     pub expanded: bool,
+    /// Orders background card writes, including user actions and run refreshes.
+    pub card_revision: u64,
 }
 
 impl CodeReview {
@@ -90,7 +103,65 @@ impl CodeReview {
             markdown,
             findings,
             expanded: false,
+            card_revision: 0,
         }
+    }
+
+    fn finding_key(&self, index: usize, finding: &CodeReviewFinding) -> String {
+        if let Some(finding) = self.structured.as_ref().and_then(|run| run.findings.get(index)) {
+            return format!("structured:{}", finding.id);
+        }
+        // Legacy Markdown has no finding IDs. Bind state to the exact finding
+        // contents rather than transferring it to a different row by position.
+        let identity = format!("{:?}:{:?}:{:?}:{:?}", finding.severity, finding.location, finding.title, finding.detail);
+        let occurrence = self.findings[..index].iter().filter(|other| {
+            other.severity == finding.severity && other.location == finding.location
+                && other.title == finding.title && other.detail == finding.detail
+        }).count();
+        format!("legacy:{:x}:{occurrence}", Sha256::digest(identity.as_bytes()))
+    }
+
+    pub(super) fn finding_state(&self) -> Vec<CodeReviewFindingState> {
+        self.findings.iter().enumerate().map(|(index, finding)| CodeReviewFindingState {
+            key: self.finding_key(index, finding),
+            selected: finding.selected,
+            fix_requested: finding.fix_requested,
+        }).collect()
+    }
+
+    pub(super) fn restore_finding_state(&mut self, states: &[CodeReviewFindingState]) {
+        let keys: Vec<_> = self.findings.iter().enumerate()
+            .map(|(index, finding)| self.finding_key(index, finding)).collect();
+        for (finding, key) in self.findings.iter_mut().zip(keys) {
+            if let Some(state) = states.iter().find(|state| state.key == key) {
+                finding.fix_requested = state.fix_requested;
+                finding.selected = state.selected && !state.fix_requested;
+            }
+        }
+    }
+
+    pub(super) fn toggle_finding_selected(&mut self, index: usize) -> bool {
+        let Some(finding) = self.findings.get_mut(index).filter(|finding| !finding.fix_requested) else {
+            return false;
+        };
+        finding.selected = !finding.selected;
+        self.card_revision = self.card_revision.saturating_add(1);
+        true
+    }
+
+    pub(super) fn mark_findings_fix_requested(&mut self, only_selected: bool) -> bool {
+        let mut changed = false;
+        for finding in &mut self.findings {
+            if !finding.fix_requested && (!only_selected || finding.selected) {
+                finding.fix_requested = true;
+                finding.selected = false;
+                changed = true;
+            }
+        }
+        if changed {
+            self.card_revision = self.card_revision.saturating_add(1);
+        }
+        changed
     }
 
     /// Missing findings alone say nothing about whether the review finished.

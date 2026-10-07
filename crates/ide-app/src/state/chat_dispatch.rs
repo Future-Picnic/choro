@@ -50,6 +50,19 @@ pub(crate) fn hydrate_with_artifacts(
     saved_files: Option<ChangedFilesSummary>,
     saved_plan: Option<ProposedPlan>,
 ) {
+    // A page captured before review recovery or a checkbox click must not
+    // replace a newer live card when its background read finally completes.
+    for item in &session.timeline {
+        if let AgentChatTimelineItem::CodeReview(live) = item {
+            if let Some(AgentChatTimelineItem::CodeReview(saved)) = timeline.iter_mut()
+                .find(|item| matches!(item, AgentChatTimelineItem::CodeReview(saved) if saved.id == live.id))
+            {
+                if live.card_revision > saved.card_revision { *saved = live.clone(); }
+            } else {
+                timeline.push(item.clone());
+            }
+        }
+    }
     place_change_receipts(&mut timeline);
     let mut changed_files = ChangedFilesSummary::default();
     session.messages.clear();

@@ -12,6 +12,16 @@ Bootstrap and `state` carry host-authored `sections` (metadata plus authoritativ
 
 Session-scoped messages: `select-section`, `move-screen {screen_id, section_id, before_screen_id, position?, revision, fingerprint}` (revision/fingerprint captured at drag start), `reorder-sections`, and `context-action` (whitelisted actions for exactly one screen or section). Rust validates bounds and shapes before queueing. `move-result` is correlated by request ID and carries authoritative screens, sections and positions; uncorrelated or older results are ignored. A dropped screen stays at its drop position, non-draggable, until the result arrives. Escape cancels a drag back to its authoritative position. `dropTarget`/`sameSlot` mirror the Rust insertion rule. Fixture hooks (`begin`, `hover`, `finish`, `drop`, `escape`) exist only when `boot.test` is set.
 
+## Prototype navigation
+
+Prototype navigation retains the native player session. `prototype-screen`
+prepares a hidden opaque iframe at the destination viewport, keeps the current
+screen visible until it is ready, then disposes the old iframe. Only one pending
+destination is retained; `prototype-failed` restores native screen selection.
+The comments adapter remounts for the destination on the player's `ready` reply.
+`editor.test.py --prototype-navigation` covers the retained shell, viewport sizing,
+superseded navigation, returning to a previous screen, load failure and Comments.
+
 ## Comments
 
 Comments is an independent tool over Design or Prototype. The native Comments

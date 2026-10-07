@@ -195,6 +195,24 @@ pub(super) fn is_noise_work_log(entry: &crate::state::agent_chat::WorkLogEntry) 
         || (entry.kind == WorkLogEntryKind::Tool && title.eq_ignore_ascii_case("file change"))
 }
 
+/// Restored cards are saved metadata, not evidence that chat history has loaded.
+/// Keep the Resume screen until loading starts, except during an active review.
+pub(super) fn agent_chat_needs_resume(
+    session: &AgentChatSession,
+    has_saved_session: bool,
+    has_backend: bool,
+    review_active: bool,
+) -> bool {
+    has_saved_session
+        && !has_backend
+        && !review_active
+        && session.messages.is_empty()
+        && !matches!(
+            session.status,
+            AgentChatStatus::Running | AgentChatStatus::Cancelling
+        )
+}
+
 pub(super) fn agent_chat_rows(
     session: &AgentChatSession,
     include_activity: bool,
@@ -565,6 +583,61 @@ mod tests {
             started_running_at: None,
             last_activity_at: 0,
         }
+    }
+
+    #[test]
+    fn unloaded_conversations_with_saved_reviews_still_need_resume() {
+        use crate::state::agent_chat::CodeReview;
+        use ide_core::code_review::{ReviewRun, ReviewRunState};
+
+        for state in [
+            ReviewRunState::Complete,
+            ReviewRunState::Partial,
+            ReviewRunState::Cancelled,
+            ReviewRunState::Failed,
+            ReviewRunState::Interrupted,
+        ] {
+            let mut run = ReviewRun::new(
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                "codex".into(),
+                "model".into(),
+                "medium".into(),
+                0,
+            );
+            run.state = state;
+            let session = session_with_timeline(vec![
+                AgentChatTimelineItem::CodeReview(CodeReview::from_run(run)),
+            ]);
+            assert!(agent_chat_needs_resume(&session, true, false, false));
+            // A terminal card can arrive before the reviewer finishes stopping.
+            assert!(!agent_chat_needs_resume(&session, true, false, true));
+            assert!(!agent_chat_needs_resume(&session, true, true, false));
+            assert!(!agent_chat_needs_resume(&session, false, false, false));
+        }
+        let legacy = session_with_timeline(vec![AgentChatTimelineItem::CodeReview(
+            CodeReview::new("legacy", "The changes look clean."),
+        )]);
+        assert!(agent_chat_needs_resume(&legacy, true, false, false));
+    }
+
+    #[test]
+    fn loaded_messages_and_active_turns_keep_the_transcript_visible() {
+        let mut session = session_with_timeline(vec![]);
+        for status in [AgentChatStatus::Running, AgentChatStatus::Cancelling] {
+            session.status = status;
+            assert!(!agent_chat_needs_resume(&session, true, false, false));
+        }
+        session.status = AgentChatStatus::Idle;
+        session.messages.push(AgentChatMessage::Assistant {
+            message_id: None,
+            text: "Completed the changes.".into(),
+            created_at: 0,
+        });
+        // Retiring an idle backend must not hide an already loaded conversation.
+        assert!(!agent_chat_needs_resume(&session, true, false, false));
+        session.messages.clear();
+        assert!(agent_chat_needs_resume(&session, true, false, false));
     }
 
     #[test]

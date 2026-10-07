@@ -363,6 +363,7 @@ impl AgentChatState {
             if let AgentChatTimelineItem::CodeReview(review) = item {
                 if review.id == review_id {
                     review.expanded = !review.expanded;
+                    review.card_revision = review.card_revision.saturating_add(1);
                     persist_review = Some(review.clone());
                     changed = true;
                 }
@@ -523,22 +524,16 @@ impl AgentChatState {
         let Some(session) = self.sessions.get_mut(&agent_id) else {
             return;
         };
-        let mut changed = false;
+        let mut persist_review = None;
         for item in &mut session.timeline {
             if let AgentChatTimelineItem::CodeReview(review) = item {
-                if review.id == review_id {
-                    if let Some(finding) = review.findings.get_mut(finding_index) {
-                        if !finding.fix_requested {
-                            finding.selected = !finding.selected;
-                            changed = true;
-                        }
-                    }
+                if review.id == review_id && review.toggle_finding_selected(finding_index) {
+                    persist_review = Some(review.clone());
                 }
             }
         }
-        if !changed {
-            return;
-        }
+        let Some(review) = persist_review else { return; };
+        persist_timeline_item(agent_id, AgentChatTimelineItem::CodeReview(review), cx);
         session.last_activity_at = unix_now();
         self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }
@@ -556,23 +551,16 @@ impl AgentChatState {
         let Some(session) = self.sessions.get_mut(&agent_id) else {
             return;
         };
-        let mut changed = false;
+        let mut persist_review = None;
         for item in &mut session.timeline {
             if let AgentChatTimelineItem::CodeReview(review) = item {
-                if review.id == review_id {
-                    for finding in &mut review.findings {
-                        if !finding.fix_requested && (!only_selected || finding.selected) {
-                            finding.fix_requested = true;
-                            finding.selected = false;
-                            changed = true;
-                        }
-                    }
+                if review.id == review_id && review.mark_findings_fix_requested(only_selected) {
+                    persist_review = Some(review.clone());
                 }
             }
         }
-        if !changed {
-            return;
-        }
+        let Some(review) = persist_review else { return; };
+        persist_timeline_item(agent_id, AgentChatTimelineItem::CodeReview(review), cx);
         session.last_activity_at = unix_now();
         self.publish_change(agent_id, ChatChangeCategories::CONTENT, cx);
     }

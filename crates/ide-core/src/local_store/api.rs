@@ -889,8 +889,20 @@ impl LocalStore {
         let payload_json = payload_json.into();
         self.rt.block_on(async {
             let conn = self.connect().await?;
-            upsert_timeline_event_async(&conn, agent_id, kind, event_key, payload_json, created_at)
-                .await
+            if kind == "code_review" {
+                // The revision comparison and write must share the reserved
+                // writer; concurrent background saves cannot both read an
+                // older revision and let the stale card win last.
+                let mut saved = None;
+                let output = &mut saved;
+                execute_transaction(&conn, |conn| Box::pin(async move {
+                    *output = Some(upsert_timeline_event_async(conn, agent_id, kind, event_key, payload_json, created_at).await?);
+                    Ok(())
+                })).await?;
+                saved.context("Review card transaction produced no event")
+            } else {
+                upsert_timeline_event_async(&conn, agent_id, kind, event_key, payload_json, created_at).await
+            }
         })
     }
 

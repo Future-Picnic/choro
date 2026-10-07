@@ -375,6 +375,8 @@ impl StoredTimelinePayload {
                 revision: plan.revision,
             }),
             AgentChatTimelineItem::CodeReview(review) => Some(Self::CodeReview {
+                finding_state: review.finding_state(),
+                card_revision: review.card_revision,
                 structured: review.structured.clone(),
                 id: review.id.clone(),
                 markdown: review.markdown.clone(),
@@ -635,6 +637,8 @@ impl StoredTimelinePayload {
                 markdown,
                 expanded,
                 structured,
+                finding_state,
+                card_revision,
             } => {
                 let mut review = CodeReview::new(id, markdown);
                 if let Some(mut run) = structured {
@@ -644,6 +648,8 @@ impl StoredTimelinePayload {
                     review = CodeReview::from_run(run);
                 }
                 review.expanded = expanded;
+                review.card_revision = card_revision;
+                review.restore_finding_state(&finding_state);
                 Some(AgentChatTimelineItem::CodeReview(review))
             }
             Self::Verification {
@@ -1120,18 +1126,52 @@ mod tests {
     }
 
     #[test]
+    fn legacy_review_round_trip_keeps_selections_fix_requests_and_collapsed_state() {
+        let mut review = CodeReview::new("legacy", "## High\n- **src/a.rs:1 — First bug**\nWhat happens: Lost data.\nSuggested fix: Keep it.\n- **src/b.rs:2 — Second bug**\nWhat happens: Wrong screen.\nSuggested fix: Show it.");
+        assert!(review.toggle_finding_selected(0));
+        assert!(review.mark_findings_fix_requested(true));
+        assert!(review.toggle_finding_selected(1));
+        let item = AgentChatTimelineItem::CodeReview(review.clone());
+        let (_, _, json, _) = stored_timeline_event_parts(&item).unwrap();
+        let stored: StoredTimelinePayload = serde_json::from_str(&json).unwrap();
+        let AgentChatTimelineItem::CodeReview(mut restored) = stored.into_timeline_item().unwrap() else { panic!("Expected review"); };
+        assert_eq!(restored, review);
+        assert_eq!(restored.selected_count(), 1);
+        assert_eq!(restored.findings_to_fix(true)[0].title, "Second bug");
+        assert!(!restored.toggle_finding_selected(0));
+        assert!(!restored.toggle_finding_selected(99));
+        assert!(restored.mark_findings_fix_requested(false));
+        assert!(!restored.has_pending_fixes());
+        assert_eq!(restored.selected_count(), 0);
+        assert!(!restored.mark_findings_fix_requested(false));
+        let old: StoredTimelinePayload = serde_json::from_value(serde_json::json!({
+            "type":"code_review", "id":"old", "markdown":review.markdown, "expanded":true,
+        })).unwrap();
+        let AgentChatTimelineItem::CodeReview(old) = old.into_timeline_item().unwrap() else { panic!("Expected legacy review"); };
+        assert!(old.findings.iter().all(|finding| !finding.selected && !finding.fix_requested));
+        assert_eq!(old.card_revision, 0);
+
+        let markdown = "## High\n- **src/a.rs:1 — Repeated bug**\nSame explanation.\n- **src/a.rs:1 — Repeated bug**\nSame explanation.";
+        let mut duplicate = CodeReview::new("duplicates", markdown);
+        assert!(duplicate.toggle_finding_selected(1));
+        let mut restored = CodeReview::new("duplicates", markdown);
+        restored.restore_finding_state(&duplicate.finding_state());
+        assert!(!restored.findings[0].selected && restored.findings[1].selected);
+    }
+
+    #[test]
     fn restored_structured_reviews_need_source_validation_before_looking_current() {
         use ide_core::code_review::*;
         let mut run=ReviewRun::new(Uuid::new_v4(),Uuid::new_v4(),"Claude".into(),"model".into(),"effort".into(),review_now());
         run.state=ReviewRunState::Complete;run.freshness=ReviewFreshness::Current;
         run.files.push(ReviewFile {id:"owned".into(),path:"owned.rs".into(),change_kind:"Modified".into(),attributed_ranges:vec![],before_hash:Some("a".repeat(64)),after_hash:Some("b".repeat(64)),diff_pages:1,consumed_pages:[0].into_iter().collect(),status:ReviewFileStatus::Complete,skip_reason:None});
         assert!(run.is_clean());
-        let stored=StoredTimelinePayload::CodeReview {id:run.id.to_string(),markdown:String::new(),expanded:false,structured:Some(run)};
+        let stored=StoredTimelinePayload::CodeReview {id:run.id.to_string(),markdown:String::new(),expanded:false,structured:Some(run),finding_state:vec![],card_revision:0};
         let AgentChatTimelineItem::CodeReview(restored)=stored.into_timeline_item().unwrap() else {panic!("Expected review card");};
         assert!(!restored.is_clean());
         assert!(!restored.expanded);
         assert!(matches!(restored.structured.unwrap().freshness,ReviewFreshness::Uncertain(_)));
-        let legacy=StoredTimelinePayload::CodeReview {id:"legacy".into(),markdown:"Existing Markdown review".into(),expanded:true,structured:None};
+        let legacy=StoredTimelinePayload::CodeReview {id:"legacy".into(),markdown:"Existing Markdown review".into(),expanded:true,structured:None,finding_state:vec![],card_revision:0};
         let AgentChatTimelineItem::CodeReview(restored)=legacy.into_timeline_item().unwrap() else {panic!("Expected legacy review card");};
         assert_eq!(restored.markdown,"Existing Markdown review");
         assert!(restored.structured.is_none());
