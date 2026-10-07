@@ -105,9 +105,18 @@ impl CenterArea {
             || session.cli_session_id.is_some()
             || agent.chat_session_id.is_some()
             || agent.cli_session_id.is_some();
+        let (has_backend, review_active) = {
+            let chats = self.agent_chats.read(cx);
+            (
+                chats.has_backend(agent.id),
+                chats.review_blocks_writing(agent.id),
+            )
+        };
+        let needs_resume =
+            agent_chat_needs_resume(session, has_saved_session, has_backend, review_active);
         let is_hydrating = self.agent_chat_hydrating.contains(&agent.id)
             && session.messages.is_empty()
-            && session.timeline.is_empty();
+            && !review_active;
         // Automatic Brain maintenance is background-only. Its persisted turn
         // is filtered from the timeline, and its synthetic running row must not
         // displace a completion card (notably the PR card created by Ship).
@@ -116,7 +125,11 @@ impl CenterArea {
             agent.status.is_finished(),
             self.agent_transcript_is_fresh(agent.id, cx),
         ) && !self.agent_summary_silent_requests.contains(&agent.id);
-        let rows = agent_chat_rows(&session, show_activity, has_saved_session, &artifact_filter);
+        let rows = if needs_resume {
+            vec![AgentChatRow::ResumeSavedSession]
+        } else {
+            agent_chat_rows(&session, show_activity, has_saved_session, &artifact_filter)
+        };
         let (display_order, newest_turn_len) = agent_chat_display_order(&rows, &session, top_down);
         // When the resume prompt is the only content, it's rendered as a
         // full-height centered panel (like the tab empty states) rather than a
@@ -127,7 +140,9 @@ impl CenterArea {
         // a handful of display rows. Keep prepending until there is enough
         // content to scroll; otherwise the user could never reach the top
         // threshold that requests the next page.
-        if row_count <= 12
+        if !is_resume_only
+            && !is_hydrating
+            && row_count <= 12
             && self
                 .agent_chat_history
                 .get(&agent.id)

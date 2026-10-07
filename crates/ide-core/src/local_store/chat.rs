@@ -76,7 +76,12 @@ pub(super) async fn upsert_timeline_event_async(
                     || existing_revision == incoming_revision
                         && !existing["implemented_at"].is_null() && incoming["implemented_at"].is_null()
             } else { false };
-            let keep_existing_payload = stale_plan || should_keep_existing_message_payload(
+            let stale_review = if kind == "code_review" {
+                let existing = serde_json::from_str::<serde_json::Value>(&existing_payload_json).unwrap_or_default();
+                let incoming = serde_json::from_str::<serde_json::Value>(&payload_json).unwrap_or_default();
+                existing["card_revision"].as_u64().unwrap_or(0) > incoming["card_revision"].as_u64().unwrap_or(0)
+            } else { false };
+            let keep_existing_payload = stale_plan || stale_review || should_keep_existing_message_payload(
                 kind.as_str(),
                 event_key.as_deref(),
                 &existing_payload_json,

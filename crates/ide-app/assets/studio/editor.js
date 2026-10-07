@@ -71,8 +71,8 @@
     if(boot.inline)parent.postMessage({type:'studio-editor',session:boot.session,message},'*');
     else window.ipc.postMessage(JSON.stringify(message));
   };
-  const tokenCss = boot.tokens_css;
-  const assets = boot.assets || {};
+  let tokenCss = boot.tokens_css;
+  let assets = boot.assets || {};
   // Text may be authored with semantic/formatting elements, not just headings
   // and generic wrappers. Keep shapes, form fields and layout sections out of
   // rich-text editing, but allow the same editing path for all these text tags.
@@ -106,17 +106,19 @@
       used.add(id);
     }
   }
-  function assetUrl(path) {
+  function assetUrl(path, resources = assets) {
     const normalized=path.replace(/^\.\.\/\.\.\//,'').replace(/^\.\//,'');
-    return assets[normalized] || (path.startsWith('data:image/') ? path : '');
+    return resources[normalized] || (path.startsWith('data:image/') ? path : '');
   }
-  function sanitize(doc, preview) {
+  function sanitize(doc, preview, incoming) {
+    const content = incoming ? { ...incoming.document, overrides: incoming.overrides || {} } : source;
+    const resources = incoming?.assets || assets, cssTokens = incoming?.tokens_css ?? tokenCss;
     doc.querySelectorAll('script,iframe,object,embed,base,meta[http-equiv],link').forEach(n=>n.remove());
     for(const node of doc.querySelectorAll('*')) {
       for(const attr of [...node.attributes]) {
         if(/^on/i.test(attr.name) || ['srcdoc','formaction','action','srcset'].includes(attr.name)) node.removeAttribute(attr.name);
       }
-      if(node.hasAttribute('src')) node.setAttribute('src',assetUrl(node.getAttribute('src')));
+      if(node.hasAttribute('src')) node.setAttribute('src',assetUrl(node.getAttribute('src'), resources));
       if(node.hasAttribute('href')) node.setAttribute('href','#');
       node.removeAttribute('contenteditable');
     }
@@ -128,7 +130,7 @@
       const rules=doc.createElement('style');rules.id='vvvebjs-styles';rules.textContent=authored?.textContent||'';
       authored?.remove();doc.head.append(rules);
     }
-    const style=doc.createElement('style'); style.textContent=(tokenCss+'\n:root{'+Object.entries(source.overrides||{}).map(([k,v])=>'--'+k+':'+v+';').join('')+'}\n'+source.css).replace(/<\//g,'<\\/').replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g,(match,path)=>{const url=assetUrl(path);return url?'url("'+url+'")':match;}); doc.head.insertBefore(style,doc.getElementById('vvvebjs-styles'));
+    const style=doc.createElement('style'); style.textContent=(cssTokens+'\n:root{'+Object.entries(content.overrides||{}).map(([k,v])=>'--'+k+':'+v+';').join('')+'}\n'+content.css).replace(/<\//g,'<\\/').replace(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g,(match,path)=>{const url=assetUrl(path, resources);return url?'url("'+url+'")':match;}); doc.head.insertBefore(style,doc.getElementById('vvvebjs-styles'));
     if(preview) {
       // A prototype scrolls its own page. Without containment WebKit chains the
       // leftover wheel delta out to this frame, so reaching the end of the page
@@ -140,7 +142,7 @@
         (boot.prototype?'html{overflow-x:hidden !important;overflow-y:auto !important}body{overflow:visible !important}':'');
       doc.head.append(isolate);
       const script=doc.createElement('script');
-      script.textContent=source.js+'\n;document.addEventListener("click",e=>{const a=e.target.closest("[data-studio-screen]");if(a){e.preventDefault();parent.postMessage({type:"studio-navigate",screen_id:a.dataset.studioScreen},"*")}});';
+      script.textContent=content.js+'\n;document.addEventListener("click",e=>{const a=e.target.closest("[data-studio-screen]");if(a){e.preventDefault();parent.postMessage({type:"studio-navigate",screen_id:a.dataset.studioScreen},"*")}});';
       doc.body.append(script);
       if (commentAvailable) {
         const comments = doc.createElement('script');
@@ -451,6 +453,61 @@
     frame.srcdoc=sanitize(parse(serialize()),mode==='preview'&&!boot.system_specimen);
     $('edit').setAttribute('aria-pressed',mode==='edit');$('preview').setAttribute('aria-pressed',mode==='preview');
   }
+  let prototypeLoad = null;
+  function preparePrototype(incoming) {
+    if (!boot.prototype || incoming?.session !== boot.session || !incoming.prototype || !incoming.document
+        || !Number.isInteger(incoming.width) || !Number.isInteger(incoming.height)
+        || incoming.width < 240 || incoming.width > 3840 || incoming.height < 240 || incoming.height > 4096) return;
+    if (prototypeLoad) { clearTimeout(prototypeLoad.timer); prototypeLoad.frame.remove(); }
+    // Native navigation has already checked draft/request protection. Suspend
+    // the clean comment layer until ready reattaches it to the destination.
+    if (commenting) window.choroStudioReply({ session: boot.session, type: 'comment-mode', enabled: false });
+    const next = document.createElement('iframe'), token = uuid();
+    next.id = 'screen-pending'; next.title = 'Loading prototype screen';
+    next.setAttribute('sandbox', 'allow-scripts');
+    Object.assign(next.style, { position: 'absolute', left: '0px', top: '0px', width: incoming.width + 'px', height: incoming.height + 'px', border: '0', visibility: 'hidden', pointerEvents: 'none' });
+    const pending = prototypeLoad = { frame: next, incoming, token, loaded: false, painted: false, timer: null };
+    frame.style.pointerEvents = 'none';
+    const fail = () => {
+      if (prototypeLoad !== pending) return;
+      clearTimeout(pending.timer); next.remove(); prototypeLoad = null;
+      frame.style.pointerEvents = commenting ? 'none' : '';
+      $('error').textContent = 'Could not open this screen. Try the link again.';
+      send({ type: 'prototype-failed', screen_id: incoming.screen_id, previous_screen_id: boot.screen_id });
+      send({ type: 'ready' });
+    };
+    next.addEventListener('error', fail, { once: true });
+    next.addEventListener('load', () => { pending.loaded = true; commitPrototype(); }, { once: true });
+    pending.timer = setTimeout(fail, 8000);
+    const doc = parse(sanitize(parse(incoming.document.html), true, incoming));
+    const ready = doc.createElement('script');
+    ready.textContent = 'addEventListener("load",()=>{document.body.getBoundingClientRect();Promise.race([Promise.allSettled([document.fonts.ready,...[...document.images].map(image=>image.decode())]),new Promise(resolve=>setTimeout(resolve,500))]).then(()=>parent.postMessage({type:"studio-prototype-ready",token:' + JSON.stringify(token) + '},"*"))},{once:true});';
+    doc.body.append(ready);
+    frame.parentElement.append(next);
+    next.srcdoc = '<!doctype html>' + doc.documentElement.outerHTML;
+  }
+  function commitPrototype() {
+    const prepared = prototypeLoad;
+    if (!prepared?.loaded || !prepared.painted) return;
+    clearTimeout(prepared.timer); prototypeLoad = null;
+    Object.assign(boot, prepared.incoming);
+    source = { ...structuredClone(boot.document), overrides: structuredClone(boot.overrides || {}) };
+    tokenCss = boot.tokens_css; assets = boot.assets || {};
+    revision = boot.revision; fingerprint = boot.fingerprint;
+    dirty = false; pending = false; savedText = JSON.stringify(source); normalize();
+    commentScroll = { x: 0, y: 0 }; commentFocus = null;
+    // Moving a loaded iframe reloads its browsing context in WebKit. Leave the
+    // prepared frame in place and remove only the old one before revealing it.
+    frame.remove(); frame = prepared.frame;
+    frame.id = 'screen'; frame.title = 'Design screen';
+    frame.style.visibility = ''; frame.style.position = ''; frame.style.left = ''; frame.style.top = '';
+    frame.style.pointerEvents = commenting ? 'none' : '';
+    $('error').textContent = '';
+    if (boot.theme) window.choroStudioReply({ session: boot.session, type: 'theme', theme: boot.theme });
+    restoreCamera(); size();
+    frame.contentWindow?.postMessage({ type: 'studio-comments-state', enabled: commenting }, '*');
+    send({ type: 'ready' });
+  }
   function selected(doc=clean){return [...doc.querySelectorAll('[data-studio-id]')].find(n=>n.dataset.studioId===selectedId);}
   function select(id) {
     if(mode!=='edit')return;
@@ -549,7 +606,9 @@
   function sendFlushed(){send({type:'flushed',request_id:flushRequest});flushRequest=null;}
   window.choroStudioReply=reply=>{
     if(reply.session!==boot.session)return;
+    if (reply.type === 'prototype-screen') { preparePrototype(reply.bootstrap); return; }
     if (reply.type === 'comment-mode' && commentAvailable) {
+      if (prototypeLoad) return;
       commenting = !!reply.enabled;
       if (!commenting) commentFocus = null;
       window.choroCommentsEnabled = commenting;
@@ -686,6 +745,9 @@
   new ResizeObserver(size).observe($('canvas'));
   window.addEventListener('message',event=>{if(event.source===frame.contentWindow&&event.data?.type==='studio-camera')cameraInput(event.data.input,true);});
   window.addEventListener('message', event => {
+    if (prototypeLoad && event.source === prototypeLoad.frame.contentWindow && event.data?.type === 'studio-prototype-ready' && event.data.token === prototypeLoad.token) {
+      prototypeLoad.painted = true; commitPrototype(); return;
+    }
     if (event.source !== frame.contentWindow) return;
     if (event.data?.type === 'studio-comment-toggle' && commentAvailable) send({ type: 'comment-toggle', request_id: uuid() });
     if (commenting && event.data?.type === 'studio-comment-scroll' && [event.data.x, event.data.y].every(Number.isFinite)) {
@@ -694,7 +756,7 @@
       publishCommentGeometry();
     }
   });
-  window.addEventListener('message',event=>{if(!commenting&&event.source===frame.contentWindow&&event.data?.type==='studio-navigate'&&boot.screens.some(s=>s.id===event.data.screen_id))send({type:'navigate',screen_id:event.data.screen_id});});
+  window.addEventListener('message',event=>{if(!commenting&&!prototypeLoad&&event.source===frame.contentWindow&&event.data?.type==='studio-navigate'&&boot.screens.some(s=>s.id===event.data.screen_id))send({type:'navigate',screen_id:event.data.screen_id});});
   window.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&event.key==='s'){event.preventDefault();flush();}});
   if (commentAvailable && !boot.inline) window.addEventListener('keydown', event => {
     if (!event.defaultPrevented && !event.repeat && !event.isComposing && !event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'c'

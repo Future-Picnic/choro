@@ -186,31 +186,50 @@ impl CodeReview {
             markdown,
             findings,
             expanded: true,
+            card_revision: run.revision,
             structured: Some(run),
         }
     }
 }
 fn update_card(session: &mut AgentChatSession, run: ReviewRun) -> CodeReview {
+    update_card_with_saved(session, run, None)
+}
+
+fn update_card_with_saved(
+    session: &mut AgentChatSession,
+    run: ReviewRun,
+    saved: Option<&CodeReview>,
+) -> CodeReview {
     let mut card = CodeReview::from_run(run);
-    if let Some(AgentChatTimelineItem::CodeReview(old)) = session
+    let old = session
         .timeline
         .iter()
-        .find(|i| matches!(i, AgentChatTimelineItem::CodeReview(r) if r.id == card.id))
-    {
+        .find_map(|item| match item {
+            AgentChatTimelineItem::CodeReview(old) if old.id == card.id => Some(old),
+            _ => None,
+        });
+    let saved = saved.filter(|saved| saved.id == card.id);
+    let previous = saved.into_iter().chain(old).max_by_key(|old| old.card_revision);
+    if let Some(old) = previous {
         card.expanded = old.expanded;
-        if let (Some(old_run), Some(new_run)) = (&old.structured, &card.structured) {
-            for (i, f) in new_run.findings.iter().enumerate() {
-                if let Some(j) = old_run.findings.iter().position(|o| o.id == f.id) {
-                    if let Some(previous) = old.findings.get(j) {
-                        card.findings[i].selected = previous.selected;
-                        card.findings[i].fix_requested = previous.fix_requested;
-                    }
-                }
-            }
-        }
+        card.restore_finding_state(&old.finding_state());
+        card.card_revision = card.card_revision.max(old.card_revision).saturating_add(1);
     }
     upsert_timeline_code_review(&mut session.timeline, card.clone());
     card
+}
+
+/// Review recovery is independent of the current chat page. Loading only the
+/// latest messages can otherwise overwrite an older card's saved user actions.
+fn load_saved_review_cards(store: &LocalStore, parent: Uuid) -> Result<HashMap<String, CodeReview>> {
+    let mut cards = HashMap::new();
+    for event in store.load_timeline_events_by_kind(parent, "code_review")? {
+        let Some(AgentChatTimelineItem::CodeReview(card)) = timeline_item_from_store_event(&event) else {
+            anyhow::bail!("Saved review card {} is unreadable; its state was preserved", event.id);
+        };
+        cards.insert(card.id.clone(), card);
+    }
+    Ok(cards)
 }
 impl AgentChatState {
     /// Call once when constructing the desktop chat state, before exposing
@@ -223,19 +242,29 @@ impl AgentChatState {
         self.review_startup_pending = true;
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
-            let result =
-                LocalStore::open_default().and_then(|s| s.interrupt_all_unfinished_reviews());
+            let result = LocalStore::open_default().and_then(|store| {
+                let runs = store.interrupt_all_unfinished_reviews()?;
+                let mut saved = HashMap::new();
+                for parent in runs.iter().map(|run| run.parent_id).collect::<HashSet<_>>() {
+                    saved.insert(parent, load_saved_review_cards(&store, parent));
+                }
+                Ok((runs, saved))
+            });
             let _ = tx.send_blocking(result);
         });
         cx.spawn(async move |this, cx| {
             if let Ok(result) = rx.recv().await {
                 let _ = this.update(cx, |state, cx| match result {
-                    Ok(runs) => {
+                    Ok((runs, saved)) => {
                         state.review_startup_pending = false;
                         for run in runs {
                             let parent = run.parent_id;
-                            if let Some(session) = state.sessions.get_mut(&parent) {
-                                let card = update_card(session, run.clone());
+                            if let Some(Err(error)) = saved.get(&parent) {
+                                eprintln!("Saved review cards for {parent} were preserved: {error:#}");
+                            }
+                            if let (Some(session), Some(Ok(cards))) = (state.sessions.get_mut(&parent), saved.get(&parent)) {
+                                let saved_card = cards.get(&run.id.to_string());
+                                let card = update_card_with_saved(session, run.clone(), saved_card);
                                 persist_timeline_item(
                                     parent,
                                     AgentChatTimelineItem::CodeReview(card),
@@ -479,6 +508,7 @@ impl AgentChatState {
         let (tx, rx) = async_channel::bounded(1);
         std::thread::spawn(move || {
             let result = LocalStore::open_default().and_then(|store| {
+                let saved = load_saved_review_cards(&store, parent)?;
                 let mut runs = store.load_review_runs(parent)?;
                 for run in &mut runs {
                     if !run.state.terminal() || run.freshness != ReviewFreshness::Current {
@@ -504,7 +534,7 @@ impl AgentChatState {
                             })?
                             .0;
                 }
-                Ok(runs)
+                Ok((runs, saved))
             });
             let _ = tx.send_blocking(result);
         });
@@ -517,14 +547,14 @@ impl AgentChatState {
                 if state.review_blocks_writing(parent) {
                     return;
                 }
-                if result.as_ref().is_ok_and(|runs| runs.is_empty()) {
+                if result.as_ref().is_ok_and(|(runs, _)| runs.is_empty()) {
                     return;
                 }
                 if let Err(error) = &result {
                     eprintln!("Saved review recovery failed: {error:#}");
                     return;
                 }
-                if let Ok(runs) = result {
+                if let Ok((runs, saved)) = result {
                     for mut run in runs {
                         if let Some(latest) = state
                             .review_run(parent)
@@ -533,7 +563,7 @@ impl AgentChatState {
                             run = latest.clone();
                         }
                         if let Some(session) = state.sessions.get_mut(&parent) {
-                            let card = update_card(session, run.clone());
+                            let card = update_card_with_saved(session, run.clone(), saved.get(&run.id.to_string()));
                             persist_timeline_item(
                                 parent,
                                 AgentChatTimelineItem::CodeReview(card),
@@ -783,6 +813,94 @@ mod tests {
             review_now(),
         )
     }
+
+    fn review_session(parent: Uuid) -> AgentChatSession {
+        AgentChatSession {
+            agent_id: parent, title: "Review".into(), chat_session_id: None, cli_session_id: None,
+            hidden_from_notifications: false, is_compacting: false, status: AgentChatStatus::Idle,
+            interaction_mode: AgentInteractionMode::Default, composer_text: String::new(),
+            messages: vec![], timeline: vec![], queued_turns: vec![], work_log: vec![],
+            pending_user_input: None, pending_approval: None, proposed_plan: None, latest_plan: None,
+            changed_files: ChangedFilesSummary::default(), usage: None, started_running_at: None,
+            last_activity_at: 0,
+        }
+    }
+
+    fn finding(id: &str) -> ReviewFinding {
+        ReviewFinding {
+            id: id.into(), severity: ReviewSeverity::High,
+            location: ReviewLocation { file_id: id.into(), path: format!("src/{id}.rs").into(),
+                side: ReviewSide::After, start: 1, end: 1 },
+            title: format!("{id} loses saved data"), trigger: "Reopen a saved conversation".into(),
+            consequence: "Saved actions disappear".into(), suggested_fix: "Restore saved actions".into(),
+            evidence: vec![], challenge: "The reopen path resets the saved flags".into(),
+        }
+    }
+
+    #[test]
+    fn restarting_with_a_paged_history_preserves_review_actions_by_finding_identity() {
+        let (dir, store, agent) = context_store();
+        let initial = run(agent.id);
+        store.create_review_run(&initial).unwrap();
+        let reviewed = store.transact_review(initial.id, None, |run| {
+            run.state = ReviewRunState::Complete;
+            run.freshness = ReviewFreshness::Current;
+            run.findings = vec![finding("first"), finding("second")];
+            Ok(())
+        }).unwrap().0;
+        let mut card = CodeReview::from_run(reviewed);
+        card.expanded = false;
+        assert!(card.toggle_finding_selected(0));
+        assert!(card.mark_findings_fix_requested(true));
+        assert!(card.toggle_finding_selected(1));
+        save_context(&store, agent.id, &AgentChatTimelineItem::CodeReview(card.clone()));
+        for i in 0..205 {
+            save_context(&store, agent.id, &user_context(&format!("Later message {i}"), 10 + i));
+        }
+        drop(store);
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let page = store.load_timeline_events_page(agent.id, None, 200).unwrap();
+        assert!(page.has_more);
+        assert!(page.events.iter().all(|event| event.kind != "code_review"));
+        let saved = load_saved_review_cards(&store, agent.id).unwrap();
+        let saved = &saved[&card.id];
+        assert_eq!(saved.finding_state(), card.finding_state());
+        assert!(matches!(saved.structured.as_ref().unwrap().freshness, ReviewFreshness::Uncertain(_)));
+
+        let mut latest = store.load_review_runs(agent.id).unwrap().remove(0);
+        latest.freshness = ReviewFreshness::Outdated("Code changed after the fix was sent".into());
+        latest.findings.reverse();
+        latest.findings.push(finding("new"));
+        let mut session = review_session(agent.id);
+        let restored = update_card_with_saved(&mut session, latest.clone(), Some(saved));
+        assert!(!restored.expanded);
+        assert!(restored.findings[0].selected);
+        assert!(restored.findings[1].fix_requested && !restored.findings[1].selected);
+        assert!(!restored.findings[2].selected && !restored.findings[2].fix_requested);
+        assert_eq!(restored.structured.as_ref().unwrap().state, ReviewRunState::Complete);
+        assert!(matches!(restored.structured.as_ref().unwrap().freshness, ReviewFreshness::Outdated(_)));
+        assert!(restored.card_revision > saved.card_revision);
+
+        // History and recovery may finish in either order. The page captured
+        // before recovery must not downgrade the live card or lose older cards.
+        crate::state::chat_dispatch::hydrate_with_artifacts(&mut session,
+            vec![AgentChatTimelineItem::CodeReview(saved.clone())], None, None);
+        let AgentChatTimelineItem::CodeReview(after_page) = &session.timeline[0] else { panic!("Expected review"); };
+        assert_eq!(after_page, &restored);
+        crate::state::chat_dispatch::hydrate_with_artifacts(&mut session, vec![], None, None);
+        let AgentChatTimelineItem::CodeReview(live) = &mut session.timeline[0] else { panic!("Expected review"); };
+        assert!(live.toggle_finding_selected(0));
+        let refreshed = update_card_with_saved(&mut session, latest, Some(saved));
+        assert!(!refreshed.findings[0].selected, "A late recovery read cannot reselect a newer unticked finding");
+        assert!(refreshed.findings[1].fix_requested);
+
+        let mut next_run = run(agent.id);
+        next_run.findings.push(finding("first"));
+        let fresh = update_card_with_saved(&mut session, next_run, Some(saved));
+        assert!(!fresh.findings[0].fix_requested && !fresh.findings[0].selected,
+            "A fresh review does not inherit another review's actions");
+    }
+
     #[test]
     fn active_review_reserves_only_its_parent_until_the_reviewer_stops() {
         let parent = Uuid::new_v4();
@@ -823,6 +941,8 @@ mod tests {
         reviewed.state = ReviewRunState::Partial;
         let card = CodeReview::from_run(reviewed);
         let stored = StoredTimelinePayload::CodeReview {
+            finding_state: card.finding_state(),
+            card_revision: card.card_revision,
             id: card.id,
             markdown: card.markdown,
             expanded: card.expanded,

@@ -455,6 +455,64 @@ fn latest_plan_and_file_receipts_are_available_outside_the_loaded_chat_page() {
 }
 
 #[test]
+fn late_review_card_writes_cannot_reset_saved_user_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let agent = sample_agent(&project);
+    let mut config = AppConfig::default();
+    config.projects = vec![project];
+    store.save_workspace_config(&config).unwrap();
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let key = Some("code_review:review".into());
+    let latest = serde_json::json!({"type":"code_review", "id":"review", "card_revision":3,
+        "expanded":false, "finding_state":[{"key":"finding", "selected":false, "fix_requested":true}]}).to_string();
+    let event = store.upsert_timeline_event(agent.id, "code_review", key.clone(), latest.clone(), 1).unwrap();
+    for stale in [
+        serde_json::json!({"card_revision":2, "expanded":true, "finding_state":[{"key":"finding", "selected":true, "fix_requested":false}]}),
+        serde_json::json!({"expanded":true}),
+    ] {
+        let late = store.upsert_timeline_event(agent.id, "code_review", key.clone(), stale.to_string(), 9).unwrap();
+        assert_eq!(late.id, event.id);
+        assert_eq!(late.sequence, event.sequence);
+        assert_eq!(late.payload_json, latest);
+    }
+    drop(store);
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let events = store.load_timeline_events_by_kind(agent.id, "code_review").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload_json, latest);
+    let newer = serde_json::json!({"card_revision":4, "expanded":true}).to_string();
+    assert_eq!(store.upsert_timeline_event(agent.id, "code_review", key.clone(), newer.clone(), 10).unwrap().payload_json, newer);
+    // Reserve the writer before reading the revision. Racing connections must
+    // keep the highest revision regardless of their commit order.
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let write = |revision| {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        let agent_id = agent.id;
+        let key = key.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..8 {
+                store.upsert_timeline_event(agent_id, "code_review", key.clone(),
+                    serde_json::json!({"card_revision":revision,"fix_requested":revision == 6}).to_string(), 11).unwrap();
+            }
+        })
+    };
+    let older = write(5);
+    let newest = write(6);
+    barrier.wait();
+    older.join().unwrap();
+    newest.join().unwrap();
+    let events = store.load_timeline_events_by_kind(agent.id, "code_review").unwrap();
+    assert_eq!(events.len(), 1);
+    let payload: serde_json::Value = serde_json::from_str(&events[0].payload_json).unwrap();
+    assert_eq!(payload["card_revision"], 6);
+    assert_eq!(payload["fix_requested"], true);
+}
+
+#[test]
 fn newer_plan_survives_late_older_persistence_and_old_plan_updates() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();

@@ -7,7 +7,7 @@ helper = pathlib.Path(helper_args[0]) if helper_args else next(pathlib.Path('tar
 checks = r'''
 (async()=>{
  Object.defineProperty(window,"__testPhase",{set(value){window.ipc.postMessage(JSON.stringify({type:"phase",phase:value}));}});window.__testPhase="start";
- window.testErrors=[];window.addEventListener("error",e=>{window.testErrors.push(e.message);e.stopImmediatePropagation();},true);
+ window.testErrors=[];window.addEventListener("error",e=>{if(e instanceof ErrorEvent){window.testErrors.push(e.message);e.stopImmediatePropagation();}},true);
  // MessageChannel avoids background timer throttling in the offscreen test window.
  const wait=async(predicate,label)=>{window.__testPhase=label;const start=performance.now();while(performance.now()-start<(window.__CHORO_STUDIO__.testComments?1500:8000)){if(predicate())return;await new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});}throw Error('Timed out: '+label+'; '+JSON.stringify(window.testErrors));};
  const assert=(condition,label)=>{if(!condition)throw Error(label);};
@@ -16,6 +16,10 @@ checks = r'''
  const messages=[];let autoAck=true;
  window.ipc.postMessage=raw=>{const value=JSON.parse(raw);messages.push(value);if(value.type==='save'&&autoAck)queueMicrotask(()=>window.choroStudioReply({session:'test',id:value.id,revision:value.revision+1,fingerprint:'next'}));else if(value.type!=='save')originalSend(raw);};
  const frame=()=>document.getElementById('screen');
+ if(window.__CHORO_STUDIO__.testPrototypeNavigation){
+   await wait(()=>frame().getBoundingClientRect().width>0,'initial player geometry');
+   await window.runPrototypeNavigationTest({wait,assert,messages,originalSend});return;
+ }
  if(window.__CHORO_STUDIO__.testComments){
    let loaded=false;window.addEventListener('message',event=>{if(event.source===frame().contentWindow&&event.data?.type==='prototype-result')loaded=true;});
    await wait(()=>window.__CHORO_STUDIO__.prototype?loaded:Vvveb.Builder.iframe===frame()&&frame().contentDocument?.querySelector('h1'),'comment fixture document');
@@ -522,7 +526,8 @@ boot={'session':'test','screen_id':'test-screen','document':{'html':'<!doctype h
 boot['document']['js'] += ";window.addEventListener('message',event=>{if(event.source===parent&&event.data==='test-camera-gesture')document.body.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,clientX:200,clientY:100,deltaY:-20}));});"
 boot['testCameraState']='--camera-state' in sys.argv or '--camera-native-state' in sys.argv
 boot['testMobilePrototype']='--prototype-mobile' in sys.argv
-boot['prototype']='--prototype' in sys.argv or boot['testMobilePrototype']
+boot['testPrototypeNavigation']='--prototype-navigation' in sys.argv
+boot['prototype']='--prototype' in sys.argv or boot['testMobilePrototype'] or boot['testPrototypeNavigation']
 if boot['testMobilePrototype']:
     boot.update(width=390, height=844, native_toolbar=True, screens=[{'id':'next-screen'}])
     boot['document']['html']=boot['document']['html'].replace('<h1', '<header id="sticky">Mobile workflow</header><h1').replace('</body>','<div id="nested" style="height:100px;overflow-y:auto"><div style="height:400px">Scrollable list</div></div><a data-studio-screen="next-screen" id="next">Next screen</a><nav id="fixed">Device navigation</nav></body>')
@@ -588,6 +593,9 @@ def bundle(boot):
     if boot.get('testComments'):
         head,tail=html.rsplit('</body>',1)
         html=head+'<script>'+(root/'screen-comments.test.js').read_text()+'</script></body>'+tail
+    if boot.get('testPrototypeNavigation'):
+        head,tail=html.rsplit('</body>',1)
+        html=head+'<script>'+(root/'prototype-navigation.test.js').read_text()+'</script></body>'+tail
     return html
 specimen_file=next((arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--specimen-fixture=')),None)
 if specimen_file:

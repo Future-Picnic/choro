@@ -848,6 +848,8 @@ impl CenterArea {
                 agent_chat_expanded_thoughts: HashSet::new(),
                 agent_chat_expanded_work_log_groups: HashSet::new(),
                 agent_chat_expanded_work_log_entries: HashSet::new(),
+                agent_chat_expanded_file_cards: HashSet::new(),
+                agent_chat_expanded_check_cards: HashSet::new(),
                 agent_chat_footer_tasks_expanded: HashSet::new(),
                 agent_chat_queue_expanded: HashSet::new(),
                 agent_chat_usage_expanded: HashSet::new(),

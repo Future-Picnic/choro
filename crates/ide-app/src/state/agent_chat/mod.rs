@@ -494,6 +494,10 @@ enum StoredTimelinePayload {
         expanded: bool,
         #[serde(default)]
         structured: Option<ide_core::code_review::ReviewRun>,
+        #[serde(default)]
+        finding_state: Vec<code_review::CodeReviewFindingState>,
+        #[serde(default)]
+        card_revision: u64,
     },
     Verification {
         id: String,

@@ -20,7 +20,7 @@ impl CenterArea {
         if visible_files.is_empty() {
             return div().into_any_element();
         }
-        let counts_available=visible_files.iter().all(|f| !f.counts_unavailable);
+        let counts_available = visible_files.iter().all(|f| !f.counts_unavailable);
         let total_additions = visible_files
             .iter()
             .map(|file| file.additions)
@@ -30,6 +30,14 @@ impl CenterArea {
             .map(|file| file.deletions)
             .sum::<usize>();
         let all_count = visible_files.len();
+        let agent_id = agent.id;
+        let expansion_key = (agent_id, summary.snapshot_id, summary.turn_id.clone());
+        let expanded = self.agent_chat_expanded_file_cards.contains(&expansion_key);
+        let visible_count = if expanded {
+            all_count
+        } else {
+            all_count.min(CHAT_CARD_PREVIEW_LIMIT)
+        };
         let paths = visible_files
             .iter()
             .map(|file| file.path.clone())
@@ -38,6 +46,7 @@ impl CenterArea {
             .snapshot_id
             .map(|id| id.as_u128() as u64)
             .unwrap_or(agent.id.as_u128() as u64);
+        let preview_files = visible_files.iter().take(visible_count);
 
         crate::ui::style::chat_card(cx)
             .relative()
@@ -62,7 +71,11 @@ impl CenterArea {
                                 div()
                                     .text_size(crate::ui::design::text_ui())
                                     .text_color(crate::ui::design::t2(cx))
-                                    .child(if summary.attribution_version < 2 {"Files changed · Legacy record"} else {"Files changed"}),
+                                    .child(if summary.attribution_version < 2 {
+                                        "Files changed · Legacy record"
+                                    } else {
+                                        "Files changed"
+                                    }),
                             )
                             .child(
                                 div()
@@ -75,13 +88,21 @@ impl CenterArea {
                         div()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::sage(cx))
-                            .child(if counts_available {format!("+{}", total_additions)} else {"Details unavailable".to_string()}),
+                            .child(if counts_available {
+                                format!("+{}", total_additions)
+                            } else {
+                                "Details unavailable".to_string()
+                            }),
                     )
                     .child(
                         div()
                             .text_size(crate::ui::design::text_ui())
                             .text_color(crate::ui::design::rose(cx))
-                            .child(if counts_available {format!("-{}", total_deletions)} else {String::new()}),
+                            .child(if counts_available {
+                                format!("-{}", total_deletions)
+                            } else {
+                                String::new()
+                            }),
                     )
                     .child(div().flex_1())
                     .child(
@@ -139,19 +160,53 @@ impl CenterArea {
                         })),
                     ),
             )
-            .child(
-                v_flex()
-                    .w_full()
-                    .children(visible_files.iter().enumerate().map(|(row_index, file)| {
-                        self.render_changed_file_flat_row(
-                            agent,
-                            summary.snapshot_id,
-                            row_index,
-                            file,
-                            cx,
-                        )
-                    })),
-            )
+            .child(v_flex().w_full().children(preview_files.enumerate().map(
+                |(row_index, file)| {
+                    self.render_changed_file_flat_row(
+                        agent,
+                        summary.snapshot_id,
+                        row_index,
+                        file,
+                        cx,
+                    )
+                },
+            )))
+            .when(all_count > CHAT_CARD_PREVIEW_LIMIT, |card| {
+                card.child(
+                    h_flex()
+                        .w_full()
+                        .justify_end()
+                        .px(crate::ui::design::chat_card_body_pad_x())
+                        .py(crate::ui::design::chat_card_head_pad_y())
+                        .border_t_1()
+                        .border_color(crate::ui::design::line(cx))
+                        .child(
+                            crate::ui::style::secondary_button_compact(
+                                ("agent-chat-changed-files-toggle", card_key),
+                                if expanded {
+                                    "Show less".to_string()
+                                } else {
+                                    format!("Show all {all_count} files")
+                                },
+                            )
+                            .icon(if expanded {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if !this.agent_chat_expanded_file_cards.remove(&expansion_key) {
+                                        this.agent_chat_expanded_file_cards
+                                            .insert(expansion_key.clone());
+                                    }
+                                    this.remeasure_agent_chat_list(agent_id);
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -294,7 +349,9 @@ impl CenterArea {
                             .font_family(crate::ui::design::FONT_MONO)
                             .text_size(crate::ui::design::text_label())
                             .text_color(crate::ui::design::sage(cx))
-                            .child(if file.counts_unavailable { "—".to_string() } else if file.additions > 0 {
+                            .child(if file.counts_unavailable {
+                                "—".to_string()
+                            } else if file.additions > 0 {
                                 format!("+{}", file.additions)
                             } else {
                                 String::new()

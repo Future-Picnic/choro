@@ -81,6 +81,8 @@ mod time;
 mod voice;
 pub(crate) mod web_preview;
 
+const CHAT_CARD_PREVIEW_LIMIT: usize = 5;
+
 /// Native WKWebView children can remain AppKit's first responder after the
 /// user clicks back into GPUI. RootView calls this for every Choro-side click so
 /// inputs, editors, terminals, menus, and dialogs always reclaim the keyboard.
@@ -2043,6 +2045,9 @@ pub struct CenterArea {
     agent_chat_expanded_thoughts: HashSet<(Uuid, usize)>,
     agent_chat_expanded_work_log_groups: HashSet<(Uuid, usize)>,
     agent_chat_expanded_work_log_entries: HashSet<(Uuid, usize)>,
+    /// Full file/check lists are opt-in for each card in this app session.
+    agent_chat_expanded_file_cards: HashSet<(Uuid, Option<Uuid>, Option<String>)>,
+    agent_chat_expanded_check_cards: HashSet<(Uuid, String)>,
     agent_chat_footer_tasks_expanded: HashSet<Uuid>,
     /// Agents whose queued-turn strip above the composer is expanded to show
     /// every pending turn. Collapsed by default once more than two are queued.
