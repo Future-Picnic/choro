@@ -1355,9 +1355,7 @@ impl CenterArea {
         if self
             .agent_chat_attachment_pastes_pending
             .get(&agent.id)
-            .copied()
-            .unwrap_or_default()
-            > 0
+            .is_some_and(|pending| !pending.is_empty())
         {
             return;
         }
@@ -1491,6 +1489,11 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if agent.delegation.as_ref().is_some_and(|b| b.is_legacy_child()) {
+            self.agent_start_errors.insert(agent.id, ide_core::delegation::LEGACY_CLOSED.into());
+            cx.notify();
+            return;
+        }
         let draft = input.read(cx).value().trim().to_string();
         let selected_command = self.agent_chat_selected_commands.get(&agent.id).cloned();
         let preview_armed = self.agent_chat_preview_armed.contains(&agent.id);
@@ -3343,10 +3346,11 @@ impl CenterArea {
             return false;
         };
         let agent_id = agent.id;
-        *self
+        let paste_id = self
             .agent_chat_attachment_pastes_pending
             .entry(agent_id)
-            .or_default() += 1;
+            .or_default()
+            .start();
         self.agent_start_errors.remove(&agent_id);
         cx.notify();
 
@@ -3356,14 +3360,16 @@ impl CenterArea {
                 .spawn(async move { materialize_agent_clipboard_image(agent_id, &image) })
                 .await;
             this.update(cx, |this, cx| {
-                let finished_all = this
+                let Some(pending) = this
                     .agent_chat_attachment_pastes_pending
                     .get_mut(&agent_id)
-                    .is_some_and(|pending| {
-                        *pending = pending.saturating_sub(1);
-                        *pending == 0
-                    });
-                if finished_all {
+                else {
+                    return;
+                };
+                if !pending.finish(paste_id) {
+                    return;
+                }
+                if pending.is_empty() {
                     this.agent_chat_attachment_pastes_pending.remove(&agent_id);
                 }
                 match result {

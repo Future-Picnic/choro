@@ -13,6 +13,29 @@ use crate::ProjectId;
 pub mod context;
 pub mod workspace;
 
+pub const SHARED_EXECUTION_VERSION: u32 = 2;
+pub const LEGACY_CLOSED: &str = "This assignment used a retired private workspace. Its conversation and report are preserved. Ask the lead for a fresh assignment in the shared project.";
+
+/// Durable team membership survives completion and removal of the lead's
+/// runtime binding. Membership never transfers ownership of edit receipts.
+pub fn contribution_ids(parent: &crate::AgentRecord, runs: &[DelegationRun]) -> Vec<Uuid> {
+    let root = crate::agent_changes::working_directory(parent.runtime_path());
+    let mut ids = std::collections::BTreeSet::from([parent.id]);
+    for run in runs.iter().filter(|r| r.is_shared() && r.parent_agent_id == parent.id && r.project_id == parent.project_id) {
+        for task in &run.tasks {
+            let directory = crate::agent_changes::working_directory(&task.plan.repository);
+            if directory.starts_with(&root) {
+                for attempt in &task.attempts {
+                    if crate::agent_changes::working_directory(&attempt.workspace) == directory {
+                        ids.insert(attempt.child_agent_id);
+                    }
+                }
+            }
+        }
+    }
+    ids.into_iter().collect()
+}
+
 pub const BETA_DISABLED: &str =
     "Delegation is off. Turn it on in Settings → Band → Delegation to start a new run.";
 
@@ -24,6 +47,8 @@ pub fn enabled() -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationBinding {
+    #[serde(default)]
+    pub execution_version: u32,
     pub run_id: Uuid,
     pub parent_agent_id: Uuid,
     pub task_id: Option<Uuid>,
@@ -33,6 +58,12 @@ pub struct DelegationBinding {
     /// corrections. Legacy children are repaired from the run before dispatch.
     #[serde(default)]
     pub task_kind: Option<TaskKind>,
+}
+
+impl DelegationBinding {
+    pub fn is_legacy_child(&self) -> bool {
+        self.task_id.is_some() && self.execution_version != SHARED_EXECUTION_VERSION
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,12 +157,12 @@ impl TaskStatus {
         match self {
             Self::Planned => "Waiting for lead",
             Self::Queued => "Queued",
-            Self::Preparing => "Preparing working copy",
+            Self::Preparing => "Preparing Bandmate",
             Self::Running => "Working",
             Self::WaitingForLead => "Waiting for lead",
             Self::NeedsUser => "Needs your input",
             Self::CompletionRequested => "Finishing",
-            Self::ResultReady => "Bandmate finished",
+            Self::ResultReady => "Report ready",
             Self::Integrating => "Integrating",
             Self::Integrated => "Integrated",
             Self::Accepted => "Accepted",
@@ -160,6 +191,7 @@ pub struct TaskPlan {
     pub goal: String,
     pub brief: String,
     pub expected_outcome: String,
+    #[serde(default, rename = "working_directory", alias = "repository")]
     pub repository: PathBuf,
     #[serde(default)]
     pub dependencies: Vec<String>,
@@ -182,12 +214,16 @@ pub struct DelegationAttempt {
     pub child_agent_id: Uuid,
     pub generation: u64,
     pub workspace: PathBuf,
+    #[serde(default)]
+    pub prepared: bool,
+    // Decode old history, but never write project manifests into new records.
+    #[serde(default, skip_serializing)]
     pub snapshot: Option<workspace::WorkspaceSnapshot>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub completed_snapshot: Option<workspace::WorkspaceSnapshot>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub archive_snapshot: Option<workspace::WorkspaceSnapshot>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub working_copy_cleaned: bool,
     pub result: Option<TaskResult>,
     pub result_revision: Option<u64>,
@@ -206,8 +242,9 @@ pub struct DelegationTask {
     pub status: TaskStatus,
     pub attempts: Vec<DelegationAttempt>,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing)]
     pub integration: Option<workspace::IntegrationOperation>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub deletion_confirmation: Option<Uuid>,
     #[serde(default)]
     pub preview: Option<DelegationPreview>,
@@ -273,6 +310,8 @@ pub struct OperationReceipt {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DelegationRun {
+    #[serde(default)]
+    pub execution_version: u32,
     pub id: Uuid,
     pub parent_agent_id: Uuid,
     pub project_id: ProjectId,
@@ -308,6 +347,7 @@ impl DelegationRun {
         limits: DelegationLimits,
     ) -> Self {
         Self {
+            execution_version: SHARED_EXECUTION_VERSION,
             id: Uuid::new_v4(),
             parent_agent_id: parent,
             project_id: project,
@@ -328,6 +368,48 @@ impl DelegationRun {
             operations: BTreeMap::new(),
             verification: None,
         }
+    }
+    pub fn is_shared(&self) -> bool {
+        self.execution_version == SHARED_EXECUTION_VERSION
+    }
+
+    pub fn require_shared(&self) -> Result<()> {
+        ensure!(self.is_shared(), LEGACY_CLOSED);
+        Ok(())
+    }
+
+    /// Close legacy execution without touching any project or chat history.
+    pub fn close_legacy(&mut self) -> bool {
+        if self.is_shared() || self.events.iter().any(|e| e.kind == "legacy_closed") {
+            return false;
+        }
+        if !self.status.terminal() { self.status = RunStatus::Cancelled; }
+        self.pause_reason = Some(LEGACY_CLOSED.into());
+        self.wait = None;
+        self.deliveries.clear();
+        // Cached operation responses may contain obsolete execution state.
+        self.operations.clear();
+        for task in &mut self.tasks {
+            if !task.status.terminal() { task.status = TaskStatus::Cancelled; }
+            task.paused_status = None;
+            let previous_reason = task.reason.take().unwrap_or_default();
+            let summary = task.integration.take().map(|op| {
+                let paths = op.changes.iter().map(|c| &c.path).chain(op.applied_paths.iter())
+                    .collect::<std::collections::BTreeSet<_>>();
+                let names = paths.iter().take(64).map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
+                format!(" Legacy integration {:?}: {} recorded applied paths; {} potentially affected paths (first 64): {}. A crash may have advanced its journal beyond this record. Existing real-project edits are preserved; review these paths before continuing.", op.status, op.applied_paths.len(), paths.len(), names)
+            }).unwrap_or_default();
+            task.reason = Some(format!("{LEGACY_CLOSED}{summary} Previous status detail: {}", previous_reason.chars().take(2000).collect::<String>()));
+            task.deletion_confirmation = None;
+            for attempt in &mut task.attempts {
+                attempt.snapshot = None;
+                attempt.completed_snapshot = None;
+                attempt.archive_snapshot = None;
+            }
+        }
+        self.revision += 1;
+        self.event(self.parent_agent_id, None, "legacy_closed", LEGACY_CLOSED);
+        true
     }
     pub fn event(
         &mut self,
@@ -350,6 +432,7 @@ impl DelegationRun {
         let task_revision = task_id
             .and_then(|id| self.task(id).ok())
             .map(|t| t.revision);
+        if !self.is_shared() { return id; }
         self.deliveries.push(DelegationDelivery {
             id,
             target,
@@ -385,6 +468,7 @@ impl DelegationRun {
         Ok(())
     }
     pub fn require_lead(&self, caller: Uuid) -> Result<()> {
+        self.require_shared()?;
         ensure!(
             caller == self.parent_agent_id,
             "Only the lead can change assignments."
@@ -526,7 +610,7 @@ impl DelegationRun {
         Ok(())
     }
     pub fn ready_tasks(&self, global_active: usize) -> Vec<Uuid> {
-        if !self.status.dispatchable() {
+        if !self.is_shared() || !self.status.dispatchable() {
             return Vec::new();
         }
         let active = self
@@ -561,6 +645,7 @@ impl DelegationRun {
         text: String,
         blocking: bool,
     ) -> Result<()> {
+        self.require_shared()?;
         ensure!(
             !text.trim().is_empty() && text.len() <= 16_000,
             "Message must contain 1–16000 bytes."
@@ -600,7 +685,7 @@ impl DelegationRun {
                 a.report_requested = false;
             }
             if task.status == TaskStatus::Paused {
-                if task.attempt().is_some_and(|a| a.snapshot.is_some()) {
+                if task.attempt().is_some_and(|a| a.prepared) {
                     task.paused_status = Some(TaskStatus::Running);
                 }
             } else {
@@ -633,6 +718,7 @@ impl DelegationRun {
         revision: u64,
         result: TaskResult,
     ) -> Result<()> {
+        self.require_shared()?;
         let task = self.task_mut(task_id)?;
         ensure!(
             task.revision == revision,
@@ -668,6 +754,7 @@ impl DelegationRun {
     /// Trusted user surface only. Corrections are durable and revoke stale
     /// results immediately; they never grant the child additional authority.
     pub fn user_correction(&mut self, task_id: Uuid, text: String) -> Result<()> {
+        self.require_shared()?;
         ensure!(
             !self.status.terminal(),
             "Start a new task to change a completed run."
@@ -686,7 +773,7 @@ impl DelegationRun {
             "Changes are being combined. Finish integration recovery before changing this assignment. Your draft is preserved."
         );
         let task = self.task_mut(task_id)?;
-        let fresh_baseline = task.status.satisfied() || task.status == TaskStatus::Failed;
+        let fresh_attempt = task.status.satisfied() || task.status == TaskStatus::Failed;
         task.revision += 1;
         task.plan.brief.push_str(&format!(
             "\n\nUser correction (revision {}):\n{text}",
@@ -694,9 +781,9 @@ impl DelegationRun {
         ));
         let revision = task.revision;
         let child = task.attempt_mut().map(|a| {
-            // An integrated result remains history. The next attempt captures
-            // a new parent baseline rather than applying the old delta twice.
-            if !fresh_baseline {
+            // An accepted report remains history. A fresh attempt reuses the
+            // same folder and reviews the current shared work.
+            if !fresh_attempt {
                 a.result = None;
                 a.result_revision = None;
                 a.completed_snapshot = None;
@@ -706,11 +793,11 @@ impl DelegationRun {
         });
         task.integration = None;
         task.deletion_confirmation = None;
-        if fresh_baseline {
+        if fresh_attempt {
             task.status = TaskStatus::Queued;
             task.reason = None;
         } else if task.status == TaskStatus::Paused {
-            if task.attempt().is_some_and(|a| a.snapshot.is_some()) {
+            if task.attempt().is_some_and(|a| a.prepared) {
                 task.paused_status = Some(TaskStatus::Running);
             }
         } else if !matches!(
@@ -725,7 +812,7 @@ impl DelegationRun {
             "user_correction",
             text.clone(),
         );
-        if let Some(child) = child.filter(|_| !fresh_baseline) {
+        if let Some(child) = child.filter(|_| !fresh_attempt) {
             self.queue(child,Some(task_id),format!("User correction. Task revision is now {revision}; previous results are invalid.\n{text}"));
         }
         self.queue(
@@ -767,16 +854,16 @@ impl DelegationRun {
                 );
                 ensure!(
                     !task.status.satisfied(),
-                    "Integrated work cannot be cancelled or reverted automatically."
+                    "Accepted work cannot be cancelled or reverted automatically."
                 );
                 task.status = TaskStatus::Cancelled;
                 task.reason = Some(reason.into());
             }
             "accept" => {
                 ensure!(
-                    task.plan.kind == TaskKind::Consultation
-                        && task.status == TaskStatus::ResultReady,
-                    "Only completed consultation results can be accepted."
+                    task.status == TaskStatus::ResultReady
+                        && task.attempt().is_some_and(|a| a.result.is_some() && a.result_revision == Some(task.revision)),
+                    "Only a settled report for the current task revision can be accepted."
                 );
                 task.status = TaskStatus::Accepted;
             }
@@ -814,6 +901,7 @@ impl DelegationRun {
     /// Trusted user Resume/Send only, after provider history is reconciled by
     /// the coordinator. No model tool may clear a user's pause.
     pub fn resume_user_task(&mut self, task_id: Uuid) -> Result<()> {
+        self.require_shared()?;
         ensure!(self.status.dispatchable(), "Resume the parent task first.");
         let task = self.task(task_id)?;
         ensure!(
@@ -835,9 +923,9 @@ impl DelegationRun {
         if previous == TaskStatus::Preparing
             && task
                 .attempt()
-                .is_some_and(|a| a.generation == 0 && a.snapshot.is_none())
+                .is_some_and(|a| a.generation == 0 && !a.prepared)
         {
-            // No child execution began. A capture interrupted by restart must
+            // No child execution began. Preparation interrupted by restart must
             // be prepared again instead of leaving the task stuck Preparing.
             task.status = TaskStatus::Queued;
         }
@@ -897,6 +985,7 @@ impl DelegationRun {
     }
     /// Only called by a trusted UI action, never exposed as an agent command.
     pub fn resume(&mut self) -> Result<()> {
+        self.require_shared()?;
         ensure!(
             matches!(
                 self.status,
@@ -935,7 +1024,7 @@ impl DelegationRun {
         );
         ensure!(
             self.tasks.iter().all(|t| t.status.terminal()),
-            "Assignments remain unfinished or unintegrated."
+            "Assignments remain unfinished or unaccepted."
         );
         ensure!(
             !summary.trim().is_empty() && !verification.trim().is_empty(),
@@ -1087,6 +1176,7 @@ mod tests {
         )
         .unwrap();
         run.tasks[0].attempts.push(DelegationAttempt {
+            prepared: false,
             id: Uuid::new_v4(),
             child_agent_id: Uuid::new_v4(),
             generation: 1,
@@ -1227,4 +1317,27 @@ mod tests {
         assert!(run.wait_satisfied());
         assert!(run.ready_tasks(6).is_empty());
     }
+    #[test]
+    fn missing_execution_version_is_closed_history_with_partial_integration_summary() {
+        let (mut run, expert) = fixture();
+        run.add_plans(run.parent_agent_id, vec![plan(&expert, "a", vec![])], &[expert]).unwrap();
+        let mut value = serde_json::to_value(&run).unwrap();
+        value.as_object_mut().unwrap().remove("execution_version");
+        let mut legacy: DelegationRun = serde_json::from_value(value).unwrap();
+        legacy.tasks[0].integration = Some(workspace::IntegrationOperation {
+            id:Uuid::new_v4(),source:"/project".into(),storage:"/retired".into(),head:None,branch:None,index_hash:None,changes:vec![],conflicts:vec![],resolution_dir:"/retired/resolve".into(),applied_paths:vec!["shared.rs".into()],status:workspace::IntegrationStatus::Applying,archive_snapshot:None,
+        });
+        assert!(legacy.close_legacy());
+        assert!(legacy.tasks[0].reason.as_ref().unwrap().contains("shared.rs"));
+        assert!(legacy.tasks[0].reason.as_ref().unwrap().contains("Applying"));
+        assert!(legacy.tasks[0].integration.is_none());
+        assert!(legacy.resume().is_err());
+        assert!(legacy.control(legacy.parent_agent_id,legacy.tasks[0].id,"request_changes","continue").is_err());
+        assert!(legacy.message(legacy.parent_agent_id,legacy.tasks[0].id,"continue".into(),false).is_err());
+        legacy.queue(legacy.parent_agent_id,None,"late".into());
+        assert!(legacy.deliveries.is_empty());
+        let json = serde_json::to_value(&legacy).unwrap();
+        assert!(json["tasks"][0].get("integration").is_none());
+    }
+
 }

@@ -31,7 +31,6 @@ use ide_core::{AgentAccessMode, AgentEffort, AgentModel, AgentRecord, TaskRef};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub(crate) use changed_files::bounded_line_diff_counts;
 pub(crate) use artifacts::restore_saved_artifacts;
 pub(crate) use changed_files::VisualizationArtifactFilter;
 pub(crate) use persistence::{load_file_ledger_from_store, load_latest_plan_from_store};
@@ -700,21 +699,6 @@ impl AgentChatState {
         self.controllers.contains_key(&agent_id)
     }
 
-    pub(crate) fn record_delegation_integration(
-        &mut self,
-        id: Uuid,
-        summary: ChangedFilesSummary,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(session) = self.sessions.get_mut(&id) {
-            if session.timeline.iter().any(|item|matches!(item,AgentChatTimelineItem::ChangedFiles(old)if old.turn_id==summary.turn_id)){return;}
-            if let Some((receipt, ledger)) = apply_changed_files_summary(session, summary) {
-                persist_changed_files_turn(id, receipt, ledger, cx);
-            }
-            self.publish_change(id, ChatChangeCategories::CONTENT, cx);
-        }
-    }
-
     pub(crate) fn background_reserved(&self, agent_id: Uuid) -> bool {
         self.delegation_reservations.contains(&agent_id)
     }
@@ -821,6 +805,7 @@ impl AgentChatState {
         initial_mode: AgentInteractionMode,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(!agent.delegation.as_ref().is_some_and(|b| b.is_legacy_child()), ide_core::delegation::LEGACY_CLOSED);
         if self.controllers.contains_key(&agent.id) {
             return Ok(());
         }

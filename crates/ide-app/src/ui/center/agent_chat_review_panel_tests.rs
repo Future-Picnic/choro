@@ -73,7 +73,8 @@ fn run(parent: Uuid, state: ReviewRunState) -> ReviewRun {
         .into_iter()
         .enumerate()
         .map(|(i, path)| ReviewFile {
-            id: path.into(),
+            author_id: None,
+id: path.into(),
             path: path.into(),
             change_kind: "modified".into(),
             attributed_ranges: vec![],

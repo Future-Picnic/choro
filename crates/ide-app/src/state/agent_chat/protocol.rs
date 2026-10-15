@@ -424,6 +424,7 @@ pub(super) fn spawn_chat_backend_after_stop(
     ChatBackendController,
     async_channel::Receiver<ChatBackendEvent>,
 )> {
+    anyhow::ensure!(!agent.delegation.as_ref().is_some_and(|b| b.is_legacy_child()), ide_core::delegation::LEGACY_CLOSED);
     if let Some(run_id) = agent.review_run_id {
         anyhow::ensure!(agent.chat_session_id.is_none() && agent.cli_session_id.is_none() && agent.delegation.is_none() && agent.studio_context.is_none() && agent.design_context.is_none(), "Reviewer must have a fresh isolated role and session");
         choro_mcp_binary_path().context("Build or install Choro MCP before reviewing code")?;
@@ -1724,6 +1725,7 @@ mod tests {
             assert_eq!(initial_chat_prompt(&agent, false), None);
             agent.hidden_doc_assistant = false;
             agent.delegation = Some(ide_core::delegation::DelegationBinding {
+            execution_version: ide_core::delegation::SHARED_EXECUTION_VERSION,
                 run_id: uuid::Uuid::new_v4(),
                 parent_agent_id: agent.id,
                 task_id: None,
@@ -1744,6 +1746,9 @@ mod tests {
                 assert_eq!(initial_chat_prompt(&agent, false), None);
                 assert_eq!(initial_chat_prompt(&agent, true), None);
             }
+            agent.delegation.as_mut().unwrap().execution_version = 0;
+            let error = spawn_chat_backend_after_stop(agent.clone(), AgentInteractionMode::Default, None, None).err().expect("Legacy startup must fail before provider setup");
+            assert!(error.to_string().contains("retired private workspace"));
             agent.delegation = None;
             assert_eq!(
                 initial_chat_prompt(&agent, false),
@@ -1776,6 +1781,7 @@ mod tests {
         };
         assert!(args(&agent).is_empty());
         agent.delegation = Some(ide_core::delegation::DelegationBinding {
+            execution_version: ide_core::delegation::SHARED_EXECUTION_VERSION,
             run_id: uuid::Uuid::new_v4(),
             parent_agent_id: agent.id,
             task_id: None,

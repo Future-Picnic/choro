@@ -85,12 +85,7 @@ impl CenterArea {
         on_close: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> Button {
-        Button::new(id)
-            .ghost()
-            .xsmall()
-            .compact()
-            .h(crate::ui::design::control_h())
-            .icon(IconName::Close)
+        crate::ui::style::header_icon_button(id, IconName::Close, cx)
             .tooltip(tooltip)
             .on_click(cx.listener(move |this, _, window, cx| on_close(this, window, cx)))
     }
@@ -411,17 +406,20 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
-        let mut exact_files = std::collections::BTreeMap::<PathBuf, (usize, usize, bool)>::new();
-        if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            let reconciled = session
-                .changed_files
-                .reconciled_final_files(agent.runtime_path());
-            let filter = VisualizationArtifactFilter::new(agent.id, agent.runtime_path());
-            for file in reconciled
-                .conversation_files()
-                .filter(|file| !filter.is_artifact(&file.path))
-            {
-                exact_files.insert(file.path.clone(), (file.additions, file.deletions, file.counts_unavailable));
+        let contributors = self.conversation_contributors(agent, cx);
+        let team = contributors.len() > 1;
+        let loading = contributors.iter().any(|a| self.agent_chats.read(cx).saved_artifacts_loading(a.id));
+        let errors = contributors.iter().filter_map(|a| self.agent_chats.read(cx).saved_artifacts_error(a.id).map(|e| format!("{}: {e}", a.title))).collect::<Vec<_>>();
+        let retry_contributors = contributors.clone();
+        let mut exact_files = std::collections::BTreeMap::<PathBuf, Vec<(AgentRecord, PathBuf, usize, usize, bool)>>::new();
+        for contributor in contributors {
+            if let Some(session) = self.agent_chats.read(cx).session(contributor.id) {
+                let reconciled = session.changed_files.reconciled_final_files(contributor.runtime_path());
+                let filter = VisualizationArtifactFilter::new(contributor.id, contributor.runtime_path());
+                for file in reconciled.conversation_files().filter(|f| !filter.is_artifact(&f.path)) {
+                    let absolute = ide_core::agent_changes::working_directory(contributor.runtime_path()).join(&file.path);
+                    exact_files.entry(absolute).or_default().push((contributor.clone(), file.path.clone(), file.additions, file.deletions, file.counts_unavailable));
+                }
             }
         }
         let exact_rows = exact_files.into_iter().collect::<Vec<_>>();
@@ -455,7 +453,17 @@ impl CenterArea {
             .p_3()
             .gap_1()
             .overflow_y_scrollbar()
-            .when(row_count == 0, |list| {
+            .when(loading, |list| list.child(div().text_size(crate::ui::design::text_ui()).child("Loading saved team Files…")))
+            .when(!errors.is_empty(), |list| list.child(
+                v_flex().gap_2().child(errors.join("\n"))
+                    .child(crate::ui::style::dialog_neutral_button(("retry-team-files", agent_id.as_u128() as u64), "Retry", cx)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.agent_chats.update(cx, |chats, cx| {
+                                for contributor in &retry_contributors { chats.retry_saved_artifacts(contributor, cx); }
+                            });
+                        })))
+            ))
+            .when(row_count == 0 && !loading, |list| {
                 list.child(
                     v_flex()
                         .h_full()
@@ -480,14 +488,21 @@ impl CenterArea {
                 )
             })
             .when(!exact_rows.is_empty(), |list| {
-                list.child(agent_files_section_label("Edited in this chat", cx))
-                    .children(exact_rows.into_iter().enumerate().map(
-                        |(index, (path, (add, del, counts_unavailable)))| {
-                            self.render_agent_file_ledger_row(
-                                project, agent, index, path, add, del, counts_unavailable, cx,
-                            )
-                        },
-                    ))
+                list.child(agent_files_section_label(if team { "Team contributions" } else { "Edited in this chat" }, cx))
+                    .children(exact_rows.into_iter().enumerate().map(|(index, (absolute, authors))| {
+                        let label = absolute.strip_prefix(agent.runtime_path()).unwrap_or(&absolute).display().to_string();
+                        let overlapping = authors.len() > 1;
+                        v_flex()
+                            .when(team, |group| group.child(
+                                h_flex().gap_2().px_2().pt_2()
+                                    .child(div().text_size(crate::ui::design::text_body()).child(label))
+                                    .when(overlapping, |row| row.child(div().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::t3(cx)).child("Combined counts unavailable")))
+                            ))
+                            .children(authors.into_iter().enumerate().map(|(author_index, (author, path, add, del, uncertain))| {
+                                self.render_agent_file_ledger_row(project, agent.id, &author, index * 1000 + author_index, path, add, del, uncertain, team, cx)
+                            }))
+                            .into_any_element()
+                    }))
             })
             .into_any_element();
 
@@ -505,12 +520,14 @@ impl CenterArea {
     fn render_agent_file_ledger_row(
         &self,
         project: ProjectId,
+        drawer_agent_id: Uuid,
         agent: &AgentRecord,
         index: usize,
         path: PathBuf,
         add: usize,
         del: usize,
         counts_unavailable: bool,
+        show_author: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let agent_id = agent.id;
@@ -518,6 +535,7 @@ impl CenterArea {
         let absolute = agent.runtime_path().join(&path);
         let label = SharedString::from(path.display().to_string());
         let diff_title = label.clone();
+        let label = if show_author { SharedString::from(format!("By {}", agent.title)) } else { label };
         h_flex()
             .id(("agent-connected-file", index))
             .w_full()
@@ -539,7 +557,7 @@ impl CenterArea {
                     })
                     .unwrap_or_default();
                 this.open_agent_diff_drawer(
-                    agent_id,
+                    drawer_agent_id,
                     project,
                     DiffKind::ConversationFileHistory {
                         repo_path: repo_path.clone(),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use gpui::{
@@ -15,6 +15,7 @@ use gpui_component::{
     v_flex, Disableable, IconName, Root,
 };
 use ide_core::code_review::{ReviewRun, ReviewRunState};
+use ide_core::delegation::{DelegationRun, DelegationTask, RunStatus, TaskStatus};
 use ide_core::{AgentRecord, AgentRuntimeKind, ProjectId};
 use uuid::Uuid;
 
@@ -23,6 +24,7 @@ use crate::state::agent_chat::{
     AgentChatMessage, AgentChatStatus, AgentChatTimelineItem, REVIEW_CHECKLIST_REQUEST_MARKER,
 };
 use crate::state::agent_navigation::AgentNavigationRuntime;
+use crate::state::delegation::{display, DelegationChanged, DelegationHandle};
 use crate::state::{AgentChatState, AgentRecords, Workspace};
 use crate::ui::center::CenterArea;
 use crate::ui::project_list::ProjectList;
@@ -316,6 +318,7 @@ impl AnimationHandoff {
 struct CompanionItem {
     project_id: ProjectId,
     agent_id: Uuid,
+    assignment_id: Option<Uuid>,
     title: String,
     project_name: String,
     status: String,
@@ -327,9 +330,11 @@ struct CompanionItem {
 
 impl CompanionItem {
     fn priority(&self) -> u8 {
-        // Urgent attention still comes first; a live review comes before old
-        // Done notices so the avatar and preview both communicate activity.
-        if self.reviewing {
+        // Live reviews and Bandmates outrank old Done notices. Human attention
+        // still comes first, even when the lead is idle between delegated turns.
+        if self.reviewing
+            || (self.assignment_id.is_some() && self.animation == CompanionAnimation::Working)
+        {
             1
         } else if self.animation == CompanionAnimation::NeedsAttention {
             0
@@ -871,10 +876,49 @@ impl CompanionView {
             .collect();
         let chats = self.agent_chats.read(cx);
         let mut items = Vec::new();
+        let mut active_band_parents = HashSet::new();
+        let managed_children: HashSet<_> = records
+            .iter()
+            .filter(|agent| agent.delegation.as_ref().is_some_and(|b| b.task_id.is_some()))
+            .map(|agent| agent.id)
+            .collect();
+
+        // Managed chats intentionally hide ordinary turn notifications. Their
+        // durable assignments remain visible even before a session is loaded.
+        if let Some(handle) = cx.try_global::<DelegationHandle>() {
+            for run in &handle.0.read(cx).runs {
+                let Some(project_name) = project_names.get(&run.project_id) else {
+                    continue;
+                };
+                for task in &run.tasks {
+                    let child = task.attempt().map(|attempt| attempt.child_agent_id);
+                    let needs_user = child
+                        .and_then(|id| chats.session(id))
+                        .is_some_and(|session| {
+                            session.pending_approval.is_some()
+                                || session.pending_user_input.is_some()
+                                || session.status == AgentChatStatus::PlanReady
+                        });
+                    let updated_at = child
+                        .and_then(|id| records_by_id.get(&id))
+                        .or_else(|| records_by_id.get(&run.parent_agent_id))
+                        .map_or(0, |agent| agent.updated_at);
+                    if let Some(item) =
+                        bandmate_activity_item(run, task, project_name, updated_at, needs_user)
+                    {
+                        active_band_parents.insert(run.parent_agent_id);
+                        items.push(item);
+                    }
+                }
+            }
+        }
 
         // Coding and review workers are live activity, not unread attention.
         // Review owns a separate controller and leaves coding status idle/done.
         for agent in &records {
+            if managed_children.contains(&agent.id) {
+                continue;
+            }
             let Some(project_name) = project_names.get(&agent.project_id) else {
                 continue;
             };
@@ -910,6 +954,14 @@ impl CompanionView {
         // Attention is coordinator-owned and remains here until the exact
         // conversation is opened or the underlying event becomes stale.
         for attention in crate::notifications::companion_attention() {
+            // Internal child turns must not duplicate assignment rows or make
+            // the lead look finished while its Bandmates are still working.
+            if managed_children.contains(&attention.agent_id)
+                || (active_band_parents.contains(&attention.agent_id)
+                    && attention.category == crate::notifications::AttentionCategory::Completed)
+            {
+                continue;
+            }
             // A coding-turn Done notice must not duplicate or outrank this
             // conversation's live review. Leave the notice unacknowledged.
             if chats.review_blocks_writing(attention.agent_id) {
@@ -935,6 +987,7 @@ impl CompanionView {
             items.push(CompanionItem {
                 project_id: attention.project_id,
                 agent_id: attention.agent_id,
+                assignment_id: None,
                 title: attention.agent_title,
                 project_name: attention.project_name,
                 status,
@@ -957,6 +1010,7 @@ impl CompanionView {
     fn render_item_row(&self, item: CompanionItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         let project_id = item.project_id;
         let agent_id = item.agent_id;
+        let row_id = item.assignment_id.unwrap_or(agent_id);
         let acknowledge = item.acknowledge_on_open;
         let title = SharedString::from(item.title);
         let status = SharedString::from(item.status);
@@ -968,7 +1022,7 @@ impl CompanionView {
         let tooltip = SharedString::from(format!("{title}\n{status} · {project_name}"));
 
         crate::ui::style::companion_notification_card(
-            SharedString::from(format!("companion-attention-row-{agent_id}")),
+            SharedString::from(format!("companion-attention-row-{row_id}")),
             cx,
         )
         .h(px(ATTENTION_ROW_HEIGHT))
@@ -1006,7 +1060,7 @@ impl CompanionView {
                             row.child(crate::ui::logo_spinner::review_spinner(
                                 12.,
                                 "companion-reviewing",
-                                agent_id.as_u128() as usize,
+                                row_id.as_u128() as usize,
                                 crate::ui::design::teal(cx),
                             ))
                         })
@@ -1014,7 +1068,7 @@ impl CompanionView {
                             row.child(crate::ui::logo_spinner::logo_spinner(
                                 12.,
                                 "companion-working",
-                                agent_id.as_u128() as usize,
+                                row_id.as_u128() as usize,
                                 crate::ui::design::t2(cx),
                             ))
                         })
@@ -1513,6 +1567,13 @@ pub(crate) fn view(
         })
         .detach();
         cx.observe(&agents, |_, _, cx| cx.notify()).detach();
+        if let Some(delegation) = cx
+            .try_global::<DelegationHandle>()
+            .map(|handle| handle.0.clone())
+        {
+            cx.subscribe(&delegation, |_, _, _: &DelegationChanged, cx| cx.notify())
+                .detach();
+        }
         cx.subscribe(&agent_chats, |_, _, event, cx| {
             if let crate::state::agent_chat::AgentChatEvent::SessionChanged(change) = event {
                 if change.categories.navigation || change.categories.identity || change.categories.controls { cx.notify(); }
@@ -1705,12 +1766,57 @@ fn terminal_working_item(
     Some(CompanionItem {
         project_id: agent.project_id,
         agent_id: agent.id,
+        assignment_id: None,
         title: agent.title.clone(),
         project_name: project_name.to_string(),
         status: "Working".to_string(),
         animation: CompanionAnimation::Working,
         reviewing: false,
         created_at: agent.updated_at,
+        acknowledge_on_open: false,
+    })
+}
+
+fn bandmate_activity_item(
+    run: &DelegationRun,
+    task: &DelegationTask,
+    project_name: &str,
+    updated_at: u64,
+    needs_user: bool,
+) -> Option<CompanionItem> {
+    if !run.is_shared()
+        || run.status.terminal()
+        || matches!(run.status, RunStatus::Paused | RunStatus::Interrupted)
+        || task.status.terminal()
+        || task.status == TaskStatus::Paused
+    {
+        return None;
+    }
+    let animation = match display::task_activity(run.status, task, needs_user) {
+        display::DelegationActivity::Attention => CompanionAnimation::NeedsAttention,
+        display::DelegationActivity::Working
+            if display::expert_is_working(task.status)
+                || task.status == TaskStatus::WaitingForLead =>
+        {
+            CompanionAnimation::Working
+        }
+        _ => return None,
+    };
+    Some(CompanionItem {
+        project_id: run.project_id,
+        agent_id: task
+            .attempt()
+            .map_or(run.parent_agent_id, |attempt| attempt.child_agent_id),
+        assignment_id: Some(task.id),
+        title: format!("{} · {}", task.expert.profile.name, task.plan.goal),
+        project_name: project_name.to_owned(),
+        status: format!(
+            "Bandmate · {}",
+            display::task_label(run.status, task, needs_user)
+        ),
+        animation,
+        reviewing: false,
+        created_at: updated_at,
         acknowledge_on_open: false,
     })
 }
@@ -1741,6 +1847,7 @@ fn chat_activity_item(
     Some(CompanionItem {
         project_id: agent.project_id,
         agent_id: agent.id,
+        assignment_id: None,
         title: agent.title.clone(),
         project_name: project_name.to_string(),
         status: label.to_string(),
@@ -1841,6 +1948,9 @@ fn companion_bounds_in_display(
 }
 
 #[cfg(test)]
+mod bandmates_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::notifications::AttentionCategory;
@@ -1850,6 +1960,7 @@ mod tests {
         CompanionItem {
             project_id: ProjectId::new(),
             agent_id: Uuid::new_v4(),
+            assignment_id: None,
             title: "Agent".to_string(),
             project_name: "Project".to_string(),
             status: "State".to_string(),

@@ -107,23 +107,7 @@ fn typo_role_request_survives_invalid_plan_and_schedules_exactly_its_team() {
         json!({"key":"frontend","expert_id":expert_id("Frontend Engineer"),"goal":"Implement a standalone page","brief":"Build the approved layout and copy in a new HTML file","expected_outcome":"Working new page","kind":"implementation","dependencies":["design","copy"]}),
     ];
     let mut args = json!({"authorization_id":source,"operation_key":"role-request","expected_revision":0,"tasks":tasks});
-    let error = DelegationTool("delegation_plan")
-        .call_enabled(&ctx, &args)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("repository") && error.contains("Each task"));
-    assert!(store.load_delegations().unwrap().is_empty());
-    let still_authorized = store
-        .latest_expert_authorization(ctx.agent_id().unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(still_authorized).unwrap(),
-        serde_json::to_value(&grant).unwrap()
-    );
-    for task in args["tasks"].as_array_mut().unwrap() {
-        task["repository"] = discovery["working_directory"].clone();
-    }
+    // Directory is optional and defaults to the lead, including consultations.
     let first = DelegationTool("delegation_plan")
         .call_enabled(&ctx, &args)
         .unwrap();
@@ -383,6 +367,7 @@ fn child_scope_cannot_read_sibling_or_operate_as_lead_and_stale_result_is_reject
             let t = &mut r.tasks[0];
             t.status = TaskStatus::Running;
             t.attempts.push(DelegationAttempt {
+            prepared: false,
                 id: attempt,
                 child_agent_id: child,
                 generation: 1,
@@ -410,6 +395,7 @@ fn child_scope_cannot_read_sibling_or_operate_as_lead_and_stale_result_is_reject
         agent_id: Some(child),
         store: ctx.store.clone(),
         delegation_scope: Some(DelegationBinding {
+            execution_version: ide_core::delegation::SHARED_EXECUTION_VERSION,
             run_id,
             parent_agent_id: run.parent_agent_id,
             task_id: Some(task),
@@ -852,4 +838,28 @@ fn retry_model_authority_is_not_a_global_preference() {
         assert!(DelegationTool("delegation_plan").call(&ctx, &args).is_err());
         assert!(store.load_delegation(second).unwrap().tasks.is_empty());
     }
+}
+
+#[test]
+fn optional_directory_accepts_non_git_and_alias_rejects_conflicts() {
+    let (dir, ctx, source, p) = fixture();
+    let store = ctx.store().unwrap();
+    let mut parent = store.load_agents().unwrap().remove(0);
+    let folder = dir.path().join("notes");
+    std::fs::create_dir(&folder).unwrap();
+    parent.repository_path = Some(folder.clone());
+    store.save_agents(&[parent.clone()]).unwrap();
+    let mut args = plan(&ctx, source, &p);
+    args["tasks"][0].as_object_mut().unwrap().remove("repository");
+    args["tasks"][0]["kind"] = json!("consultation");
+    let answer = content(DelegationTool("delegation_plan").call_enabled(&ctx, &args).unwrap());
+    let run = store.load_delegation(Uuid::parse_str(answer["run_id"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(run.tasks[0].plan.repository, folder.canonicalize().unwrap());
+    assert!(!store.app_data_dir().join("delegation").exists());
+    args["tasks"][0]["repository"] = json!(".");
+    args["tasks"][0]["working_directory"] = json!("different");
+    assert!(parse_plans(&args).unwrap_err().to_string().contains("conflict"));
+    args["tasks"][0]["working_directory"] = json!(".");
+    assert_eq!(parse_plans(&args).unwrap()[0].repository, std::path::Path::new("."));
+    assert!(!tools().iter().any(|t| t.name() == "delegation_integrate"));
 }

@@ -177,6 +177,12 @@ impl CenterArea {
         })
     }
 
+    pub(super) fn delegated_task_detail(&self, run: &DelegationRun, task: &DelegationTask, cx: &App) -> Option<String> {
+        cx.try_global::<DelegationHandle>().and_then(|handle| {
+            display::task_detail_across_runs(&handle.0.read(cx).runs, run, task)
+        }).or_else(|| display::task_detail(run, task))
+    }
+
     pub(super) fn expert_bandmate_index(&self, agent: &AgentRecord, cx: &App) -> Option<usize> {
         let binding = agent.delegation.as_ref()?;
         let task_id = binding.task_id?;
@@ -259,6 +265,19 @@ impl CenterArea {
     /// Open one delegated assignment's conversation in the Expert panel beside
     /// its parent. Used by explicit clicks only (cards, composer chip, sidebar);
     /// activity never opens anything on its own.
+    pub(super) fn open_delegated_assignment(&mut self, run: Uuid, task: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(handle) = cx.try_global::<DelegationHandle>().cloned() else { return; };
+        match handle.0.update(cx, |state, cx| state.ensure_assignment_chat(run, task, cx)) {
+            Ok(child) => self.open_delegated_task(child, window, cx),
+            Err(error) => {
+                if let Some(parent) = handle.0.read(cx).runs.iter().find(|r| r.id == run).map(|r| r.parent_agent_id) {
+                    self.agent_start_errors.insert(parent, error.to_string());
+                }
+                cx.notify();
+            }
+        }
+    }
+
     pub(crate) fn open_delegated_task(
         &mut self,
         child: Uuid,
@@ -525,6 +544,10 @@ impl CenterArea {
                             .text_color(crate::ui::design::t3(cx))
                             .child(meta.join("  ·  ")),
                     )
+                    .when_some(self.delegated_task_detail(run, task, cx), |body, detail| {
+                        body.child(div().whitespace_normal().text_size(crate::ui::design::text_ui())
+                            .text_color(crate::ui::design::t2(cx)).child(detail))
+                    })
                     .child(
                         crate::ui::style::delegation_card_action_button(
                             ("assignment-brief-toggle", task_id.as_u128() as u64),
@@ -660,6 +683,9 @@ impl CenterArea {
         let mut row = h_flex().gap_2().flex_wrap().items_center();
         if let Some(binding) = agent.delegation.as_ref().filter(|b| b.task_id.is_some()) {
             let parent = binding.parent_agent_id;
+            if let Some(status) = self.render_expert_chat_status(agent, cx) {
+                row = row.child(status);
+            }
             let pause_hint = cx.try_global::<DelegationHandle>().and_then(|h| {
                 let run = h.0.read(cx).runs.iter().find(|r| r.id == binding.run_id)?;
                 if run.status.stopped() {
@@ -752,13 +778,15 @@ impl CenterArea {
         parent: Uuid,
         cx: &App,
     ) -> Option<gpui::AnyElement> {
-        self.agent_start_errors.get(&parent).map(|error| {
+        self.agent_start_errors.get(&parent).cloned()
+            .or_else(|| cx.try_global::<DelegationHandle>().and_then(|h| h.0.read(cx).error.clone()))
+            .map(|error| {
             div()
                 .w_full()
                 .whitespace_normal()
                 .text_size(crate::ui::design::text_ui())
                 .text_color(crate::ui::design::rose(cx))
-                .child(error.clone())
+                .child(error)
                 .into_any_element()
         })
     }
@@ -770,7 +798,9 @@ impl CenterArea {
         surface: &'static str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        h_flex()
+        let reason = self.delegation_runs(parent, cx).into_iter()
+            .find(|run| run.id == run_id).and_then(|run| run.pause_reason);
+        let actions = h_flex()
             .gap_2()
             .flex_wrap()
             .child(
@@ -813,7 +843,13 @@ impl CenterArea {
                     cx.notify();
                 })),
             )
-            .into_any_element()
+            .into_any_element();
+        v_flex().w_full().min_w(px(0.)).gap_2()
+            .when_some(reason, |body, reason| {
+                body.child(div().whitespace_normal().text_size(crate::ui::design::text_ui())
+                    .text_color(crate::ui::design::t2(cx)).child(reason))
+            })
+            .child(actions).into_any_element()
     }
 
     /// A second entry point for the same Band panel, outside the composer.

@@ -34,11 +34,6 @@ export CHORO_DEMO_RESET=1
 export CHORO_DATA_DIR="$HOME/Library/Application Support/com.ritmus.choro.demo"
 export CHORO_INSTALLATION_KEYCHAIN_SERVICE="com.ritmus.choro.installation.demo.$RUN_ID"
 
-TOKEN_FILE="$HOME/Library/Application Support/com.ritmus.choro.demo-secrets/jira-token"
-if [[ -z "${CHORO_DEMO_JIRA_TOKEN:-}" && -f "$TOKEN_FILE" ]]; then
-  export CHORO_DEMO_JIRA_TOKEN="$(<"$TOKEN_FILE")"
-fi
-
 exec "$HERE/choro-bin" "$@"
 WRAPPER
 sed -i '' "s/__CHORO_DEMO_BUILD_ID__/$BUILD_ID/" "$BUNDLE/Contents/MacOS/choro-demo"

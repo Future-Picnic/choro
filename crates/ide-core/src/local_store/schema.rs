@@ -622,6 +622,13 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         })).await?;
     }
 
+    if current < 41 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            delegation::close_legacy_async(conn).await?;
+            record_schema_version(conn, 41).await?;
+            Ok(())
+        })).await?;
+    }
     Ok(())
 }
 

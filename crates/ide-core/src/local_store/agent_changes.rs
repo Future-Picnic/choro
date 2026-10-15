@@ -398,6 +398,16 @@ impl LocalStore {
     /// reflected even before its UI refresh arrives. Nested scopes are mapped
     /// to repository-relative paths without reading file contents.
     pub fn pending_agent_repository_paths(
+        &self, agent_id: Uuid, repository: &Path,
+    ) -> Result<HashSet<PathBuf>> {
+        let mut paths = HashSet::new();
+        for actor in self.conversation_contributor_ids(agent_id)? {
+            paths.extend(self.pending_actor_repository_paths(actor, repository)?);
+        }
+        Ok(paths)
+    }
+
+    fn pending_actor_repository_paths(
         &self,
         agent_id: Uuid,
         repository: &Path,

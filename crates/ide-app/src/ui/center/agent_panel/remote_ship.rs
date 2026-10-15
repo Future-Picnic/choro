@@ -35,6 +35,7 @@ struct RemoteShipSource {
 
 impl CenterArea {
     fn remote_ship_source(&self, agent: &AgentRecord, cx: &App) -> RemoteResult<RemoteShipSource> {
+        if let Some(notice) = self.team_artifacts_notice(agent, cx) { return Err(RemoteError::conflict(notice)); }
         if agent.repository_path.is_none() && self.git_states.read(cx).repositories(agent.project_id).into_iter().filter(|g|g.read(cx).is_repo).count()>1 {
             return Err(RemoteError::conflict("This agent spans multiple repositories. Ship each repository on your Mac."));
         }
@@ -70,22 +71,7 @@ impl CenterArea {
         staged_files.sort();
         staged_files.dedup();
 
-        let mut related = std::collections::BTreeSet::new();
-        if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            related = super::center_ship::exact_agent_ship_paths(
-                agent.runtime_path(),
-                &session.changed_files,
-            );
-        } else {
-            for file in &agent.changed_files {
-                related.insert(normalize_agent_ship_path(agent.runtime_path(), &file.path));
-            }
-        }
-        if let Some(pending) =
-            ide_core::agent_changes::cached_pending_paths(agent.id, agent.runtime_path())
-        {
-            related.retain(|p| pending.contains(p));
-        }
+        let related = self.team_ship_paths(agent, agent.runtime_path(), cx);
         let conversation_files = all_files
             .iter()
             .filter(|path| related.contains(*path))
@@ -115,6 +101,8 @@ impl CenterArea {
             .cloned()
             .filter(|agent| !agent.hidden_doc_assistant)
             .ok_or_else(|| RemoteError::not_found("agent not found"))?;
+        self.ensure_team_artifacts(&agent, cx);
+        if let Some(notice) = self.team_artifacts_notice(&agent, cx) { return Err(RemoteError::conflict(notice)); }
         let source = self.remote_ship_source(&agent, cx)?;
         let status = self.remote_ship_status.get(&agent_id);
         let paths = |files: &[PathBuf]| {

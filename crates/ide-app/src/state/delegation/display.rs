@@ -68,7 +68,7 @@ pub fn task_activity(
     task: &DelegationTask,
     child_needs_user: bool,
 ) -> DelegationActivity {
-    if run_status.terminal() {
+    if run_status.terminal() || task.status.terminal() {
         return DelegationActivity::Idle;
     }
     if run_status == RunStatus::Blocked {
@@ -99,6 +99,63 @@ pub fn task_activity(
         | TaskStatus::Cancelled
         | TaskStatus::Superseded => DelegationActivity::Idle,
     }
+}
+
+/// Attention must distinguish a real question from a setup/coordinator error.
+pub fn task_label(run_status: RunStatus, task: &DelegationTask, needs_user: bool) -> &'static str {
+    if task.status.terminal() { return task.status.label(); }
+    if run_status == RunStatus::Cancelled { return "Cancelled"; }
+    if run_status == RunStatus::Blocked { return "Needs attention"; }
+    if matches!(run_status, RunStatus::Paused | RunStatus::Interrupted) { return "Paused"; }
+    if task.status == TaskStatus::Failed { return "Could not continue"; }
+    if needs_user { return "Needs your input"; }
+    if task.status == TaskStatus::Running && task.attempt().is_some_and(|a| a.generation == 0) {
+        return "Starting Bandmate";
+    }
+    task.status.label()
+}
+
+pub fn task_detail(run: &DelegationRun, task: &DelegationTask) -> Option<String> {
+    if !task.status.terminal() && run.status.stopped() {
+        return run.pause_reason.clone();
+    }
+    if let Some(reason) = task.reason.as_ref().filter(|r| !r.trim().is_empty()) {
+        return Some(reason.clone());
+    }
+    match task.status {
+        TaskStatus::Planned => Some("The lead has held this assignment. It will start when released.".into()),
+        TaskStatus::Queued => {
+            let dependencies = task.plan.dependencies.iter().filter(|key| {
+                !run.tasks.iter().any(|t| &t.plan.key == *key && t.status.satisfied())
+            }).cloned().collect::<Vec<_>>();
+            Some(if !dependencies.is_empty() {
+                format!("Waiting for {}", dependencies.join(", "))
+            } else if run.plan_mode && task.plan.kind == ide_core::delegation::TaskKind::Implementation {
+                "Waiting for implementation mode".into()
+            } else if run.status == RunStatus::Preparing {
+                "Waiting for the lead to finish setting up the Band".into()
+            } else if run.tasks.iter().filter(|t| t.status.occupies_slot()).count() >= run.limits.concurrent_per_run {
+                "Waiting for an available Bandmate slot".into()
+            } else {
+                "Scheduled to start automatically".into()
+            })
+        }
+        TaskStatus::WaitingForLead => Some("Waiting for a reply from the lead".into()),
+        TaskStatus::Cancelled | TaskStatus::Superseded => None,
+        _ => task.attempt().map(|a| a.progress.clone()).filter(|s| !s.trim().is_empty()),
+    }
+}
+
+pub fn task_detail_across_runs(runs: &[DelegationRun], run: &DelegationRun, task: &DelegationTask) -> Option<String> {
+    let detail = task_detail(run, task);
+    if detail.as_deref() == Some("Scheduled to start automatically") {
+        let occupied = runs.iter().filter(|run| run.status.dispatchable())
+            .flat_map(|run| &run.tasks).filter(|task| task.status.occupies_slot()).count();
+        if occupied >= run.limits.concurrent_global {
+            return Some("Waiting for an available Bandmate slot across your projects".into());
+        }
+    }
+    detail
 }
 
 /// Activity of a whole run, as its header and the composer indicator show it.
@@ -273,6 +330,8 @@ pub fn delegation_indicator(
             .tasks
             .iter()
             .all(|task| task.status.terminal() || task.status == TaskStatus::ResultReady);
+    let preparing = current.tasks.iter().filter(|task| task.status == TaskStatus::Preparing
+        || (task.status == TaskStatus::Running && task.attempt().is_some_and(|a| a.generation == 0))).count();
     let (label, activity, status, live) = match activity {
         DelegationActivity::Attention => (
             "Band · Needs attention".into(),
@@ -291,8 +350,15 @@ pub fn delegation_indicator(
             TaskStatus::Paused,
             false,
         ),
+        _ if working > 0 && preparing == working => (
+            format!("Band · {working} preparing"),
+            DelegationActivity::Working,
+            TaskStatus::Preparing,
+            true,
+        ),
         _ if working > 0 => (
-            format!("Band · {working} working"),
+            if preparing > 0 { format!("Band · {preparing} preparing · {} working", working - preparing) }
+            else { format!("Band · {working} working") },
             DelegationActivity::Working,
             TaskStatus::Running,
             true,
@@ -448,6 +514,7 @@ pub struct AssignmentEntry {
     pub report: ReportState,
     pub stage: Option<&'static str>,
     pub detail: String,
+    pub status_label: &'static str,
 }
 
 fn overview_rank(entry: &AssignmentEntry) -> u8 {
@@ -498,6 +565,7 @@ pub fn assignment_overview(
                 model: task.expert.profile.model.label().to_string(),
                 goal: task.plan.goal.clone(),
                 status: task.status,
+                status_label: task_label(run.status, task, needs_user),
                 activity: task_activity(run.status, task, needs_user),
                 finished: run.status.terminal()
                     || task.status.terminal()
@@ -509,15 +577,8 @@ pub fn assignment_overview(
                         .and_then(|a| a.result.as_ref())
                         .map(|r| bounded_text(&r.summary, 180).0)
                         .unwrap_or_default()
-                } else if !task.plan.dependencies.is_empty()
-                    && matches!(task.status, TaskStatus::Planned | TaskStatus::Queued)
-                {
-                    format!("Waiting for {}", task.plan.dependencies.join(", "))
                 } else {
-                    task.reason
-                        .clone()
-                        .or_else(|| task.attempt().map(|a| a.progress.clone()))
-                        .unwrap_or_default()
+                    task_detail_across_runs(runs, run, task).unwrap_or_default()
                 },
                 report: report_state(task),
                 stage: completion_stage(run.status, task.status),
@@ -621,6 +682,7 @@ mod tests {
             attempts: child
                 .map(|child| {
                     vec![DelegationAttempt {
+            prepared: false,
                         id: Uuid::new_v4(),
                         child_agent_id: child,
                         generation: 1,

@@ -1,5 +1,41 @@
 use super::*;
 
+/// Tracks individual saves so removing a loading image also rejects its late
+/// completion, without consuming another paste's pending state.
+#[derive(Clone, Default)]
+pub(crate) struct PendingAttachmentPastes {
+    ids: Vec<Uuid>,
+}
+
+impl PendingAttachmentPastes {
+    pub(crate) fn start(&mut self) -> Uuid {
+        let id = Uuid::new_v4();
+        self.ids.push(id);
+        id
+    }
+
+    /// Returns false for a canceled or already completed paste.
+    pub(crate) fn finish(&mut self, id: Uuid) -> bool {
+        let Some(index) = self.ids.iter().position(|pending| *pending == id) else {
+            return false;
+        };
+        self.ids.remove(index);
+        true
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub(crate) fn ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+        self.ids.iter().copied()
+    }
+}
+
 pub(super) fn clipboard_image_extension(format: ImageFormat) -> &'static str {
     match format {
         ImageFormat::Png => "png",
@@ -170,6 +206,38 @@ pub(super) fn queued_turn_composer_draft(turn: &QueuedChatTurn) -> (String, Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canceled_attachment_completion_does_not_consume_a_new_paste() {
+        let mut pending = PendingAttachmentPastes::default();
+        let canceled = pending.start();
+        assert!(pending.finish(canceled));
+        assert!(
+            pending.is_empty(),
+            "removing the stuck image must unblock send"
+        );
+
+        let newer = pending.start();
+        assert!(!pending.finish(canceled), "ignore late success or failure");
+        assert_eq!(pending.ids().collect::<Vec<_>>(), [newer]);
+        assert!(pending.finish(newer));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn canceling_one_attachment_preserves_other_pending_images() {
+        let mut pending = PendingAttachmentPastes::default();
+        let first = pending.start();
+        let second = pending.start();
+        let third = pending.start();
+        assert!(pending.finish(second));
+        assert_eq!(pending.ids().collect::<Vec<_>>(), [first, third]);
+        assert!(pending.finish(third));
+        assert!(!pending.is_empty());
+        assert!(pending.finish(first));
+        assert!(pending.is_empty());
+        assert!(!pending.finish(first));
+    }
 
     #[test]
     fn owned_clipboard_image_extraction_preserves_payload() {

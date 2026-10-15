@@ -141,6 +141,7 @@ pub(crate) fn managed_send(
     mode: AgentInteractionMode,
     cx: &mut Context<AgentChatState>,
 ) -> Result<u64> {
+    anyhow::ensure!(!agent.delegation.as_ref().is_some_and(|b| b.is_legacy_child()), ide_core::delegation::LEGACY_CLOSED);
     // Caller has reserved the boundary and persisted the delivery first.
     let id = agent.id;
     let mode = protocol::managed::interaction_mode(&agent, mode);

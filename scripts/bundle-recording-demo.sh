@@ -51,7 +51,7 @@ wrapper = bundle / 'Contents/MacOS/choro-recording'
 lines = ['#!/bin/zsh', 'set -euo pipefail', 'HERE="$(cd "$(dirname "$0")" && pwd)"']
 lines.extend(f'export {key}={shlex.quote(value)}' for key, value in environment.items())
 lines.extend([
-    'unset CHORO_DEMO_RESET CHORO_DEMO CHORO_DEMO_JIRA_TOKEN CHORO_DEMO_JIRA_BOARD_ID',
+    'unset CHORO_DEMO_RESET CHORO_DEMO',
     # Seed only on first launch; prepared recording scenes must survive relaunches.
     'if [[ ! -f "$CHORO_DATA_DIR/demo-build-id" ]]; then',
     '  if [[ -e "$CHORO_DATA_DIR" ]]; then',

@@ -76,14 +76,14 @@ fn new_agent_draft_accepts_background_completion_while_away(cx: &mut gpui::TestA
         let other = ProjectId(Uuid::new_v4());
         let mut composer = draft(project, "Image still pasting", window, cx);
         let id = composer.id;
-        composer.attachment_pastes_pending = 1;
+        let paste_id = composer.attachment_pastes_pending.start();
         composer.starting = true;
         let mut active = Some(composer);
         let mut drafts = HashMap::new();
         stash_new_agent_draft(&mut active, &mut drafts);
         active = Some(draft(other, "Do not change this draft", window, cx));
         let pending = find_new_agent_draft(&mut active, &mut drafts, project, id).unwrap();
-        pending.attachment_pastes_pending -= 1;
+        assert!(pending.attachment_pastes_pending.finish(paste_id));
         pending
             .attached_files
             .push(PathBuf::from("/draft/finished.png"));
@@ -93,7 +93,7 @@ fn new_agent_draft_accepts_background_completion_while_away(cx: &mut gpui::TestA
         assert!(find_new_agent_draft(&mut active, &mut drafts, project, Uuid::new_v4()).is_none());
         stash_new_agent_draft(&mut active, &mut drafts);
         let restored = drafts.remove(&project).unwrap();
-        assert_eq!(restored.attachment_pastes_pending, 0);
+        assert!(restored.attachment_pastes_pending.is_empty());
         assert_eq!(
             restored.attached_files,
             [PathBuf::from("/draft/finished.png")]
@@ -103,6 +103,41 @@ fn new_agent_draft_accepts_background_completion_while_away(cx: &mut gpui::TestA
             "a failed launch must remain retryable after returning"
         );
         assert_eq!(restored.error.as_deref(), Some("Save failed; retry"));
+        Fixture
+    });
+}
+
+#[gpui::test]
+fn canceled_image_stays_removed_when_draft_is_restored(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    cx.add_window_view(|window, cx| {
+        let project = ProjectId(Uuid::new_v4());
+        let other = ProjectId(Uuid::new_v4());
+        let mut composer = draft(project, "Send this without the stuck image", window, cx);
+        let composer_id = composer.id;
+        let canceled = composer.attachment_pastes_pending.start();
+        assert!(composer.attachment_pastes_pending.finish(canceled));
+        let mut active = Some(composer);
+        let mut drafts = HashMap::new();
+        stash_new_agent_draft(&mut active, &mut drafts);
+        active = Some(draft(other, "Another draft", window, cx));
+
+        let saved = find_new_agent_draft(&mut active, &mut drafts, project, composer_id).unwrap();
+        let newer = saved.attachment_pastes_pending.start();
+        assert!(!saved.attachment_pastes_pending.finish(canceled));
+        assert!(saved.attached_files.is_empty());
+        assert!(saved.attachment_pastes_pending.finish(newer));
+
+        let restored = drafts.remove(&project).unwrap();
+        assert!(restored.attachment_pastes_pending.is_empty());
+        assert_eq!(
+            restored.prompt.read(cx).value().as_str(),
+            "Send this without the stuck image"
+        );
+        assert_eq!(
+            active.as_ref().unwrap().prompt.read(cx).value().as_str(),
+            "Another draft"
+        );
         Fixture
     });
 }

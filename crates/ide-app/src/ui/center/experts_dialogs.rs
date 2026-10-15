@@ -288,7 +288,13 @@ impl CenterArea {
         let needs_user = |child: Uuid| self.delegated_child_needs_user(child, cx);
         let mut entries = display::assignment_overview(&runs, parent, &needs_user);
         for entry in &mut entries {
-            if !entry.finished && display::expert_is_working(entry.status) {
+            if entry.status == ide_core::delegation::TaskStatus::Queued {
+                if let Some((run, task)) = runs.iter().find(|r| r.id == entry.run_id)
+                    .and_then(|run| run.task(entry.task_id).ok().map(|task| (run, task))) {
+                    entry.detail = self.delegated_task_detail(run, task, cx).unwrap_or_default();
+                }
+            }
+            if !entry.finished && entry.status == ide_core::delegation::TaskStatus::Running {
                 if let Some(step) = entry
                     .child_agent_id
                     .and_then(|id| self.agent_chats.read(cx).session(id))
@@ -537,14 +543,11 @@ fn overview_row(
     center: WeakEntity<CenterArea>,
     cx: &App,
 ) -> gpui::AnyElement {
-    let child = entry.child_agent_id;
     let run_id = entry.run_id;
     let task_id = entry.task_id;
-    let status = match entry.activity {
-        DelegationActivity::Attention => "Needs your input",
-        DelegationActivity::Paused => "Paused",
-        _ => entry.stage.unwrap_or(entry.status.label()),
-    };
+    let status = if matches!(entry.activity, DelegationActivity::Attention | DelegationActivity::Paused) {
+        entry.status_label
+    } else { entry.stage.unwrap_or(entry.status_label) };
     let summary_center = center.clone();
     let content = h_flex()
         .w_full()
@@ -628,13 +631,9 @@ fn overview_row(
                 content,
                 cx,
             )
-            .disabled(child.is_none())
-            .tooltip(entry.goal.clone())
+            .tooltip(format!("Open Bandmate chat · {}", entry.goal))
             .on_click(move |_, window, cx| {
-                if let Some(child) = child {
-                    let _ =
-                        center.update(cx, |this, cx| this.open_delegated_task(child, window, cx));
-                }
+                let _ = center.update(cx, |this, cx| this.open_delegated_assignment(run_id, task_id, window, cx));
             }),
         )
         .when(entry.report != ReportState::None, |row| {

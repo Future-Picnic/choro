@@ -1164,7 +1164,8 @@ mod tests {
         use ide_core::code_review::*;
         let mut run=ReviewRun::new(Uuid::new_v4(),Uuid::new_v4(),"Claude".into(),"model".into(),"effort".into(),review_now());
         run.state=ReviewRunState::Complete;run.freshness=ReviewFreshness::Current;
-        run.files.push(ReviewFile {id:"owned".into(),path:"owned.rs".into(),change_kind:"Modified".into(),attributed_ranges:vec![],before_hash:Some("a".repeat(64)),after_hash:Some("b".repeat(64)),diff_pages:1,consumed_pages:[0].into_iter().collect(),status:ReviewFileStatus::Complete,skip_reason:None});
+        run.files.push(ReviewFile {author_id: None,
+id:"owned".into(),path:"owned.rs".into(),change_kind:"Modified".into(),attributed_ranges:vec![],before_hash:Some("a".repeat(64)),after_hash:Some("b".repeat(64)),diff_pages:1,consumed_pages:[0].into_iter().collect(),status:ReviewFileStatus::Complete,skip_reason:None});
         assert!(run.is_clean());
         let stored=StoredTimelinePayload::CodeReview {id:run.id.to_string(),markdown:String::new(),expanded:false,structured:Some(run),finding_state:vec![],card_revision:0};
         let AgentChatTimelineItem::CodeReview(restored)=stored.into_timeline_item().unwrap() else {panic!("Expected review card");};

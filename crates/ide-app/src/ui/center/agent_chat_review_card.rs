@@ -514,7 +514,8 @@ mod tests {
         run.state = state;
         run.freshness = freshness;
         let file = |path: &str, status| ReviewFile {
-            id: path.into(),
+            author_id: None,
+id: path.into(),
             path: path.into(),
             change_kind: "modified".into(),
             attributed_ranges: vec![],

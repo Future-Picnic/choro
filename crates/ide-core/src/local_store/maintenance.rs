@@ -207,6 +207,7 @@ impl LocalStore {
         )?;
 
         for attachment in &snapshot.attachments {
+            if attachment.relative_path.starts_with("data/delegation") { continue; }
             let absolute = self.root.join(&attachment.relative_path);
             if !absolute.is_file() {
                 continue;
@@ -227,6 +228,7 @@ impl LocalStore {
         }
         let mut exported_reference_files = HashSet::new();
         for relative_path in project_reference_file_paths(&snapshot.project_references) {
+            if relative_path.starts_with("data/delegation") { continue; }
             if !exported_reference_files.insert(relative_path.clone()) {
                 continue;
             }
@@ -302,12 +304,6 @@ impl LocalStore {
             read_zip_jsonl_optional(&mut zip, "experts.jsonl")?;
         let mut delegations: Vec<crate::delegation::DelegationRun> =
             read_zip_jsonl_optional(&mut zip, "delegations.jsonl")?;
-        for run in &mut delegations {
-            run.pause(
-                "Imported task — review its working copies before resuming",
-                true,
-            );
-        }
         let messages: Vec<StoredChatMessage> = read_zip_jsonl(&mut zip, "messages.jsonl")?;
         let timeline_events: Vec<StoredTimelineEvent> = read_zip_jsonl(&mut zip, "timeline.jsonl")?;
         let chat_file_ledgers: Vec<StoredChatFileLedger> =
@@ -348,7 +344,15 @@ impl LocalStore {
 
         let data_root = self.app_data_dir();
         if data_root.exists() {
-            fs::remove_dir_all(&data_root).context("failed to clear data root before import")?;
+            anyhow::ensure!(!fs::symlink_metadata(&data_root)?.is_symlink(), "Import refuses a linked data root");
+            for entry in fs::read_dir(&data_root)? {
+                let entry = entry?;
+                // Legacy copies are removed only by offline maintenance. An
+                // import neither duplicates nor deletes another running task.
+                if entry.file_name() == "delegation" { continue; }
+                if entry.file_type()?.is_dir() { fs::remove_dir_all(entry.path())?; }
+                else { fs::remove_file(entry.path())?; }
+            }
         }
         fs::create_dir_all(&data_root).context("failed to recreate data root")?;
 
@@ -364,6 +368,11 @@ impl LocalStore {
                     .all(|c| matches!(c, std::path::Component::Normal(_))),
                 "Archive path escapes application storage."
             );
+            // Old archives may include gigabytes of private project copies.
+            // Keep their chats/reports; never extract or reconstruct those copies.
+            if Path::new(relative).starts_with("data/delegation") {
+                continue;
+            }
             let target = self.root.join(relative);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
@@ -733,7 +742,16 @@ impl LocalStore {
                 continue;
             }
             let target = backup.join(name);
-            if source.is_dir() {
+            if name == "data" {
+                fs::create_dir_all(&target)?;
+                for entry in fs::read_dir(&source)? {
+                    let entry = entry?;
+                    if entry.file_name() == "delegation" { continue; }
+                    anyhow::ensure!(!entry.file_type()?.is_symlink(), "Import backup refuses linked application data");
+                    if entry.file_type()?.is_dir() { copy_dir_recursive(&entry.path(), &target.join(entry.file_name()))?; }
+                    else { fs::copy(entry.path(), target.join(entry.file_name()))?; }
+                }
+            } else if source.is_dir() {
                 copy_dir_recursive(&source, &target)?;
             } else {
                 fs::copy(&source, &target).with_context(|| {

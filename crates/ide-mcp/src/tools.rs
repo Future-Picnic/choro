@@ -509,12 +509,18 @@ impl ToolRegistry {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if ctx.delegation_scope.as_ref().is_some_and(|b| b.is_legacy_child()) && name != "delegation_read" {
+            return json!({"content":[text_content(ide_core::delegation::LEGACY_CLOSED)],"isError":true});
+        }
         if ctx.review_run.is_some() && (!review_tools::allowed(name) || review_tools::binding(ctx).is_err())
             || ctx.review_run.is_none() && review_tools::allowed(name) {
             return json!({"content":[text_content("Tool is unavailable in this review scope")],"isError":true});
         }
         if studio_tools::is_studio(ctx) && !studio_tools::allowed(name) {
             return json!({"content":[text_content("This tool is unavailable to the Studio design agent")],"isError":true});
+        }
+        if name == "delegation_integrate" {
+            return json!({"content":[text_content("Bandmates now edit the shared working folder. Review the result, then use delegation_control with action accept or request_changes. Integration is retired and this call performs no filesystem work.")],"isError":true});
         }
         let args = params
             .get("arguments")
@@ -1997,6 +2003,9 @@ fn resolve_project_html_file(
     let path = lane_root
         .as_ref()
         .and_then(|lane| {
+            // Shared-folder Bandmates already name their actual files. This
+            // also keeps an explicit Solo-lane path from being prefixed twice.
+            if path.starts_with(lane) { return None; }
             let relative = path.strip_prefix(&project_root).ok()?;
             lane.join(relative).canonicalize().ok()
         })
@@ -2870,6 +2879,19 @@ mod tests {
 
         assert!(target.starts_with("file://"));
         assert!(target.ends_with("/index.html"));
+    }
+
+    #[test]
+    fn shared_subdirectory_preview_never_redirects_to_a_second_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::from_path(dir.path().to_path_buf());
+        let working = dir.path().join("site");
+        std::fs::create_dir_all(working.join("site")).unwrap();
+        std::fs::write(working.join("index.html"), "real").unwrap();
+        std::fs::write(working.join("site/index.html"), "other").unwrap();
+        let expected = working.join("index.html").canonicalize().unwrap();
+        let resolved = resolve_project_preview_target(&project, Some(&working), expected.to_str().unwrap()).unwrap();
+        assert_eq!(url::Url::parse(&resolved).unwrap().to_file_path().unwrap(), expected);
     }
 
     #[test]

@@ -56,6 +56,11 @@ pub(super) fn collapse_current_edits(evidence: Vec<MutationEvidence>, source: &B
     let mut result = Vec::new();
     for (path, mut receipts) in groups {
         receipts.sort_by_key(|e| e.captured_at);
+        if receipts.iter().map(|e| e.key.agent_id).collect::<std::collections::BTreeSet<_>>().len() > 1 {
+            // A net diff cannot be attributed to one member of a team.
+            result.extend(receipts);
+            continue;
+        }
         let mut missing = Vec::new();
         receipts.retain(|receipt| {
             let usable = receipt.before.is_some() && receipt.after.is_some() || receipt.patch.is_some();

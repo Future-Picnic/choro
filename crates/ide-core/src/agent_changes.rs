@@ -423,6 +423,14 @@ pub fn cached_pending_repository_paths(
             .collect(),
     )
 }
+/// Union a recorded conversation team without changing receipt ownership.
+/// Missing caches stay unknown so partial loads cannot prune another author's files.
+pub fn cached_team_repository_paths(agents: &[Uuid], repo: &Path) -> Option<std::collections::HashSet<PathBuf>> {
+    let mut paths = std::collections::HashSet::new();
+    for agent in agents { paths.extend(cached_pending_repository_paths(*agent, repo)?); }
+    Some(paths)
+}
+
 pub fn refresh_pending_paths(
     store: &crate::local_store::LocalStore,
     agent: Uuid,

@@ -126,6 +126,8 @@ pub struct ReviewRange {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewFile {
     pub id: String,
+    #[serde(default)]
+    pub author_id: Option<Uuid>,
     pub path: PathBuf,
     pub change_kind: String,
     pub attributed_ranges: Vec<ReviewRange>,
@@ -184,6 +186,8 @@ pub struct ReviewRun {
     pub id: Uuid,
     pub project_id: Uuid,
     pub parent_id: Uuid,
+    #[serde(default)]
+    pub contributor_ids: Vec<Uuid>,
     pub reviewer_id: Uuid,
     pub snapshot_id: Uuid,
     pub provider: String,
@@ -230,6 +234,7 @@ impl ReviewRun {
             id: Uuid::new_v4(),
             project_id,
             parent_id,
+            contributor_ids: vec![parent_id],
             reviewer_id: Uuid::new_v4(),
             snapshot_id: Uuid::new_v4(),
             provider,
