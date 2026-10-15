@@ -439,8 +439,8 @@ mod tests {
 
     #[test]
     fn json5_style_filter_parses() {
-        let doc = parse_filter(r#"{email:"asafelazari@gmail.com", active:true,}"#).unwrap();
-        assert_eq!(doc.get_str("email").unwrap(), "asafelazari@gmail.com");
+        let doc = parse_filter(r#"{email:"test@example.com", active:true,}"#).unwrap();
+        assert_eq!(doc.get_str("email").unwrap(), "test@example.com");
         assert_eq!(doc.get_bool("active").unwrap(), true);
     }
 

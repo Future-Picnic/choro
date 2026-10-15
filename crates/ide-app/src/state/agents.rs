@@ -1109,6 +1109,7 @@ mod tests {
         let mut prepared = current.clone();
         let run_id = Uuid::new_v4();
         prepared.delegation = Some(ide_core::delegation::DelegationBinding {
+            execution_version: ide_core::delegation::SHARED_EXECUTION_VERSION,
             run_id,
             parent_agent_id: current.id,
             task_id: None,

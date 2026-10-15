@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::state::{QuickAskEvent, QuickAskPhase, QuickAskScope, QuickAskState, Workspace};
 use crate::ui::center::attachment_helpers::{
     clipboard_image_from_item, image_format_for_path, materialize_quick_ask_clipboard_image,
+    PendingAttachmentPastes,
 };
 use crate::ui::center::{provider_brand_icon, CenterArea};
 
@@ -61,7 +62,7 @@ pub struct QuickAskPanel {
     center: Entity<CenterArea>,
     question: Entity<InputState>,
     attached_images: Vec<PathBuf>,
-    attachment_pastes_pending: usize,
+    attachment_pastes_pending: PendingAttachmentPastes,
     composer_error: Option<String>,
     pending_started_at: Option<u64>,
     error_details_expanded: bool,
@@ -91,7 +92,7 @@ impl QuickAskPanel {
                 center,
                 question: question.clone(),
                 attached_images: Vec::new(),
-                attachment_pastes_pending: 0,
+                attachment_pastes_pending: PendingAttachmentPastes::default(),
                 composer_error: None,
                 pending_started_at: None,
                 error_details_expanded: false,
@@ -158,6 +159,7 @@ impl QuickAskPanel {
 
     fn start_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.attached_images.clear();
+        self.attachment_pastes_pending = PendingAttachmentPastes::default();
         self.composer_error = None;
         self.pending_started_at = None;
         self.error_details_expanded = false;
@@ -173,7 +175,7 @@ impl QuickAskPanel {
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let question = self.question.read(cx).value().trim().to_string();
         if (question.is_empty() && self.attached_images.is_empty())
-            || self.attachment_pastes_pending > 0
+            || !self.attachment_pastes_pending.is_empty()
             || self.quick_ask.read(cx).phase() == QuickAskPhase::Thinking
         {
             return;
@@ -202,7 +204,7 @@ impl QuickAskPanel {
         let Some(image) = cx.read_from_clipboard().and_then(clipboard_image_from_item) else {
             return false;
         };
-        if self.attached_images.len() + self.attachment_pastes_pending >= 5 {
+        if self.attached_images.len() + self.attachment_pastes_pending.len() >= 5 {
             self.composer_error = Some("Attach at most 5 images.".into());
             cx.notify();
             return true;
@@ -223,7 +225,7 @@ impl QuickAskPanel {
         }
 
         let session_id = self.quick_ask.read(cx).session_id();
-        self.attachment_pastes_pending += 1;
+        let paste_id = self.attachment_pastes_pending.start();
         self.composer_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -232,7 +234,9 @@ impl QuickAskPanel {
                 .spawn(async move { materialize_quick_ask_clipboard_image(session_id, &image) })
                 .await;
             this.update(cx, |this, cx| {
-                this.attachment_pastes_pending = this.attachment_pastes_pending.saturating_sub(1);
+                if !this.attachment_pastes_pending.finish(paste_id) {
+                    return;
+                }
                 match result {
                     Ok(path) => {
                         this.attached_images.push(path);
@@ -834,9 +838,13 @@ impl QuickAskPanel {
             .into_any_element()
     }
 
-    fn render_attachment_pending(&self, index: usize, cx: &App) -> gpui::AnyElement {
+    fn render_attachment_pending(
+        &self,
+        paste_id: uuid::Uuid,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         h_flex()
-            .id(("quick-ask-attachment-pending", index))
+            .id(("quick-ask-attachment-pending", paste_id.as_u128() as u64))
             .h(px(34.))
             .flex_none()
             .gap_1p5()
@@ -850,6 +858,21 @@ impl QuickAskPanel {
             .text_color(crate::ui::design::t2(cx))
             .child(Spinner::new().xsmall())
             .child("Attaching image…")
+            .child(
+                crate::ui::style::attachment_remove_button(
+                    (
+                        "remove-quick-ask-pending-attachment",
+                        paste_id.as_u128() as u64,
+                    ),
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.attachment_pastes_pending.finish(paste_id);
+                    this.composer_error = None;
+                    cx.notify();
+                })),
+            )
             .into_any_element()
     }
 
@@ -907,11 +930,11 @@ impl QuickAskPanel {
         let error = state.error().map(str::to_string);
         let view = cx.entity().clone();
         let attached_images = self.attached_images.clone();
-        let attachment_pastes_pending = self.attachment_pastes_pending;
+        let attachment_pastes_pending = self.attachment_pastes_pending.clone();
         let composer_error = self.composer_error.clone();
         let has_draft = !self.question.read(cx).value().trim().is_empty();
         let can_send = phase != QuickAskPhase::Thinking
-            && attachment_pastes_pending == 0
+            && attachment_pastes_pending.is_empty()
             && (has_draft || !attached_images.is_empty());
         let session_len = session.len();
         let session_empty = session.is_empty();
@@ -987,7 +1010,8 @@ impl QuickAskPanel {
                                 .min_h(crate::ui::design::compact_composer_input_min_h())
                                 .gap_2()
                                 .when(
-                                    !attached_images.is_empty() || attachment_pastes_pending > 0,
+                                    !attached_images.is_empty()
+                                        || !attachment_pastes_pending.is_empty(),
                                     |column| {
                                         column.child(
                                             h_flex()
@@ -1003,9 +1027,9 @@ impl QuickAskPanel {
                                                         )
                                                     },
                                                 ))
-                                                .children((0..attachment_pastes_pending).map(
-                                                    |index| {
-                                                        self.render_attachment_pending(index, cx)
+                                                .children(attachment_pastes_pending.ids().map(
+                                                    |paste_id| {
+                                                        self.render_attachment_pending(paste_id, cx)
                                                     },
                                                 )),
                                         )
@@ -1034,7 +1058,7 @@ impl QuickAskPanel {
                                         move |window, cx| {
                                             Tooltip::new(if phase == QuickAskPhase::Thinking {
                                                 "Quick Ask is thinking…"
-                                            } else if attachment_pastes_pending > 0 {
+                                            } else if !attachment_pastes_pending.is_empty() {
                                                 "Wait for the image to finish attaching"
                                             } else {
                                                 "Ask"

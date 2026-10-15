@@ -1,4 +1,5 @@
 use super::*;
+mod lifecycle;
 use ide_core::{
     experts::ExpertProfile, AgentAccessMode, AgentKind, AgentModel, AppConfig, Project,
 };
@@ -29,6 +30,7 @@ fn reload_hints_reject_stale_results_and_unchanged_polls_are_silent(cx: &mut gpu
         let coordinator = cx.new(|_| DelegationCoordinator {
             runs: vec![], error: None, agents, chats, terminals, settled: HashMap::new(), cursor: 0,
             stopped_parents: HashSet::new(), wake, reload_epoch: 0, snapshot: vec![],
+            in_flight: HashMap::new(),
         });
         let count = notifications.clone();
         cx.observe(&coordinator, move |_, _| count.set(count.get() + 1)).detach();
@@ -290,6 +292,8 @@ impl Fixture {
         self.adopt(effect);
     }
     fn prepare(&mut self, task: Uuid) -> AgentRecord {
+        let effect = self.job(Job::BeginPrepare(self.load(), task, self.parent.clone())).unwrap();
+        self.adopt(effect);
         let effect = self
             .job(Job::Prepare(self.load(), task, self.parent.clone()))
             .unwrap();
@@ -314,16 +318,14 @@ impl Fixture {
                 )
             })
             .unwrap();
-        self.job(Job::Capture(self.load(), task)).unwrap();
+        self.job(Job::Finalize(self.load(), task)).unwrap();
     }
-    fn integrate(&mut self, task: Uuid) {
+    fn accept(&mut self, task: Uuid) {
         self.store
             .update_delegation(self.run, None, |r| {
-                r.task_mut(task)?.status = TaskStatus::Integrating;
-                Ok(())
+                r.control(r.parent_agent_id, task, "accept", "Reviewed result")
             })
             .unwrap();
-        self.job(Job::Integrate(self.load(), task)).unwrap();
     }
 }
 
@@ -519,8 +521,8 @@ fn real_managed_providers_return_structured_results() {
                 TaskStatus::CompletionRequested,
                 "Provider did not submit the required MCP result"
             );
-            f.job(Job::Capture(f.load(), task)).unwrap();
-            f.integrate(task);
+            f.job(Job::Finalize(f.load(), task)).unwrap();
+            f.accept(task);
             if let Some(proof) = frozen_proofs.get(&task) {
                 let key = f.load().task(task).unwrap().plan.key.clone();
                 let path = f
@@ -557,11 +559,11 @@ fn real_managed_providers_return_structured_results() {
         .tasks
         .iter()
         .filter(|t| !t.attempts.is_empty())
-        .all(|t| t.status == TaskStatus::Integrated));
+        .all(|t| t.status == TaskStatus::Accepted));
 }
 
 #[test]
-fn coordinator_integrates_two_experts_preserving_dirty_source_and_reuses_revision_chat() {
+fn coordinator_accepts_two_experts_preserving_dirty_source_and_reuses_revision_chat() {
     let mut f = Fixture::new();
     f.configure();
     let ids = f.load().ready_tasks(0);
@@ -584,7 +586,7 @@ fn coordinator_integrates_two_experts_preserving_dirty_source_and_reuses_revisio
     for id in &ids {
         f.report(*id);
         assert_eq!(f.load().task(*id).unwrap().status, TaskStatus::ResultReady);
-        f.integrate(*id);
+        f.accept(*id);
     }
     assert!(f.parent.runtime_path().join("0.txt").is_file());
     assert!(f.parent.runtime_path().join("1.txt").is_file());
@@ -602,7 +604,7 @@ fn coordinator_integrates_two_experts_preserving_dirty_source_and_reuses_revisio
         .unwrap();
     let second = f.prepare(ids[0]);
     assert_eq!(second.id, children[0].id);
-    assert_ne!(second.runtime_path(), children[0].runtime_path());
+    assert_eq!(second.runtime_path(), children[0].runtime_path());
     assert!(second.runtime_path().join("1.txt").exists());
     fs::write(
         second.runtime_path().join("followup.txt"),
@@ -610,7 +612,7 @@ fn coordinator_integrates_two_experts_preserving_dirty_source_and_reuses_revisio
     )
     .unwrap();
     f.report(ids[0]);
-    f.integrate(ids[0]);
+    f.accept(ids[0]);
     f.store
         .update_delegation(f.run, None, |r| {
             r.finish(
@@ -678,38 +680,19 @@ fn delivery_is_persisted_before_runtime_dispatch_and_acknowledged_by_generation(
 }
 
 #[test]
-fn conflict_resolution_and_late_parent_edit_are_reprepared_without_overwriting() {
+fn accepting_a_report_never_overwrites_later_shared_edits() {
     let mut f = Fixture::new();
     f.configure();
     let id = f.load().tasks[0].id;
     let child = f.prepare(id);
+    assert_eq!(child.runtime_path(), f.parent.runtime_path());
     fs::write(child.runtime_path().join("user.txt"), "expert change\n").unwrap();
-    fs::write(f.parent.runtime_path().join("user.txt"), "parent change\n").unwrap();
     f.report(id);
-    f.integrate(id);
-    let run = f.load();
-    let op = run.task(id).unwrap().integration.as_ref().unwrap();
-    assert_eq!(op.status, workspace::IntegrationStatus::Conflict);
-    fs::write(op.resolution_dir.join("user.txt"), "combined\n").unwrap();
-    f.store
-        .update_delegation(f.run, None, |r| {
-            let t = r.task_mut(id)?;
-            t.reason = Some("resolutions_submitted".into());
-            t.status = TaskStatus::Integrating;
-            Ok(())
-        })
-        .unwrap();
-    fs::write(
-        f.parent.runtime_path().join("user.txt"),
-        "new parent change\n",
-    )
-    .unwrap();
-    f.job(Job::Integrate(f.load(), id)).unwrap();
-    assert_eq!(
-        fs::read_to_string(f.parent.runtime_path().join("user.txt")).unwrap(),
-        "new parent change\n"
-    );
-    assert_eq!(f.load().task(id).unwrap().status, TaskStatus::ResultReady);
+    fs::write(f.parent.runtime_path().join("user.txt"), "combined parent change\n").unwrap();
+    f.accept(id);
+    assert_eq!(fs::read_to_string(f.parent.runtime_path().join("user.txt")).unwrap(), "combined parent change\n");
+    assert!(f.load().task(id).unwrap().integration.is_none());
+    assert!(!f.store.app_data_dir().join("delegation").exists());
 }
 
 #[test]
@@ -730,7 +713,7 @@ fn missing_result_is_requested_once_and_forged_workspace_is_rejected() {
     f.job(Job::MissingReport(f.load(), id)).unwrap();
     assert_eq!(f.load().task(id).unwrap().status, TaskStatus::Failed);
     let mut run = f.load();
-    run.tasks[0].attempt_mut().unwrap().workspace = f.parent.runtime_path().to_path_buf();
+    run.tasks[0].attempt_mut().unwrap().workspace = f.store.root().to_path_buf();
     assert!(validate_working_scope(&f.store, &run, &run.tasks[0]).is_err());
 }
 
@@ -1125,7 +1108,7 @@ fn corrections_before_start_and_after_integration_use_the_current_baseline() {
         .contains("compact controls"));
     fs::write(first.runtime_path().join("first.txt"), "first result").unwrap();
     f.report(task);
-    f.integrate(task);
+    f.accept(task);
     fs::write(
         f.parent.runtime_path().join("later.txt"),
         "later parent work",
@@ -1139,7 +1122,7 @@ fn corrections_before_start_and_after_integration_use_the_current_baseline() {
     assert_eq!(f.load().task(task).unwrap().status, TaskStatus::Queued);
     let second = f.prepare(task);
     assert_eq!(first.id, second.id);
-    assert_ne!(first.runtime_path(), second.runtime_path());
+    assert_eq!(first.runtime_path(), second.runtime_path());
     assert_eq!(
         fs::read_to_string(second.runtime_path().join("later.txt")).unwrap(),
         "later parent work"
@@ -1154,7 +1137,7 @@ fn corrections_before_start_and_after_integration_use_the_current_baseline() {
     )
     .unwrap();
     f.report(task);
-    f.integrate(task);
+    f.accept(task);
     assert_eq!(
         fs::read_to_string(f.parent.runtime_path().join("first.txt")).unwrap(),
         "first result"
@@ -1205,7 +1188,7 @@ fn preparing_assignment_accepts_corrections_without_losing_a_users_pause() {
     let task = run.task_mut(task_id).unwrap();
     let revision = task.revision;
     let attempt_id = task.attempt().unwrap().id;
-    let snapshot = task.attempt_mut().unwrap().snapshot.take().unwrap();
+    task.attempt_mut().unwrap().prepared = false;
     task.status = TaskStatus::Paused;
     task.paused_status = Some(TaskStatus::Preparing);
     run.user_correction(task_id, "Use the revised video script".into())
@@ -1227,14 +1210,13 @@ fn preparing_assignment_accepts_corrections_without_losing_a_users_pause() {
         task_id,
         attempt_id,
         revision,
-        snapshot,
         &mut context
     )
     .unwrap());
     let task = run.task(task_id).unwrap();
     assert_eq!(task.status, TaskStatus::Paused);
     assert_eq!(task.paused_status, Some(TaskStatus::Running));
-    assert!(task.attempt().unwrap().snapshot.is_some());
+    assert!(task.attempt().unwrap().prepared);
     assert!(context.contains("revised video script"));
     assert!(context.contains("Retain the closing title"));
     assert!(context.contains(&format!("Current task revision: {}", task.revision)));
@@ -1244,7 +1226,7 @@ fn preparing_assignment_accepts_corrections_without_losing_a_users_pause() {
 }
 
 #[test]
-fn resume_before_initial_snapshot_reprepares_without_a_new_chat() {
+fn resume_before_agent_preparation_reprepares_without_a_new_chat() {
     let mut f = Fixture::new();
     f.configure();
     let task_id = f.load().tasks[0].id;
@@ -1252,7 +1234,7 @@ fn resume_before_initial_snapshot_reprepares_without_a_new_chat() {
     f.store
         .update_delegation(f.run, None, |r| {
             let task = r.task_mut(task_id)?;
-            task.attempt_mut().unwrap().snapshot = None;
+            task.attempt_mut().unwrap().prepared = false;
             task.status = TaskStatus::Paused;
             task.paused_status = Some(TaskStatus::Preparing);
             r.user_correction(task_id, "Use the corrected brief".into())?;
@@ -1265,4 +1247,61 @@ fn resume_before_initial_snapshot_reprepares_without_a_new_chat() {
     assert!(second.doc.contains("corrected brief"));
     assert_eq!(f.load().task(task_id).unwrap().status, TaskStatus::Running);
     assert!(first.runtime_path().exists());
+}
+
+#[test]
+fn non_git_shared_folder_cancellation_and_large_caches_never_create_copies() {
+    let mut f = Fixture::new();
+    let folder = f.parent.project_path.join("writing");
+    fs::create_dir_all(folder.join("target")).unwrap();
+    // A sparse cache makes accidental traversal/capture observable without disk usage.
+    std::fs::File::create(folder.join("target/huge-cache")).unwrap().set_len(8 * 1024 * 1024 * 1024).unwrap();
+    f.parent.repository_path = Some(folder.clone());
+    f.store.save_agents(&[f.parent.clone()]).unwrap();
+    f.store.update_delegation(f.run, None, |r| {
+        for task in &mut r.tasks { task.plan.repository = folder.clone(); }
+        r.tasks[1].plan.kind = TaskKind::Consultation;
+        Ok(())
+    }).unwrap();
+    f.configure();
+    let ids = f.load().ready_tasks(0);
+    let first = f.prepare(ids[0]);
+    let second = f.prepare(ids[1]);
+    assert_eq!(first.runtime_path(), folder);
+    assert_eq!(second.runtime_path(), folder);
+    fs::write(first.runtime_path().join("draft.txt"), "retained work").unwrap();
+    f.store.update_delegation(f.run, None, |r| r.control(r.parent_agent_id, ids[0], "cancel", "Stop this assignment")).unwrap();
+    f.report(ids[1]);
+    f.accept(ids[1]);
+    assert_eq!(fs::read_to_string(folder.join("draft.txt")).unwrap(), "retained work");
+    assert!(!f.store.app_data_dir().join("delegation").exists());
+    let archive = f.store.root().join("export.zip");
+    f.store.export_workspace(&archive).unwrap();
+    assert!(fs::metadata(archive).unwrap().len() < 2 * 1024 * 1024);
+    assert!(!f.store.app_data_dir().join("delegation").exists());
+}
+
+#[test]
+fn existing_solo_folder_is_reused_for_new_attempts() {
+    let mut f = Fixture::new();
+    let lane = f.parent.project_path.join("existing-solo");
+    fs::create_dir_all(&lane).unwrap();
+    f.parent.lane_path = Some(lane.clone());
+    f.parent.solo_branch = Some("solo/already-created".into());
+    f.store.save_agents(&[f.parent.clone()]).unwrap();
+    f.store.update_delegation(f.run,None,|r| {
+        for t in &mut r.tasks { t.plan.repository=lane.clone(); }
+        Ok(())
+    }).unwrap();
+    f.configure();
+    let task = f.load().tasks[0].id;
+    let child = f.prepare(task);
+    assert_eq!(child.runtime_path(), lane);
+    f.report(task);
+    f.accept(task);
+    f.store.update_delegation(f.run,None,|r|r.control(r.parent_agent_id,task,"request_changes","One more detail")).unwrap();
+    let next = f.prepare(task);
+    assert_eq!(next.runtime_path(), lane);
+    assert_eq!(next.id, child.id);
+    assert!(!f.store.app_data_dir().join("delegation").exists());
 }

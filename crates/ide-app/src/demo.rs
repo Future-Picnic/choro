@@ -9,7 +9,7 @@ use ide_core::{
     AgentAccessMode, AgentChangedFile, AgentEffort, AgentKind, AgentModel, AgentRecord,
     AgentRuntimeKind, AgentStatus, AppConfig, PersonalTaskPriority, PersonalTaskRecord,
     PersonalTaskStatus, Project, ProjectId, ProjectReferenceKind, ProjectSection, ProjectSectionId,
-    ScriptPreset, TaskTrackerClient, TaskTrackerConnection,
+    ScriptPreset,
 };
 use uuid::Uuid;
 
@@ -412,11 +412,6 @@ fn seed_demo(root: &Path) -> Result<()> {
             .iter()
             .map(|(name, command)| ScriptPreset::new(*name, *command))
             .collect();
-        if seed.id == NORTHSTAR_ID {
-            project
-                .task_tracker_connections
-                .push(demo_jira_connection());
-        }
         projects.push(project);
     }
 
@@ -543,69 +538,6 @@ fn seed_references(store: &LocalStore, seed: &ProjectSeed, root: &Path) -> Resul
         )?;
     }
     Ok(())
-}
-
-fn demo_jira_connection() -> TaskTrackerConnection {
-    let mut connection = base_demo_jira_connection();
-
-    if let Ok(board_id) = std::env::var("CHORO_DEMO_JIRA_BOARD_ID")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
-        .ok_or(())
-    {
-        apply_jira_board(&mut connection, board_id);
-    } else if std::env::var_os("CHORO_DEMO_JIRA_TOKEN").is_some() {
-        if let Ok(client) = TaskTrackerClient::new(connection.clone()) {
-            if let Ok(sources) = client.list_sources() {
-                if let Some(source) = sources
-                    .into_iter()
-                    .find(|source| source.name.eq_ignore_ascii_case("Kan board"))
-                {
-                    if let Ok(board_id) = source.id.parse::<i64>() {
-                        apply_jira_board(&mut connection, board_id);
-                    }
-                }
-            }
-        }
-    }
-
-    if connection.board_id.is_some() && std::env::var_os("CHORO_DEMO_JIRA_TOKEN").is_some() {
-        if let Ok(client) = TaskTrackerClient::new(connection.clone()) {
-            if let Ok(users) = client.list_assignees() {
-                if let Some(user) = users.into_iter().find(|user| {
-                    user.display_name.eq_ignore_ascii_case("Liran Gabai")
-                        || user.email.as_deref() == Some("liran@ritmus.studio")
-                }) {
-                    connection.assignee_account_id = Some(user.account_id);
-                    connection.assignee_display_name = Some(user.display_name);
-                }
-            }
-        }
-    }
-    connection
-}
-
-fn base_demo_jira_connection() -> TaskTrackerConnection {
-    let mut connection = TaskTrackerConnection::new_jira(
-        "Ritmus Jira · Kan board",
-        "https://ritmus-41374047.atlassian.net",
-        "liran@ritmus.studio",
-        "${CHORO_DEMO_JIRA_TOKEN}",
-    );
-    connection.id = Uuid::from_u128(0x43b9_2000_0000_0000_0000_0000_0000_0001);
-    connection.source_name = Some("Kan board".into());
-    connection.source_kind = Some("kanban".into());
-    connection.board_name = Some("Kan board".into());
-    connection.assignee_filter = Some("Liran Gabai".into());
-    connection.assignee_display_name = Some("Liran Gabai".into());
-    connection
-}
-
-fn apply_jira_board(connection: &mut TaskTrackerConnection, board_id: i64) {
-    connection.source_id = Some(board_id.to_string());
-    connection.source_name = Some("Kan board".into());
-    connection.board_id = Some(board_id);
-    connection.board_name = Some("Kan board".into());
 }
 
 fn write_project_files(root: &Path, files: &[(&str, &[u8])]) -> Result<()> {
@@ -1087,14 +1019,5 @@ mod tests {
             fs::read(root.path().join(".env")).expect("generated .env"),
             example
         );
-    }
-
-    #[test]
-    fn jira_connection_persists_only_the_environment_placeholder() {
-        let connection = base_demo_jira_connection();
-        let serialized = serde_json::to_string(&connection).expect("serialize Jira connection");
-
-        assert_eq!(connection.api_token, "${CHORO_DEMO_JIRA_TOKEN}");
-        assert!(serialized.contains("${CHORO_DEMO_JIRA_TOKEN}"));
     }
 }

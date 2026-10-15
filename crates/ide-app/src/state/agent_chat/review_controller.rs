@@ -1188,6 +1188,7 @@ fn review_worker(
         );
         let root = agent.runtime_path().to_path_buf();
         let requirements = load_review_requirements(&store, agent.id, &agent.doc, seed, &cancel)?;
+        run.contributor_ids = store.conversation_contributor_ids(agent.id)?;
         let (evidence, limitations, revision) = store.review_ownership(agent.id)?;
         run.mutation_revision = revision;
         let storage = store.review_storage(run.id);

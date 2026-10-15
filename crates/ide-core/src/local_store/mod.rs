@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 40;
+const STORE_SCHEMA_VERSION: u32 = 41;
 const EXPORT_FORMAT_VERSION: u32 = 9;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -783,6 +783,8 @@ mod brain;
 mod chat;
 mod delegation;
 mod delegation_archive;
+mod legacy_bandmates;
+pub use legacy_bandmates::{preview_legacy_bandmate_storage, cleanup_legacy_bandmate_storage, require_legacy_storage_offline, LegacyBandmateStoragePreview};
 mod diffs;
 pub use delegation::ExpertAuthorization;
 mod maintenance;

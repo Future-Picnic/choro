@@ -186,7 +186,11 @@ impl CenterArea {
             {
                 cx.subscribe(&handle.0, |this: &mut Self, _, change, cx| {
                     let selected = this.workspace.read(cx).active.and_then(|project| this.agents.read(cx).selected_agent_id(project));
+                    let managed_visible = this.rendered_chat_agents.iter().copied().chain(selected)
+                        .filter_map(|id| this.agents.read(cx).agent(id).and_then(|a| a.delegation.as_ref()))
+                        .any(|binding| change.parents.contains(&binding.parent_agent_id) || change.error_changed);
                     if change.parents.iter().any(|id| this.rendered_chat_agents.contains(id) || (this.view_mode == CenterMode::Agents && selected == Some(*id)))
+                        || managed_visible
                         || (change.error_changed && (this.delegated_overview.is_some() || this.delegated_panel.is_some())) {
                         cx.notify();
                     }

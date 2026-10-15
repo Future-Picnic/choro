@@ -124,7 +124,9 @@ impl CenterArea {
         let (attachment_paste_pending, agent_starting) = self
             .new_agent_composer
             .as_ref()
-            .map(|composer| (composer.attachment_pastes_pending > 0, composer.starting))
+            .map(|composer| {
+                (!composer.attachment_pastes_pending.is_empty(), composer.starting)
+            })
             .unwrap_or_default();
         let send_pending = attachment_paste_pending || agent_starting;
         let send_tooltip = if agent_starting {
@@ -1004,7 +1006,8 @@ impl CenterArea {
             .cloned()
             .collect::<Vec<_>>();
         let attached_files = composer.attached_files.clone();
-        let attachment_pastes_pending = composer.attachment_pastes_pending;
+        let attachment_pastes_pending = composer.attachment_pastes_pending.clone();
+        let composer_id = composer.id;
         let error = composer.error.clone();
         let voice_transcribing = self
             .voice
@@ -1870,7 +1873,7 @@ impl CenterArea {
                                 )
                             })
                             .when(
-                                !attached_files.is_empty() || attachment_pastes_pending > 0,
+                                !attached_files.is_empty() || !attachment_pastes_pending.is_empty(),
                                 |card| {
                                 card.child(
                                     h_flex()
@@ -1893,9 +1896,16 @@ impl CenterArea {
                                                 )
                                             },
                                         ))
-                                        .children((0..attachment_pastes_pending).map(|index| {
+                                        .children(attachment_pastes_pending.ids().map(|paste_id| {
                                             self.render_agent_attachment_pending(
-                                                ("new-agent-composer-attachment-pending", index),
+                                                (
+                                                    "new-agent-composer-attachment-pending",
+                                                    paste_id.as_u128() as u64,
+                                                ),
+                                                AttachmentRemoval::PendingNewAgent {
+                                                    composer_id,
+                                                    paste_id,
+                                                },
                                                 cx,
                                             )
                                         })),

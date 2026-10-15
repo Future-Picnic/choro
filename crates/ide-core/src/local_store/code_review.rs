@@ -211,6 +211,13 @@ impl LocalStore {
         Ok(runs)
     }
     pub fn review_mutation_revision(&self, parent: Uuid) -> Result<u64> {
+        let mut revision = 0u64;
+        for actor in self.conversation_contributor_ids(parent)? {
+            revision = revision.saturating_add(self.actor_review_mutation_revision(actor)?);
+        }
+        Ok(revision)
+    }
+    fn actor_review_mutation_revision(&self, parent: Uuid) -> Result<u64> {
         self.rt.block_on(async {
             let conn = self.connect().await?;
             scope_revision(&conn, parent).await
@@ -218,7 +225,33 @@ impl LocalStore {
     }
     /// This queries mutation receipts, never Git dirtiness. Attributable commits
     /// stay in scope because their original immutable receipts remain recorded.
-    pub fn review_ownership(
+    pub fn review_ownership(&self, parent: Uuid) -> Result<(Vec<crate::agent_changes::MutationEvidence>, Vec<String>, u64)> {
+        let before = self.review_mutation_revision(parent)?;
+        let mut evidence = Vec::new();
+        let mut limitations = Vec::new();
+        let mut bytes = 0usize;
+        'contributors: for actor in self.conversation_contributor_ids(parent)? {
+            let (items, warnings, _) = self.actor_review_ownership(actor)?;
+            limitations.extend(warnings);
+            for item in items {
+                bytes = bytes.saturating_add(serde_json::to_vec(&item)?.len());
+                if evidence.len() >= 8192 || bytes > MAX_REVIEW_BYTES {
+                    limitations.push("Team contribution evidence exceeds the review budget; remaining receipts were omitted".into());
+                    break 'contributors;
+                }
+                evidence.push(item);
+            }
+        }
+        evidence.sort_by_key(|e| e.captured_at);
+        if before != self.review_mutation_revision(parent)? {
+            limitations.push("Team contributions changed during review preparation".into());
+        }
+        limitations.sort();
+        limitations.dedup();
+        Ok((evidence, limitations, before))
+    }
+
+    fn actor_review_ownership(
         &self,
         parent: Uuid,
     ) -> Result<(

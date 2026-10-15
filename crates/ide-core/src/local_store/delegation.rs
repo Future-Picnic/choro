@@ -131,7 +131,39 @@ pub(super) async fn write_run(conn: &Connection, run: &DelegationRun) -> Result<
     Ok(())
 }
 
+pub(super) async fn close_legacy_async(conn: &Connection) -> Result<usize> {
+    let mut closed = 0;
+    let mut bindings = Vec::new();
+    let mut rows = conn.query("SELECT id, delegation_json FROM agents WHERE delegation_json IS NOT NULL", ()).await?;
+    while let Some(row) = rows.next().await? {
+        bindings.push((row.get::<String>(0)?, serde_json::from_str::<crate::delegation::DelegationBinding>(&row.get::<String>(1)?)?));
+    }
+    drop(rows);
+    for mut run in load_delegations_async(conn).await? {
+        if run.close_legacy() {
+            write_run(conn, &run).await?;
+            closed += 1;
+        }
+        if !run.is_shared() {
+            for (id, old) in bindings.iter().filter(|(_, b)| b.run_id == run.id) {
+                if old.task_id.is_none() {
+                    conn.execute("UPDATE agents SET delegation_json=NULL WHERE id=?1", [id.clone()]).await?;
+                } else if old.execution_version != 0 {
+                    let mut binding = old.clone();
+                    binding.execution_version = 0;
+                    conn.execute("UPDATE agents SET delegation_json=?2 WHERE id=?1", params![id.as_str(), serde_json::to_string(&binding)?]).await?;
+                }
+            }
+        }
+    }
+    Ok(closed)
+}
+
 impl LocalStore {
+    pub fn conversation_contributor_ids(&self, parent: Uuid) -> Result<Vec<Uuid>> {
+        let Some(agent) = self.load_agents()?.into_iter().find(|a| a.id == parent) else { return Ok(vec![parent]); };
+        Ok(crate::delegation::contribution_ids(&agent, &self.load_delegations()?))
+    }
     /// Seed shipped profiles once per catalog version. Never replace a user's
     /// edits, disabled/archive state, or an existing profile with the same name.
     pub fn ensure_default_experts(&self) -> Result<()> {
@@ -497,6 +529,32 @@ impl LocalStore {
         crate::preview_control::notify_delegation_changed(&self.root, id);
         Ok(result)
     }
+    /// Progress is telemetry, not a plan revision. Check the stop/attempt gate
+    /// in the same transaction so stale workers cannot publish over a retry.
+    pub fn update_delegation_preparation(
+        &self, id: Uuid, task: Uuid, attempt: Uuid, progress: &str,
+    ) -> Result<bool> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            conn.execute("BEGIN IMMEDIATE", ()).await?;
+            let result = async {
+                let mut run = read_run(&conn, id).await?;
+                if !run.status.dispatchable() { return Ok(false); }
+                let task = run.task_mut(task)?;
+                if task.status != crate::delegation::TaskStatus::Preparing { return Ok(false); }
+                let Some(current) = task.attempt_mut().filter(|a| a.id == attempt) else {
+                    return Ok(false);
+                };
+                if current.progress != progress {
+                    current.progress = progress.to_owned();
+                    write_run(&conn, &run).await?;
+                }
+                Ok(true)
+            }.await;
+            end_transaction(&conn, result).await
+        })
+    }
+
     /// Provider telemetry does not revise task authority or invalidate a lead's
     /// pending operation. The transaction still preserves concurrent commands.
     pub fn update_delegation_telemetry(
@@ -548,7 +606,8 @@ impl LocalStore {
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let result = async {
                 let mut run = read_run(&conn, id).await?;
-                run.authorize_caller(caller)?;
+                run.require_shared()?;
+        run.authorize_caller(caller)?;
                 let scoped_key = format!("{caller}:{key}");
                 if let Some(receipt) = run.operations.get(&scoped_key) {
                     ensure!(
@@ -594,6 +653,7 @@ impl LocalStore {
         input: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>> {
         let run = self.load_delegation(id)?;
+        run.require_shared()?;
         run.authorize_caller(caller)?;
         let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(input)?));
         if let Some(receipt) = run.operations.get(&format!("{caller}:{key}")) {
@@ -631,65 +691,7 @@ impl LocalStore {
             end_transaction(&conn, result).await
         })
     }
-    pub fn delegation_cleanup_preview(&self, id: Uuid) -> Result<Vec<std::path::PathBuf>> {
-        let run = self.load_delegation(id)?;
-        ensure!(
-            run.status.terminal(),
-            "Finish or cancel the run before cleaning its working copies."
-        );
-        let root = self.app_data_dir().join("delegation").join(id.to_string());
-        let mut paths = Vec::new();
-        for task in &run.tasks {
-            for a in &task.attempts {
-                ensure!(
-                    a.workspace == root.join(format!("attempt-{}", a.id)),
-                    "Working-copy identity changed. Cleanup refused."
-                );
-                if !a.working_copy_cleaned && a.workspace.exists() {
-                    ensure!(
-                        !std::fs::symlink_metadata(&a.workspace)?
-                            .file_type()
-                            .is_symlink(),
-                        "Cleanup refuses linked working copies."
-                    );
-                    paths.push(a.workspace.clone());
-                }
-            }
-        }
-        Ok(paths)
-    }
-    /// The UI must first show `delegation_cleanup_preview` and get an explicit
-    /// user confirmation. History, immutable blobs, and reports remain intact.
-    pub fn cleanup_delegation_workspaces(
-        &self,
-        id: Uuid,
-        confirmed_paths: &[std::path::PathBuf],
-    ) -> Result<()> {
-        let paths = self.delegation_cleanup_preview(id)?;
-        ensure!(
-            paths == confirmed_paths,
-            "Working copies changed after the cleanup preview. Review them again."
-        );
-        for path in &paths {
-            std::fs::remove_dir_all(path)?;
-        }
-        self.update_delegation(id, None, |r| {
-            for task in &mut r.tasks {
-                for a in &mut task.attempts {
-                    if paths.contains(&a.workspace) {
-                        a.working_copy_cleaned = true;
-                    }
-                }
-            }
-            r.event(
-                r.parent_agent_id,
-                None,
-                "cleanup",
-                "User confirmed removal of private working copies; reports and snapshots retained",
-            );
-            Ok(())
-        })
-    }
+
 }
 
 #[cfg(test)]
@@ -1177,9 +1179,9 @@ mod tests {
             .is_err());
     }
     #[test]
-    fn archive_restores_private_dirty_work_and_never_activates_imported_runs() {
+    fn archive_preserves_metadata_without_exporting_or_reconstructing_project_files() {
         use crate::delegation::{
-            workspace, DelegationAttempt, DelegationBinding, TaskKind, TaskPlan, TaskStatus,
+            DelegationAttempt, DelegationBinding, TaskKind, TaskPlan, TaskStatus,
         };
         let (dir, store, parent, mut p) = fixture();
         p.additions.bundled_skills.push("impeccable".into());
@@ -1220,15 +1222,14 @@ mod tests {
             .app_data_dir()
             .join("delegation")
             .join(run.id.to_string());
-        let working = storage.join(format!("attempt-{attempt}"));
-        let base = workspace::capture(&parent.project_path, &storage).unwrap();
-        workspace::materialize(&base, &working).unwrap();
+        let working = parent.runtime_path().to_path_buf();
         std::fs::write(working.join("todo.txt"), "expert unfinished work\n").unwrap();
         std::fs::write(working.join(".env"), "SECRET=do-not-export").unwrap();
         let mut child = parent.clone();
         child.id = Uuid::new_v4();
         child.expert_snapshot = Some(expert);
         child.delegation = Some(DelegationBinding {
+            execution_version: crate::delegation::SHARED_EXECUTION_VERSION,
             run_id: run.id,
             parent_agent_id: parent.id,
             task_id: Some(task_id),
@@ -1243,11 +1244,12 @@ mod tests {
                 let t = r.task_mut(task_id)?;
                 t.status = TaskStatus::Running;
                 t.attempts.push(DelegationAttempt {
+            prepared: false,
                     id: attempt,
                     child_agent_id: child.id,
                     generation: 0,
                     workspace: working,
-                    snapshot: Some(base),
+                    snapshot: None,
                     completed_snapshot: None,
                     archive_snapshot: None,
                     working_copy_cleaned: false,
@@ -1291,17 +1293,122 @@ mod tests {
         );
         assert!(imported.ready_tasks(0).is_empty());
         let a = imported.tasks[0].attempt().unwrap();
-        assert!(a.workspace.starts_with(restored.app_data_dir()));
+        assert_eq!(a.workspace, parent.runtime_path());
+        assert!(!storage.exists());
+        assert!(!restored.app_data_dir().join("delegation").exists());
+        let zip_file = File::open(&archive).unwrap();
+        let zip = zip::ZipArchive::new(zip_file).unwrap();
+        assert!(!zip.file_names().any(|name| name.starts_with("files/data/delegation")));
         assert_eq!(
             std::fs::read_to_string(a.workspace.join("todo.txt")).unwrap(),
             "expert unfinished work\n"
         );
-        assert!(!a.workspace.join(".env").exists());
+        assert!(a.workspace.join(".env").exists());
         assert!(git2::Repository::open(&a.workspace).is_ok());
         assert_eq!(
             std::fs::read_to_string(parent.project_path.join("todo.txt")).unwrap(),
-            "user work\n"
+            "expert unfinished work\n"
         );
-        assert!(restored.delegation_cleanup_preview(run.id).is_err());
+
     }
+    #[test]
+    fn legacy_migration_closes_execution_idempotently_and_keeps_conversations() {
+        use crate::delegation::{DelegationBinding, LEGACY_CLOSED};
+        let (dir, store, mut parent, p) = fixture();
+        let source = Uuid::new_v4();
+        store.authorize_experts(parent.id, source, "Use UI Designer", &[], false).unwrap();
+        let run = store.begin_delegation(parent.id, source).unwrap();
+        let mut legacy = run.clone();
+        legacy.execution_version = 0;
+        legacy.status = RunStatus::Active;
+        parent.delegation = Some(DelegationBinding { execution_version: 0, run_id: run.id, parent_agent_id: parent.id, task_id: None, attempt_id: None, workspace: None, task_kind: None });
+        store.save_agents(&[parent.clone()]).unwrap();
+        store.append_chat_message(parent.id, "user", "Keep this conversation", 0, None).unwrap();
+        store.rt.block_on(async {
+            let conn = store.connect().await.unwrap();
+            write_run(&conn, &legacy).await.unwrap();
+            conn.execute("DELETE FROM schema_migrations WHERE version > 40", ()).await.unwrap();
+            super::super::schema::record_schema_version(&conn, 40).await.unwrap();
+        });
+        drop(store);
+        let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        let closed = store.load_delegation(run.id).unwrap();
+        assert_eq!(closed.status, RunStatus::Cancelled);
+        assert_eq!(closed.pause_reason.as_deref(), Some(LEGACY_CLOSED));
+        assert!(closed.ready_tasks(0).is_empty());
+        assert!(store.load_agents().unwrap().iter().find(|a| a.id == parent.id).unwrap().delegation.is_none());
+        assert!(store.load_experts().unwrap().iter().any(|e| e.id == p.id));
+        let mut again = closed.clone();
+        assert!(!again.close_legacy());
+        assert!(again.resume().is_err());
+        assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(closed).unwrap());
+        assert!(store.replay_delegation_operation(run.id, parent.id, "old", &json!({})).is_err());
+        let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.load_delegation(run.id).unwrap().events.iter().filter(|e| e.kind == "legacy_closed").count(), 1);
+    }
+
+    #[test]
+    fn team_scope_and_review_freshness_survive_restart_without_relabelling() {
+        use crate::delegation::{DelegationAttempt, TaskKind, TaskPlan, TaskStatus};
+        use crate::agent_changes::{ChangeKey, EvidenceKind, MutationEvidence};
+        let (dir, store, parent, p) = fixture();
+        fs::create_dir_all(parent.runtime_path()).unwrap();
+        let source = Uuid::new_v4();
+        store.authorize_experts(parent.id, source, "Use UI Designer", &[], false).unwrap();
+        let run = store.begin_delegation(parent.id, source).unwrap();
+        let child = Uuid::new_v4();
+        let unrelated = Uuid::new_v4();
+        store.update_delegation(run.id, None, |r| {
+            r.add_plans(parent.id, vec![TaskPlan { model_request: None, key:"files".into(), expert_id:p.id, goal:"Write".into(), brief:"Write notes".into(), expected_outcome:"Checked".into(), repository:parent.runtime_path().into(), dependencies:vec![], kind:TaskKind::Implementation, held:false }], &[p.snapshot()?])?;
+            r.tasks[0].attempts.push(DelegationAttempt { prepared:true, id:Uuid::new_v4(), child_agent_id:child, generation:1, workspace:parent.runtime_path().into(), snapshot:None, completed_snapshot:None, archive_snapshot:None, working_copy_cleaned:false, result:None, result_revision:None, report_requested:false, session_id:None, progress:String::new(), usage:None });
+            r.tasks[0].status = TaskStatus::Cancelled;
+            r.status = RunStatus::Cancelled;
+            Ok(())
+        }).unwrap();
+        let revision = store.review_mutation_revision(parent.id).unwrap();
+        for (index, actor) in [parent.id, child, unrelated].into_iter().enumerate() {
+            store.save_mutation_evidence(&MutationEvidence {
+                key: ChangeKey { project_id:parent.project_id.0, agent_id:actor, root:parent.runtime_path().into(), generation:"g".into(), turn_id:"t".into(), action_id:format!("edit-{index}"), path:format!("{index}.txt").into() },
+                kind:EvidenceKind::Contents, confirmed:true, additions:Some(1), deletions:Some(0), before_hash:None, after_hash:None, before:Some(String::new()), after:Some("work".into()), patch:None, captured_at:10+index as u64,
+            }).unwrap();
+        }
+        assert_ne!(store.review_mutation_revision(parent.id).unwrap(), revision);
+        let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reopened.conversation_contributor_ids(parent.id).unwrap().into_iter().collect::<std::collections::BTreeSet<_>>(), [parent.id,child].into_iter().collect());
+        let (evidence, _, _) = reopened.review_ownership(parent.id).unwrap();
+        assert_eq!(evidence.iter().map(|e|e.key.agent_id).collect::<std::collections::BTreeSet<_>>(), [parent.id,child].into_iter().collect());
+        assert_eq!(reopened.pending_agent_repository_paths(parent.id, parent.runtime_path()).unwrap(), [PathBuf::from("0.txt"),PathBuf::from("1.txt")].into_iter().collect());
+        reopened.update_delegation(run.id,None,|r|{r.execution_version=0;Ok(())}).unwrap();
+        assert_eq!(reopened.conversation_contributor_ids(parent.id).unwrap(), vec![parent.id]);
+    }
+
+    #[test]
+    fn old_archive_files_are_skipped_and_import_does_not_copy_existing_legacy_storage() {
+        let (dir, store, parent, _) = fixture();
+        let source = Uuid::new_v4();
+        store.authorize_experts(parent.id, source, "Use UI Designer", &[], false).unwrap();
+        let run = store.begin_delegation(parent.id, source).unwrap();
+        store.update_delegation(run.id,None,|r| {r.execution_version=0;Ok(())}).unwrap();
+        let archive = dir.path().join("legacy.zip");
+        store.export_workspace(&archive).unwrap();
+        let file = fs::OpenOptions::new().read(true).write(true).open(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new_append(file).unwrap();
+        writer.start_file("files/data/delegation/orphan/project.txt", zip::write::FileOptions::default()).unwrap();
+        writer.write_all(b"old private work").unwrap();
+        writer.finish().unwrap();
+        let restored_dir = tempfile::tempdir().unwrap();
+        let restored = LocalStore::open(restored_dir.path().into()).unwrap();
+        let existing = restored.app_data_dir().join("delegation/existing/orphan.txt");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, b"await offline cleanup").unwrap();
+        let backup = restored.import_workspace_replace(&archive).unwrap();
+        assert!(!restored.app_data_dir().join("delegation/orphan").exists());
+        assert!(existing.is_file());
+        assert!(!backup.join("data/delegation").exists());
+        let mut history = restored.load_delegation(run.id).unwrap();
+        assert_eq!(history.status, RunStatus::Cancelled);
+        assert!(history.resume().is_err());
+        assert!(restored.load_agents().unwrap().iter().any(|a| a.id == parent.id));
+    }
+
 }

@@ -4,12 +4,15 @@ use super::*;
 pub(super) enum AttachmentRemoval {
     AgentChat { agent_id: Uuid, path: PathBuf },
     NewAgent { path: PathBuf },
+    PendingAgentChat { agent_id: Uuid, paste_id: Uuid },
+    PendingNewAgent { composer_id: Uuid, paste_id: Uuid },
 }
 
 impl CenterArea {
     pub(super) fn render_agent_attachment_pending(
         &self,
-        id: (&'static str, usize),
+        id: (&'static str, u64),
+        removal: AttachmentRemoval,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         h_flex()
@@ -27,11 +30,42 @@ impl CenterArea {
             .text_color(crate::ui::style::focus_text(cx))
             .child(gpui_component::spinner::Spinner::new().xsmall())
             .child("Attaching image…")
+            .child(
+                crate::ui::style::attachment_remove_button(("remove-pending-attachment", id.1), cx)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.remove_composer_attachment(&removal);
+                        cx.notify();
+                    })),
+            )
             .into_any_element()
     }
 
     fn remove_composer_attachment(&mut self, removal: &AttachmentRemoval) {
         match removal {
+            AttachmentRemoval::PendingAgentChat { agent_id, paste_id } => {
+                if let Some(pending) = self.agent_chat_attachment_pastes_pending.get_mut(agent_id) {
+                    pending.finish(*paste_id);
+                    if pending.is_empty() {
+                        self.agent_chat_attachment_pastes_pending.remove(agent_id);
+                    }
+                }
+                self.agent_start_errors.remove(agent_id);
+                self.agent_handoff_preparations_pending.remove(agent_id);
+            }
+            AttachmentRemoval::PendingNewAgent {
+                composer_id,
+                paste_id,
+            } => {
+                if let Some(composer) = self
+                    .new_agent_composer
+                    .as_mut()
+                    .filter(|composer| composer.id == *composer_id)
+                {
+                    composer.attachment_pastes_pending.finish(*paste_id);
+                    composer.error = None;
+                }
+            }
             AttachmentRemoval::AgentChat { agent_id, path } => {
                 self.agent_handoff_preparations_pending.remove(agent_id);
                 if let Some(files) = self.agent_chat_attached_files.get_mut(agent_id) {

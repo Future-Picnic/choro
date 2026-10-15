@@ -268,7 +268,7 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         self.rendered_chat_agents.insert(agent.id);
-        self.agent_chats.update(cx, |chats, cx| chats.ensure_saved_artifacts(agent, cx));
+        self.ensure_team_artifacts(agent, cx);
         let _slow_operation = crate::ui::performance::UiOperationTimer::start("agent_chat.render");
         let top_down = self.workspace.read(cx).conversation_layout
             == ide_core::config::ConversationLayout::TopDown;
@@ -386,12 +386,12 @@ impl CenterArea {
             .contains_key(&agent.id);
         let handoff_sending = self.agent_handoff_sends_pending.contains_key(&agent.id);
         let handoff_busy = handoff_preparing || handoff_sending;
-        let pending_attachment_count = self
+        let pending_attachments = self
             .agent_chat_attachment_pastes_pending
             .get(&agent.id)
-            .copied()
+            .cloned()
             .unwrap_or_default();
-        let attachment_paste_pending = pending_attachment_count > 0;
+        let attachment_paste_pending = !pending_attachments.is_empty();
         let has_attachments = !attached_files.is_empty() || attachment_paste_pending;
         let has_pasted_text_blocks = !pasted_text_blocks.is_empty();
         let has_draft = !input.read(cx).value().trim().is_empty()
@@ -967,13 +967,17 @@ impl CenterArea {
                                                             )
                                                         },
                                                     ))
-                                                    .children((0..pending_attachment_count).map(
-                                                        |index| {
+                                                    .children(pending_attachments.ids().map(
+                                                        |paste_id| {
                                                             self.render_agent_attachment_pending(
                                                                 (
                                                                     "agent-chat-composer-attachment-pending",
-                                                                    index,
+                                                                    paste_id.as_u128() as u64,
                                                                 ),
+                                                                AttachmentRemoval::PendingAgentChat {
+                                                                    agent_id: agent.id,
+                                                                    paste_id,
+                                                                },
                                                                 cx,
                                                             )
                                                         },

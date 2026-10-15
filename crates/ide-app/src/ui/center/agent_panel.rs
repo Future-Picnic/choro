@@ -66,6 +66,7 @@ struct MultiRepoShipRepository {
 
 struct MultiRepoShipDialog {
     agent_id: Uuid,
+    contributor_ids: Vec<Uuid>,
     project_id: ProjectId,
     center: gpui::WeakEntity<CenterArea>,
     agent_title: String,
@@ -87,6 +88,7 @@ struct MultiRepoShipDialog {
 
 struct AgentShipDialog {
     agent_id: Uuid,
+    contributor_ids: Vec<Uuid>,
     project_id: ProjectId,
     center: gpui::WeakEntity<CenterArea>,
     git: Entity<GitState>,
@@ -150,7 +152,7 @@ impl AgentShipDialog {
             return pending.files.clone();
         }
         let pending = if self.scope == AgentShipScope::Conversation {
-            ide_core::agent_changes::cached_pending_repository_paths(self.agent_id, &self.repo_path)
+            ide_core::agent_changes::cached_team_repository_paths(&self.contributor_ids, &self.repo_path)
         } else {
             None
         };

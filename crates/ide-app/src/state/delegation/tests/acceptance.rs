@@ -256,6 +256,10 @@ fn natural_language_two_expert_provider_acceptance() {
             if job.is_none() {
                 for task in &run.tasks {
                     if let Some(a) = task.attempt() {
+                        if task.status == TaskStatus::Preparing {
+                            job = Some(Job::Prepare(run.clone(), task.id, f.parent.clone()));
+                            break;
+                        }
                         let settled = runtimes
                             .get(&a.child_agent_id)
                             .is_some_and(|r| r.settled && r.generation == a.generation);
@@ -263,15 +267,11 @@ fn natural_language_two_expert_provider_acceptance() {
                             d.target == a.child_agent_id && d.status != DeliveryStatus::Acknowledged
                         });
                         if settled && !pending && task.status == TaskStatus::CompletionRequested {
-                            job = Some(Job::Capture(run.clone(), task.id));
+                            job = Some(Job::Finalize(run.clone(), task.id));
                             break;
                         }
                         if settled && !pending && task.status == TaskStatus::Running {
                             job = Some(Job::MissingReport(run.clone(), task.id));
-                            break;
-                        }
-                        if task.status == TaskStatus::Integrating && safe(run.parent_agent_id) {
-                            job = Some(Job::Integrate(run.clone(), task.id));
                             break;
                         }
                     }
@@ -287,7 +287,7 @@ fn natural_language_two_expert_provider_acceptance() {
                     )
                     .first()
                 {
-                    job = Some(Job::Prepare(run.clone(), *task, f.parent.clone()));
+                    job = Some(Job::BeginPrepare(run.clone(), *task, f.parent.clone()));
                 }
             }
             if job.is_none() {
@@ -342,7 +342,7 @@ fn natural_language_two_expert_provider_acceptance() {
         .load()
         .tasks
         .iter()
-        .all(|t| t.status == TaskStatus::Integrated));
+        .all(|t| t.status == TaskStatus::Accepted));
     assert_eq!(
         fs::read_to_string(f.parent.runtime_path().join("user.txt")).unwrap(),
         "unfinished user work\n"

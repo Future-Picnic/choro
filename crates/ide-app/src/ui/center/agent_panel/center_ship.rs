@@ -48,8 +48,8 @@ fn refresh_single_ship_inventory(dialog: &mut AgentShipDialog, cx: &mut Context<
             .iter()
             .filter_map(|e| Some((e.path.clone(), e.staged.or(e.unstaged)?)))
             .collect();
-        let pending = ide_core::agent_changes::cached_pending_repository_paths(
-            dialog.agent_id,
+        let pending = ide_core::agent_changes::cached_team_repository_paths(
+            &dialog.contributor_ids,
             &dialog.repo_path,
         );
         dialog.conversation_files = refreshed_conversation_files(
@@ -83,8 +83,8 @@ fn refresh_multi_ship_inventory(
                 .iter()
                 .filter_map(|e| Some((e.path.clone(), e.staged.or(e.unstaged)?)))
                 .collect();
-            let pending = ide_core::agent_changes::cached_pending_repository_paths(
-                dialog.agent_id,
+            let pending = ide_core::agent_changes::cached_team_repository_paths(
+                &dialog.contributor_ids,
                 &repository.repo_path,
             );
             repository.conversation_files = refreshed_conversation_files(
@@ -176,6 +176,53 @@ fn prefer_ship_base_branch(
 }
 
 impl CenterArea {
+    pub(in crate::ui::center) fn conversation_contributors(&self, agent: &AgentRecord, cx: &App) -> Vec<AgentRecord> {
+        let ids = cx.try_global::<crate::state::delegation::DelegationHandle>()
+            .map(|handle| ide_core::delegation::contribution_ids(agent, &handle.0.read(cx).runs))
+            .unwrap_or_else(|| vec![agent.id]);
+        ids.into_iter().filter_map(|id| if id == agent.id { Some(agent.clone()) } else { self.agents.read(cx).agent(id).cloned() }).collect()
+    }
+
+    pub(in crate::ui::center) fn ensure_team_artifacts(&mut self, agent: &AgentRecord, cx: &mut Context<Self>) {
+        let contributors = self.conversation_contributors(agent, cx);
+        for contributor in &contributors { self.rendered_chat_agents.insert(contributor.id); }
+        self.agent_chats.update(cx, |chats, cx| {
+            for contributor in contributors { chats.ensure_saved_artifacts(&contributor, cx); }
+        });
+    }
+
+    pub(super) fn team_artifacts_notice(&self, agent: &AgentRecord, cx: &App) -> Option<String> {
+        let contributors = self.conversation_contributors(agent, cx);
+        if contributors.len() <= 1 { return None; }
+        let chats = self.agent_chats.read(cx);
+        for contributor in contributors {
+            if let Some(error) = chats.saved_artifacts_error(contributor.id) { return Some(format!("{}: {error}", contributor.title)); }
+            if chats.session(contributor.id).is_none() || chats.saved_artifacts_loading(contributor.id) {
+                return Some("Team Files are loading. Try Ship again when they are ready.".into());
+            }
+        }
+        None
+    }
+
+    pub(super) fn team_ship_paths(&self, agent: &AgentRecord, root: &Path, cx: &App) -> std::collections::BTreeSet<PathBuf> {
+        let mut paths = std::collections::BTreeSet::new();
+        for contributor in self.conversation_contributors(agent, cx) {
+            let contributor_root = contributor.runtime_path();
+            let local = if let Some(session) = self.agent_chats.read(cx).session(contributor.id) {
+                exact_agent_ship_paths(contributor_root, &session.changed_files)
+            } else if contributor.id == agent.id {
+                contributor.changed_files.iter().map(|f| normalize_agent_ship_path(contributor_root, &f.path)).collect()
+            } else { std::collections::BTreeSet::new() };
+            let pending = ide_core::agent_changes::cached_pending_repository_paths(contributor.id, contributor_root);
+            for path in local {
+                if pending.as_ref().is_none_or(|p| p.contains(&path)) {
+                    if let Some(path) = ide_core::agent_changes::relative_path(root, &contributor_root.join(path)) { paths.insert(path); }
+                }
+            }
+        }
+        paths
+    }
+
     pub(in crate::ui::center) fn attach_ship_commit_to_changed_files(
         &mut self,
         agent_id: Uuid,
@@ -439,6 +486,11 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.ensure_team_artifacts(&agent, cx);
+        if let Some(notice) = self.team_artifacts_notice(&agent, cx) {
+            window.push_notification(Notification::info(notice), cx);
+            return;
+        }
         let next_agent = agent.id;
         let next_git = git.clone();
         if ship_activity::confirm_activity(
@@ -581,29 +633,10 @@ impl CenterArea {
                 )
             };
 
-        let mut related = std::collections::BTreeSet::new();
         let whole_workspace = agent.repository_path.is_none() && !agent.is_active_solo();
-        let related_root = if whole_workspace {
-            agent.project_path.as_path()
-        } else {
-            agent.runtime_path()
-        };
-        if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            related = exact_agent_ship_paths(related_root, &session.changed_files);
-        } else {
-            // Legacy terminal agents have no chat ledger. Once a chat session
-            // exists, its attributed projection is authoritative and the old
-            // agent cache must not reintroduce another chat's dirty paths.
-            for file in &agent.changed_files {
-                related.insert(normalize_agent_ship_path(related_root, &file.path));
-            }
-        }
-
-        if let Some(pending) =
-            ide_core::agent_changes::cached_pending_paths(agent.id, agent.runtime_path())
-        {
-            related.retain(|path| pending.contains(path));
-        }
+        let related_root = if whole_workspace { agent.project_path.as_path() } else { agent.runtime_path() };
+        let related = self.team_ship_paths(&agent, related_root, cx);
+        let contributor_ids = self.conversation_contributors(&agent, cx).iter().map(|a| a.id).collect();
         let conversation_files = if whole_workspace {
             conversation_files_for_repository(&agent.project_path, &repo_path, &all_files, &related)
         } else {
@@ -705,6 +738,7 @@ impl CenterArea {
             .detach();
             AgentShipDialog {
                 agent_id: agent.id,
+                contributor_ids,
                 project_id: agent.project_id,
                 center,
                 git,
@@ -770,20 +804,8 @@ impl CenterArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let mut related = std::collections::BTreeSet::new();
-        if let Some(session) = self.agent_chats.read(cx).session(agent.id) {
-            related = exact_agent_ship_paths(&agent.project_path, &session.changed_files);
-        } else {
-            for file in &agent.changed_files {
-                related.insert(normalize_agent_ship_path(&agent.project_path, &file.path));
-            }
-        }
-
-        if let Some(pending) =
-            ide_core::agent_changes::cached_pending_paths(agent.id, agent.runtime_path())
-        {
-            related.retain(|path| pending.contains(path));
-        }
+        let related = self.team_ship_paths(&agent, &agent.project_path, cx);
+        let contributor_ids = self.conversation_contributors(&agent, cx).iter().map(|a| a.id).collect();
         let git_repositories = self.git_states.read(cx).repositories(agent.project_id);
         let mut repositories = Vec::new();
         for git in git_repositories {
@@ -931,6 +953,7 @@ impl CenterArea {
             }
             MultiRepoShipDialog {
                 agent_id: agent.id,
+                contributor_ids,
                 project_id: agent.project_id,
                 center,
                 agent_title: agent.title.clone(),

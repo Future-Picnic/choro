@@ -298,7 +298,8 @@ mod tests {
 
     fn file(path: &str, status: ReviewFileStatus) -> ReviewFile {
         ReviewFile {
-            id: format!("{path}:{status:?}"),
+            author_id: None,
+id: format!("{path}:{status:?}"),
             path: path.into(),
             change_kind: "modified".into(),
             attributed_ranges: vec![ReviewRange {

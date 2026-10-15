@@ -93,15 +93,7 @@ pub(super) fn task_status_label(
     task: &DelegationTask,
     needs_user: bool,
 ) -> &'static str {
-    if run_status == RunStatus::Blocked {
-        "Needs attention"
-    } else if matches!(run_status, RunStatus::Paused | RunStatus::Interrupted) {
-        "Paused"
-    } else if needs_user && !task.status.terminal() {
-        "Needs your input"
-    } else {
-        task.status.label()
-    }
+    display::task_label(run_status, task, needs_user)
 }
 
 fn run_title(run: &DelegationRun) -> &'static str {
@@ -184,7 +176,7 @@ impl CenterArea {
                 head.child(div().text_color(crate::ui::design::t4(cx)).child(summary))
             })
             .child(div().flex_1());
-        if !run.status.terminal() {
+        if run.is_shared() && !run.status.terminal() {
             head = head.child(
                 crate::ui::style::delegation_card_action_button(
                     ("delegation-control", run_id.as_u128() as u64),
@@ -257,11 +249,6 @@ impl CenterArea {
         for (index, task) in run.tasks.iter().enumerate() {
             card = card.child(self.render_delegation_task_row(&run, task, index > 0, cx));
         }
-        if run.status.terminal() {
-            if let Some(cleanup) = self.render_delegation_cleanup(run_id, parent, cx) {
-                card = card.child(cleanup);
-            }
-        }
         card.into_any_element()
     }
 
@@ -304,20 +291,23 @@ impl CenterArea {
         surface: &'static str,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if run.status.terminal() || run.status.stopped() || task.status.terminal() {
+        if !run.is_shared() || run.status.terminal() || run.status.stopped() || task.status.terminal() {
             return None;
         }
         let run_id = run.id;
         let parent = run.parent_agent_id;
         let task_id = task.id;
         let stopped = task.status == TaskStatus::Paused;
+        let failed = task.status == TaskStatus::Failed;
         Some(
             crate::ui::style::delegation_card_action_button(
                 SharedString::from(format!("{surface}-bandmate-control-{task_id}")),
-                if stopped { "Resume" } else { "Stop" },
+                if failed { "Retry" } else if stopped { "Resume" } else { "Stop" },
                 cx,
             )
-            .tooltip(if stopped {
+            .tooltip(if failed {
+                "Retry this assignment"
+            } else if stopped {
                 "Resume this bandmate"
             } else {
                 "Stop this bandmate"
@@ -325,7 +315,9 @@ impl CenterArea {
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(h) = cx.try_global::<DelegationHandle>().cloned() {
                     let result = h.0.update(cx, |s, cx| {
-                        if stopped {
+                        if failed {
+                            s.retry_task(run_id, task_id, cx)
+                        } else if stopped {
                             s.resume_task(run_id, task_id, cx)
                         } else {
                             s.pause_task(run_id, task_id, cx)
@@ -354,7 +346,6 @@ impl CenterArea {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let run_id = run.id;
-        let parent = run.parent_agent_id;
         let task_id = task.id;
         let child = task.attempt().map(|a| a.child_agent_id);
         let needs_user = child.is_some_and(|id| self.delegated_child_needs_user(id, cx));
@@ -372,19 +363,16 @@ impl CenterArea {
                     .map(|a| a.progress.clone())
                     .filter(|p| !p.trim().is_empty())
             });
-        let dependency = task.plan.dependencies.join(", ");
-        let detail = if task.status == TaskStatus::Queued && !dependency.is_empty() {
-            Some(format!("Waiting for {dependency}"))
-        } else if display::report_state(task) == display::ReportState::Fresh
+        let detail = if display::report_state(task) == display::ReportState::Fresh
             && !display::expert_is_working(task.status)
         {
             task.attempt()
                 .and_then(|a| a.result.as_ref())
                 .map(|r| display::bounded_text(&r.summary, 180).0)
-        } else if activity == DelegationActivity::Working {
+        } else if activity == DelegationActivity::Working && task.status == TaskStatus::Running {
             latest_step
         } else {
-            None
+            self.delegated_task_detail(run, task, cx)
         };
         let status = display::completion_stage(run.status, task.status)
             .filter(|_| !run.status.stopped())
@@ -403,18 +391,16 @@ impl CenterArea {
                 })),
             );
         }
-        if let Some(child) = child {
-            actions = actions.child(
+        actions = actions.child(
                 crate::ui::style::delegation_card_action_button(
-                    ("open-expert", child.as_u128() as u64),
-                    "Open",
+                    ("open-expert", task_id.as_u128() as u64),
+                    "Open chat",
                     cx,
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_delegated_task(child, window, cx);
+                    this.open_delegated_assignment(run_id, task_id, window, cx);
                 })),
             );
-        }
         actions = actions.children(self.render_delegation_task_control(run, task, "timeline", cx));
 
         let mut body = v_flex()
@@ -472,10 +458,10 @@ impl CenterArea {
                     .text_color(crate::ui::design::t2(cx))
                     .child(task.plan.goal.clone()),
             );
-        if let Some(detail) = detail {
+        if let Some(detail) = detail.filter(|_| task.status != TaskStatus::Failed) {
             body = body.child(crate::ui::style::delegation_activity_preview(&detail, cx));
         }
-        if let Some(reason) = task.reason.clone() {
+        if let Some(reason) = task.reason.clone().filter(|_| task.status == TaskStatus::Failed) {
             body = body.child(
                 div()
                     .whitespace_normal()
@@ -488,9 +474,6 @@ impl CenterArea {
                     })
                     .child(reason),
             );
-        }
-        if let Some(confirm) = self.render_deletion_confirmation(run, task, cx) {
-            body = body.child(confirm);
         }
 
         h_flex()
@@ -516,138 +499,4 @@ impl CenterArea {
             .into_any_element()
     }
 
-    fn render_deletion_confirmation(
-        &self,
-        run: &DelegationRun,
-        task: &DelegationTask,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let op = task.integration.as_ref()?;
-        if !op.needs_deletion_confirmation() || task.deletion_confirmation == Some(op.id) {
-            return None;
-        }
-        let run_id = run.id;
-        let parent = run.parent_agent_id;
-        let op_id = op.id;
-        let task_id = task.id;
-        let paths = op
-            .changes
-            .iter()
-            .filter(|c| c.after.is_none() && c.before.is_some())
-            .map(|c| c.path.display().to_string())
-            .collect::<Vec<_>>();
-        Some(
-            v_flex()
-                .mt_1()
-                .gap_1p5()
-                .child(
-                    div()
-                        .text_size(crate::ui::design::text_ui())
-                        .text_color(crate::ui::design::rose(cx))
-                        .child("This integration removes these files:"),
-                )
-                .children(paths.into_iter().map(|path| {
-                    div()
-                        .font_family(crate::ui::design::FONT_MONO)
-                        .text_size(crate::ui::design::text_file())
-                        .text_color(crate::ui::design::t2(cx))
-                        .child(path)
-                }))
-                .child(
-                    h_flex().child(
-                        crate::ui::style::danger_button_compact(
-                            ("confirm-expert-deletions", task_id.as_u128() as u64),
-                            "Confirm deletions and integrate",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let result = LocalStore::open_default().and_then(|s| {
-                                s.update_delegation(run_id, None, |r| {
-                                    anyhow::ensure!(
-                                        r.status.dispatchable() && !r.plan_mode,
-                                        "Resume this run before integrating."
-                                    );
-                                    let t = r.task_mut(task_id)?;
-                                    anyhow::ensure!(
-                                        t.integration.as_ref().is_some_and(|op| op.id == op_id),
-                                        "Integration changed. Review the new deletion list."
-                                    );
-                                    t.deletion_confirmation = Some(op_id);
-                                    t.status = TaskStatus::Integrating;
-                                    Ok(())
-                                })
-                            });
-                            if let Err(e) = result {
-                                this.agent_start_errors.insert(parent, e.to_string());
-                            }
-                            cx.notify();
-                        })),
-                    ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn render_delegation_cleanup(
-        &self,
-        run_id: Uuid,
-        parent: Uuid,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        let paths = LocalStore::open_default()
-            .and_then(|s| s.delegation_cleanup_preview(run_id))
-            .ok()?;
-        if paths.is_empty() {
-            return None;
-        }
-        let listed = paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>();
-        Some(
-            v_flex()
-                .w_full()
-                .gap_1p5()
-                .px(crate::ui::design::chat_card_row_pad_x())
-                .py(crate::ui::design::chat_card_row_pad_y())
-                .border_t_1()
-                .border_color(crate::ui::design::line(cx))
-                .child(
-                    div()
-                        .whitespace_normal()
-                        .text_size(crate::ui::design::text_ui())
-                        .line_height(gpui::relative(1.45))
-                        .text_color(crate::ui::design::t2(cx))
-                        .child(
-                            "Working copies are kept. Cleanup removes only the folders below. \
-                             Conversations, reports and snapshots stay.",
-                        ),
-                )
-                .children(listed.into_iter().map(|path| {
-                    div()
-                        .font_family(crate::ui::design::FONT_MONO)
-                        .text_size(crate::ui::design::text_file())
-                        .text_color(crate::ui::design::t3(cx))
-                        .child(path)
-                }))
-                .child(
-                    h_flex().child(
-                        crate::ui::style::danger_button_compact(
-                            ("cleanup-experts", run_id.as_u128() as u64),
-                            "Remove working copies",
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(h) = cx.try_global::<DelegationHandle>().cloned() {
-                                if let Err(e) = h.0.update(cx, |s, cx| {
-                                    s.cleanup_confirmed(run_id, paths.clone(), cx)
-                                }) {
-                                    this.agent_start_errors.insert(parent, e.to_string());
-                                }
-                            }
-                            cx.notify();
-                        })),
-                    ),
-                )
-                .into_any_element(),
-        )
-    }
 }

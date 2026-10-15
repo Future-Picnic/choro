@@ -19,17 +19,6 @@ pub(super) struct ShipActivity {
     title: String,
 }
 
-fn uses_shared_project_files(agent: &AgentRecord) -> bool {
-    !agent.is_active_solo()
-        && agent
-            .delegation
-            .as_ref()
-            .and_then(|binding| binding.workspace.as_deref())
-            .is_none_or(|workspace| {
-                workspace == agent.repository_root() || workspace == agent.project_path
-            })
-}
-
 fn conflicting_activity(
     shipper: &AgentRecord,
     other: &AgentRecord,
@@ -39,8 +28,11 @@ fn conflicting_activity(
 ) -> Option<ShipActivity> {
     (shipper.id != other.id
         && shipper.project_id == other.project_id
-        && uses_shared_project_files(shipper)
-        && uses_shared_project_files(other)
+        && {
+            let a = ide_core::agent_changes::working_directory(shipper.runtime_path());
+            let b = ide_core::agent_changes::working_directory(other.runtime_path());
+            a.starts_with(&b) || b.starts_with(&a)
+        }
         && matches!(
             status,
             AgentChatStatus::Running
@@ -233,6 +225,7 @@ mod tests {
         let mut other = agent(shipper.project_id);
         other.hidden_doc_assistant = true;
         other.delegation = Some(ide_core::delegation::DelegationBinding {
+            execution_version: ide_core::delegation::SHARED_EXECUTION_VERSION,
             run_id: Uuid::new_v4(),
             parent_agent_id: shipper.id,
             task_id: Some(Uuid::new_v4()),

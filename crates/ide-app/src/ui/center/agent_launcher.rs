@@ -71,7 +71,7 @@ impl NewAgentComposer {
             preview_suggestion_dismissed: false,
             selected_mentions: Vec::new(),
             attached_files: Vec::new(),
-            attachment_pastes_pending: 0,
+            attachment_pastes_pending: PendingAttachmentPastes::default(),
             suggested_title: None,
             source_doc: None,
             linked_tasks: Vec::new(),
@@ -334,7 +334,7 @@ impl CenterArea {
         let Some(composer) = self.new_agent_composer.as_mut() else {
             return;
         };
-        if composer.attachment_pastes_pending > 0 {
+        if !composer.attachment_pastes_pending.is_empty() {
             composer.error = Some("Wait for the image to finish attaching.".into());
             cx.notify();
             return;
@@ -397,7 +397,7 @@ impl CenterArea {
         if composer.starting {
             return;
         }
-        if composer.attachment_pastes_pending > 0 {
+        if !composer.attachment_pastes_pending.is_empty() {
             composer.error = Some("Wait for the image to finish attaching, then send again.".into());
             cx.notify();
             return;
@@ -829,10 +829,11 @@ impl CenterArea {
             return false;
         }
 
-        if let Some(composer) = self.new_agent_composer.as_mut() {
-            composer.attachment_pastes_pending += 1;
-            composer.error = None;
-        }
+        let Some(composer) = self.new_agent_composer.as_mut() else {
+            return false;
+        };
+        let paste_id = composer.attachment_pastes_pending.start();
+        composer.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -849,8 +850,9 @@ impl CenterArea {
                 else {
                     return;
                 };
-                composer.attachment_pastes_pending =
-                    composer.attachment_pastes_pending.saturating_sub(1);
+                if !composer.attachment_pastes_pending.finish(paste_id) {
+                    return;
+                }
                 match result {
                     Ok(path) => {
                         composer.attached_files.push(path);

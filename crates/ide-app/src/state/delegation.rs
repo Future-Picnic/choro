@@ -1,6 +1,7 @@
 //! Application-owned orchestration. Views observe this entity; MCP writes the
 //! durable commands it consumes. No selected-chat state drives scheduling.
 pub mod display;
+mod preparation;
 #[cfg(test)]
 mod tests;
 use super::agent_chat::protocol::managed;
@@ -32,6 +33,9 @@ pub(crate) struct DelegationCoordinator {
     wake: async_channel::Sender<()>,
     reload_epoch: u64,
     snapshot: Vec<RunStamp>,
+    /// Slow work never owns the refresh/scheduling loop. One job per task;
+    /// durable task state still decides whether any result may be dispatched.
+    in_flight: HashMap<(Uuid, Uuid), Job>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -51,10 +55,11 @@ impl EventEmitter<DelegationChanged> for DelegationCoordinator {}
 #[derive(Clone)]
 enum Job {
     Configure(DelegationRun, AgentRecord),
+    Provision(DelegationRun, Uuid, AgentRecord),
+    BeginPrepare(DelegationRun, Uuid, AgentRecord),
     Prepare(DelegationRun, Uuid, AgentRecord),
     Deliver(DelegationRun, AgentRecord, Vec<Uuid>, AgentInteractionMode),
-    Capture(DelegationRun, Uuid),
-    Integrate(DelegationRun, Uuid),
+    Finalize(DelegationRun, Uuid),
     Acknowledge(DelegationRun, Uuid, u64),
     MissingReport(DelegationRun, Uuid),
     Failure(DelegationRun, Uuid, String),
@@ -62,9 +67,10 @@ enum Job {
 impl Job {
     fn task_id(&self) -> Option<Uuid> {
         match self {
-            Self::Prepare(_, id, _)
-            | Self::Capture(_, id)
-            | Self::Integrate(_, id)
+            Self::Provision(_, id, _)
+            | Self::BeginPrepare(_, id, _)
+            | Self::Prepare(_, id, _)
+            | Self::Finalize(_, id)
             | Self::MissingReport(_, id)
             | Self::Failure(_, id, _) => Some(*id),
             Self::Deliver(_, a, _, _) => a.delegation.as_ref().and_then(|b| b.task_id),
@@ -74,10 +80,11 @@ impl Job {
     fn run(&self) -> &DelegationRun {
         match self {
             Self::Configure(r, _)
+            | Self::Provision(r, _, _)
+            | Self::BeginPrepare(r, _, _)
             | Self::Prepare(r, _, _)
             | Self::Deliver(r, _, _, _)
-            | Self::Capture(r, _)
-            | Self::Integrate(r, _)
+            | Self::Finalize(r, _)
             | Self::Acknowledge(r, _, _)
             | Self::MissingReport(r, _)
             | Self::Failure(r, _, _) => r,
@@ -85,11 +92,11 @@ impl Job {
     }
     fn reserved_agent(&self) -> Option<Uuid> {
         match self {
-            Self::Configure(r, _) | Self::Prepare(r, _, _) | Self::Integrate(r, _) => {
+            Self::Configure(r, _) => {
                 Some(r.parent_agent_id)
             }
             Self::Deliver(_, a, _, _) => Some(a.id),
-            Self::Capture(r, t) => r.task(*t).ok()?.attempt().map(|a| a.child_agent_id),
+            Self::Finalize(r, t) => r.task(*t).ok()?.attempt().map(|a| a.child_agent_id),
             _ => None,
         }
     }
@@ -148,12 +155,13 @@ impl DelegationCoordinator {
                 wake,
                 reload_epoch: 0,
                 snapshot: Vec::new(),
+                in_flight: HashMap::new(),
             }
         });
         cx.set_global(DelegationHandle(entity.clone()));
         let owner = Uuid::new_v4();
         entity.update(cx, |_, cx| {
-            // Renewal is independent of slow snapshots and integrations.
+            // Renewal is independent of provider preparation and report finalization.
             cx.spawn(async move |this,cx| loop {
                 cx.background_executor().timer(Duration::from_secs(4)).await;
                 if this.upgrade().is_none(){break;}
@@ -197,22 +205,26 @@ impl DelegationCoordinator {
                         s.next_job(cx)
                     }) { Ok(job) => job, Err(_) => break };
                     let Some(job) = job else { continue; };
-                    let run_id = job.run().id;
-                    let reserved = job.reserved_agent();
+                    if matches!(job, Job::Prepare(..) | Job::Finalize(..)) {
+                        let key = (job.run().id, job.task_id().expect("task job"));
+                        if this.update(cx, |s, _| { s.in_flight.insert(key, job.clone()); }).is_err() { break; }
+                        let weak = this.clone();
+                        cx.spawn(async move |cx| {
+                            let work = job.clone();
+                            let result = cx.background_executor().spawn(async move {
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(work, owner)))
+                                    .unwrap_or_else(|_| Err(anyhow::anyhow!("Bandmate preparation stopped unexpectedly. Retry the assignment.")))
+                            }).await;
+                            let _ = weak.update(cx, |s, cx| {
+                                s.in_flight.remove(&key);
+                                s.finish_job(job, result, cx);
+                            });
+                        }).detach();
+                        continue;
+                    }
                     let work = job.clone();
                     let result = cx.background_executor().spawn(async move { execute(work,owner) }).await;
-                    if this.update(cx, |s,cx| {
-                        if let Some(id) = reserved { s.chats.update(cx, |chats,_| { chats.delegation_reservations.remove(&id); }); }
-                        match result {
-                            Ok(effect) => if let Err(error) = s.apply_effect(run_id, effect, cx) { s.fail_run(run_id, error.to_string()); },
-                            Err(error) => {
-                                let stopped=job.task_id().and_then(|id|LocalStore::open_default().ok()?.load_delegation(run_id).ok()?.task(id).ok().map(|t|matches!(t.status,TaskStatus::Paused|TaskStatus::Cancelled))).unwrap_or(false);
-                                if !stopped{s.fail_run(run_id, error.to_string());}
-                            },
-                        }
-                        if let Some(id) = reserved { s.chats.update(cx, |chats,cx| chats.release_delegation_reservation(id,cx)); }
-                        s.request_reload();
-                    }).is_err() { break; }
+                    if this.update(cx, |s,cx| s.finish_job(job, result, cx)).is_err() { break; }
                 }
             }).detach();
         });
@@ -237,6 +249,25 @@ impl DelegationCoordinator {
         true
     }
 
+    fn finish_job(&mut self, job: Job, result: Result<Effect>, cx: &mut Context<Self>) {
+        if let Some(id) = job.reserved_agent() {
+            self.chats.update(cx, |chats, _| { chats.delegation_reservations.remove(&id); });
+        }
+        let result = result.and_then(|effect| self.apply_effect(job.run().id, effect, cx));
+        if let Err(error) = result {
+            if let Err(error) = LocalStore::open_default()
+                .and_then(|store| preparation::record_job_failure(&store, &job, &error.to_string())) {
+                self.error = Some(error.to_string());
+                cx.emit(DelegationChanged { parents: vec![job.run().parent_agent_id], error_changed: true });
+                cx.notify();
+            }
+        }
+        if let Some(id) = job.reserved_agent() {
+            self.chats.update(cx, |chats, cx| chats.release_delegation_reservation(id, cx));
+        }
+        self.request_reload();
+    }
+
     fn accept_error(&mut self, epoch: u64, error: String, cx: &mut Context<Self>) {
         if self.reload_epoch != epoch { return; }
         let error = Some(error);
@@ -256,16 +287,6 @@ impl DelegationCoordinator {
         let _ = self.wake.try_send(());
     }
 
-    fn fail_run(&mut self, id: Uuid, error: String) {
-        self.error = Some(error.clone());
-        if let Ok(store) = LocalStore::open_default() {
-            let _ = store.update_delegation(id, None, |r| {
-                r.block(&error);
-                Ok(())
-            });
-        }
-    }
-
     fn stop_runtime(&self, id: Uuid, cx: &mut Context<Self>) {
         self.chats.update(cx, |chats, cx| {
             if chats.has_backend(id) {
@@ -280,8 +301,6 @@ impl DelegationCoordinator {
                 .into_iter()
                 .filter(|s| {
                     s.agent_record_id == Some(id)
-                        || a.delegation.as_ref().is_some_and(|b| b.task_id.is_some())
-                            && s.cwd.starts_with(a.runtime_path())
                 })
                 .map(|s| s.id)
                 .collect::<Vec<_>>();
@@ -324,29 +343,7 @@ impl DelegationCoordinator {
                         }
                     }
                 });
-                for task in run
-                    .tasks
-                    .iter()
-                    .filter(|t| t.status == TaskStatus::Integrated)
-                {
-                    if let Some(op) = &task.integration {
-                        let turn = format!("delegation-integration-{}", op.id);
-                        let needs_receipt=self.chats.read(cx).session(parent.id).is_some_and(|s|!s.messages.is_empty()&&!s.timeline.iter().any(|i|matches!(i,super::agent_chat::AgentChatTimelineItem::ChangedFiles(summary)if summary.turn_id.as_deref()==Some(&turn))));
-                        if needs_receipt {
-                            match integration_summary(op, parent.runtime_path()) {
-                                Ok(summary) => {
-                                    self.agents.update(cx, |records, cx| {
-                                        records.merge_changed_files(parent.id, &summary.files, cx)
-                                    });
-                                    self.chats.update(cx, |chats, cx| {
-                                        chats.record_delegation_integration(parent.id, summary, cx)
-                                    });
-                                }
-                                Err(e) => self.error = Some(e.to_string()),
-                            }
-                        }
-                    }
-                }
+
             }
         }
         // Keep provider resume IDs in the same authoritative record owner even
@@ -411,6 +408,13 @@ impl DelegationCoordinator {
             let Some(parent) = self.agents.read(cx).agent(run.parent_agent_id).cloned() else {
                 continue;
             };
+            // A conversation exists even for queued, held, failed or stopped
+            // assignments. Creating its record does not launch a provider.
+            if let Some(task) = run.tasks.iter().filter(|_| !run.status.terminal()).find(|task| {
+                task.attempt().is_none_or(|a| self.agents.read(cx).agent(a.child_agent_id).is_none())
+            }) {
+                return Some(Job::Provision(run.clone(), task.id, parent.clone()));
+            }
             let stop_parent = parent_stop_required(&mut self.stopped_parents, &run);
             if run.status.stopped() {
                 if stop_parent {
@@ -424,6 +428,9 @@ impl DelegationCoordinator {
                 continue;
             }
             if run.status.terminal() {
+                for task in &run.tasks {
+                    if let Some(attempt) = task.attempt() { self.stop_runtime(attempt.child_agent_id, cx); }
+                }
                 if can_restore_lead_policy(&run, &parent)
                     && self.chats.read(cx).safe_for_delegation(parent.id)
                 {
@@ -442,7 +449,8 @@ impl DelegationCoordinator {
             }
             let safe = self.chats.read(cx).safe_for_delegation(parent.id);
             let job = if run.status == RunStatus::Preparing {
-                (safe && !run.tasks.is_empty()).then(|| Job::Configure(run.clone(), parent.clone()))
+                (safe && !run.tasks.is_empty() && !self.in_flight.keys().any(|(id, _)| *id == run.id))
+                    .then(|| Job::Configure(run.clone(), parent.clone()))
             } else {
                 self.choose_active(&run, &parent, safe, total, cx)
             };
@@ -463,7 +471,7 @@ impl DelegationCoordinator {
         &self,
         run: &DelegationRun,
         parent: &AgentRecord,
-        safe: bool,
+        _safe: bool,
         total: usize,
         cx: &mut Context<Self>,
     ) -> Option<Job> {
@@ -492,13 +500,18 @@ impl DelegationCoordinator {
                 ));
             }
         }
+        if !run.is_shared() { return None; }
         for task in &run.tasks {
+            if self.in_flight.contains_key(&(run.id, task.id)) { continue; }
             let Some(a) = task.attempt() else {
                 continue;
             };
             if matches!(task.status, TaskStatus::Cancelled | TaskStatus::Paused) {
                 self.stop_runtime(a.child_agent_id, cx);
                 continue;
+            }
+            if task.status == TaskStatus::Preparing && run.status.dispatchable() {
+                return Some(Job::Prepare(run.clone(), task.id, parent.clone()));
             }
             let session = self.chats.read(cx).session(a.child_agent_id);
             let settled = self.settled.get(&a.child_agent_id).copied() == Some(a.generation);
@@ -520,7 +533,7 @@ impl DelegationCoordinator {
                 && !pending
                 && self.chats.read(cx).safe_for_delegation(a.child_agent_id)
             {
-                return Some(Job::Capture(run.clone(), task.id));
+                return Some(Job::Finalize(run.clone(), task.id));
             }
             if task.status == TaskStatus::Running
                 && settled
@@ -529,15 +542,13 @@ impl DelegationCoordinator {
             {
                 return Some(Job::MissingReport(run.clone(), task.id));
             }
-            if task.status == TaskStatus::Integrating && safe && !run.plan_mode {
-                return Some(Job::Integrate(run.clone(), task.id));
-            }
         }
         // Deliver questions and corrections before spending a safe boundary on
-        // another workspace snapshot. Independent work can still run afterward.
+        // another agent startup. Independent work can still run afterward.
         for d in &run.deliveries {
             if d.status != DeliveryStatus::Queued
                 || !self.chats.read(cx).safe_for_delegation(d.target)
+                || d.task_id.is_some_and(|id| self.in_flight.contains_key(&(run.id, id)))
             {
                 continue;
             }
@@ -579,10 +590,9 @@ impl DelegationCoordinator {
             };
             return Some(Job::Deliver(run.clone(), agent, ids, mode));
         }
-        if safe {
-            if let Some(id) = run.ready_tasks(total).first() {
-                return Some(Job::Prepare(run.clone(), *id, parent.clone()));
-            }
+        if let Some(id) = run.ready_tasks(total).into_iter()
+            .find(|id| !self.in_flight.contains_key(&(run.id, *id))) {
+            return Some(Job::BeginPrepare(run.clone(), id, parent.clone()));
         }
         None
     }
@@ -622,13 +632,17 @@ impl DelegationCoordinator {
                 return Ok(());
             }
         }
-        ensure!(
-            run.status.dispatchable() || run.status == RunStatus::Preparing,
-            "This run stopped before dispatch. Work remains saved."
-        );
         match effect {
             Effect::None => (),
             Effect::Adopt(agent) => {
+                // Record adoption is safe while stopped, but a stale attempt
+                // must never replace the current chat configuration.
+                if let Some(binding) = agent.delegation.as_ref().filter(|b| b.task_id.is_some()) {
+                    if run.task(binding.task_id.unwrap())?.attempt()
+                        .is_none_or(|a| Some(a.id) != binding.attempt_id) { return Ok(()); }
+                } else if run.status.stopped() || run.status.terminal() {
+                    return Ok(());
+                }
                 // Reconfiguration never substitutes a fresh provider session.
                 if self.chats.read(cx).has_backend(agent.id) {
                     ensure!(
@@ -706,6 +720,7 @@ impl DelegationCoordinator {
                         if let Some(a) = t.attempt_mut() {
                             if a.child_agent_id == target {
                                 a.generation = generation;
+                                a.progress = "Working".into();
                             }
                         }
                     }
@@ -713,43 +728,6 @@ impl DelegationCoordinator {
                 })?;
             }
         }
-        Ok(())
-    }
-
-    pub fn cleanup_confirmed(
-        &mut self,
-        run_id: Uuid,
-        paths: Vec<std::path::PathBuf>,
-        cx: &mut Context<Self>,
-    ) -> Result<()> {
-        let store = LocalStore::open_default()?;
-        ensure!(
-            store.delegation_cleanup_preview(run_id)? == paths,
-            "Working-copy cleanup changed; review the paths again."
-        );
-        let run = store.load_delegation(run_id)?;
-        let mut stops = Vec::new();
-        for task in &run.tasks {
-            if let Some(a) = task.attempt() {
-                if let Some(signal) = self.chats.update(cx, |chats, cx| {
-                    chats.stop_backend_for_lane_exit(a.child_agent_id, cx)
-                }) {
-                    stops.push(signal);
-                }
-                self.stop_runtime(a.child_agent_id, cx);
-            }
-        }
-        cx.spawn(async move|this,cx|{
-            let result=cx.background_executor().spawn(async move{
-                let deadline=std::time::Instant::now()+Duration::from_secs(10);
-                while stops.iter().any(|s|!s.is_stopped()) {
-                    ensure!(std::time::Instant::now()<deadline,"A Bandmate process has not stopped. Its files were retained; try cleanup again after it exits.");
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                store.cleanup_delegation_workspaces(run_id,&paths)?;store.load_delegations()
-            }).await;
-            let _=this.update(cx,|s,cx|{match result{Ok(runs)=>s.runs=runs,Err(e)=>s.error=Some(e.to_string())}s.request_reload();cx.emit(DelegationChanged { parents: s.runs.iter().map(|r|r.parent_agent_id).collect(), error_changed: true });cx.notify();});
-        }).detach();
         Ok(())
     }
 
@@ -770,7 +748,7 @@ impl DelegationCoordinator {
                 r.parent_agent_id,
                 None,
                 "cancelled",
-                "User ended delegation; working copies retained",
+                "User ended delegation; shared project edits retained",
             );
             Ok(())
         })?;
@@ -822,6 +800,50 @@ impl DelegationCoordinator {
         self.notify_run_changed(run_id, cx);
         Ok(())
     }
+    pub fn ensure_assignment_chat(&mut self, run_id: Uuid, task_id: Uuid, cx: &mut Context<Self>) -> Result<Uuid> {
+        let store = LocalStore::open_default()?;
+        let run = store.load_delegation(run_id)?;
+        if let Some(child) = run.task(task_id)?.attempt().map(|a| a.child_agent_id)
+            .filter(|id| self.agents.read(cx).agent(*id).is_some()) { return Ok(child); }
+        let parent = self.agents.read(cx).agent(run.parent_agent_id).cloned().context("Lead conversation is missing")?;
+        let effect = preparation::provision(&store, run, task_id, parent, false)?;
+        self.apply_effect(run_id, effect, cx)?;
+        self.runs = store.load_delegations()?;
+        self.notify_run_changed(run_id, cx);
+        Ok(store.load_delegation(run_id)?.task(task_id)?.attempt().context("Bandmate conversation is missing")?.child_agent_id)
+    }
+
+    pub fn retry_task(&mut self, run_id: Uuid, task_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
+        let store = LocalStore::open_default()?;
+        let run = store.load_delegation(run_id)?;
+        run.require_shared()?;
+        ensure!(run.status.dispatchable(), "Resume the Band before retrying this assignment.");
+        ensure!(run.task(task_id)?.status == TaskStatus::Failed, "Only a failed assignment can be retried.");
+        if let Some(child) = run.task(task_id)?.attempt().map(|a| a.child_agent_id) {
+            // A failed provider may already have dropped its controller. Reset
+            // its runtime state as well, without adding a false user-Stop row.
+            self.chats.update(cx, |chats, cx| { chats.stop_backend_for_lane_exit(child, cx); });
+        }
+        store.update_delegation(run_id, None, |r| {
+            let task = r.task_mut(task_id)?;
+            ensure!(task.status == TaskStatus::Failed, "Assignment changed before Retry");
+            let started = task.attempt().is_some_and(|a| a.generation > 0);
+            task.status = TaskStatus::Paused;
+            task.paused_status = Some(if started { TaskStatus::Running } else { TaskStatus::Queued });
+            for delivery in &mut r.deliveries {
+                if delivery.task_id == Some(task_id) && delivery.target != r.parent_agent_id {
+                    if !started && delivery.runtime_generation.is_none() {
+                        delivery.status = DeliveryStatus::Acknowledged;
+                    } else if delivery.status == DeliveryStatus::Dispatched {
+                        delivery.status = DeliveryStatus::Uncertain;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        self.resume_task(run_id, task_id, cx)
+    }
+
     pub fn resume_task(
         &mut self,
         run_id: Uuid,
@@ -830,6 +852,7 @@ impl DelegationCoordinator {
     ) -> Result<()> {
         let store = LocalStore::open_default()?;
         let run = store.load_delegation(run_id)?;
+        run.require_shared()?;
         ensure!(run.status.dispatchable(), "Resume the parent task first.");
         let task = run.task(task_id)?;
         ensure!(
@@ -837,12 +860,12 @@ impl DelegationCoordinator {
             "This Bandmate is not paused."
         );
         let child = task.attempt().map(|a| a.child_agent_id);
-        let awaiting_first_snapshot = task.paused_status == Some(TaskStatus::Preparing)
+        let awaiting_preparation = matches!(task.paused_status, Some(TaskStatus::Preparing | TaskStatus::Queued | TaskStatus::Planned))
             && task
                 .attempt()
-                .is_some_and(|a| a.generation == 0 && a.snapshot.is_none());
+                .is_some_and(|a| a.generation == 0 && !a.prepared);
         let mut received = Vec::new();
-        if let Some(child) = child.filter(|_| !awaiting_first_snapshot) {
+        if let Some(child) = child.filter(|_| !awaiting_preparation) {
             let agent = self
                 .agents
                 .read(cx)
@@ -904,6 +927,7 @@ impl DelegationCoordinator {
     ) -> Result<Option<String>> {
         let store = LocalStore::open_default()?;
         let run = store.load_delegation(run_id)?;
+        run.require_shared()?;
         ensure!(run.task(task_id)?.status != TaskStatus::Integrating
             && run.task(task_id)?.paused_status != Some(TaskStatus::Integrating),
             "Changes are being combined. Finish integration recovery before changing this assignment. Your draft is preserved.");
@@ -931,6 +955,7 @@ impl DelegationCoordinator {
     pub fn resume(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
         let store = LocalStore::open_default()?;
         let run = store.load_delegation(run_id)?;
+        run.require_shared()?;
         let records = self.agents.read(cx).all_records();
         let parent = records
             .iter()
@@ -958,6 +983,10 @@ impl DelegationCoordinator {
             .iter()
             .filter(|d| d.status == DeliveryStatus::Uncertain)
         {
+            if delivery.task_id.is_some_and(|id| run.task(id).is_ok_and(|t| t.status.terminal())) {
+                received.push(delivery.id);
+                continue;
+            }
             let agent = records.iter().find(|a| a.id == delivery.target).context(
                 "A delegated chat record is missing. Its assignment is retained for recovery.",
             )?;
@@ -980,72 +1009,20 @@ impl DelegationCoordinator {
             ensure!(messages.iter().any(|m|m.role==ide_core::doc_assistant::DocAssistantRole::User && m.text.contains(&marker)),"Delivery {} has an uncertain outcome in provider history. Open the Bandmate and reconcile it before retrying; Choro will not repeat it automatically.",delivery.id);
             received.push(delivery.id);
         }
-        // Reconcile journals without touching files. Apply only after explicit
-        // Resume and the next settled parent boundary.
-        let mut journals = HashMap::new();
-        for task in &run.tasks {
+        run.require_shared()?;
+        for task in run.tasks.iter().filter(|task| !task.status.terminal()) {
             validate_working_scope(&store, &run, task)?;
-            if let Some(a) = task.attempt() {
-                if (task.status == TaskStatus::Preparing || task.paused_status == Some(TaskStatus::Preparing))
-                    && a.generation == 0 && a.snapshot.is_none() {
-                    continue;
-                }
-                ensure!(
-                    a.workspace.is_dir(),
-                    "Bandmate working copy is missing: {}",
-                    a.workspace.display()
-                );
-                if let Some(base) = &a.snapshot {
-                    ensure!(
-                        base.source.is_dir() && base.storage.is_dir(),
-                        "Task snapshot or source repository is missing."
-                    );
-                }
-            }
-            if let Some(op) = &task.integration {
-                if op.journal_path().is_file() {
-                    let journal: workspace::IntegrationOperation =
-                        serde_json::from_slice(&std::fs::read(op.journal_path())?)?;
-                    ensure!(
-                        journal.id == op.id && journal.source == op.source,
-                        "Integration journal identity changed."
-                    );
-                    journals.insert(task.id, journal);
-                }
-            }
         }
         let parent = records
             .iter()
             .find(|a| a.id == run.parent_agent_id)
             .context("Lead record is missing")?;
-        for task in &run.tasks {
+        for task in run.tasks.iter().filter(|task| !task.status.terminal()) {
             if let Some(a) = task.attempt().filter(|a| {
-                a.snapshot.is_some() && !records.iter().any(|record| record.id == a.child_agent_id)
+                a.prepared && !records.iter().any(|record| record.id == a.child_agent_id)
             }) {
                 ensure!(a.generation==0,"A previously launched Bandmate record is missing; restoring its session is required.");
-                let p = &task.expert.profile;
-                let mut child = AgentRecord::new(
-                    parent.project_id,
-                    parent.project_path.clone(),
-                    format!("{} · {}", p.name, task.plan.goal),
-                    task.plan.brief.clone(),
-                    p.provider,
-                    p.model,
-                    p.effort,
-                    parent.access_mode,
-                );
-                child.id = a.child_agent_id;
-                child.runtime = AgentRuntimeKind::Chat;
-                child.repository_path = parent.repository_path.clone();
-                child.expert_snapshot = Some(task.expert.clone());
-                child.delegation = Some(DelegationBinding {
-                    run_id,
-                    parent_agent_id: parent.id,
-                    task_id: Some(task.id),
-                    attempt_id: Some(a.id),
-                    workspace: Some(a.workspace.clone()),
-                    task_kind: Some(task.plan.kind),
-                });
+                let child = preparation::child_record(&store, &run, task, parent)?;
                 self.agents.update(cx, |records, cx| {
                     records.adopt_managed(child, cx);
                     records.try_save_now()
@@ -1058,20 +1035,14 @@ impl DelegationCoordinator {
             let mut continuations=Vec::new();
             for task in &mut r.tasks {
                 if task.status==TaskStatus::Paused{continue;}
-                if task.status==TaskStatus::Preparing && task.attempt().is_some_and(|a|a.snapshot.is_none()){task.status=TaskStatus::Queued;continue;}
-                if let Some(journal)=journals.remove(&task.id) {
-                    if journal.status==workspace::IntegrationStatus::Applied {task.status=TaskStatus::Integrated;}
-                    else if matches!(journal.status,workspace::IntegrationStatus::Applying|workspace::IntegrationStatus::Prepared|workspace::IntegrationStatus::NeedsAttention){task.status=TaskStatus::Integrating;}
-                    task.integration=Some(journal);
-                }
+                if task.status==TaskStatus::Preparing && task.attempt().is_some_and(|a|!a.prepared){task.status=TaskStatus::Queued;continue;}
                 if matches!(task.status,TaskStatus::Running|TaskStatus::CompletionRequested|TaskStatus::NeedsUser) {
-                    if task.integration.is_some(){continue;}
                     task.revision+=1;task.status=TaskStatus::Running;
                     let revision=task.revision;
                     if let Some(a)=task.attempt_mut(){a.result=None;a.result_revision=None;a.report_requested=false;continuations.push((a.child_agent_id,task.id,revision));}
                 }
             }
-            for (child,task,revision) in continuations {r.queue(child,Some(task),format!("The user resumed this task. Continue from the existing session and working copy; do not repeat external side effects. Read current state for task {task}. Task revision is now {revision}. Reconcile what already happened, finish remaining work, and report the verified result."));}
+            for (child,task,revision) in continuations {r.queue(child,Some(task),format!("The user resumed this task. Continue from the existing session and shared project; do not repeat external side effects. Read current state for task {task}. Task revision is now {revision}. Reconcile what already happened, finish remaining work, and report the verified result."));}
             Ok(())
         })?;
         let run = store.load_delegation(run_id)?;
@@ -1128,40 +1099,6 @@ fn validate_resume_session(agent: &AgentRecord, execution_started: bool) -> Resu
     Ok(())
 }
 
-fn integration_summary(
-    op: &workspace::IntegrationOperation,
-    root: &std::path::Path,
-) -> Result<super::agent_chat::ChangedFilesSummary> {
-    let mut files = Vec::new();
-    for change in &op.changes {
-        let before = workspace::bounded_text(&op.storage, change.before.as_ref())?;
-        let after = workspace::bounded_text(&op.storage, change.after.as_ref())?;
-        let (added, deleted) = before
-            .as_deref()
-            .zip(after.as_deref())
-            .and_then(|(b, e)| super::agent_chat::bounded_line_diff_counts(b, e))
-            .unwrap_or((0, 0));
-        let absolute = op.source.join(&change.path);
-        let path = absolute
-            .strip_prefix(root)
-            .unwrap_or(&absolute)
-            .to_path_buf();
-        files.push(
-            super::agent_chat::FileChangeStat::new(path, added, deleted)
-                .with_content_hashes(
-                    change.before.as_ref().map(|f| f.hash.clone()),
-                    change.after.as_ref().map(|f| f.hash.clone()),
-                )
-                .with_content_projection(before, after),
-        );
-    }
-    Ok(super::agent_chat::ChangedFilesSummary::attributed(
-        format!("delegation-integration-{}", op.id),
-        files,
-        vec![],
-    ))
-}
-
 fn validate_working_scope(
     store: &LocalStore,
     run: &DelegationRun,
@@ -1180,51 +1117,22 @@ fn validate_working_scope(
         repository.display(),
         allowed.display()
     );
-    let root = store
-        .app_data_dir()
-        .join("delegation")
-        .join(run.id.to_string());
-    if let Some(a) = task.attempt() {
-        ensure!(
-            a.workspace == root.join(format!("attempt-{}", a.id)),
-            "Bandmate working-copy identity changed."
-        );
-        if a.workspace.exists() {
-            ensure!(
-                !std::fs::symlink_metadata(&a.workspace)?.is_symlink(),
-                "Bandmate working copy cannot be a symlink."
-            );
-        }
-        if let Some(base) = &a.snapshot {
-            ensure!(
-                base.source == repository && base.storage == root,
-                "Snapshot source or storage identity changed."
-            );
-        }
-        if let Some(result) = &a.completed_snapshot {
-            ensure!(result.storage == root, "Result storage identity changed.");
-        }
-    }
-    if let Some(op) = &task.integration {
-        ensure!(
-            op.source == repository
-                && op.storage == root
-                && op.resolution_dir == root.join(format!("integration-{}", op.id)),
-            "Integration scope changed. Restore the recorded repository before resuming."
-        );
+    run.require_shared()?;
+    ensure!(repository.is_dir(), "Bandmate working directory is missing.");
+    if let Some(attempt) = task.attempt() {
+        ensure!(attempt.workspace.canonicalize()? == repository, "Bandmate working directory changed.");
     }
     Ok(())
 }
 
-/// A user can correct or stop an assignment while its snapshot is captured.
-/// Keep that capture if it still belongs to the same attempt, and deliver the
+/// A user can correct or stop an assignment while its agent is prepared.
+/// Keep that preparation if it still belongs to the same attempt, and deliver the
 /// latest brief instead of treating an ordinary correction as a run failure.
 fn record_prepared_assignment(
     run: &mut DelegationRun,
     task_id: Uuid,
     attempt_id: Uuid,
     prepared_revision: u64,
-    snapshot: workspace::WorkspaceSnapshot,
     context: &mut String,
 ) -> Result<bool> {
     let active = run.status.dispatchable();
@@ -1234,7 +1142,7 @@ fn record_prepared_assignment(
         return Ok(false);
     }
     let child = task.attempt().unwrap().child_agent_id;
-    task.attempt_mut().unwrap().snapshot = Some(snapshot);
+    task.attempt_mut().unwrap().prepared = true;
     if ended || matches!(task.status, TaskStatus::Cancelled | TaskStatus::Superseded) {
         return Ok(false);
     }
@@ -1254,7 +1162,7 @@ fn record_prepared_assignment(
         run.parent_agent_id,
         Some(task_id),
         "prepared",
-        "Private working copy ready",
+        "Bandmate ready in the shared working directory",
     );
     Ok(active)
 }
@@ -1277,20 +1185,21 @@ fn execute_in_store(
     }
     let id = job.run().id;
     let latest = store.load_delegation(id)?;
+    latest.require_shared()?;
     if latest.revision != job.run().revision {
         return Ok(Effect::None);
     }
     ensure!(
-        latest.status.dispatchable() || latest.status == RunStatus::Preparing,
+        latest.status.dispatchable() || latest.status == RunStatus::Preparing || matches!(job, Job::Provision(..)),
         "The run is paused."
     );
     match job {
+        Job::Provision(run, task_id, parent) => preparation::provision(store, run, task_id, parent, false),
+        Job::BeginPrepare(run, task_id, parent) => preparation::provision(store, run, task_id, parent, true),
         Job::Configure(run, mut parent) => {
             preflight(parent.provider)?;
-            for task in &run.tasks {
-                preflight(task.expert.profile.provider)?;
-            }
             parent.delegation = Some(DelegationBinding {
+                    execution_version: SHARED_EXECUTION_VERSION,
                 run_id: id,
                 parent_agent_id: parent.id,
                 task_id: None,
@@ -1298,86 +1207,31 @@ fn execute_in_store(
                 workspace: None,
                 task_kind: None,
             });
-            store.update_delegation(id,Some(run.revision),|r| { r.status=RunStatus::Active; r.queue(r.parent_agent_id,None,format!("Managed Bandmates are ready. Run {id}. Continue your share of the task, coordinate contracts and integrate results. Use delegation_wait and end the turn when there is no independent work.")); Ok(()) })?;
+            store.update_delegation(id,Some(run.revision),|r| { r.status=RunStatus::Active; r.queue(r.parent_agent_id,None,format!("Managed Bandmates are ready. Run {id}. Continue your share of the task, coordinate responsibilities and review results. Use delegation_wait and end the turn when there is no independent work.")); Ok(()) })?;
             Ok(Effect::Adopt(parent))
         }
         Job::Prepare(run, task_id, parent) => {
             let task = run.task(task_id)?.clone();
             let expert = &task.expert.profile;
+            ensure!(task.status == TaskStatus::Preparing, "Assignment is not preparing");
             validate_working_scope(store, &run, &task)?;
             preflight(expert.provider)?;
             // Launch from the immutable package, including after import or a
             // changed/uninstalled source skill. The original path is provenance.
             task.expert
                 .runtime_instructions(&store.root().join("expert-skill-cache"))?;
-            let attempt_id = Uuid::new_v4();
-            let root = store.app_data_dir().join("delegation").join(id.to_string());
-            let workspace_path = root.join(format!("attempt-{attempt_id}"));
-            let child_id = task
-                .attempt()
-                .map_or_else(Uuid::new_v4, |a| a.child_agent_id);
-            store.update_delegation(id, Some(run.revision), |r| {
-                let t = r.task_mut(task_id)?;
-                t.status = TaskStatus::Preparing;
-                t.attempts.push(DelegationAttempt {
-                    id: attempt_id,
-                    child_agent_id: child_id,
-                    generation: 0,
-                    workspace: workspace_path.clone(),
-                    snapshot: None,
-                    completed_snapshot: None,
-                    archive_snapshot: None,
-                    working_copy_cleaned: false,
-                    result: None,
-                    result_revision: None,
-                    report_requested: false,
-                    session_id: None,
-                    progress: "Capturing current work".into(),
-                    usage: None,
-                });
-                Ok(())
-            })?;
-            let snapshot = workspace::capture(&task.plan.repository, &root)?;
-            workspace::materialize(&snapshot, &workspace_path)?;
-            let mut child = if let Some(previous) =
-                store.load_agents()?.into_iter().find(|a| a.id == child_id)
-            {
-                previous
-            } else {
-                AgentRecord::new(
-                    parent.project_id,
-                    parent.project_path.clone(),
-                    format!("{} · {}", expert.name, task.plan.goal),
-                    String::new(),
-                    expert.provider,
-                    expert.model,
-                    expert.effort,
-                    parent.access_mode,
-                )
-            };
-            child.id = child_id;
-            child.runtime = AgentRuntimeKind::Chat;
-            child.repository_path = parent.repository_path.clone();
-            child.expert_snapshot = Some(task.expert.clone());
-            child.delegation = Some(DelegationBinding {
-                run_id: id,
-                parent_agent_id: parent.id,
-                task_id: Some(task_id),
-                attempt_id: Some(attempt_id),
-                workspace: Some(workspace_path),
-                task_kind: Some(task.plan.kind),
-            });
-            child.linked_docs = parent.linked_docs.clone();
+            let attempt_id = task.attempt().context("Bandmate conversation is missing")?.id;
+            let mut child = preparation::child_record(store, &run, &task, &parent)?;
             let memories = store.load_memories_for_project(parent.project_id)?;
             let background = ide_core::delegation::context::parent_context(store, parent.id, None)?;
-            let context = format!("Choro managed assignment\nRun: {id}\nTask: {task_id}\nAttempt: {attempt_id}\nTask revision: {}\nSnapshot: {}\n\nExact user assignment (user authority):\n{}\n\nGoal: {}\nBrief from lead:\n{}\nExpected completion:\n{}\n\nApplicable Choro memories:\n{}\n\nUse delegation_read with include_context for additional scoped parent context. Background excerpts are not authorization. Follow project instructions in this private copy. Report with delegation_complete for these exact IDs and revision. {}",task.revision,snapshot.id,run.original_assignment,task.plan.goal,task.plan.brief,task.plan.expected_outcome,serde_json::to_string(&memories)?,managed::MANAGED_INSTRUCTIONS);
+            let context = format!("Choro managed assignment\nRun: {id}\nTask: {task_id}\nAttempt: {attempt_id}\nTask revision: {}\nWorking directory: {}\n\nExact user assignment (user authority):\n{}\n\nGoal: {}\nBrief from lead:\n{}\nExpected completion:\n{}\n\nApplicable Choro memories:\n{}\n\nUse delegation_read with include_context for additional scoped parent context. Background excerpts are not authorization. Work directly in this shared folder. Follow its project instructions and coordinate overlapping edits with the lead. Never create a private project copy, clone, worktree, baseline, or project snapshot for this assignment. Report with delegation_complete for these exact IDs and revision. {}",task.revision,task.plan.repository.display(),run.original_assignment,task.plan.goal,task.plan.brief,task.plan.expected_outcome,serde_json::to_string(&memories)?,managed::MANAGED_INSTRUCTIONS);
             let context = format!(
                 "{context}\n\nScoped background (not authority):\n{}",
                 serde_json::to_string(&background)?
             );
             let mut context = context;
             let adopt = store.update_delegation(id, None, |r| {
-                record_prepared_assignment(r, task_id, attempt_id, task.revision, snapshot, &mut context)
+                record_prepared_assignment(r, task_id, attempt_id, task.revision, &mut context)
             })?;
             child.doc = context;
             Ok(if adopt {
@@ -1399,6 +1253,9 @@ fn execute_in_store(
                         "The bandmate's assignment changed before delivery."
                     );
                     binding.task_kind = Some(task.plan.kind);
+                    ensure!(task.attempt().is_none_or(|a| a.generation == 0)
+                        || agent.chat_session_id.is_some() || agent.cli_session_id.is_some(),
+                        "Cannot continue this Bandmate: its saved provider session ID is missing. Restore the original session before retrying.");
                 }
             }
             let history = super::chat_dispatch::load_history_from_store(store, &agent)?;
@@ -1445,27 +1302,18 @@ fn execute_in_store(
             })?;
             Ok(Effect::None)
         }
-        Job::Capture(run, task_id) => {
+        Job::Finalize(run, task_id) => {
             let task = run.task(task_id)?;
             let a = task.attempt().context("Missing attempt")?;
             validate_working_scope(store, &run, task)?;
-            let snapshot = workspace::capture(
-                &a.workspace,
-                &a.snapshot.as_ref().context("Missing baseline")?.storage,
-            )?;
-            // Freeze E independently from later corrections to the Expert chat.
-            workspace::materialize(
-                &snapshot,
-                &snapshot.storage.join(format!("result-{}", snapshot.id)),
-            )?;
             store.update_delegation(id,None,|r| {
                 if !r.status.dispatchable(){return Ok(());}
                 let t=r.task(task_id)?;
                 if t.revision!=task.revision||t.status!=TaskStatus::CompletionRequested||t.attempt().is_none_or(|current|current.id!=a.id){return Ok(());}
-                let t=r.task_mut(task_id)?; t.attempt_mut().unwrap().completed_snapshot=Some(snapshot); t.status=TaskStatus::ResultReady;
+                let t=r.task_mut(task_id)?; t.status=TaskStatus::ResultReady;
                 let summary=t.attempt().and_then(|a|a.result.as_ref()).context("Missing completion report")?.summary.clone();
                 r.event(r.parent_agent_id,Some(task_id),"result",summary.clone());
-                r.queue(r.parent_agent_id,Some(task_id),format!("Bandmate result ready for task {task_id}: {summary}. Read the report and request delegation_integrate, or accept a consultation. Verify the combined outcome.")); Ok(())
+                r.queue(r.parent_agent_id,Some(task_id),format!("Bandmate result ready for task {task_id}: {summary}. Review the report and shared files, then use delegation_control accept or request_changes. Verify the combined outcome.")); Ok(())
             })?;
             Ok(Effect::None)
         }
@@ -1489,93 +1337,6 @@ fn execute_in_store(
             })?;
             Ok(Effect::None)
         }
-        Job::Integrate(run, task_id) => {
-            let task = run.task(task_id)?;
-            let attempt = task.attempt().context("Missing attempt")?;
-            validate_working_scope(store, &run, task)?;
-            ensure!(
-                attempt.result_revision == Some(task.revision),
-                "Cannot integrate an outdated result."
-            );
-            let baseline = attempt.snapshot.as_ref().context("Missing baseline")?;
-            let completed = attempt
-                .completed_snapshot
-                .as_ref()
-                .context("Result is not captured")?;
-            let mut op = if let Some(existing) = &task.integration {
-                existing.clone()
-            } else {
-                workspace::prepare_integration(
-                    baseline,
-                    &completed.storage.join(format!("result-{}", completed.id)),
-                )?
-            };
-            let reprepare = op.status == workspace::IntegrationStatus::NeedsAttention
-                || !op.matches_current_source()?;
-            if reprepare {
-                op = op.reprepare_remaining(
-                    baseline,
-                    &completed.storage.join(format!("result-{}", completed.id)),
-                )?;
-            }
-            if op.status == workspace::IntegrationStatus::Conflict
-                && !reprepare
-                && task.reason.as_deref() == Some("resolutions_submitted")
-            {
-                op.accept_resolutions()?;
-            }
-            let needs_attention = op.status == workspace::IntegrationStatus::Conflict
-                || op.needs_deletion_confirmation() && task.deletion_confirmation != Some(op.id);
-            let accepted = store.update_delegation(id, None, |r| {
-                if !r.status.dispatchable() || r.plan_mode {
-                    return Ok(false);
-                }
-                let current = r.task(task_id)?;
-                if current.revision != task.revision
-                    || current.status != TaskStatus::Integrating
-                    || current.attempt().is_none_or(|a| a.id != attempt.id)
-                {
-                    return Ok(false);
-                }
-                r.task_mut(task_id)?.integration = Some(op.clone());
-                Ok(true)
-            })?;
-            if !accepted {
-                return Ok(Effect::None);
-            }
-            if needs_attention {
-                store.update_delegation(id,None,|r| {
-                    let t=r.task_mut(task_id)?;
-                    t.status=if op.status==workspace::IntegrationStatus::Conflict {TaskStatus::ResultReady} else {TaskStatus::NeedsUser};
-                    let reason=if op.status==workspace::IntegrationStatus::Conflict {format!("Resolve conflicts {:?} in {}. Base and result manifests are available through delegation_read. Submit resolutions_ready when checked.",op.conflicts,op.resolution_dir.display())} else {"Integration proposes file deletions. User confirmation is required in Choro.".into()};
-                    t.reason=Some(reason.clone());r.event(r.parent_agent_id,Some(task_id),"question",reason.clone());r.queue(r.parent_agent_id,Some(task_id),reason);Ok(())
-                })?;
-                return Ok(Effect::None);
-            }
-            op.apply_guarded(task.deletion_confirmation == Some(op.id), || {
-                if let Some(owner) = lease {
-                    ensure!(
-                        store.claim_delegation_coordinator(owner)?,
-                        "Coordinator lease was lost during integration."
-                    );
-                }
-                let r = store.load_delegation(id)?;
-                ensure!(
-                    r.status.dispatchable()
-                        && !r.plan_mode
-                        && r.task(task_id)?.status == TaskStatus::Integrating
-                        && r.task(task_id)?.revision == task.revision,
-                    "Integration paused. Reconcile the preserved journal before continuing."
-                );
-                Ok(())
-            })?;
-            store.update_delegation(id,None,|r| {
-                let active=r.status.dispatchable();
-                let t=r.task_mut(task_id)?;t.integration=Some(op);
-                if active && t.status==TaskStatus::Integrating {t.status=TaskStatus::Integrated;t.reason=None;}
-                r.event(r.parent_agent_id,Some(task_id),"integrated","Bandmate changes integrated; verification is still required");r.queue(r.parent_agent_id,Some(task_id),format!("Task {task_id} changes are integrated. Source index is unchanged. Verify the combined behavior before delegation_finish."));Ok(())
-            })?;
-            Ok(Effect::None)
-        }
+
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     agent_changes::MutationEvidence,
-    delegation::workspace::safe_path,
+    git::safe_path::safe_path,
     git::{diff::diff_from_contents, LineOrigin},
 };
 use anyhow::{ensure, Context, Result};
@@ -357,15 +357,27 @@ pub fn prepare_review(
     let mut last_by_path = BTreeMap::<PathBuf, usize>::new();
     for e in evidence.iter().filter(|e| {
         e.confirmed
-            && e.key.agent_id == run.parent_id
+            && (e.key.agent_id == run.parent_id || run.contributor_ids.contains(&e.key.agent_id))
             && e.key.project_id == run.project_id
-            && crate::agent_changes::working_directory(&e.key.root) == root
+            && crate::agent_changes::working_directory(&e.key.root).starts_with(&root)
     }) {
+        let mut mapped = e.clone();
+        // Preserve unsafe receipts as explicit skipped entries below instead
+        // of aborting the entire review or silently dropping coverage.
+        let path = crate::agent_changes::relative_path(&root, &crate::agent_changes::working_directory(&e.key.root).join(&e.key.path))
+            .unwrap_or_else(|| e.key.path.clone());
+        mapped.key.path = path.clone();
+        if let Some(patch) = mapped.patch.as_mut() {
+            // Change only a valid source-relative patch identity, never repair
+            // a mismatched/forged patch.
+            if patch.path == e.key.path { patch.path = path; }
+        }
+        let e = &mapped;
         // Collapse only a proven contiguous content chain. Shared-file gaps
         // remain separate attributed receipts, never a whole-workspace diff.
         if let Some(index) = last_by_path.get(&e.key.path).copied() {
             let previous = &mut owned[index];
-            if previous.before.is_some() && previous.after.is_some()
+            if previous.key.agent_id == e.key.agent_id && previous.before.is_some() && previous.after.is_some()
                 && e.after.is_some() && previous.after == e.before {
                 previous.after = e.after.clone();
                 previous.after_hash = e.after_hash.clone();
@@ -436,7 +448,8 @@ pub fn prepare_review(
             continue;
         }
         let mut f = ReviewFile {
-            id: id.clone(),
+            author_id: Some(e.key.agent_id),
+id: id.clone(),
             path: e.key.path.clone(),
             change_kind: "Modified".into(),
             attributed_ranges: vec![],

@@ -1348,3 +1348,26 @@ fn all_provider_reviewer_records_preserve_selection_without_saved_mutation_autho
         );
     }
 }
+
+#[test]
+fn shared_team_review_preserves_each_author_and_excludes_unrelated_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    fs::create_dir(&root).unwrap();
+    git2::Repository::init(&root).unwrap();
+    fs::write(root.join("shared.rs"), "first\nsecond\nuser\n").unwrap();
+    let mut run = ReviewRun::new(Uuid::new_v4(), Uuid::new_v4(), "Claude".into(), "model".into(), "effort".into(), review_now());
+    let child = Uuid::new_v4();
+    run.contributor_ids.push(child);
+    let a = receipt(&run, &root, "shared.rs", "user\n", "first\nuser\n", "lead");
+    let mut b = receipt(&run, &root, "shared.rs", "first\nuser\n", "first\nsecond\nuser\n", "child");
+    b.key.agent_id = child;
+    b.captured_at = 2;
+    let mut unrelated = b.clone();
+    unrelated.key.agent_id = Uuid::new_v4();
+    let storage = dir.path().join("review");
+    prepare_review(&mut run, &root, &storage, requirements(), &[a,b,unrelated], &[], &AtomicBool::new(false)).unwrap();
+    assert_eq!(run.files.len(), 2);
+    assert_eq!(run.files.iter().filter_map(|f| f.author_id).collect::<BTreeSet<_>>(), BTreeSet::from([run.parent_id, child]));
+    assert_eq!(fs::read_to_string(root.join("shared.rs")).unwrap(), "first\nsecond\nuser\n");
+}

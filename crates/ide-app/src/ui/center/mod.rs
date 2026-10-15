@@ -363,7 +363,7 @@ struct NewAgentComposer {
     selected_mentions: Vec<ComposerMentionToken>,
     attached_files: Vec<PathBuf>,
     /// Clipboard images currently being written off the GPUI thread.
-    attachment_pastes_pending: usize,
+    attachment_pastes_pending: PendingAttachmentPastes,
     /// Source-aware display name supplied by flows such as task/doc
     /// implementation. This stays separate from the full first-turn prompt.
     suggested_title: Option<String>,
@@ -1959,8 +1959,8 @@ pub struct CenterArea {
     agent_chat_inputs: HashMap<Uuid, Entity<InputState>>,
     agent_chat_attached_files: HashMap<Uuid, Vec<PathBuf>>,
     /// Clipboard images currently being hashed, written, and registered off
-    /// the GPUI thread. Counts allow several quick pastes into one composer.
-    agent_chat_attachment_pastes_pending: HashMap<Uuid, usize>,
+    /// the GPUI thread. Each paste can be removed independently while loading.
+    agent_chat_attachment_pastes_pending: HashMap<Uuid, PendingAttachmentPastes>,
     agent_chat_pasted_text_blocks: HashMap<Uuid, Vec<PastedTextBlock>>,
     agent_chat_selected_commands: HashMap<Uuid, AgentCapability>,
     agent_chat_capability_cache:

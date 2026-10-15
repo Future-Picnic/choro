@@ -76,6 +76,7 @@ pub use log::{ahead_behind, commit_diff, list_commits, worktree_diffs, CommitInf
 pub use read::{read_head, read_snapshot};
 pub use remote::{fetch, pull, push, RemoteOutput};
 pub use repository::{discover_repositories, workspace_worktree_diffs};
+pub mod safe_path;
 pub use snapshot::{BranchInfo, ChangeKind, GitSnapshot, HeadInfo, LineStats, StatusEntry};
 
 #[cfg(test)]
