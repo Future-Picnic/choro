@@ -53,15 +53,18 @@ const MAX_VISUALIZATION_BYTES: u64 = 2 * 1024 * 1024;
 /// Cached transcripts reuse a native placement. Only a real transcript layout
 /// can prove that its inline visualization has left the visible list.
 #[derive(Default)]
-struct InlinePlacement {
+pub(super) struct InlinePlacement {
     laying_out: bool,
     placed: bool,
-    hidden: bool,
+    pub(super) hidden: bool,
 }
 impl InlinePlacement {
-    fn begin(&mut self) { self.laying_out = true; self.placed = false; }
-    fn place(&mut self) { self.placed = true; self.hidden = false; }
-    fn finish(&mut self) {
+    pub(super) fn begin(&mut self) { self.laying_out = true; self.placed = false; }
+    pub(super) fn place(&mut self) { self.placed = true; self.hidden = false; }
+    /// The row was laid out but isn't wholly visible: hide at once, rather
+    /// than keeping the previous (fully visible) bounds until `finish`.
+    pub(super) fn reject(&mut self) { if !self.placed { self.hidden = true; } }
+    pub(super) fn finish(&mut self) {
         if std::mem::take(&mut self.laying_out) { self.hidden = !self.placed; }
     }
 }
@@ -79,6 +82,63 @@ mod inline_placement_tests {
         placement.finish(); assert!(placement.hidden);
         placement.begin(); placement.place(); placement.finish();
         assert!(!placement.hidden, "scrolling back must restore the surface");
+    }
+
+    #[test]
+    fn a_partly_visible_row_hides_immediately_not_at_frame_end() {
+        let mut placement = InlinePlacement::default();
+        placement.begin(); placement.place(); placement.finish();
+        assert!(!placement.hidden);
+        placement.begin(); placement.reject();
+        assert!(placement.hidden, "hidden before anything else paints this frame");
+        placement.finish();
+        assert!(placement.hidden);
+        for _ in 0..3 { placement.finish(); assert!(placement.hidden, "cached frames keep it hidden"); }
+    }
+
+    #[test]
+    fn a_center_frame_without_the_conversation_hides_its_surface() {
+        // `begin` at the center render, `place` from the owning conversation's
+        // marker or panel, `finish` at the center paint.
+        let mut frame = InlinePlacement::default();
+        frame.begin(); frame.place(); frame.finish();
+        assert!(!frame.hidden);
+        // New agent (or any screen without that conversation) renders.
+        frame.begin(); frame.finish();
+        assert!(frame.hidden, "a frame without the conversation must hide it");
+        // A cached center frame (no render, no paint callback) keeps it hidden.
+        frame.finish();
+        assert!(frame.hidden);
+        frame.begin(); frame.place(); frame.finish();
+        assert!(!frame.hidden, "returning to the conversation shows it again");
+    }
+}
+
+/// The intent's surface lives inside a conversation (inline card or composer
+/// panel), so a center frame must prove that conversation is on screen.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn chat_hosted(intent: &WebPreviewIntent) -> bool {
+    matches!(intent, WebPreviewIntent::Visualization { .. } | WebPreviewIntent::VisualAnswer(_))
+}
+
+/// Placed in a scrolling transcript row rather than a fixed region.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn transcript_hosted(intent: &WebPreviewIntent) -> bool {
+    match intent {
+        WebPreviewIntent::Visualization { .. } => true,
+        WebPreviewIntent::VisualAnswer(surface) => surface.inline,
+        _ => false,
+    }
+}
+
+/// Whether this conversation owns the intent's transcript surface. An HTML
+/// visualization intent is only ever built for its owner (checked by the caller).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn transcript_owned_by(intent: &WebPreviewIntent, agent_id: Uuid, owns_visualization: bool) -> bool {
+    match intent {
+        WebPreviewIntent::Visualization { .. } => owns_visualization,
+        WebPreviewIntent::VisualAnswer(surface) => surface.inline && surface.agent_id == agent_id,
+        _ => false,
     }
 }
 
@@ -140,6 +200,9 @@ pub enum WebPreviewIntent {
         path: PathBuf,
         theme: VisualizationTheme,
     },
+    /// Composer Visual answer. Separate from Preview: it never registers or
+    /// replaces a project Preview, and Preview takes precedence over it.
+    VisualAnswer(super::visual_answer_surface::VisualAnswerSurface),
 }
 
 #[derive(Clone, Debug)]
@@ -456,6 +519,7 @@ mod imp {
     use wry::http::{header::CONTENT_TYPE, Request, Response};
     use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewExtMacOS};
 
+    use super::super::visual_answer_surface::{self as visual_answer, VisualAnswerEnvelope};
     use super::{
         WebPreviewWake, DocEditorMessage, ProjectId, ProjectPreviewConsoleEntry, ProjectPreviewInspectorMessage,
         ProjectPreviewMessage, Uuid, VisualizationTheme, WebPreviewIntent, MAX_VISUALIZATION_BYTES,
@@ -994,12 +1058,22 @@ mod imp {
         active: Option<Active>,
         pending: Option<WebPreviewIntent>,
         inline_placement: super::InlinePlacement,
+        /// Proves, per center frame, that the conversation owning a chat-hosted
+        /// surface is actually on screen (not New agent, another tab, etc.).
+        chat_frame: super::InlinePlacement,
+        /// A GPUI sheet or popover (detail drawer, context picker) covers the
+        /// conversation in this center frame; WebKit would paint above it.
+        chat_covered: bool,
         suspended: bool,
         overlay_suspended: bool,
         overlays: super::NativeOverlays,
         messages: Rc<RefCell<VecDeque<DocEditorMessage>>>,
         preview_messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
         project_preview_live_urls: Rc<RefCell<HashMap<ProjectId, String>>>,
+        visual_messages: Rc<RefCell<VecDeque<VisualAnswerEnvelope>>>,
+        /// A replaced Visual answer awaiting its final snapshot (hidden).
+        retiring: Option<(Active, visual_answer::SnapshotHandoff)>,
+        handoff_seq: u64,
         app: WebPreviewWake,
     }
 
@@ -1304,12 +1378,17 @@ mod imp {
                 active: None,
                 pending: None,
                 inline_placement: Default::default(),
+                chat_frame: Default::default(),
+                chat_covered: false,
                 suspended: false,
                 overlay_suspended: false,
                 overlays: super::NativeOverlays::default(),
                 messages: Rc::new(RefCell::new(VecDeque::new())),
                 preview_messages: Rc::new(RefCell::new(VecDeque::new())),
                 project_preview_live_urls: Rc::new(RefCell::new(HashMap::new())),
+                visual_messages: Rc::new(RefCell::new(VecDeque::new())),
+                retiring: None,
+                handoff_seq: 0,
                 app,
             }
         }
@@ -1349,9 +1428,15 @@ mod imp {
         }
 
         fn is_hidden(&self) -> bool {
+            let intent = self.active.as_ref().map(|active| &active.intent);
             self.suspended || self.overlay_suspended || self.overlays.hidden()
-                || (self.inline_placement.hidden && self.active.as_ref().is_some_and(|active|
-                    matches!(active.intent, WebPreviewIntent::Visualization { .. })))
+                || (self.inline_placement.hidden && intent.is_some_and(super::transcript_hosted))
+                || ((self.chat_frame.hidden || self.chat_covered)
+                    && intent.is_some_and(super::chat_hosted))
+        }
+
+        fn current_intent(&self) -> Option<&WebPreviewIntent> {
+            self.active.as_ref().map(|active| &active.intent).or(self.pending.as_ref())
         }
 
         fn update_overlay_visibility(&self) {
@@ -1386,7 +1471,7 @@ mod imp {
             self.cache_active_project_preview_live_url();
 
             let Some(intent) = intent else {
-                self.active = None;
+                self.retire_active();
                 self.pending = None;
                 return had_active;
             };
@@ -1400,6 +1485,7 @@ mod imp {
                     if let Some(active) = self.active.as_mut() {
                         sync_active_doc_editor(active, &intent);
                         sync_active_project_preview(active, &intent);
+                        sync_active_visual_answer(active, &intent);
                         active.intent = intent.clone();
                     }
                 }
@@ -1412,9 +1498,65 @@ mod imp {
                 return false;
             }
 
-            self.active = None;
+            self.retire_active();
             self.pending = Some(intent);
             had_active
+        }
+
+        /// Drop the active surface. A loaded Visual answer is instead hidden
+        /// and kept until it acknowledges a final snapshot (bounded by
+        /// `SNAPSHOT_TIMEOUT`); the next surface is built after that, in place,
+        /// so nothing else is moved or reloaded.
+        fn retire_active(&mut self) {
+            let Some(active) = self.active.take() else { return };
+            let WebPreviewIntent::VisualAnswer(surface) = &active.intent else { return };
+            if !active.doc_editor_ready {
+                return;
+            }
+            self.handoff_seq += 1;
+            let handoff = visual_answer::SnapshotHandoff::new(
+                surface.surface,
+                self.handoff_seq,
+                std::time::Instant::now(),
+            );
+            let _ = active.webview.set_visible(false);
+            if active
+                .webview
+                .evaluate_script(&visual_answer::snapshot_script(handoff.token))
+                .is_ok()
+            {
+                // A previous retiring surface has had its chance; release it.
+                self.retiring = Some((active, handoff));
+            }
+        }
+
+        /// The outgoing answer still owns WebKit until this instant.
+        pub fn visual_handoff_deadline(&self) -> Option<std::time::Instant> {
+            self.retiring.as_ref().map(|(_, handoff)| handoff.deadline)
+        }
+
+        /// Release an outgoing answer whose snapshot wait has ended, even when
+        /// nothing else is placed (collapse with no replacement), so the
+        /// hidden webview and its WebKit lease never outlive the bound.
+        pub fn expire_visual_handoff(&mut self, now: std::time::Instant) -> bool {
+            if self.retiring.as_ref().is_some_and(|(_, handoff)| handoff.expired(now)) {
+                self.retiring = None;
+                return true;
+            }
+            false
+        }
+
+        /// Ask the live answer for its complete current state now. The reply is
+        /// a `Snapshot` message carrying the returned token.
+        pub fn request_visual_snapshot(&mut self, surface: u64) -> Option<u64> {
+            let active = self.active_visual_answer(surface).filter(|a| a.doc_editor_ready)?;
+            let token = self.handoff_seq + 1;
+            active
+                .webview
+                .evaluate_script(&visual_answer::snapshot_script(token))
+                .ok()?;
+            self.handoff_seq = token;
+            Some(token)
         }
 
         /// Drain editor IPC. Uploads are fulfilled here because the live
@@ -1488,6 +1630,84 @@ mod imp {
                 changes.insert(0, DocEditorMessage::Change { path, document });
             }
             changes
+        }
+
+        /// Drain Visual answer IPC. `Ready` reveals the surface (kept hidden
+        /// until then to avoid a blank flash) and is also returned to the owner.
+        pub fn take_visual_answer_messages(&mut self) -> Vec<VisualAnswerEnvelope> {
+            let messages = self.visual_messages.borrow_mut().drain(..).collect::<Vec<_>>();
+            if self
+                .retiring
+                .as_ref()
+                .is_some_and(|(_, handoff)| messages.iter().any(|m| handoff.acknowledged_by(m)))
+            {
+                // Its final state is in `messages`; the webview can go now.
+                self.retiring = None;
+            }
+            let visible = !self.is_hidden();
+            if let Some(active) = self.active.as_mut() {
+                if let WebPreviewIntent::VisualAnswer(surface) = &active.intent {
+                    let ready = messages.iter().any(|m| {
+                        m.surface == surface.surface
+                            && matches!(m.message, super::super::visual_answer_surface::VisualAnswerMessage::Ready)
+                    });
+                    if ready && !active.doc_editor_ready {
+                        active.doc_editor_ready = true;
+                        let _ = active.webview.set_visible(visible);
+                    }
+                }
+            }
+            messages
+        }
+
+        /// Whether the shared surface is (or is about to be) this answer.
+        pub fn hosts_visual_answer(&self, surface: u64) -> bool {
+            let intent = self.active.as_ref().map(|active| &active.intent).or(self.pending.as_ref());
+            matches!(intent, Some(WebPreviewIntent::VisualAnswer(s)) if s.surface == surface)
+        }
+
+        /// This answer's renderer has loaded (it may still be hidden).
+        pub fn visual_answer_ready(&self, surface: u64) -> bool {
+            self.active_visual_answer(surface).is_some_and(|active| active.doc_editor_ready)
+        }
+
+        /// Place only this answer's surface; never move another intent (such
+        /// as Preview) into the composer's rectangle.
+        pub fn place_visual_answer(&mut self, surface: u64, bounds: Bounds<Pixels>, window: &Window) {
+            if self.hosts_visual_answer(surface) {
+                self.place(bounds, window);
+            }
+        }
+
+        fn active_visual_answer(&self, surface: u64) -> Option<&Active> {
+            self.active.as_ref().filter(|active| {
+                matches!(&active.intent, WebPreviewIntent::VisualAnswer(s) if s.surface == surface)
+            })
+        }
+
+        /// Ask the renderer to send pending state before the surface changes.
+        pub fn flush_visual_answer(&self, surface: u64) {
+            if let Some(active) = self.active_visual_answer(surface) {
+                let _ = active.webview.evaluate_script("window.choroVisual?.flush();");
+            }
+        }
+
+        /// Move keyboard focus from the native panel into the answer content.
+        /// A hidden surface (scrolled out, another screen) never takes focus.
+        pub fn focus_visual_answer(&self, surface: u64, first: bool) -> bool {
+            if self.is_hidden() {
+                return false;
+            }
+            let Some(active) = self.active_visual_answer(surface).filter(|a| a.doc_editor_ready) else {
+                return false;
+            };
+            let Some(webview) = active.webview.webkit() else { return false };
+            let _ = webview.focus();
+            let edge = if first { "first" } else { "last" };
+            let _ = active
+                .webview
+                .evaluate_script(&format!("window.choroVisual?.focusEdge(\"{edge}\");"));
+            true
         }
 
         pub fn take_project_preview_messages(&mut self) -> Vec<ProjectPreviewMessage> {
@@ -2138,33 +2358,104 @@ mod imp {
             ));
         }
 
-        pub fn begin_transcript_layout(&mut self) {
-            let intent = self.active.as_ref().map(|active| &active.intent).or(self.pending.as_ref());
-            if matches!(intent, Some(WebPreviewIntent::Visualization { .. })) {
+        /// A real (uncached) layout of this conversation's transcript starts.
+        pub fn begin_transcript_layout(&mut self, agent_id: Uuid, owns_visualization: bool) {
+            if self
+                .current_intent()
+                .is_some_and(|intent| super::transcript_owned_by(intent, agent_id, owns_visualization))
+            {
                 self.inline_placement.begin();
             }
         }
 
+        /// A real center frame starts. Its conversation must confirm itself
+        /// (`confirm_conversation` or a placement) before `finish_layout`.
+        pub fn begin_center_layout(&mut self) {
+            self.chat_covered = false;
+            if self.current_intent().is_some_and(super::chat_hosted) {
+                self.chat_frame.begin();
+            }
+        }
+
+        /// Called during the center render when a GPUI sheet or popover will
+        /// cover the conversation; the surface hides for this frame.
+        pub fn cover_conversation(&mut self) {
+            if !self.chat_covered {
+                self.chat_covered = true;
+                self.update_overlay_visibility();
+            }
+        }
+
+        /// The owning transcript is part of this center frame, even when it is
+        /// cached and reuses the previous placement. A composer panel instead
+        /// confirms itself by placing, so a panel that isn't rendered hides.
+        pub fn confirm_conversation(&mut self, agent_id: Uuid, owns_visualization: bool) {
+            if self
+                .current_intent()
+                .is_some_and(|intent| super::transcript_owned_by(intent, agent_id, owns_visualization))
+            {
+                self.chat_frame.place();
+            }
+        }
+
+        /// End of a real transcript layout, painted by the transcript itself so
+        /// a scroll that re-lays out only the transcript (its owner cached)
+        /// still clears the proof when its row has left the list.
         pub fn finish_transcript_layout(&mut self) {
-            let was_hidden = self.inline_placement.hidden;
+            let was_hidden = self.is_hidden();
             self.inline_placement.finish();
-            if was_hidden != self.inline_placement.hidden { self.update_overlay_visibility(); }
+            if was_hidden != self.is_hidden() {
+                self.update_overlay_visibility();
+            }
+        }
+
+        pub fn finish_layout(&mut self) {
+            self.inline_placement.finish();
+            self.chat_frame.finish();
+            // Covering and frame proofs can change without a placement (a
+            // cached transcript), so settle a chat-hosted surface every frame.
+            if self.active.as_ref().is_some_and(|active| super::chat_hosted(&active.intent)) {
+                self.update_overlay_visibility();
+            }
         }
 
         /// Build or reposition the selected web surface inside a GPUI-reserved
         /// rectangle. Only a visible chat row calls this method.
         pub fn place(&mut self, bounds: Bounds<Pixels>, window: &Window) {
-            let intent = self.active.as_ref().map(|active| &active.intent).or(self.pending.as_ref());
-            if matches!(intent, Some(WebPreviewIntent::Visualization { .. })) {
-                let visible = bounds.intersect(&window.content_mask().bounds);
-                if visible.size.width <= gpui::px(0.) || visible.size.height <= gpui::px(0.) { return; }
+            let Some(intent) = self.current_intent() else { return };
+            let (transcript_hosted, chat_hosted) =
+                (super::transcript_hosted(intent), super::chat_hosted(intent));
+            if transcript_hosted {
+                // WebKit can't be clipped by GPUI: a row partly outside the
+                // list would float over the header, composer or sidebar.
+                if !super::super::agent_chat_visual_answer_placement::fully_visible(
+                    bounds,
+                    window.content_mask().bounds,
+                ) {
+                    // Hide now: the previous bounds were fully visible but the
+                    // row has since scrolled partly out.
+                    self.inline_placement.reject();
+                    self.update_overlay_visibility();
+                    return;
+                }
                 self.inline_placement.place();
+            }
+            if chat_hosted {
+                self.chat_frame.place();
             }
             if self.is_hidden() {
                 if let Some(active) = self.active.as_ref() {
                     let _ = active.webview.set_visible(false);
                 }
                 return;
+            }
+            // The outgoing answer holds the single WebKit lease until it has
+            // handed over its final snapshot (or the bounded wait ends).
+            if let Some((_, handoff)) = self.retiring.as_ref() {
+                if !handoff.expired(std::time::Instant::now()) {
+                    return;
+                }
+                self.retiring = None;
             }
             if let Some(intent) = self.pending.take() {
                 match build(
@@ -2174,6 +2465,7 @@ mod imp {
                     self.messages.clone(),
                     self.preview_messages.clone(),
                     self.project_preview_live_urls.clone(),
+                    self.visual_messages.clone(),
                     self.app.clone(),
                 ) {
                     Ok(webview) => {
@@ -2185,8 +2477,10 @@ mod imp {
                                 .borrow_mut()
                                 .insert(*project_id, url.clone());
                         }
-                        let doc_editor_ready =
-                            !matches!(intent, WebPreviewIntent::DocEditor { .. });
+                        let doc_editor_ready = !matches!(
+                            intent,
+                            WebPreviewIntent::DocEditor { .. } | WebPreviewIntent::VisualAnswer(_)
+                        );
                         self.active = Some(Active {
                             intent,
                             webview,
@@ -2345,6 +2639,9 @@ mod imp {
             return true;
         }
         match (left, right) {
+            (WebPreviewIntent::VisualAnswer(left), WebPreviewIntent::VisualAnswer(right)) => {
+                left.same_surface(right)
+            }
             (WebPreviewIntent::StudioCanvas{session:left,..},WebPreviewIntent::StudioCanvas{session:right,..})=>left==right,
             (
                 WebPreviewIntent::Studio { session: left, .. },
@@ -2478,6 +2775,16 @@ mod imp {
         (current_revision != next_revision).then_some(ProjectPreviewSyncAction::ReloadFromOrigin)
     }
 
+    fn sync_active_visual_answer(active: &Active, next: &WebPreviewIntent) {
+        if let (WebPreviewIntent::VisualAnswer(current), WebPreviewIntent::VisualAnswer(next)) =
+            (&active.intent, next)
+        {
+            if let Some(script) = current.sync_script(next) {
+                let _ = active.webview.evaluate_script(&script);
+            }
+        }
+    }
+
     fn sync_active_project_preview(active: &Active, next: &WebPreviewIntent) {
         match project_preview_sync_action(&active.intent, next) {
             Some(ProjectPreviewSyncAction::Navigate(url)) => {
@@ -2497,10 +2804,50 @@ mod imp {
         messages: Rc<RefCell<VecDeque<DocEditorMessage>>>,
         preview_messages: Rc<RefCell<VecDeque<ProjectPreviewMessage>>>,
         project_preview_live_urls: Rc<RefCell<HashMap<ProjectId, String>>>,
+        visual_messages: Rc<RefCell<VecDeque<VisualAnswerEnvelope>>>,
         app: WebPreviewWake,
     ) -> Result<WebSurface, String> {
         let rect = to_rect(bounds);
         match intent {
+            WebPreviewIntent::VisualAnswer(surface) => {
+                let lease = WebKitLease::acquire()?;
+                let html = visual_answer::document(&surface.bootstrap);
+                let built = surface.clone();
+                let ipc_app = app.clone();
+                WebViewBuilder::new()
+                    .with_custom_protocol("choro-visual".into(), move |_, request| {
+                        if request.uri().to_string() != visual_answer::VISUAL_ANSWER_URL {
+                            return Response::builder().status(404).body(Cow::Owned(Vec::new())).unwrap();
+                        }
+                        Response::builder()
+                            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                            .header("Cache-Control", "no-store")
+                            .body(Cow::Owned(html.as_bytes().to_vec()))
+                            .unwrap()
+                    })
+                    .with_ipc_handler(move |request| {
+                        // Only the answer document itself may talk to the host;
+                        // sandboxed design frames have no IPC at all.
+                        if request.uri().to_string() != visual_answer::VISUAL_ANSWER_URL {
+                            return;
+                        }
+                        if let Some(envelope) = visual_answer::decode_message(request.body(), &built) {
+                            visual_messages.borrow_mut().push_back(envelope);
+                            let _ = ipc_app.refresh();
+                        }
+                    })
+                    .with_url(visual_answer::VISUAL_ANSWER_URL)
+                    .with_bounds(rect)
+                    .with_visible(false)
+                    .with_transparent(false)
+                    .with_accept_first_mouse(true)
+                    .with_navigation_handler(|url| visual_answer::allows_navigation(&url))
+                    .build_as_child(window)
+                    // Route typing, Tab and Escape to WebKit while it has focus,
+                    // so the composer behind it cannot claim them.
+                    .map(|webview| WebSurface::WebKit(WebKitSurface::with_keyboard_routing(webview, lease, true)))
+                    .map_err(|error| error.to_string())
+            }
             WebPreviewIntent::Url(url) => {
                 let lease = WebKitLease::acquire()?;
                 WebViewBuilder::new()
@@ -3452,14 +3799,43 @@ mod imp {
         pub fn is_route_suspended(&self) -> bool {
             false
         }
-        pub fn begin_transcript_layout(&mut self) {}
+        pub fn begin_transcript_layout(&mut self, _agent_id: uuid::Uuid, _owns_visualization: bool) {}
+        pub fn begin_center_layout(&mut self) {}
+        pub fn cover_conversation(&mut self) {}
+        pub fn confirm_conversation(&mut self, _agent_id: uuid::Uuid, _owns_visualization: bool) {}
         pub fn finish_transcript_layout(&mut self) {}
+        pub fn finish_layout(&mut self) {}
         pub fn place(&mut self, _bounds: Bounds<Pixels>, _window: &Window) {}
         pub fn take_doc_editor_messages(&mut self) -> Vec<DocEditorMessage> {
             Vec::new()
         }
         pub fn take_project_preview_messages(&mut self) -> Vec<ProjectPreviewMessage> {
             Vec::new()
+        }
+        pub fn take_visual_answer_messages(
+            &mut self,
+        ) -> Vec<super::super::visual_answer_surface::VisualAnswerEnvelope> {
+            Vec::new()
+        }
+        pub fn flush_visual_answer(&self, _surface: u64) {}
+        pub fn visual_handoff_deadline(&self) -> Option<std::time::Instant> {
+            None
+        }
+        pub fn expire_visual_handoff(&mut self, _now: std::time::Instant) -> bool {
+            false
+        }
+        pub fn request_visual_snapshot(&mut self, _surface: u64) -> Option<u64> {
+            None
+        }
+        pub fn hosts_visual_answer(&self, _surface: u64) -> bool {
+            false
+        }
+        pub fn visual_answer_ready(&self, _surface: u64) -> bool {
+            false
+        }
+        pub fn place_visual_answer(&mut self, _surface: u64, _bounds: Bounds<Pixels>, _window: &Window) {}
+        pub fn focus_visual_answer(&self, _surface: u64, _first: bool) -> bool {
+            false
         }
         pub fn set_project_preview_inspecting(&self, _inspecting: bool) -> Result<(), String> {
             Err("Project Preview is only available on macOS.".to_string())

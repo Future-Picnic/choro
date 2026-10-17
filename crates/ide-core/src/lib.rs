@@ -26,6 +26,7 @@ pub mod services;
 pub mod studio;
 pub mod task_tracker;
 pub mod visual_review;
+pub mod visual_answers;
 pub mod watcher;
 
 pub use agents::{

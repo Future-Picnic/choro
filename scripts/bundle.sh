@@ -76,6 +76,24 @@ else
   )
 fi
 
+# The Visual answer renderer and its generated provider instructions are
+# compiled into the Rust binary. Rebuild them from the same component library.
+if [[ "${CHORO_SKIP_VISUAL_ANSWER_BUILD:-0}" == "1" ]]; then
+  for file in visual-answer.js visual-answer.css instructions.md library.json; do
+    if [[ ! -f "crates/ide-app/web/visual-answer/dist/$file" ]]; then
+      echo "CHORO_SKIP_VISUAL_ANSWER_BUILD=1 requires an existing Visual answer dist." >&2
+      exit 1
+    fi
+  done
+else
+  (
+    cd crates/ide-app/web/visual-answer
+    npm ci --no-audit --no-fund
+    npm test
+    npm run build
+  )
+fi
+
 cargo build --release -p ide-app --bin choro
 cargo build --release -p ide-mcp
 
@@ -130,7 +148,8 @@ node scripts/collect-third-party-licenses.mjs \
   --output "$BUNDLE/Contents/Resources/licenses" \
   --agent-node-modules "$BUNDLE/Contents/Resources/agent-chat/node_modules" \
   --editor-node-modules "crates/ide-app/web/doc-editor/node_modules" \
-  --canvas-node-modules "crates/ide-app/web/studio-canvas/node_modules"
+  --canvas-node-modules "crates/ide-app/web/studio-canvas/node_modules" \
+  --visual-answer-node-modules "crates/ide-app/web/visual-answer/node_modules"
 mkdir -p "$BUNDLE/Contents/Resources/licenses/sparkle"
 cp "$SPARKLE_ROOT/LICENSE" "$BUNDLE/Contents/Resources/licenses/sparkle/LICENSE"
 # Keep the exact adapted sources and notices readable in the distributed app,

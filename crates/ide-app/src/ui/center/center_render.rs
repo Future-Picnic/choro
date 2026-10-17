@@ -1,3 +1,4 @@
+use super::agent_chat_visual_answer_placement::AgentsScreen;
 use super::*;
 
 impl Render for CenterArea {
@@ -71,6 +72,26 @@ impl Render for CenterArea {
                 })
         });
         let overlay_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
+        let narrow = window.viewport_size().width < px(900.);
+        // The conversation the Agents body will actually render; a selected
+        // agent alone is not enough (New agent, terminal agents, a narrow
+        // delegation panel replace it).
+        let conversation_agent = self
+            .agents
+            .read(cx)
+            .selected_agent(project)
+            .filter(|agent| {
+                AgentsScreen {
+                    agents_mode: effective_mode == CenterMode::Agents,
+                    new_agent_composer: self
+                        .new_agent_composer
+                        .as_ref()
+                        .is_some_and(|composer| composer.project == project),
+                    selected_chat: agent.runtime == AgentRuntimeKind::Chat,
+                    panel_replaces_body: narrow && (overview.is_some() || delegated.is_some()),
+                }
+                .shows_selected_conversation()
+            });
         if self.native_surface_dirty || self.native_overlay_open != overlay_open {
             self.native_surface_dirty = false;
             self.native_overlay_open = overlay_open;
@@ -96,6 +117,11 @@ impl Render for CenterArea {
         } else {
             None
         };
+        // Preview always keeps the shared surface. An answer shown when Preview
+        // opens is saved and collapsed first; it never reopens on its own.
+        if self.is_project_preview_open(project) {
+            self.collapse_visual_answers_for_preview(project, cx);
+        }
         let compare_preview_intent = if design_compare_active {
             project_preview_intent.clone()
         } else {
@@ -212,15 +238,16 @@ impl Render for CenterArea {
                 })
                 .and_then(|reference| designs::design_web_preview_url(&reference))
                 .map(web_preview::WebPreviewIntent::Url)
-        } else if !overlay_open
-            && effective_mode == CenterMode::Agents
-            && overview.is_none()
-            && delegated.is_none()
-        {
-            self.agents
-                .read(cx)
-                .selected_agent(project)
-                .and_then(|agent| self.active_chat_visualization_intent(&agent, cx))
+        } else if !overlay_open && effective_mode == CenterMode::Agents {
+            // The open Visual answer takes the free surface before an inline
+            // chat visualization; Preview was already preferred above.
+            conversation_agent.clone().and_then(|agent| {
+                self.visual_answer_intent(&agent, cx).or_else(|| {
+                    (overview.is_none() && delegated.is_none())
+                        .then(|| self.active_chat_visualization_intent(&agent, cx))
+                        .flatten()
+                })
+            })
         } else {
             None
         };
@@ -236,6 +263,7 @@ impl Render for CenterArea {
             );
             host.set_intent(web_preview_intent)
         });
+        self.schedule_visual_handoff_wake(cx);
         let compare_preview_torn_down = self
             .compare_web_host
             .update(cx, |host, _| host.set_intent(compare_preview_intent));
@@ -246,6 +274,9 @@ impl Render for CenterArea {
         }
 
         }
+        // Even with a cached reconcile, a chat-hosted surface stays hidden
+        // unless this frame renders its conversation (checked at paint).
+        self.web_host.update(cx, |host, _| host.begin_center_layout());
         let body: gpui::AnyElement = match effective_mode {
             CenterMode::Files => {
                 let editors = self.render_editor_section(project, cx);
@@ -317,7 +348,6 @@ impl Render for CenterArea {
             }
         };
 
-        let narrow = window.viewport_size().width < px(900.);
         let expert_surface = overview.is_some() || delegated.is_some();
         let body = if narrow {
             if let Some(parent) = overview {
@@ -417,7 +447,7 @@ impl Render for CenterArea {
             )
             .child(canvas(
                 |_, _, _| (),
-                move |_, _, _, cx| inline_host.update(cx, |host, _| host.finish_transcript_layout()),
+                move |_, _, _, cx| inline_host.update(cx, |host, _| host.finish_layout()),
             ).absolute().size_0())
             .into_any_element()
     }

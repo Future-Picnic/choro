@@ -1,0 +1,28 @@
+{
+  "name": "choro-visual-answer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build && vite build --mode instructions && node scripts/write-instructions.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openuidev/react-headless": "0.18.1",
+    "@openuidev/react-lang": "1.0.1",
+    "@openuidev/react-ui": "0.18.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "4.3.6",
+    "zustand": "4.5.7"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.9",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "jsdom": "26.1.0",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.12"
+  }
+}

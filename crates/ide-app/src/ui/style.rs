@@ -1386,6 +1386,16 @@ pub fn solo_lane_action_button(
     )
 }
 
+/// Quiet text action in the composer's Band row (an attached visual answer's
+/// Open / Hide). Same treatment as the Solo lane's unemphasized actions.
+pub fn composer_band_action_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    solo_lane_action_button(id, label, false, cx)
+}
+
 pub fn danger_button_compact(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
     base_button_compact(id, label).danger()
 }

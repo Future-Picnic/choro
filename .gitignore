@@ -11,6 +11,11 @@ dist/
 !crates/ide-app/web/doc-editor/dist/**
 !crates/ide-app/web/studio-canvas/dist/
 !crates/ide-app/web/studio-canvas/dist/**
+# The Visual answer renderer and its generated instructions are embedded with
+# include_str!; the Node build of the library is an intermediate.
+!crates/ide-app/web/visual-answer/dist/
+!crates/ide-app/web/visual-answer/dist/**
+/crates/ide-app/web/visual-answer/build-node/
 # Local Choro working documents may contain private product context.
 /choro_docs/
 # Studio designs are local workspace data, not public app source.

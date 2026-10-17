@@ -1753,11 +1753,11 @@ impl CenterArea {
         let submission_text = if delegation_stopped {
             format!("{submission_text}\n\nChoro status: Bandmate delegation remains stopped. This message continues only the lead conversation. Answer the user and inspect saved status as needed; do not restart Bandmates, schedule or integrate their work, or substitute other agents. The user can resume Bandmates or end delegation using the controls beside the composer.")
         } else if self.delegation_selection.get(&agent.id) == Some(&None) {
-            format!("{submission_text}\n\nThe user selected /delegate with on-demand teammates. Use Choro experts_list and delegation_plan to create focused assignments using the authorized temporary teammate ID. Choose dependencies and parallel work as appropriate. Do not use native subagents or change the lead's model.")
+            format!("{submission_text}\n\nThe user selected /delegate with on-demand teammates. Use Choro experts_list and delegation_plan to create focused assignments using the available on-demand teammate ID. Choose dependencies and parallel work as appropriate. Do not use native subagents or change the lead's model.")
         } else if let Some(id) = selected_expert {
             format!("{submission_text}\n\nThe user explicitly selected Bandmate {id} for this assignment. Use experts_list and delegation_plan to prepare and schedule it. Do not change this lead's model.")
         } else if delegation_prepared && ide_core::experts::requests_delegation(&draft) {
-            format!("{submission_text}\n\nThe user requested Choro delegation in this message. Call experts_list and use its authorized saved or on-demand IDs to prepare delegation_plan. Saved profiles are optional; one authorized on-demand ID can create several teammates with distinct assignments. Do not ask the user to repeat the request, type /delegate, or create profiles. Ask only about an actual unresolved decision or report a concrete configuration blocker. Do not substitute native subagents or change the lead's model.")
+            format!("{submission_text}\n\nThe user requested Choro delegation in this message. Call experts_list and use its available saved or on-demand IDs to prepare delegation_plan. Saved profiles are optional; one on-demand ID can create several teammates with distinct assignments. Do not ask the user to repeat the request, type /delegate, or create profiles. Ask only about an actual unresolved decision or report a concrete configuration blocker. Do not substitute native subagents or change the lead's model.")
         } else {
             submission_text
         };

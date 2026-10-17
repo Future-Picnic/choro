@@ -521,6 +521,15 @@ impl StoredTimelinePayload {
                     created_at: *created_at,
                 })
             }
+            AgentChatTimelineItem::VisualAnswer {
+                answer_id,
+                title,
+                created_at,
+            } => Some(Self::VisualAnswer {
+                answer_id: *answer_id,
+                title: title.clone(),
+                created_at: *created_at,
+            }),
             AgentChatTimelineItem::AgentMessage(card) => Some(Self::AgentMessage {
                 id: card.id,
                 source_agent_id: card.source_agent_id,
@@ -864,6 +873,15 @@ impl StoredTimelinePayload {
             Self::DelegationGroup { run_id, created_at } => {
                 Some(AgentChatTimelineItem::DelegationGroup { run_id, created_at })
             }
+            Self::VisualAnswer {
+                answer_id,
+                title,
+                created_at,
+            } => Some(AgentChatTimelineItem::VisualAnswer {
+                answer_id,
+                title,
+                created_at,
+            }),
             Self::AgentMessage {
                 id,
                 source_agent_id,
@@ -889,6 +907,7 @@ impl StoredTimelinePayload {
     fn kind(&self) -> &'static str {
         match self {
             Self::DelegationGroup { .. } => "delegation_group",
+            Self::VisualAnswer { .. } => "visual_answer",
             Self::Message { .. } => "message",
             Self::WorkLog { .. } => "work_log",
             Self::FileChangeActivity { .. } => "file_change_activity",
@@ -912,6 +931,7 @@ impl StoredTimelinePayload {
     fn event_key(&self) -> Option<String> {
         match self {
             Self::DelegationGroup { run_id, .. } => Some(format!("delegation_group:{run_id}")),
+            Self::VisualAnswer { answer_id, .. } => Some(format!("visual_answer:{answer_id}")),
             Self::Message {
                 role,
                 text,
@@ -972,6 +992,7 @@ impl StoredTimelinePayload {
     fn created_at(&self) -> u64 {
         match self {
             Self::DelegationGroup { created_at, .. } => *created_at,
+            Self::VisualAnswer { created_at, .. } => *created_at,
             Self::Message { created_at, .. } => *created_at,
             Self::WorkLog { updated_at, .. } => *updated_at,
             Self::FileChangeActivity { updated_at, .. } => *updated_at,

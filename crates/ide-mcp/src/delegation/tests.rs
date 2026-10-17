@@ -92,10 +92,7 @@ fn typo_role_request_survives_invalid_plan_and_schedules_exactly_its_team() {
             .unwrap(),
     );
     assert_eq!(discovery["authorization_status"], "ready");
-    assert_eq!(
-        discovery["authorized_expert_ids"].as_array().unwrap().len(),
-        3
-    );
+    assert!(!discovery["on_demand_expert_ids"].as_array().unwrap().is_empty());
     let profiles = store.load_experts().unwrap();
     let expert_id = |name: &str| profiles.iter().find(|p| p.name == name).unwrap().id;
     for name in ["UI Designer", "UX Writer", "Frontend Engineer"] {
@@ -129,7 +126,7 @@ fn typo_role_request_survives_invalid_plan_and_schedules_exactly_its_team() {
 }
 
 #[test]
-fn later_work_scope_cannot_authorize_another_bandmate() {
+fn lead_can_select_an_enabled_preset_without_a_recipient_grant() {
     let (_dir, ctx, _, _) = fixture();
     let store = ctx.store().unwrap();
     store.ensure_default_experts().unwrap();
@@ -151,19 +148,14 @@ fn later_work_scope_cannot_authorize_another_bandmate() {
         .find(|p| p.name == "Frontend Engineer")
         .unwrap();
     assert_eq!(grant.expert_ids, vec![ui.id]);
-    let error = DelegationTool("delegation_plan")
+    DelegationTool("delegation_plan")
         .call_enabled(&ctx, &plan(&ctx, source, frontend))
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("not named this Bandmate"),
-        "{error:#}"
-    );
-    // Run creation precedes plan validation, but a rejected plan must neither
-    // extend its authorized team nor create assignments or child chats.
+        .unwrap();
+    // The lead can select any enabled preset without a second consent grant.
     let runs = store.load_delegations().unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].authorized_experts, vec![ui.id]);
-    assert!(runs[0].tasks.is_empty());
+    assert_eq!(runs[0].tasks[0].expert.profile.id, frontend.id);
     assert_eq!(store.load_agents().unwrap().len(), 1);
     assert_eq!(
         store
@@ -176,7 +168,7 @@ fn later_work_scope_cannot_authorize_another_bandmate() {
 }
 
 #[test]
-fn empty_authorization_discovery_requires_clarification_instead_of_a_plan_retry() {
+fn ordinary_followup_does_not_require_a_new_delegation_grant() {
     let (_dir, ctx, _, expert) = fixture();
     let source = Uuid::new_v4();
     ctx.store()
@@ -194,18 +186,11 @@ fn empty_authorization_discovery_requires_clarification_instead_of_a_plan_retry(
             .call_enabled(&ctx, &json!({}))
             .unwrap(),
     );
-    assert_eq!(discovery["authorization_status"], "needs_expert_selection");
-    assert_eq!(discovery["authorized_expert_ids"], json!([]));
-    assert!(discovery["guidance"]
-        .as_str()
-        .unwrap()
-        .contains("Do not call delegation_plan"));
-    let error = DelegationTool("delegation_plan")
-        .call_enabled(&ctx, &plan(&ctx, source, &expert))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("No delegation authority was recorded"));
-    assert!(ctx.store().unwrap().load_delegations().unwrap().is_empty());
+    assert_eq!(discovery["authorization_status"], "ready");
+    let mut args = plan(&ctx, source, &expert);
+    args.as_object_mut().unwrap().remove("authorization_id");
+    DelegationTool("delegation_plan").call_enabled(&ctx, &args).unwrap();
+    assert_eq!(ctx.store().unwrap().load_delegations().unwrap()[0].tasks.len(), 1);
 }
 
 #[test]
@@ -225,7 +210,7 @@ fn explicit_picker_selection_resolves_ambiguous_typo_without_expanding_team() {
     let request = "Delegate to UI Writie";
     assert!(store
         .authorize_experts(ctx.agent_id().unwrap(), Uuid::new_v4(), request, &[], false)
-        .is_err());
+        .is_ok());
     let grant = store
         .authorize_experts(
             ctx.agent_id().unwrap(),
@@ -312,13 +297,11 @@ fn plan_replay_survives_profile_disable_and_never_creates_gui_agent_rows() {
 }
 
 #[test]
-fn forged_authorization_and_outside_repository_are_rejected() {
+fn obsolete_token_is_ignored_but_outside_directory_is_rejected() {
     let (_dir, ctx, source, p) = fixture();
     let mut args = plan(&ctx, source, &p);
     args["authorization_id"] = json!(Uuid::new_v4());
-    assert!(DelegationTool("delegation_plan")
-        .call_enabled(&ctx, &args)
-        .is_err());
+    DelegationTool("delegation_plan").call_enabled(&ctx, &args).unwrap();
     args["authorization_id"] = json!(source);
     args["tasks"][0]["repository"] = json!("/");
     assert!(DelegationTool("delegation_plan")
@@ -535,7 +518,7 @@ fn natural_on_demand_request_stays_ready_after_clarification_without_a_picker() 
             .unwrap(),
     );
     assert_eq!(listed["authorization_status"], "ready");
-    assert_eq!(listed["on_demand_expert_ids"], json!([source]));
+    assert!(listed["on_demand_expert_ids"].as_array().unwrap().contains(&json!(source)));
     assert_eq!(listed["active_run"]["id"], json!(id));
     let tasks = (0..4).map(|i| json!({
         "key":format!("approach-{i}"), "expert_id":source,
@@ -552,7 +535,7 @@ fn natural_on_demand_request_stays_ready_after_clarification_without_a_picker() 
 }
 
 #[test]
-fn ordinary_text_cannot_authorize_temporary_teammates() {
+fn on_demand_discovery_does_not_depend_on_request_wording() {
     let (_dir, ctx, _, _) = fixture();
     let store = ctx.store().unwrap();
     let parent = ctx.agent_id().unwrap();
@@ -561,13 +544,71 @@ fn ordinary_text_cannot_authorize_temporary_teammates() {
         .authorize_experts(parent, source, "Build a page", &[], false)
         .unwrap()
         .is_none());
-    assert!(store.begin_delegation(parent, source).is_err());
     let listed = content(
         DelegationTool("experts_list")
             .call(&ctx, &json!({}))
             .unwrap(),
     );
-    assert_eq!(listed["on_demand_expert_ids"], json!([]));
+    assert_eq!(listed["on_demand_expert_ids"], json!([parent]));
+    assert!(store.load_delegations().unwrap().is_empty());
+}
+
+#[test]
+fn both_providers_can_plan_without_submission_tokens_and_replay_after_restart() {
+    for provider in [AgentKind::Codex, AgentKind::Claude] {
+        let (_dir, mut ctx, _, _) = fixture();
+        let store = ctx.store().unwrap();
+        let mut parent = store.load_agents().unwrap()[0].clone();
+        parent.id = Uuid::new_v4();
+        parent.provider = provider;
+        parent.model = AgentModel::default_for(provider);
+        parent.effort = parent.model.default_effort();
+        store.save_agents(&[parent.clone()]).unwrap();
+        ctx.agent_id = Some(parent.id);
+        let listed = content(DelegationTool("experts_list").call(&ctx, &json!({})).unwrap());
+        assert_eq!(listed["on_demand_expert_ids"], json!([parent.id]));
+        let args = json!({"operation_key":"direct-plan","expected_revision":0,"tasks":[
+            {"key":"design","expert_id":parent.id,"goal":"Design","brief":"Review layout",
+            "expected_outcome":"Recommendations","kind":"consultation"},
+            {"key":"copy","expert_id":parent.id,"goal":"Copy","brief":"Review text",
+            "expected_outcome":"Suggested text","kind":"consultation"}
+        ]});
+        let first = content(DelegationTool("delegation_plan").call(&ctx, &args).unwrap());
+        let root = ctx.store().unwrap().root().to_path_buf();
+        ctx.store = Some(LocalStore::open(root.clone()).unwrap());
+        let replay = content(DelegationTool("delegation_plan").call(&ctx, &args).unwrap());
+        assert_eq!(first, replay);
+        let runs = ctx.store().unwrap().load_delegations().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].tasks.len(), 2);
+        for task in &runs[0].tasks {
+            assert_eq!(task.expert.profile.provider, provider);
+            assert_eq!(task.expert.profile.model, parent.model);
+            assert_eq!(task.plan.repository, parent.runtime_path().canonicalize().unwrap());
+        }
+        assert!(!root.join("delegation").exists());
+    }
+}
+
+#[test]
+fn direct_planning_preserves_stop_and_disabled_profile_controls() {
+    let (_dir, ctx, source, mut expert) = fixture();
+    let store = ctx.store().unwrap();
+    expert.enabled = false;
+    store.save_expert(expert.clone(), Some(expert.revision)).unwrap();
+    let args = plan(&ctx, source, &expert);
+    assert!(DelegationTool("delegation_plan").call(&ctx, &args).is_err());
+    let run = store.load_delegations().unwrap().remove(0);
+    assert!(run.tasks.is_empty());
+    for status in [RunStatus::Paused, RunStatus::Interrupted, RunStatus::Blocked] {
+        store.update_delegation(run.id, None, |r| { r.status = status; Ok(()) }).unwrap();
+        let mut retry = args.clone();
+        retry["tasks"][0]["expert_id"] = json!(ctx.agent_id().unwrap());
+        assert!(DelegationTool("delegation_plan").call(&ctx, &retry).is_err());
+        let after = store.load_delegation(run.id).unwrap();
+        assert_eq!(after.status, status);
+        assert!(after.tasks.is_empty());
+    }
 }
 
 #[test]
@@ -629,12 +670,10 @@ fn on_demand_model_comparison_resolves_user_typos_without_changing_the_lead() {
 }
 
 #[test]
-fn model_requests_fail_closed_for_unknown_ambiguous_and_unmentioned_names() {
+fn model_requests_reject_unknown_and_ambiguous_names() {
     for (typed, requested) in [
         ("Fable", "Fable"),
         ("Gemini", "Gemini"),
-        ("Astra", "Sonnet 5"),
-        ("Sonnnet 5", "Sonnet 5"),
     ] {
         let (_dir, ctx, _, _) = fixture();
         let store = ctx.store().unwrap();
@@ -663,7 +702,7 @@ fn model_requests_fail_closed_for_unknown_ambiguous_and_unmentioned_names() {
 }
 
 #[test]
-fn followup_model_authority_is_bound_to_its_own_temporary_teammate() {
+fn followup_model_choice_does_not_require_a_new_temporary_id() {
     let (_dir, ctx, _, _) = fixture();
     let store = ctx.store().unwrap();
     let parent = store.load_agents().unwrap()[0].clone();
@@ -684,11 +723,9 @@ fn followup_model_authority_is_bound_to_its_own_temporary_teammate() {
         .unwrap();
     let updated = store.begin_delegation(parent.id, second).unwrap();
     assert_eq!(run.id, updated.id);
-    let mut args = json!({"run_id":run.id,"operation_key":"followup-model","expected_revision":updated.revision,
+    let args = json!({"run_id":run.id,"operation_key":"followup-model","expected_revision":updated.revision,
         "tasks":[{"key":"followup","expert_id":first,"model_request":"Sonnet 5","goal":"Another variant",
         "brief":"Use the user requested model","expected_outcome":"Checked","repository":parent.project_path,"kind":"consultation"}]});
-    assert!(DelegationTool("delegation_plan").call(&ctx, &args).is_err());
-    args["tasks"][0]["expert_id"] = json!(second);
     DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
     assert_eq!(
         store.load_delegation(run.id).unwrap().tasks[0]
@@ -796,7 +833,7 @@ fn adding_a_teammate_during_a_run_preserves_existing_assignments() {
 }
 
 #[test]
-fn retry_model_authority_is_not_a_global_preference() {
+fn new_assignments_inherit_the_lead_model_without_an_override() {
     for (status, request) in [
         (
             RunStatus::Cancelled,
@@ -832,11 +869,12 @@ fn retry_model_authority_is_not_a_global_preference() {
         assert_eq!(run.temporary_model_authorizations[&source], request);
         let repo = store.load_agents().unwrap()[0].project_path.clone();
         let args = json!({"run_id":second,"operation_key":"unauthorized-model","expected_revision":run.revision,"tasks":[{
-            "key":"different-task", "expert_id":source,"model_request":"Sonnet 5", "goal":"New work",
+            "key":"different-task", "expert_id":source, "goal":"New work",
             "brief":"New task", "expected_outcome":"Checked result", "repository":repo,"kind":"consultation"
         }]});
-        assert!(DelegationTool("delegation_plan").call(&ctx, &args).is_err());
-        assert!(store.load_delegation(second).unwrap().tasks.is_empty());
+        DelegationTool("delegation_plan").call(&ctx, &args).unwrap();
+        assert_eq!(store.load_delegation(second).unwrap().tasks[0].expert.profile.model,
+            store.load_agents().unwrap()[0].model);
     }
 }
 

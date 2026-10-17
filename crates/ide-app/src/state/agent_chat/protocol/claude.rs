@@ -112,10 +112,10 @@ impl ClaudeBridgeRuntime {
         let system_prompt = super::managed::instructions(system_prompt, &self.agent)?;
         let system_prompt = if self.agent.review_run_id.is_some() {
             system_prompt
-        } else { super::append_choro_visualization_instructions(
+        } else { super::append_visual_answer_instructions(super::append_choro_visualization_instructions(
             system_prompt,
             self.visualization_dir.as_deref(),
-        ) };
+        ), &self.agent) };
         self.studio_review
             .begin(self.agent.studio_context.is_some());
         self.assistant_stream.reset(&self.events);

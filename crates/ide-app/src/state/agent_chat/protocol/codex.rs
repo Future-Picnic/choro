@@ -195,13 +195,13 @@ impl CodexRuntime {
         };
         let developer_instructions = if self.agent.review_run_id.is_some() {
             ide_core::code_review::REVIEW_INSTRUCTIONS.to_string()
-        } else { codex_developer_instructions(
+        } else { super::append_visual_answer_instructions(codex_developer_instructions(
             mode_instructions,
             self.visualization_dir.as_deref(),
             self.agent
                 .hidden_doc_assistant
                 .then_some(self.agent.doc.as_str()),
-        ) };
+        ), &self.agent) };
         let developer_instructions =
             super::managed::instructions(developer_instructions, &self.agent)?;
         let mut sandbox_policy = if read_only || self.agent.studio_context.is_some() {
