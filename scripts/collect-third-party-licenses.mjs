@@ -96,6 +96,10 @@ const canvasNodeModules = options.canvasNodeModules
   ? collectNodePackages(resolve(repoRoot, options.canvasNodeModules))
   : [];
 
+const visualAnswerNodeModules = options.visualAnswerNodeModules
+  ? collectNodePackages(resolve(repoRoot, options.visualAnswerNodeModules))
+  : [];
+
 const index = [
   "# Resolved third-party license inventory",
   "",
@@ -140,11 +144,23 @@ const index = [
       ]
     : ["No Studio canvas `node_modules` directory was supplied or found."]),
   "",
+  "## Embedded Visual answer renderer Node packages",
+  "",
+  "Build-only packages are listed with the runtime packages they resolve alongside.",
+  "",
+  ...(visualAnswerNodeModules.length > 0
+    ? [
+        "| Package | Version | Declared license | Repository | Copied files |",
+        "| --- | --- | --- | --- | --- |",
+        ...visualAnswerNodeModules.map(formatRow),
+      ]
+    : ["No Visual answer renderer `node_modules` directory was supplied or found."]),
+  "",
 ];
 
 writeFileSync(join(thirdPartyRoot, "INDEX.md"), index.join("\n"));
 console.log(
-  `Collected licenses for ${rustPackages.length} Rust packages, ${agentNodeModules.length} agent Node packages, ${editorNodeModules.length} editor Node packages, and ${canvasNodeModules.length} canvas Node packages into ${outputRoot}`,
+  `Collected licenses for ${rustPackages.length} Rust packages, ${agentNodeModules.length} agent Node packages, ${editorNodeModules.length} editor Node packages, ${canvasNodeModules.length} canvas Node packages, and ${visualAnswerNodeModules.length} Visual answer Node packages into ${outputRoot}`,
 );
 
 function parseArgs(args) {
@@ -167,13 +183,18 @@ function parseArgs(args) {
       parsed.canvasNodeModules = args[++index];
     } else if (arg.startsWith("--canvas-node-modules=")) {
       parsed.canvasNodeModules = arg.slice("--canvas-node-modules=".length);
+    } else if (arg === "--visual-answer-node-modules") {
+      parsed.visualAnswerNodeModules = args[++index];
+    } else if (arg.startsWith("--visual-answer-node-modules=")) {
+      parsed.visualAnswerNodeModules = arg.slice("--visual-answer-node-modules=".length);
     } else if (arg === "--help" || arg === "-h") {
       console.log(`Usage: node scripts/collect-third-party-licenses.mjs [options]
 
   --output PATH               License bundle destination
   --agent-node-modules PATH   Installed agent bridge node_modules directory
   --editor-node-modules PATH  Installed document editor node_modules directory
-  --canvas-node-modules PATH  Installed Studio canvas node_modules directory`);
+  --canvas-node-modules PATH  Installed Studio canvas node_modules directory
+  --visual-answer-node-modules PATH  Installed Visual answer renderer node_modules directory`);
       process.exit(0);
     } else {
       throw new Error(`Unknown argument: ${arg}`);

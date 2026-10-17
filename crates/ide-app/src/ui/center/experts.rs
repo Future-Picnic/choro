@@ -673,10 +673,12 @@ impl CenterArea {
     /// The composer's delegation strip. There is deliberately no standing
     /// "Delegate" button: `/delegate`, a slash-picked Expert, or plain language
     /// start delegation, and this strip only reflects what is already chosen
-    /// or already running.
+    /// or already running. `trailing` (an attached visual answer) joins the
+    /// same wrapping row.
     pub(super) fn render_expert_composer(
         &mut self,
         agent: &AgentRecord,
+        trailing: Option<gpui::AnyElement>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let id = agent.id;
@@ -770,7 +772,7 @@ impl CenterArea {
         if let Some(run_id) = stopped_run {
             row = row.child(self.render_delegation_recovery(run_id, id, "composer", cx));
         }
-        row.into_any_element()
+        row.children(trailing).into_any_element()
     }
 
     pub(super) fn render_delegation_panel_error(

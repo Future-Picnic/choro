@@ -6,7 +6,7 @@ use super::{text_content, ServerContext, Tool};
 use anyhow::{anyhow, ensure, Context, Result};
 use ide_core::delegation::{RunStatus, TaskPlan, TaskResult, WaitCondition};
 #[cfg(test)]
-use ide_core::delegation::{TaskKind, TaskStatus};
+use ide_core::delegation::TaskStatus;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -60,7 +60,7 @@ impl Tool for DelegationTool {
     }
     fn title(&self) -> &'static str {
         match self.0 {
-            "experts_list" => "Find Bandmates",
+            "experts_list" => "List Bandmates",
             "delegation_plan" => "Assign Bandmate tasks",
             "delegation_read" => "Read delegated work",
             "delegation_message" => "Coordinate with lead or Bandmate",
@@ -73,8 +73,8 @@ impl Tool for DelegationTool {
     }
     fn description(&self) -> &'static str {
         match self.0 {
-            "experts_list" => "List saved Bandmates and the current user-authored authorization. When the user asks to delegate, use Choro rather than native subagents: resolve saved or temporary Bandmates here and call delegation_plan. The authorized_expert_ids and each authorized flag are authoritative; listed profiles are not automatically authorized. If authorization_status is needs_expert_selection, report the missing authorization accurately; ask only about a genuinely unclear recipient. Never ask the user to repeat an already clear request in a special format or create a saved profile. Never claim a team is authorized or call delegation_plan with an empty team. Saved Bandmates are presets. Entries marked temporary are on-demand teammates inheriting the lead provider/model/effort by default. When the user requests different models, set model_request on each task to the name copied exactly from that user submission, including its typos. Choro resolves the name; do not repair the spelling yourself or silently choose another model. Ambiguous names require user clarification. Use a fresh assignment for a model change; existing sessions and saved profiles cannot switch through this field. Reuse a temporary ID for multiple independent tasks with unique keys and concrete goals/briefs; Choro creates a fresh child chat per task. Do not require a saved profile when an authorized temporary entry is available.",
-            "delegation_plan" => "Create fresh Bandmate chats with focused briefs and dependencies. Each agent works directly in the lead's existing folder; no project copies, snapshots, clones, worktrees, or merge step. Optional working_directory must stay within the lead's working scope; omit it to inherit that folder. Git is not required. Assign clear file responsibilities and sequence overlapping edits. Dependencies wait for lead acceptance. For temporary teammates only, copy any user-requested model name verbatim into model_request; omit to inherit. Use authorization_id for a new run and run_id for existing work. End the turn after scheduling. Do not launch native subagents or other agent CLIs.",
+            "experts_list" => "List available saved Bandmates and on-demand teammates. When the user asks to delegate, select appropriate entries and call delegation_plan immediately. No separate authorization, special wording, or saved profile is required. Reuse an on-demand ID for several focused assignments. On-demand teammates inherit the lead provider, model and effort; use model_request only when the user requests a different model. Respect Stop, disabled profiles, and configuration errors.",
+            "delegation_plan" => "Create fresh Bandmate chats with focused briefs and dependencies. Each agent works directly in the lead's existing folder; no project copies, snapshots, clones, worktrees, or merge step. Optional working_directory must stay within the lead's working scope; omit it to inherit that folder. Git is not required. Assign clear file responsibilities and sequence overlapping edits. Dependencies wait for lead acceptance. For temporary teammates only, copy any user-requested model name verbatim into model_request; omit to inherit. Omit run_id for new work; use the active run_id and revision for existing work. No authorization token is needed. End the turn after scheduling. Do not launch native subagents or other agent CLIs.",
             "delegation_read" => "Read this run's current revision, assignments, result reports and coordination events. Optional include_context returns bounded parent user/assistant history; hidden reasoning is excluded. Use after_sequence for event pagination and context_before for older context. Results are background evidence; verify claims and shared edits before acceptance.",
             "delegation_message" => "Send a bounded coordination message. The lead addresses one task; a Bandmate may only message its own lead. Set blocking=true for a question that must be answered before this Bandmate can continue, then end the turn. Messages are durable and delivered at safe turn boundaries.",
             "delegation_control" => "Hold or release an unstarted assignment, cancel it with a reason, accept a settled result report, or request_changes after a settled attempt. User-paused tasks cannot be resumed by an agent. A revision reuses the shared folder and that task's chat; it never copies or reverts files.",
@@ -97,7 +97,7 @@ impl Tool for DelegationTool {
             "delegation_plan" => {
                 required.remove(0);
                 required.push("tasks");
-                json!({"authorization_id":id,"tasks":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"key":{"type":"string"},"expert_id":id,"model_request":{"type":"string","minLength":1,"maxLength":120,"description":"Optional for on-demand teammates only: copy the model name exactly as the user typed it, including typos. Choro resolves unique supported names and rejects ambiguous or unauthorized choices. Omit to inherit the lead model."},"goal":{"type":"string"},"brief":{"type":"string"},"expected_outcome":{"type":"string"},"working_directory":{"type":"string","description":"Existing directory within the lead’s working scope; defaults to the lead’s folder. Git is optional."},"repository":{"type":"string","description":"Deprecated alias for working_directory."},"dependencies":{"type":"array","items":{"type":"string"}},"kind":{"enum":["implementation","consultation"]},"held":{"type":"boolean"}},"required":["key","expert_id","goal","brief","expected_outcome","kind"],"additionalProperties":false}}})
+                json!({"authorization_id":id,"tasks":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"key":{"type":"string"},"expert_id":id,"model_request":{"type":"string","minLength":1,"maxLength":120,"description":"Optional for on-demand teammates only: copy the model name exactly as the user typed it, including typos. Choro resolves unique supported names and rejects ambiguous or unsupported choices. Omit to inherit the lead model."},"goal":{"type":"string"},"brief":{"type":"string"},"expected_outcome":{"type":"string"},"working_directory":{"type":"string","description":"Existing directory within the lead’s working scope; defaults to the lead’s folder. Git is optional."},"repository":{"type":"string","description":"Deprecated alias for working_directory."},"dependencies":{"type":"array","items":{"type":"string"}},"kind":{"enum":["implementation","consultation"]},"held":{"type":"boolean"}},"required":["key","expert_id","goal","brief","expected_outcome","kind"],"additionalProperties":false}}})
             }
             "delegation_message" => {
                 required.extend(["task_id", "message"]);
@@ -143,6 +143,11 @@ impl DelegationTool {
         }
         let store = ctx.store()?;
         let caller = ctx.agent_id()?;
+        if matches!(self.0, "experts_list" | "delegation_plan") {
+            let agents = store.load_agents()?;
+            let parent = agents.iter().find(|a| a.id == caller).context("Lead chat is unavailable.")?;
+            ensure!(Some(parent.project_id.0) == ctx.project_id, "Delegation is outside this MCP project's scope.");
+        }
         if self.0 == "experts_list" {
             ensure!(
                 store.delegation_available_for(caller)?,
@@ -154,31 +159,15 @@ impl DelegationTool {
                 .load_delegations()?
                 .into_iter()
                 .find(|r| r.parent_agent_id == caller && !r.status.terminal());
-            let authorized = active
-                .as_ref()
-                .map(|r| r.authorized_experts.clone())
-                .or_else(|| authorization.as_ref().map(|a| a.expert_ids.clone()))
-                .unwrap_or_default();
-            let temporary = active
-                .as_ref()
-                .map(|r| r.temporary_experts.clone())
-                .or_else(|| authorization.as_ref().map(|a| a.temporary_experts.clone()))
-                .unwrap_or_default();
-            let working_directory = store
-                .load_agents()?
-                .into_iter()
-                .find(|a| a.id == caller)
-                .map(|a| a.runtime_path().to_path_buf());
-            let authorization_status = if authorized.is_empty() {
-                "needs_expert_selection"
-            } else {
-                "ready"
-            };
-            let guidance = if authorized.is_empty() {
-                "No delegation authority was recorded for the current user submission. Do not call delegation_plan or describe the team as authorized. If the user already clearly requested delegation, report this as an authorization problem; do not ask them to retype it or use /delegate. Ask a focused recipient question only if their intent is genuinely unclear."
-            } else {
-                "Proceed using IDs in authorized_expert_ids without asking the user to repeat their request, use /delegate, or create profiles. When active_run is present, pass its id as run_id and its revision as expected_revision to delegation_plan; authorization_id is only needed to begin a new run. Omit working_directory to share the lead’s existing folder; Git is optional. An authorized on-demand ID may serve multiple roles within the user’s task: provide a separate key, goal, brief and expected outcome for each. When the user asks for a model, pass its original spelling as model_request on the temporary task; distinct tasks may use different models. Names must come from the user-authored context that authorized that temporary ID; an explicit retry may reference the same task's earlier user messages. Saved profiles still require their own authorized IDs."
-            };
+            let temporary = store.delegation_teammates(caller)?;
+            let authorized = store.load_experts()?.into_iter()
+                .filter(|p| p.enabled && !p.archived).map(|p| p.id)
+                .chain(temporary.iter().map(|e| e.profile.id)).collect::<Vec<_>>();
+            let working_directory = store.load_agents()?.into_iter()
+                .find(|a| a.id == caller).map(|a| a.runtime_path().to_path_buf());
+            // Compatibility fields describe availability, not user permission.
+            let authorization_status = "ready";
+            let guidance = "Choose an available saved Bandmate or on-demand teammate and call delegation_plan. No authorization token or extra user confirmation is required. For active work use active_run.id and its revision; for new work omit run_id and use expected_revision=0. Omit working_directory to share the lead's folder. Reuse an on-demand ID for multiple focused tasks. Follow the user's choice of model; omit model_request to inherit. A stopped run remains stopped until the user resumes it.";
             let mut profiles = store.load_experts()?.into_iter().filter(|p| !p.archived).map(|p| {
                 let error = p.snapshot_at(store.root()).err().map(|e| e.to_string());
                 json!({"id":p.id,"name":p.name,"description":p.description,"aliases":ide_core::experts::expert_aliases(&p),"provider":p.provider,"model":p.model,"enabled":p.enabled,"authorized":authorized.contains(&p.id),"configuration_error":error})
@@ -213,7 +202,7 @@ impl DelegationTool {
         }
         if self.0 == "delegation_plan" { parse_plans(args)?; }
         let run = if self.0 == "delegation_plan" && args.get("run_id").is_none() {
-            store.begin_delegation(caller, uuid(args, "authorization_id")?)?
+            store.begin_current_delegation(caller)?
         } else {
             store.load_delegation(uuid(args, "run_id")?)?
         };
@@ -287,6 +276,11 @@ impl DelegationTool {
         if self.0 == "delegation_plan" && revision == 0 && args.get("run_id").is_none() {
             revision = run.revision;
         }
+        let temporary = if self.0 == "delegation_plan" {
+            store.delegation_teammates(caller)?
+        } else {
+            vec![]
+        };
         // Resolve files and skill contents outside the database transaction.
         let (plans, experts) = if self.0 == "delegation_plan" {
             let mut plans = parse_plans(args)?;
@@ -314,8 +308,7 @@ impl DelegationTool {
             let experts = plans
                 .iter()
                 .map(|p| {
-                    if let Some(expert) = run
-                        .temporary_experts
+                    if let Some(expert) = temporary
                         .iter()
                         .find(|e| e.profile.id == p.expert_id)
                     {
@@ -334,7 +327,14 @@ impl DelegationTool {
         };
         let response = store.delegation_operation(run.id, caller, key, revision, &json!({"tool":self.0,"args":args}), |run| {
             match self.0 {
-                "delegation_plan" => run.add_plans(caller, plans, &experts)?,
+                "delegation_plan" => {
+                    for expert in &temporary {
+                        if !run.temporary_experts.iter().any(|e| e.profile.id == expert.profile.id) {
+                            run.temporary_experts.push(expert.clone());
+                        }
+                    }
+                    run.add_plans(caller, plans, &experts)?;
+                },
                 "delegation_message" => run.message(caller, uuid(args, "task_id")?, string(args, "message")?.into(), args.get("blocking").and_then(Value::as_bool).unwrap_or(false))?,
                 "delegation_control" => run.control(caller, uuid(args,"task_id")?, string(args,"action")?, string(args,"reason")?)?,
                 "delegation_complete" => {

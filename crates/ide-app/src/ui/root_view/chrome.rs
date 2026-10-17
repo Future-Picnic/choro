@@ -6,6 +6,7 @@ use ide_core::ProjectActivityId;
 const FEATURE_REQUESTS_URL: &str = "https://choro.usergist.com/choro/requests";
 const SUPPORT_URL: &str = "https://choro.usergist.com/choro/support";
 const ROADMAP_URL: &str = "https://choro.usergist.com/choro/roadmap";
+const CHANGELOG_URL: &str = "https://choro.usergist.com/choro/changelog";
 const TUTORIALS_URL: &str = "https://www.youtube.com/@chorodev";
 
 enum RailIcon {
@@ -309,6 +310,13 @@ impl RootView {
                         }),
                 )
                 .item(
+                    PopupMenuItem::new("Changelog")
+                        .icon(IconName::FileText)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(CHANGELOG_URL);
+                        }),
+                )
+                .item(
                     PopupMenuItem::new("Tutorials")
                         .icon(IconName::BookOpen)
                         .on_click(|_, _, _| {
@@ -367,6 +375,13 @@ impl RootView {
                         .icon(IconName::Map)
                         .on_click(|_, _, _| {
                             crate::ui::git::git_panel::open_url(ROADMAP_URL);
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Changelog")
+                        .icon(IconName::FileText)
+                        .on_click(|_, _, _| {
+                            crate::ui::git::git_panel::open_url(CHANGELOG_URL);
                         }),
                 )
                 .item(

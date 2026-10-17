@@ -80,6 +80,14 @@ mod tasks;
 mod time;
 mod voice;
 pub(crate) mod web_preview;
+mod agent_chat_visual_answer;
+mod agent_chat_visual_answer_attach;
+mod agent_chat_visual_answer_flow;
+mod agent_chat_visual_answer_jobs;
+mod agent_chat_visual_answer_panel;
+mod agent_chat_visual_answer_placement;
+mod agent_chat_visual_answer_submit;
+mod visual_answer_surface;
 
 const CHAT_CARD_PREVIEW_LIMIT: usize = 5;
 
@@ -119,7 +127,10 @@ use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants},
     h_flex,
     input::Position,
-    input::{Enter, Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, Paste},
+    input::{
+        Enter, Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, OutdentInline,
+        Paste,
+    },
     menu::{ContextMenuExt, DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     resizable::{resizable_panel, v_resizable},
@@ -2121,6 +2132,14 @@ pub struct CenterArea {
     auto_loaded_chat_visualizations: HashSet<agent_chat_visualization::ChatVisualizationKey>,
     agent_chat_visualization_sync_stamps:
         HashMap<Uuid, agent_chat_visualization::ChatVisualizationSyncStamp>,
+    /// Composer Visual answers per conversation (loaded when first shown).
+    visual_answers: HashMap<Uuid, agent_chat_visual_answer::VisualAnswerChat>,
+    visual_answer_surface_seq: u64,
+    /// Serialized bootstrap of the open surface, keyed by everything it
+    /// contains (identity, local state version, mode, theme).
+    visual_answer_bootstrap: Option<(String, Arc<str>)>,
+    /// Redraw scheduled for when an outgoing answer's snapshot wait ends.
+    visual_handoff_wake: Option<Instant>,
     agent_diff_drawers: HashMap<Uuid, AgentDiffDrawer>,
     agent_ship_pr_targets: HashMap<Uuid, (PathBuf, String)>,
     agent_ship_prs: HashMap<Uuid, crate::ui::git::git_panel::BranchPullRequest>,

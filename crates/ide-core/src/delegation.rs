@@ -317,10 +317,12 @@ pub struct DelegationRun {
     pub project_id: ProjectId,
     pub source_message_id: Uuid,
     pub original_assignment: String,
+    /// Historical recipient selections; retained for archive compatibility.
+    /// Available profiles, not this list, determine which presets can be used.
     pub authorized_experts: Vec<Uuid>,
     #[serde(default)]
     pub temporary_experts: Vec<ExpertSnapshot>,
-    /// Trusted source submission per temporary setup, including follow-up grants.
+    /// Historical model request context; no longer a scheduling permission gate.
     #[serde(default)]
     pub temporary_model_authorizations: BTreeMap<Uuid, String>,
     pub revision: u64,
@@ -518,10 +520,6 @@ impl DelegationRun {
                 "Task brief is too long."
             );
             ensure!(
-                self.authorized_experts.contains(&plan.expert_id),
-                "The user has not named this Bandmate for the current task."
-            );
-            ensure!(
                 !self.plan_mode || plan.kind == TaskKind::Consultation,
                 "Plan mode only permits consultation tasks."
             );
@@ -533,6 +531,7 @@ impl DelegationRun {
                 .or_else(|| experts.iter().find(|e| e.profile.id == plan.expert_id))
                 .ok_or_else(|| anyhow::anyhow!("Bandmate configuration is unavailable."))?
                 .clone();
+            ensure!(expert.profile.enabled && !expert.profile.archived, "Bandmate is disabled or archived.");
             if plan.model_request.is_none() {
                 if let Some(existing) = tasks
                     .iter()
@@ -549,11 +548,6 @@ impl DelegationRun {
                     "Provide a short model name copied from the user's request."
                 );
                 ensure!(temporary.is_some(), "Model overrides apply only to on-demand teammates. Saved Bandmates keep their configured model.");
-                let source = self.temporary_model_authorizations.get(&plan.expert_id)
-                    .or_else(|| (plan.expert_id == self.source_message_id).then_some(&self.original_assignment))
-                    .ok_or_else(|| anyhow::anyhow!("This teammate has no saved user model authorization. Ask the user for a new assignment."))?;
-                ensure!(crate::experts::models::contains_model_request(source, request),
-                    "Copy the model name exactly as the user typed it in this teammate's assignment. Other messages cannot authorize a model change.");
                 let (provider, model) = crate::experts::models::resolve_model_request(request)?;
                 expert.profile.provider = provider;
                 expert.profile.model = model;
@@ -1122,7 +1116,7 @@ mod tests {
         }
     }
     #[test]
-    fn model_override_requires_temporary_user_authority_and_never_mutates_presets() {
+    fn model_override_uses_on_demand_teammates_and_never_mutates_presets() {
         let (mut run, expert) = fixture();
         let mut request = plan(&expert, "variant", vec![]);
         request.model_request = Some("Sonnet 5".into());
@@ -1134,17 +1128,6 @@ mod tests {
             )
             .is_err());
         run.temporary_experts.push(expert.clone());
-        run.temporary_model_authorizations
-            .insert(expert.profile.id, "Delegate using Astra".into());
-        assert!(run
-            .add_plans(
-                run.parent_agent_id,
-                vec![request.clone()],
-                &[expert.clone()]
-            )
-            .is_err());
-        run.temporary_model_authorizations
-            .insert(expert.profile.id, "Delegate using Sonnet 5".into());
         run.add_plans(run.parent_agent_id, vec![request], &[expert.clone()])
             .unwrap();
         assert_eq!(run.tasks[0].expert.profile.model, AgentModel::ClaudeSonnet);
@@ -1286,7 +1269,7 @@ mod tests {
             .add_plans(
                 run.parent_agent_id,
                 vec![plan(&expert, "a", vec![])],
-                &[expert.clone()]
+                &[]
             )
             .is_err());
         run.authorized_experts.push(expert.profile.id);

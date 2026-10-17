@@ -157,7 +157,7 @@ pub fn requests_delegation_continuation(text: &str) -> bool {
             .any(|word| {
                 matches!(
                     word,
-                    "again" | "it" | "them" | "same" | "resume" | "continue" | "restart" | "retry"
+                    "again" | "agin" | "it" | "them" | "same" | "resume" | "continue" | "restart" | "retry"
                 )
             })
 }
@@ -169,7 +169,7 @@ fn directive_prefix(words: &[&str]) -> bool {
         .filter(|w| {
             !matches!(
                 *w,
-                "please" | "ok" | "okay" | "also" | "now" | "actually" | "just" | "simply"
+                "please" | "ok" | "okay" | "also" | "now" | "actually" | "just" | "simply" | "try"
             )
         })
         .collect::<Vec<_>>();
@@ -209,6 +209,7 @@ mod tests {
             "Please delagte four on demand teammates without saved profiles",
             "Please delagete this to on-demand teammates",
             "please deleage it",
+            "try delegete agin",
             "Add another teammate to review accessibility",
             "Resume the bandmates",
             "Continue delegation",

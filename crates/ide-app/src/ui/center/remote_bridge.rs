@@ -2352,7 +2352,9 @@ pub(super) fn timeline_item_dto(
     rejoin_cleanup_pending: bool,
 ) -> Option<TimelineItemDto> {
     match item {
-        AgentChatTimelineItem::DelegationGroup { .. } => None,
+        // Visual answers render only in the desktop composer.
+        AgentChatTimelineItem::DelegationGroup { .. }
+        | AgentChatTimelineItem::VisualAnswer { .. } => None,
         AgentChatTimelineItem::Message(AgentChatMessage::User {
             text, created_at, ..
         }) => Some(TimelineItemDto::Message {

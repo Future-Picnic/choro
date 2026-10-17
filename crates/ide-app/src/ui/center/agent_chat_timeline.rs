@@ -20,9 +20,14 @@ impl Render for AgentChatTranscript {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.owner
             .update(cx, |center, cx| {
-                if center.active_chat_visualization.as_ref().is_some_and(|active| active.agent_id == self.agent.id) {
-                    center.web_host.update(cx, |host, _| host.begin_transcript_layout());
-                }
+                // A real layout of this transcript: its inline surface (HTML
+                // visualization or informational Visual answer) must be placed
+                // in a fully visible row, or it hides.
+                let owns_visualization = center.owns_chat_visualization(self.agent.id);
+                let agent_id = self.agent.id;
+                center.web_host.update(cx, |host, _| {
+                    host.begin_transcript_layout(agent_id, owns_visualization)
+                });
                 center.render_agent_chat_transcript(
                     &self.agent,
                     &self.session,
@@ -236,9 +241,31 @@ impl CenterArea {
                         .py_5()
                         .into_any_element()
                     })
-                    .when_some(scroll_button, |area, button| area.child(button)),
+                    .when_some(scroll_button, |area, button| area.child(button))
+                    .child(self.transcript_layout_probe(agent.id, cx)),
             )
             .into_any_element()
+    }
+
+    /// Records the list's real height (inline results are sized to fit it)
+    /// and, at paint, ends this transcript's placement proof. Both run only
+    /// when the transcript actually lays out, including a scroll that leaves
+    /// its owner cached.
+    fn transcript_layout_probe(&self, agent_id: Uuid, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let owner = cx.entity().downgrade();
+        let host = self.web_host.clone();
+        canvas(
+            move |bounds, _, cx| {
+                let height = f32::from(bounds.size.height);
+                owner
+                    .update(cx, |this, cx| this.record_transcript_height(agent_id, height, cx))
+                    .ok();
+            },
+            move |_, _, _, cx| host.update(cx, |host, _| host.finish_transcript_layout()),
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
     }
 
     pub(super) fn render_agent_chat_body(
@@ -351,6 +378,8 @@ impl CenterArea {
             session
         };
         self.sync_agent_chat_visualizations(agent, &session);
+        self.ensure_visual_answers(agent, cx);
+        self.restore_visual_note(agent.id, window, cx);
         let is_plan_mode = surface.allows_plan_mode(agent)
             && session.interaction_mode == AgentInteractionMode::Plan;
         let attached_files = self
@@ -515,6 +544,40 @@ impl CenterArea {
             !session.messages.is_empty(),
         );
 
+        // Native decisions take precedence; the answer waits with its state.
+        let visual_panel = if has_composer_decision || handoff_busy || reviewing {
+            None
+        } else {
+            self.render_visual_answer_panel(agent, window, cx)
+        };
+        // An attached choice is named in the composer's Band row (beside the
+        // delegation context), open or collapsed; native decisions hide it
+        // like the panel.
+        let visual_in_band = !(has_composer_decision
+            || reviewing
+            || handoff_busy
+            || self.visual_answer_suppressed(agent.id, cx));
+        let visual_expanded = visual_panel.is_some() && self.visual_answer_expanded(agent.id, cx);
+        let transcript = (!visual_expanded)
+            .then(|| self.agent_chat_transcript_view(agent, session.clone(), searchable, top_down, cx));
+        // The transcript is a cached view, so its rows may reuse last frame's
+        // placement. This uncached marker proves to the shared host that this
+        // conversation is on screen in this center frame; without it (New
+        // agent, another tab or agent) an inline surface hides.
+        let transcript_marker = transcript.is_some().then(|| {
+            let host = self.web_host.clone();
+            let agent_id = agent.id;
+            let owns_visualization = self.owns_chat_visualization(agent_id);
+            canvas(
+                move |_, _, cx| {
+                    host.update(cx, |host, _| host.confirm_conversation(agent_id, owns_visualization))
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0()
+        });
+
         let chat = v_flex()
             .size_full()
             .min_w(px(0.))
@@ -565,13 +628,15 @@ impl CenterArea {
                 }
             }))
             .when(top_down, |layout| layout.flex_col_reverse())
-            .child(
-                self.agent_chat_transcript_view(agent, session.clone(), searchable, top_down, cx)
-            )
+            // Expanded, the answer panel takes the conversation's height; the
+            // transcript returns unchanged when it docks.
+            .children(transcript)
+            .children(transcript_marker)
             .child(
                 v_flex()
                     .relative()
                     .when(top_down, |composer| composer.flex_col_reverse())
+                    .when(visual_expanded, |composer| composer.flex_1().min_h(px(0.)))
                     .w_full()
                     // The transcript gives up space, never the composer. Without
                     // this a tall decision panel (long question, wrapped option
@@ -639,6 +704,7 @@ impl CenterArea {
                         crate::ui::style::composer_frame(cx)
                             .relative()
                             .flex_shrink_0()
+                            .when(visual_expanded, |frame| frame.flex_1().min_h(px(0.)))
                             .w_full()
                             .min_w(px(0.))
                             .max_w(crate::ui::design::agent_chat_content_max_w())
@@ -674,32 +740,12 @@ impl CenterArea {
                             }))
                             .capture_action(cx.listener({
                                 let agent = agent.clone();
+                                // The text box's route into the composer's one
+                                // Escape handler (stop, picker, dock, leave).
                                 move |this, _: &Escape, _window, cx| {
-                                    if this.agent_handoff_busy(agent.id) {
-                                        cx.stop_propagation();
-                                        return;
-                                    }
-                                    if this.dismiss_agent_chat_context_picker(&agent, cx) {
-                                        cx.stop_propagation();
-                                        return;
-                                    }
-                                    let can_stop = this
-                                        .agent_chats
-                                        .read(cx)
-                                        .session(agent.id)
-                                        .is_some_and(|session| {
-                                            matches!(
-                                                session.status,
-                                                AgentChatStatus::Running
-                                                    | AgentChatStatus::Cancelling
-                                            )
-                                        });
-                                    if can_stop {
-                                        // First Escape requests a graceful stop;
-                                        // pressing Escape again while Cancelling
-                                        // follows the same force-stop path as a
-                                        // second click on the stop control.
-                                        this.request_agent_chat_stop(agent.id, cx);
+                                    if this.composer_escape(&agent, cx)
+                                        != super::agent_chat_visual_answer_attach::ComposerEscape::Unhandled
+                                    {
                                         cx.stop_propagation();
                                     }
                                 }
@@ -718,6 +764,18 @@ impl CenterArea {
                                         window,
                                         cx,
                                     ) {
+                                        cx.stop_propagation();
+                                    } else if this.focus_visual_answer_content(agent.id, true, cx) {
+                                        // Tab moves into an open visual answer;
+                                        // Tab past its end returns here.
+                                        cx.stop_propagation();
+                                    }
+                                }
+                            }))
+                            .capture_action(cx.listener({
+                                let agent = agent.clone();
+                                move |this, _: &OutdentInline, _window, cx| {
+                                    if this.focus_visual_answer_content(agent.id, false, cx) {
                                         cx.stop_propagation();
                                     }
                                 }
@@ -818,10 +876,12 @@ impl CenterArea {
                                             cx,
                                         );
                                     } else {
-                                        this.submit_agent_chat_message_for_surface(
+                                        // With an open visual answer, Enter
+                                        // refines it (with its id, revision and
+                                        // current view); otherwise a normal send.
+                                        this.submit_agent_chat_composer(
                                             &agent,
                                             input.clone(),
-                                            false,
                                             &surface,
                                             window,
                                             cx,
@@ -851,7 +911,7 @@ impl CenterArea {
                             .when(compact_assistant_controls, |frame| {
                                 frame.px_2().pt_2().pb_2()
                             })
-                            .when_some(session.pending_approval.as_ref(), |card, pending| {
+                            .when_some(visual_panel, |card, panel| card.child(panel))                            .when_some(session.pending_approval.as_ref(), |card, pending| {
                                 card.child(self.render_pending_approval_panel(
                                     agent.id,
                                     pending,
@@ -895,13 +955,19 @@ impl CenterArea {
                                     cx,
                                 ))
                             })
-                            .when(ide_core::delegation::enabled(), |card|card.child(self.render_expert_composer(agent,cx)))
+                            // The Band row: delegation context and an attached
+                            // visual answer share one wrapping row.
+                            .when_some(self.render_composer_context_row(agent, visual_in_band, cx), |card, row| card.child(row))
                             .when_some(self.render_studio_composer_target(agent, cx), |card, chip| {
                                 card.child(h_flex().w_full().min_w(px(0.)).child(chip))
                             })
                             .when(!has_composer_decision && !handoff_busy, |card| {
                                 let picker =
                                     self.render_agent_chat_context_picker(agent, input.clone(), window, cx);
+                                if picker.is_some() {
+                                    // It opens over the conversation and panel.
+                                    self.web_host.update(cx, |host, _| host.cover_conversation());
+                                }
                                 card.when_some(picker, |card, picker| {
                                     card.child(
                                         div()
@@ -1485,10 +1551,11 @@ impl CenterArea {
                                                             let input = input.clone();
                                                             let surface = surface.clone();
                                                             move |this, _, window, cx| {
-                                                                this.submit_agent_chat_message_for_surface(
+                                                                // Same path as Enter: an open visual
+                                                                // answer receives the note as a refinement.
+                                                                this.submit_agent_chat_composer(
                                                                     &agent,
                                                                     input.clone(),
-                                                                    false,
                                                                     &surface,
                                                                     window,
                                                                     cx,

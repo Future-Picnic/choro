@@ -54,6 +54,17 @@ MPL-covered package files remain under MPL-2.0 and are kept separate from
 Choro's first-party Rust and TypeScript source. Choro does not include the
 commercial `@blocknote/xl-*` packages.
 
+## Embedded Visual answer renderer
+
+Choro's Visual answers embed the unmodified OpenUI packages
+`@openuidev/react-lang` 1.0.1, `@openuidev/lang-core` 1.0.1,
+`@openuidev/react-ui` 0.18.1 and `@openuidev/react-headless` 0.18.1 (MIT), with
+React, D3 scale/shape modules, Radix UI primitives and Zod, bundled locally at
+build time. No package is loaded
+from a network at runtime, install scripts are disabled, and OpenUI's optional
+telemetry is not enabled. Exact versions and license files are collected into
+the packaged license inventory.
+
 ## Claude Agent SDK
 
 `@anthropic-ai/claude-agent-sdk` is proprietary software from Anthropic PBC. It

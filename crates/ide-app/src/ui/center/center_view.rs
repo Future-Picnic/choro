@@ -124,6 +124,11 @@ impl CenterArea {
             cx.subscribe(&agent_chats, |this: &mut Self, _, event, cx| {
                 let AgentChatEvent::SessionChanged(change) = event else { return; };
                 this.agent_chat_render_sessions.remove(&change.agent_id);
+                // A `visual_present` call shows up as conversation activity;
+                // check the cheap publication stamp (throttled) for shown chats.
+                if change.categories.conversation {
+                    this.refresh_visual_answers(change.agent_id, false, cx);
+                }
                 if change.categories.identity || change.categories.controls {
                     this.sync_chat_session_ids_for(Some(change.agent_id), cx);
                     this.sync_doc_assistant_chat_session_ids(cx);
@@ -154,6 +159,7 @@ impl CenterArea {
                         source_turn_id,
                     } => {
                         this.complete_orbit_invocation_for_agent(*agent_id, cx);
+                        this.refresh_visual_answers(*agent_id, true, cx);
                         let review_started = this.maybe_request_review_checklist(
                             *agent_id,
                             source_turn_id.clone(),
@@ -884,6 +890,10 @@ impl CenterArea {
                 active_chat_visualization: None,
                 auto_loaded_chat_visualizations: HashSet::new(),
                 agent_chat_visualization_sync_stamps: HashMap::new(),
+                visual_answers: HashMap::new(),
+                visual_answer_surface_seq: 0,
+                visual_answer_bootstrap: None,
+                visual_handoff_wake: None,
                 agent_diff_drawers: HashMap::new(),
                 agent_ship_pr_targets: HashMap::new(),
                 agent_ship_prs: HashMap::new(),
@@ -1005,6 +1015,7 @@ impl CenterArea {
             }
         }
         self.handle_project_preview_messages(window, cx);
+        self.process_visual_answer_messages(window, cx);
         self.apply_pending_reference_open(window, cx);
 
         self.process_studio_messages(window, cx);

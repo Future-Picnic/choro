@@ -127,6 +127,14 @@ fn render_saved_message_tag(
             .into_any_element(),
             "Choro Brain",
         ),
+        AgentChatMessageTagKind::VisualAnswer => (
+            crate::ui::design::accent(cx),
+            gpui_component::Icon::new(IconName::ChartPie)
+                .size(crate::ui::design::icon_sm())
+                .text_color(crate::ui::design::accent(cx))
+                .into_any_element(),
+            "Visual answer",
+        ),
         AgentChatMessageTagKind::LegacyVisual => (
             crate::ui::design::t3(cx),
             crate::ui::design::indicator::lucide_icon(
@@ -586,7 +594,7 @@ impl CenterArea {
                 text,
                 created_at,
             } => {
-                let visualization = self.chat_visualization_render_context(agent);
+                let visualization = self.chat_visualization_render_context(agent, window);
                 // While this is the streaming message, paint only the revealed
                 // prefix (paced word-by-word) with a warm lavender trailing edge.
                 // Finalised and historical messages fall through to the normal
@@ -1142,6 +1150,9 @@ impl CenterArea {
                 .find(|r| r.id == *run_id)
                 .map(|r| self.render_delegation_group(r, cx))
                 .unwrap_or_else(|| div().child("Delegated work is loading…").into_any_element()),
+            AgentChatTimelineItem::VisualAnswer { answer_id, title, .. } => {
+                self.render_visual_answer_card(agent, *answer_id, title, window, cx)
+            }
             AgentChatTimelineItem::Message(message) => {
                 self.render_agent_chat_message(agent, index, message, window, cx)
             }

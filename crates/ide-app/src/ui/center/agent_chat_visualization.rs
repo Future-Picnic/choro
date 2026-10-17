@@ -27,6 +27,20 @@ pub(super) struct ChatVisualizationRenderContext {
     pub files: ChatVisualizationContext,
     pub active: Option<ChatVisualizationKey>,
     pub web_host: Entity<web_preview::WebPreviewHost>,
+    /// The live view shows only while wholly inside the transcript, so it
+    /// must fit there even in a short window.
+    pub live_height: f32,
+}
+
+/// List padding, row gap, card border and the 48 px card header.
+const VISUALIZATION_CARD_CHROME: f32 = 100.0;
+
+fn live_visualization_height(viewport_height: f32, transcript_height: Option<f32>) -> f32 {
+    let preferred = ACTIVE_VISUALIZATION_HEIGHT.min((viewport_height * 0.45).max(140.0));
+    match transcript_height {
+        Some(transcript) => preferred.min(transcript - VISUALIZATION_CARD_CHROME).max(120.0).floor(),
+        None => preferred,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,6 +219,12 @@ impl CenterArea {
         }
     }
 
+    pub(super) fn owns_chat_visualization(&self, agent_id: Uuid) -> bool {
+        self.active_chat_visualization
+            .as_ref()
+            .is_some_and(|active| active.agent_id == agent_id)
+    }
+
     pub(super) fn active_chat_visualization_intent(
         &self,
         selected_agent: &AgentRecord,
@@ -224,11 +244,24 @@ impl CenterArea {
     pub(super) fn chat_visualization_render_context(
         &self,
         agent: &AgentRecord,
+        window: &Window,
     ) -> ChatVisualizationRenderContext {
+        // An open composer Visual answer owns the shared surface; inline
+        // visualizations show their paused card meanwhile.
+        let answer_open = self
+            .visual_answers
+            .get(&agent.id)
+            .is_some_and(|entry| entry.is_open());
         ChatVisualizationRenderContext {
             files: ChatVisualizationContext::for_agent(agent),
-            active: self.active_chat_visualization.clone(),
+            active: self.active_chat_visualization.clone().filter(|_| !answer_open),
             web_host: self.web_host.clone(),
+            live_height: live_visualization_height(
+                f32::from(window.viewport_size().height),
+                self.visual_answers
+                    .get(&agent.id)
+                    .and_then(|entry| entry.transcript_height),
+            ),
         }
     }
 }
@@ -362,7 +395,7 @@ pub(super) fn render_chat_visualization_card(
                 div()
                     .relative()
                     .w_full()
-                    .h(px(ACTIVE_VISUALIZATION_HEIGHT))
+                    .h(px(context.live_height))
                     .bg(crate::ui::design::base(cx))
                     .child(
                         v_flex()
@@ -497,9 +530,19 @@ mod tests {
     use std::fs;
 
     use super::{
-        parse_visualization_directive_line, resolve_visualization_file, visualization_directives,
-        ChatVisualizationContext,
+        live_visualization_height, parse_visualization_directive_line, resolve_visualization_file,
+        visualization_directives, ChatVisualizationContext,
     };
+
+    #[test]
+    fn the_live_view_fits_inside_a_short_transcript() {
+        assert_eq!(live_visualization_height(1200.0, None), 380.0);
+        assert_eq!(live_visualization_height(600.0, None), 270.0);
+        assert_eq!(live_visualization_height(200.0, None), 140.0);
+        assert_eq!(live_visualization_height(1200.0, Some(900.0)), 380.0);
+        // A tall composer leaves 320 px of transcript.
+        assert_eq!(live_visualization_height(1200.0, Some(320.0)), 220.0);
+    }
 
     #[test]
     fn parses_exact_directive() {

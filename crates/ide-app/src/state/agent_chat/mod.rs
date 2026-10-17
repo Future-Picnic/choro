@@ -268,6 +268,7 @@ pub enum AgentChatMessageTagKind {
     Design,
     Project,
     Brain,
+    VisualAnswer,
     /// Keeps older or third-party tag values readable after capabilities are removed.
     #[serde(other)]
     LegacyVisual,
@@ -283,6 +284,9 @@ pub struct AgentChatMessageTag {
 #[derive(Clone, Debug)]
 pub enum AgentChatTimelineItem {
     DelegationGroup { run_id: Uuid, created_at: u64 },
+    /// A published Visual answer. The document lives in LocalStore; the title
+    /// is kept here so the card reads well before the answer loads.
+    VisualAnswer { answer_id: Uuid, title: String, created_at: u64 },
     Message(AgentChatMessage),
     WorkLog(WorkLogEntry),
     FileChangeActivity(FileChangeActivity),
@@ -439,6 +443,11 @@ pub struct RejoinConflictCard {
 enum StoredTimelinePayload {
     DelegationGroup {
         run_id: Uuid,
+        created_at: u64,
+    },
+    VisualAnswer {
+        answer_id: Uuid,
+        title: String,
         created_at: u64,
     },
     Message {

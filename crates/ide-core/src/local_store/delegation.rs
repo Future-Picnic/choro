@@ -341,7 +341,9 @@ impl LocalStore {
                 // An explicit picker selection resolves an ambiguous textual
                 // reference. Do not infer any additional team members in that case.
                 Err(_) if !explicit.is_empty() => explicit.to_vec(),
-                Err(error) => return Err(error),
+                // Discovery and the lead resolve recipients. A spelling parser
+                // must never prevent the user's message from being submitted.
+                Err(_) => Vec::new(),
             }
         };
         for id in &explicit {
@@ -457,14 +459,12 @@ impl LocalStore {
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let result = async {
                 let mut rows = conn.query("SELECT payload_json FROM delegation_authorizations WHERE id = ?1 AND parent_agent_id = ?2", (authorization_id.to_string(), parent.to_string())).await?;
-                let row = rows.next().await?.context("This assignment was not authorized by a user submission. Ask the user to name the Bandmates.")?;
+                let row = rows.next().await?.context("Delegation submission metadata is unavailable.")?;
                 let authorization: ExpertAuthorization = serde_json::from_str(&row.get::<String>(0)?)?;
                 drop(rows);
                 if let Some(previous) = load_delegations_async(&conn).await?.into_iter().find(|r| r.parent_agent_id == parent && r.source_message_id == authorization_id) {
                     return Ok(previous);
                 }
-                let mut latest=conn.query("SELECT id FROM delegation_authorizations WHERE parent_agent_id = ?1 ORDER BY created_at DESC,rowid DESC LIMIT 1",[parent.to_string()]).await?;
-                ensure!(latest.next().await?.is_some_and(|r|r.get::<String>(0).ok().as_deref()==Some(&authorization_id.to_string())),"This authorization belongs to an older user request. Ask the user to name the Bandmates for the current task.");drop(latest);
                 let agents = load_agents_async(&conn).await?;
                 let agent = agents.iter().find(|a| a.id == parent).context("Lead chat is unavailable.")?;
                 ensure!(agent.delegation.as_ref().is_none_or(|b| b.task_id.is_none()), "Bandmates cannot create nested delegations.");
@@ -483,7 +483,6 @@ impl LocalStore {
                     return Ok(run);
                 }
                 drop(existing);
-                ensure!(!authorization.expert_ids.is_empty(), "No delegation authority was recorded for this user submission. A clear on-demand request does not require saved profiles or /delegate. Report an authorization problem if the request was already clear; retrying this authorization cannot add Bandmates.");
                 ensure!(beta_features_async(&conn).await?.delegation, "{}", crate::delegation::BETA_DISABLED);
                 let mut run = DelegationRun::new(parent, agent.project_id, authorization.id, authorization.original_assignment.clone(), authorization.expert_ids.clone(), authorization.plan_mode, limits);
                 extend_authorized_team(&mut run, &authorization);
@@ -494,6 +493,63 @@ impl LocalStore {
         })?;
         crate::preview_control::notify_delegation_changed(&self.root, result.id);
         Ok(result)
+    }
+
+    /// Available on-demand presets, not permission grants. The stable lead ID
+    /// works before any request parser has run and across ordinary follow-ups.
+    /// Keep recorded IDs usable for in-flight plans from older clients.
+    pub fn delegation_teammates(&self, parent: Uuid) -> Result<Vec<crate::experts::ExpertSnapshot>> {
+        let agents = self.load_agents()?;
+        let agent = agents.iter().find(|a| a.id == parent).context("Lead chat is unavailable.")?;
+        ensure!(agent.delegation.as_ref().is_none_or(|b| b.task_id.is_none()), "Bandmates cannot create nested delegations.");
+        ensure!(matches!(agent.provider, crate::AgentKind::Codex | crate::AgentKind::Claude)
+            && agent.runtime == crate::AgentRuntimeKind::Chat
+            && !agent.hidden_doc_assistant && agent.design_context.is_none(),
+            "Delegation is available in ordinary Codex and Claude chats.");
+        let mut teammates = self.load_delegations()?.into_iter()
+            .find(|r| r.parent_agent_id == parent && !r.status.terminal())
+            .map(|r| r.temporary_experts).unwrap_or_default();
+        if let Some(submission) = self.latest_expert_authorization(parent)? {
+            for expert in submission.temporary_experts {
+                if !teammates.iter().any(|e| e.profile.id == expert.profile.id) {
+                    teammates.push(expert);
+                }
+            }
+        }
+        if !teammates.iter().any(|e| e.profile.id == parent) {
+            teammates.push(crate::experts::ExpertSnapshot {
+                profile: ExpertProfile {
+                    id: parent, revision: 1, name: "Teammate".into(),
+                    description: "On-demand teammate".into(),
+                    provider: agent.provider, model: agent.model, effort: agent.effort,
+                    instructions: "Carry out the lead's focused assignment in the shared folder. Coordinate overlapping work and report results to the lead.".into(),
+                    skills: vec![], expected_outcome: "Return the deliverable, checks, and unresolved issues.".into(),
+                    enabled: true, archived: false, additions: Default::default(),
+                },
+                skills: vec![],
+            });
+        }
+        Ok(teammates)
+    }
+
+    /// Scheduling is a normal lead tool call. Submission records supply context
+    /// and Plan Mode, never an expiring token or a per-recipient permission.
+    pub fn begin_current_delegation(&self, parent: Uuid) -> Result<DelegationRun> {
+        self.delegation_teammates(parent)?;
+        if let Some(run) = self.load_delegations()?.into_iter()
+            .find(|r| r.parent_agent_id == parent && !r.status.terminal()) {
+            return Ok(run);
+        }
+        let submission = if let Some(submission) = self.latest_expert_authorization(parent)? {
+            submission
+        } else {
+            let messages = self.load_chat_messages(parent)?;
+            let text = messages.iter().rev().find(|m| m.role == "user")
+                .map(|m| m.text.as_str()).unwrap_or("");
+            self.authorize_experts(parent, Uuid::new_v4(), text, &[Uuid::nil()], false)?
+                .context("Could not prepare delegation context.")?
+        };
+        self.begin_delegation(parent, submission.id)
     }
     pub fn load_delegations(&self) -> Result<Vec<DelegationRun>> {
         self.rt

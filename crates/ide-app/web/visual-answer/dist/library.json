@@ -1,0 +1,14 @@
+{
+  "root": "Answer",
+  "components": [
+    "Answer",
+    "CategoryChart",
+    "DataTable",
+    "DesignOptions",
+    "Metric",
+    "MetricGroup",
+    "Note",
+    "Section",
+    "TrendChart"
+  ]
+}

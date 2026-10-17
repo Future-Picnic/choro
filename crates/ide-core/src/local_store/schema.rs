@@ -26,6 +26,7 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
     }
     migrate_turso_fts_storage(conn).await?;
     if current == STORE_SCHEMA_VERSION {
+        super::visual_answers::ensure_schema(conn).await?;
         super::agent_changes::ensure_schema(conn).await?;
         super::code_review::ensure_schema(conn).await?;
         // Development and preview builds can share the same local database while
@@ -626,6 +627,13 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
         execute_transaction(conn, |conn| Box::pin(async move {
             delegation::close_legacy_async(conn).await?;
             record_schema_version(conn, 41).await?;
+            Ok(())
+        })).await?;
+    }
+    if current < 42 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            super::visual_answers::ensure_schema(conn).await?;
+            record_schema_version(conn, 42).await?;
             Ok(())
         })).await?;
     }

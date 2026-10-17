@@ -23,6 +23,8 @@ mod delegation_tools;
 mod studio_tools;
 #[path = "code_review.rs"]
 mod review_tools;
+#[path = "visual_answers.rs"]
+mod visual_answer_tools;
 
 use ide_core::local_store::{LocalStore, OrbitRecordInput};
 use ide_core::{
@@ -259,6 +261,9 @@ impl Default for ToolRegistry {
         }
         tools.extend(studio_tools::tools());
         tools.extend(review_tools::tools());
+        if ide_core::visual_answers::VISUAL_ANSWERS_READY {
+            tools.extend(visual_answer_tools::tools());
+        }
         Self { tools }
     }
 }

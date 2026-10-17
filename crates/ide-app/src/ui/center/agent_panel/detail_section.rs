@@ -134,6 +134,14 @@ impl CenterArea {
         let diff_drawer = (detail_tab == AgentDetailTab::Diff)
             .then(|| self.agent_diff_drawers.get(&agent.id).cloned())
             .flatten();
+        // Drawers are GPUI sheets over the conversation; a native visual
+        // surface there would paint above them.
+        if matches!(detail_tab, AgentDetailTab::Notes | AgentDetailTab::Files)
+            || diff_drawer.is_some()
+            || plan_drawer.is_some()
+        {
+            self.web_host.update(cx, |host, _| host.cover_conversation());
+        }
         let detail_body: gpui::AnyElement = if agent.runtime == AgentRuntimeKind::Chat {
             self.render_agent_chat_body(&agent, window, cx)
         } else if let Some(view) = terminal_view {

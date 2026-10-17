@@ -31,7 +31,7 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 41;
+const STORE_SCHEMA_VERSION: u32 = 42;
 const EXPORT_FORMAT_VERSION: u32 = 9;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
@@ -802,6 +802,7 @@ mod tasks;
 
 pub use brain::MAX_AGENT_MESSAGE_CHARS;
 mod voice;
+mod visual_answers;
 mod workspace;
 
 use agents::*;
