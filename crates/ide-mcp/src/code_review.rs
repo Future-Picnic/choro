@@ -72,7 +72,7 @@ impl Tool for ReviewTool {
         match self.0 {
             "review_context" => "Start with a compact overview. Full decisions, check evidence and file metadata are available in paginated sections; none are discarded.",
             "review_read" => "Prefer kind=batch with batch ID and zero-based page to consume related diff pages together. Individual diff pages and numbered snapshot source remain available. No live workspace access.",
-            "review_search" => "Bounded literal search within frozen snapshot source. Optional repository-relative prefix narrows scope.",
+            "review_search" => "Paginated literal search within frozen snapshot source. Optional repository-relative prefix narrows scope. Pass next_cursor back as cursor with the same query/prefix until next_cursor is null; an empty limited page does not mean no matches exist.",
             _ => "Report stage, completed file, candidate, checked finding, discard or finalization. File completion requires all assigned diff pages. Only validated checked findings become visible.",
         }
     }
@@ -85,7 +85,7 @@ impl Tool for ReviewTool {
                 json!({"type":"object","additionalProperties":false,"properties":{"kind":{"enum":["batch","diff","source"]},"batch":{"type":"integer","minimum":0},"file_id":{"type":"string"},"page":{"type":"integer","minimum":0},"path":{"type":"string"},"side":{"enum":["Before","After","Source"]},"start":{"type":"integer","minimum":1},"end":{"type":"integer","minimum":1}},"required":["kind"]})
             }
             "review_search" => {
-                json!({"type":"object","additionalProperties":false,"properties":{"query":{"type":"string","minLength":1,"maxLength":256},"prefix":{"type":"string"}},"required":["query"]})
+                json!({"type":"object","additionalProperties":false,"properties":{"query":{"type":"string","minLength":1,"maxLength":256},"prefix":{"type":"string"},"cursor":{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"line":{"type":"integer","minimum":1}},"required":["path","line"]}},"required":["query"]})
             }
             _ => {
                 json!({"type":"object","additionalProperties":false,"properties":{"report":{"type":"object","description":"action: stage (stage Understanding/Reviewing/CheckingFindings, optional batch); files_complete (file_ids: one to five IDs, all assigned pages consumed); file_complete (file_id); candidate/checked (finding: id,severity Critical/High/Medium/Low,location {file_id,path,side Before/After,start,end},title,trigger,consequence,suggested_fix,evidence [{path,file_id,side,content_hash,start,end,excerpt}],challenge); discard (finding_id,reason); finalize."}},"required":["report"]})
@@ -142,8 +142,9 @@ impl Tool for ReviewTool {
                     }
                 },
                 "review_search" => {
-                    reject_unknown_arguments(args, &["query","prefix"])?;
-                    review_search(run, &input, &storage, args["query"].as_str().context("query is required")?, args["prefix"].as_str().map(Path::new))
+                    reject_unknown_arguments(args, &["query","prefix","cursor"])?;
+                    let cursor = args.get("cursor").map(|value| serde_json::from_value::<ReviewSearchCursor>(value.clone())).transpose()?;
+                    review_search(run, &input, &storage, args["query"].as_str().context("query is required")?, args["prefix"].as_str().map(Path::new), cursor.as_ref())
                 },
                 _ => {
                     reject_unknown_arguments(args, &["report"])?;

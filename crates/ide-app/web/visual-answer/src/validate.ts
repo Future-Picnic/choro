@@ -109,7 +109,10 @@ export function validateProgram(source: string, reader: DatasetReader, document:
     errors.push("Query and Mutation are not available in Choro visual answers.");
   if (Object.keys(result.stateDeclarations ?? {}).length) errors.push("$variables are not available in Choro visual answers.");
   if (!result.root || result.root.typeName !== ROOT_COMPONENT) errors.push(`The root must be ${ROOT_COMPONENT}(...).`);
-  for (const node of elements(result.root)) {
+  const nodes = elements(result.root);
+  if (document.options.length > 0 && !nodes.some((node) => node.typeName === "DesignOptions"))
+    errors.push("Design alternatives must be displayed with DesignOptions() inside Answer([...]).");
+  for (const node of nodes) {
     if (!library.components[node.typeName]) errors.push(`Unknown component ${node.typeName}.`);
     else checkReferences(node, reader, document, errors);
   }

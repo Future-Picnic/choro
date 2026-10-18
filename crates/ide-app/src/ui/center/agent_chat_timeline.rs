@@ -181,6 +181,15 @@ impl CenterArea {
                 cx,
             );
         }
+        self.reconcile_ship_reveal(
+            agent,
+            &session,
+            &rows,
+            &display_order,
+            &list_state,
+            top_down,
+            cx,
+        );
         let search_bar = searchable
             .then(|| self.render_agent_chat_search(agent.id, cx))
             .flatten();

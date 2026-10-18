@@ -20,6 +20,54 @@ fn sample_project() -> Project {
 }
 
 #[test]
+fn ship_actions_are_durable_versioned_and_archived() {
+    use crate::ship_actions::{tests::watch, ShipActionsOrigin};
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+    let agent = sample_agent(&project);
+    store.save_agents(std::slice::from_ref(&agent)).unwrap();
+    let mut w = watch();
+    w.project_id = project.id;
+    w.runs.push(crate::ship_actions::tests::run(
+        1,
+        "completed",
+        Some("success"),
+    ));
+    w.origins.push(ShipActionsOrigin {
+        agent_id: agent.id,
+        ship_id: "ship-1".into(),
+        agent_title: agent.title.clone(),
+        created_at: 90,
+    });
+    store.save_ship_actions_watch(&w).unwrap();
+    let old = w.clone();
+    w.revision += 1;
+    w.acknowledged_revision = Some("seen".into());
+    store.save_ship_actions_watch(&w).unwrap();
+    store.save_ship_actions_watch(&old).unwrap();
+    assert_eq!(store.load_ship_actions_watches().unwrap(), vec![w.clone()]);
+    let archive = dir.path().join("export.zip");
+    store.export_workspace(&archive).unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let restored = LocalStore::open(target.path().to_path_buf()).unwrap();
+    restored.import_workspace_replace(&archive).unwrap();
+    assert_eq!(
+        restored.load_ship_actions_watches().unwrap(),
+        vec![w.clone()]
+    );
+    drop(store);
+    let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(reopened.load_ship_actions_watches().unwrap(), vec![w]);
+    config.projects.clear();
+    reopened.save_workspace_config(&config).unwrap();
+    assert!(reopened.load_ship_actions_watches().unwrap().is_empty());
+}
+
+#[test]
 fn studio_conversation_parent_and_artifacts_survive_ordinary_agent_snapshots() {
     let dir = tempfile::tempdir().unwrap();
     let store = LocalStore::open(dir.path().to_path_buf()).unwrap();

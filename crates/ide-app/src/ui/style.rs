@@ -2041,6 +2041,22 @@ pub fn header_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &App) ->
         )
 }
 
+/// A 24px focusable "open externally" action for dense list rows (for example
+/// one workflow run in a chat card). Give it a specific tooltip naming its target.
+pub fn row_link_icon_button(id: impl Into<ElementId>, cx: &App) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .compact()
+        .h(px(CHIP_H))
+        .w(px(CHIP_H))
+        .icon(
+            Icon::new(IconName::ExternalLink)
+                .size(crate::ui::design::icon_sm())
+                .text_color(crate::ui::design::t3(cx)),
+        )
+}
+
 /// Icon-only action in the left sidebar's header row and footer bar: a 28px
 /// ghost square, so several sit beside a text control at one height.
 pub fn sidebar_bar_icon_button(id: impl Into<ElementId>, icon: IconName, cx: &App) -> Button {

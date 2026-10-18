@@ -10,6 +10,7 @@ impl LocalStore {
         let mut zip = ZipWriter::new(file);
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let mut checksums = Vec::new();
+        write_zip_jsonl(&mut zip, options, "ship_actions.jsonl", &snapshot.ship_actions, &mut checksums)?;
         write_zip_jsonl(
             &mut zip,
             options,
@@ -342,6 +343,7 @@ impl LocalStore {
         let orbit_mutation_batches: Vec<OrbitMutationBatch> =
             read_zip_jsonl_optional(&mut zip, "orbit_mutation_batches.jsonl")?;
 
+        let ship_actions: Vec<crate::ship_actions::ShipActionsWatch> = read_zip_jsonl_optional(&mut zip, "ship_actions.jsonl")?;
         let data_root = self.app_data_dir();
         if data_root.exists() {
             anyhow::ensure!(!fs::symlink_metadata(&data_root)?.is_symlink(), "Import refuses a linked data root");
@@ -443,6 +445,7 @@ impl LocalStore {
                         insert_personal_task_async(conn, task).await?;
                     }
                     save_agents_async(conn, &agents).await?;
+                    for watch in &ship_actions { ship_actions::save_watch(conn, watch).await?; }
                     for record in &orbit_records {
                         conn.execute(
                             "INSERT INTO orbit_records
@@ -721,6 +724,7 @@ impl LocalStore {
                 orbit_records,
                 orbit_invocations: orbit::load_all_orbit_invocations_async(&conn).await?,
                 orbit_mutation_batches: orbit::load_all_orbit_mutation_batches_async(&conn).await?,
+                ship_actions: ship_actions::load_watches(&conn).await?,
             })
         })
     }
@@ -764,6 +768,7 @@ impl LocalStore {
 }
 
 pub(super) struct ExportSnapshot {
+    ship_actions: Vec<crate::ship_actions::ShipActionsWatch>,
     workspace: AppConfig,
     experts: Vec<crate::experts::ExpertProfile>,
     delegations: Vec<crate::delegation::DelegationRun>,

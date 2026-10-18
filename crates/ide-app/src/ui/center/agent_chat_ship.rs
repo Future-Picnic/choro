@@ -80,7 +80,11 @@ impl CenterArea {
         };
         let agent_id = agent.id;
         let task_done = agent.status == AgentStatus::Done;
-        crate::ui::style::chat_card(cx)
+        let track_actions =
+            self.render_ship_actions_track_button(agent, result, repo_path.is_some(), cx);
+        let actions_inline = self.render_ship_actions_inline(agent, result, cx);
+        let actions_card = self.render_ship_actions_card(agent, result, cx);
+        let ship_card = crate::ui::style::chat_card(cx)
             .relative()
             .child(crate::ui::onboarding::target_marker(
                 crate::ui::onboarding::SpotlightTarget::ShipResult,
@@ -130,6 +134,11 @@ impl CenterArea {
                             let branch = result.branch.clone();
                             let pr_number = tracked_pr.map(|pr| pr.number);
                             let pr_title = pr_title.clone();
+                            // This Ship's own watch (project, repository, PR),
+                            // never whichever branch the agent shipped last.
+                            let actions_watch = self
+                                .ship_actions_watch(agent_id, &result.id, cx)
+                                .map(|watch| (watch.id, watch.pr_number));
                             row.child(
                                 crate::ui::style::accent_button_compact(
                                     (
@@ -149,6 +158,7 @@ impl CenterArea {
                                         base_branch.clone(),
                                         pr_number,
                                         pr_title.clone(),
+                                        actions_watch,
                                         window,
                                         cx,
                                     );
@@ -156,19 +166,14 @@ impl CenterArea {
                             )
                         },
                     )
+                    .when_some(track_actions, |row, button| row.child(button))
                     .child(
-                        Button::new(("agent-chat-ship-mark-done", agent_id.as_u128() as u64))
-                            .xsmall()
-                            .compact()
-                            .h(crate::ui::design::control_h_xs())
-                            .px(crate::ui::design::split_primary_pad_x())
-                            .icon(
-                                gpui_component::Icon::new(IconName::Check)
-                                    .text_color(crate::ui::design::sage(cx)),
-                            )
-                            .label(if task_done { "Done" } else { "Mark done" })
-                            .custom(crate::ui::style::chat_card_action_variant(cx))
-                            .disabled(task_done)
+                        crate::ui::style::chat_card_done_button(
+                            ("agent-chat-ship-mark-done", agent_id.as_u128() as u64),
+                            if task_done { "Done" } else { "Mark done" },
+                            cx,
+                        )
+                        .disabled(task_done)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.agents.update(cx, |agents, cx| {
                                     agents.update_status(agent_id, AgentStatus::Done, cx);
@@ -324,14 +329,25 @@ impl CenterArea {
                         ),
                 )
             })
+            .when_some(actions_inline, |card, line| card.child(line))
             .when_some(
                 self.render_ship_task_actions(agent, result, cx),
                 |card, section| card.child(section),
-            )
-            .into_any_element()
+            );
+        // The Actions card belongs to this exact Ship, so it sits directly
+        // below it rather than at the end of the conversation.
+        match actions_card {
+            Some(actions) => v_flex()
+                .w_full()
+                .gap_2()
+                .child(ship_card)
+                .child(actions)
+                .into_any_element(),
+            None => ship_card.into_any_element(),
+        }
     }
 
-    fn ship_result_repository_path(
+    pub(in crate::ui::center) fn ship_result_repository_path(
         &self,
         agent: &AgentRecord,
         result: &crate::state::agent_chat::ShipResult,
@@ -412,6 +428,7 @@ impl CenterArea {
         base_branch: String,
         pr_number: Option<u64>,
         pr_title: Option<String>,
+        actions_watch: Option<(Uuid, u64)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -507,6 +524,26 @@ impl CenterArea {
                                 if cached.number == outcome.number {
                                     cached.state = "MERGED".into();
                                 }
+                            }
+                            // Check for the merge now instead of waiting out
+                            // the slower pre-merge polling interval.
+                            let merged = result.as_ref().ok().map(|outcome| outcome.number);
+                            if let Some(state) =
+                                super::agent_chat_ship_actions::ship_actions_state(cx)
+                            {
+                                state.update(cx, |state, cx| {
+                                    // Read current state: Stop may have been clicked
+                                    // while the merge request was in flight.
+                                    let active = actions_watch.is_some_and(|(id, _)| {
+                                        state.watches.get(&id)
+                                            .is_some_and(|watch| watch.automatically_polled())
+                                    });
+                                    if let Some(id) = super::ship_actions_model::watch_to_wake(
+                                        actions_watch, merged, active,
+                                    ) {
+                                        state.refresh(id, cx);
+                                    }
+                                });
                             }
                             cx.notify();
                         })

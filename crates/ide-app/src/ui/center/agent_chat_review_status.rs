@@ -156,10 +156,10 @@ pub(super) fn review_outcome(run: &ReviewRun, reviewer_active: bool) -> ReviewOu
             Some("Coverage is incomplete, so unreviewed code may still have problems.".into()),
         ),
         ReviewRunState::Partial if finished_available => (
-            "Finished",
+            "Incomplete",
             ReviewTone::Incomplete,
             Some(if run.files.iter().any(|file| file.status == ReviewFileStatus::Complete) {
-                "Reviewed all available changes. Some files or earlier edits were unavailable; the coverage gaps are listed below.".into()
+                "Some files or earlier edits could not be reviewed. Results cover only the available changes; the coverage gaps are listed below.".into()
             } else {
                 "The review finished, but no recorded changes were readable. The unavailable changes are listed below.".into()
             }),
@@ -447,17 +447,17 @@ id: format!("{path}:{status:?}"),
     }
 
     #[test]
-    fn finalized_available_changes_are_finished_even_with_missing_historical_edits() {
+    fn finalized_available_changes_remain_incomplete_with_missing_historical_edits() {
         let mut run = run_with(ReviewRunState::Partial,vec![
             file("a.rs",ReviewFileStatus::Complete),file("controller.rs",ReviewFileStatus::Complete),
             file("controller.rs",ReviewFileStatus::Skipped)]);
         run.finalized_by_reviewer = true;
         run.limitations.push("Missing earlier edit contents".into());
         let outcome = review_outcome(&run,false);
-        assert_eq!(outcome.state,"Finished");
+        assert_eq!(outcome.state,"Incomplete");
         assert_eq!(outcome.summary,"No findings in reviewed changes");
         assert_eq!(outcome.coverage,"Reviewed 1 of 2 files");
-        assert!(outcome.notice.unwrap().starts_with("Reviewed all available changes."));
+        assert!(outcome.notice.unwrap().starts_with("Some files or earlier edits could not be reviewed."));
         assert_ne!(outcome.tone,ReviewTone::Clean);
         run.files[1].status = ReviewFileStatus::Pending;
         assert_eq!(review_outcome(&run,false).state,"Partial", "Unread assigned pages must not look finished");

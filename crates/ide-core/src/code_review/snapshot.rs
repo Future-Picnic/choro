@@ -378,7 +378,12 @@ pub fn prepare_review(
         if let Some(index) = last_by_path.get(&e.key.path).copied() {
             let previous = &mut owned[index];
             if previous.key.agent_id == e.key.agent_id && previous.before.is_some() && previous.after.is_some()
-                && e.after.is_some() && previous.after == e.before {
+                && e.after.is_some() && previous.after == e.before
+                && (previous.after_hash.as_deref() == Some("missing")) == (e.before_hash.as_deref() == Some("missing"))
+                && recorded_content_matches(previous.before_hash.as_deref(), previous.before.as_deref().unwrap())
+                && recorded_content_matches(previous.after_hash.as_deref(), previous.after.as_deref().unwrap())
+                && recorded_content_matches(e.before_hash.as_deref(), e.before.as_deref().unwrap())
+                && recorded_content_matches(e.after_hash.as_deref(), e.after.as_deref().unwrap()) {
                 previous.after = e.after.clone();
                 previous.after_hash = e.after_hash.clone();
                 previous.captured_at = e.captured_at;
@@ -490,13 +495,8 @@ id: id.clone(),
                 Some("Mutation evidence exceeds 100 MiB")
             } else if before.unwrap().contains('\0') || after.unwrap().contains('\0') {
                 Some("Binary mutation")
-            } else if e
-                .before_hash
-                .as_ref()
-                .is_some_and(|h| h != &content_hash(before.unwrap().as_bytes()))
-                || e.after_hash
-                    .as_ref()
-                    .is_some_and(|h| h != &content_hash(after.unwrap().as_bytes()))
+            } else if !recorded_content_matches(e.before_hash.as_deref(), before.unwrap())
+                || !recorded_content_matches(e.after_hash.as_deref(), after.unwrap())
             {
                 Some("Mutation contents do not match recorded identity")
             } else {

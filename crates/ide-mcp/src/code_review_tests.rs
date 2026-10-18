@@ -80,6 +80,16 @@ fn call(ctx: &ServerContext, name: &str, args: Value) -> Value {
 }
 
 #[test]
+fn review_search_accepts_snapshot_cursors_and_rejects_invalid_ranges() {
+    let (_dir, ctx, _) = setup();
+    assert_eq!(call(&ctx, "review_search", json!({"query":"new","cursor":{"path":"test.rs","line":1}}))["isError"], false);
+    for cursor in [json!({"path":"../outside","line":1}), json!({"path":"test.rs","line":0}),
+        json!({"path":"test.rs","line":2}), json!({"path":"test.rs","line":1,"unexpected":true})] {
+        assert_eq!(call(&ctx, "review_search", json!({"query":"new","cursor":cursor}))["isError"], true);
+    }
+}
+
+#[test]
 fn review_listing_and_dispatch_expose_exactly_the_bound_four_tools() {
     let (_dir, mut ctx, run) = setup();
     let registry = ToolRegistry::default();

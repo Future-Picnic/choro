@@ -25,8 +25,12 @@ use crate::state::agent_chat::{
 };
 use crate::state::agent_navigation::AgentNavigationRuntime;
 use crate::state::delegation::{display, DelegationChanged, DelegationHandle};
+use crate::state::ship_actions::ShipActionsHandle;
 use crate::state::{AgentChatState, AgentRecords, Workspace};
+use crate::ui::center::ship_actions_model::{rank, CompanionActionsRow};
 use crate::ui::center::CenterArea;
+
+mod actions;
 use crate::ui::project_list::ProjectList;
 use crate::ui::settings::{ProcessInfo, ProjectSource, SettingsView};
 use crate::voice::{VoiceEvent, VoicePhase, VoiceState};
@@ -326,21 +330,33 @@ struct CompanionItem {
     reviewing: bool,
     created_at: u64,
     acknowledge_on_open: bool,
+    /// Present only for a Ship's GitHub Actions; its watch is the row identity.
+    actions: Option<CompanionActionsRow>,
 }
 
 impl CompanionItem {
     fn priority(&self) -> u8 {
-        // Live reviews and Bandmates outrank old Done notices. Human attention
-        // still comes first, even when the lead is idle between delegated turns.
-        if self.reviewing
-            || (self.assignment_id.is_some() && self.animation == CompanionAnimation::Working)
-        {
-            1
-        } else if self.animation == CompanionAnimation::NeedsAttention {
-            0
-        } else {
-            self.animation.priority() + 1
+        // Human attention first, then live agent work and reviews, then
+        // running Actions, then unread completions. An old Done notice must
+        // never outrank or hide work that is still happening.
+        if let Some(actions) = &self.actions {
+            return actions.rank;
         }
+        match self.animation {
+            CompanionAnimation::NeedsAttention => rank::ATTENTION,
+            CompanionAnimation::Working => rank::ACTIVE_AGENT,
+            _ if self.reviewing => rank::ACTIVE_AGENT,
+            CompanionAnimation::Done => rank::COMPLETION,
+            other => rank::COMPLETION + other.priority(),
+        }
+    }
+
+    fn row_id(&self) -> Uuid {
+        self.actions
+            .as_ref()
+            .map(|actions| actions.watch_id)
+            .or(self.assignment_id)
+            .unwrap_or(self.agent_id)
     }
 }
 
@@ -396,6 +412,18 @@ impl CompanionView {
         let _ = main_window.update(cx, move |_root, window, cx| {
             workspace.update(cx, |workspace, cx| workspace.set_active(project_id, cx));
             center.update(cx, |center, cx| center.open_agent(agent_id, window, cx));
+            window.activate_window();
+        });
+        cx.notify();
+    }
+
+    /// Opens the conversation at the exact Ship and clears only this watch's
+    /// notice. The conversation's own notices are left untouched.
+    fn open_actions_item(&mut self, watch_id: Uuid, cx: &mut Context<Self>) {
+        let center = self.center.clone();
+        cx.activate(true);
+        let _ = self.main_window.update(cx, move |_root, window, cx| {
+            center.update(cx, |center, cx| center.open_ship_actions(watch_id, window, cx));
             window.activate_window();
         });
         cx.notify();
@@ -995,7 +1023,16 @@ impl CompanionView {
                 reviewing: false,
                 created_at: attention.created_at,
                 acknowledge_on_open: true,
+                actions: None,
             });
+        }
+
+        // GitHub Actions run outside any agent turn and coexist with its rows.
+        if let Some(handle) = cx.try_global::<ShipActionsHandle>() {
+            items.extend(actions::actions_items(
+                handle.0.read(cx).watches.values(),
+                &project_names,
+            ));
         }
 
         items.sort_by(|a, b| {
@@ -1010,14 +1047,17 @@ impl CompanionView {
     fn render_item_row(&self, item: CompanionItem, cx: &mut Context<Self>) -> gpui::AnyElement {
         let project_id = item.project_id;
         let agent_id = item.agent_id;
-        let row_id = item.assignment_id.unwrap_or(agent_id);
+        let row_id = item.row_id();
         let acknowledge = item.acknowledge_on_open;
+        let actions = item.actions.clone();
+        let actions_watch = actions.as_ref().map(|actions| actions.watch_id);
         let title = SharedString::from(item.title);
         let status = SharedString::from(item.status);
         let project_name = SharedString::from(item.project_name);
-        let working = item.animation == CompanionAnimation::Working;
+        let working = actions.is_none() && item.animation == CompanionAnimation::Working;
         let reviewing = item.reviewing;
-        let needs_attention = item.animation == CompanionAnimation::NeedsAttention;
+        let needs_attention =
+            actions.is_none() && item.animation == CompanionAnimation::NeedsAttention;
         let attention_color = crate::ui::design::amber(cx);
         let tooltip = SharedString::from(format!("{title}\n{status} · {project_name}"));
 
@@ -1030,8 +1070,9 @@ impl CompanionView {
         .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
             cx.stop_propagation();
         })
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.open_item(project_id, agent_id, acknowledge, cx);
+        .on_click(cx.listener(move |this, _, _, cx| match actions_watch {
+            Some(watch_id) => this.open_actions_item(watch_id, cx),
+            None => this.open_item(project_id, agent_id, acknowledge, cx),
         }))
         .child(
             v_flex()
@@ -1079,6 +1120,9 @@ impl CompanionView {
                                     .text_color(attention_color),
                             )
                         })
+                        .when_some(actions.as_ref(), |row, actions| {
+                            row.child(actions::actions_status_glyph(actions, row_id, cx))
+                        })
                         .child(
                             div()
                                 .flex_none()
@@ -1086,6 +1130,9 @@ impl CompanionView {
                                     label.text_color(crate::ui::design::teal(cx))
                                 })
                                 .when(needs_attention, |label| label.text_color(attention_color))
+                                .when_some(actions.as_ref(), |label, actions| {
+                                    label.text_color(actions::actions_tone_color(actions.tone, cx))
+                                })
                                 .child(status),
                         )
                         .child(
@@ -1594,6 +1641,9 @@ pub(crate) fn view(
         .detach();
         cx.observe(&music, |_, _, cx| cx.notify()).detach();
         cx.observe(&center, |_, _, cx| cx.notify()).detach();
+        if let Some(watcher) = cx.try_global::<ShipActionsHandle>().map(|handle| handle.0.clone()) {
+            cx.observe(&watcher, |_, _, cx| cx.notify()).detach();
+        }
         cx.spawn(async move |this, cx| loop {
             let interval = match this.update(cx, |companion, _| {
                 let animation = companion.animation_handoff.current;
@@ -1774,6 +1824,7 @@ fn terminal_working_item(
         reviewing: false,
         created_at: agent.updated_at,
         acknowledge_on_open: false,
+        actions: None,
     })
 }
 
@@ -1818,6 +1869,7 @@ fn bandmate_activity_item(
         reviewing: false,
         created_at: updated_at,
         acknowledge_on_open: false,
+        actions: None,
     })
 }
 
@@ -1855,6 +1907,7 @@ fn chat_activity_item(
         reviewing: active_review.is_some(),
         created_at,
         acknowledge_on_open: false,
+        actions: None,
     })
 }
 
@@ -1956,7 +2009,7 @@ mod tests {
     use crate::notifications::AttentionCategory;
     use crate::state::agent_chat::{ChangedFilesSummary, FileChangeStat};
 
-    fn item(animation: CompanionAnimation) -> CompanionItem {
+    pub(super) fn item(animation: CompanionAnimation) -> CompanionItem {
         CompanionItem {
             project_id: ProjectId::new(),
             agent_id: Uuid::new_v4(),
@@ -1968,6 +2021,7 @@ mod tests {
             reviewing: false,
             created_at: 1,
             acknowledge_on_open: animation != CompanionAnimation::Working,
+            actions: None,
         }
     }
 

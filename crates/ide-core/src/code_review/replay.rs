@@ -77,15 +77,15 @@ pub(super) fn collapse_current_edits(evidence: Vec<MutationEvidence>, source: &B
                 let undo = (|| -> Result<String> {
                   if let Some((old, new)) = receipt.before.as_ref().zip(receipt.after.as_ref()) {
                     ensure!(new == &before, "Content chain has another writer or missing edit");
-                    ensure!(receipt.before_hash.as_ref().is_none_or(|hash| hash == &content_hash(old.as_bytes()))
-                        && receipt.after_hash.as_ref().is_none_or(|hash| hash == &content_hash(new.as_bytes())), "Content identity mismatch");
+                    ensure!(recorded_content_matches(receipt.before_hash.as_deref(), old)
+                        && recorded_content_matches(receipt.after_hash.as_deref(), new), "Content identity mismatch");
                     Ok(old.clone())
                 } else {
                     let patch = receipt.patch.as_ref().context("Missing receipt contents")?;
                     ensure!(patch.path == path, "Patch path mismatch");
-                    if let Some(hash) = &receipt.after_hash { ensure!(hash == &content_hash(before.as_bytes()), "After identity mismatch"); }
+                    ensure!(recorded_content_matches(receipt.after_hash.as_deref(), &before), "After identity mismatch");
                     let previous = reverse_patch(&before, patch)?;
-                    if let Some(hash) = &receipt.before_hash { ensure!(hash == &content_hash(previous.as_bytes()), "Before identity mismatch"); }
+                    ensure!(recorded_content_matches(receipt.before_hash.as_deref(), &previous), "Before identity mismatch");
                     Ok(previous)
                 }
                 })();

@@ -816,8 +816,17 @@ impl Render for AgentsPanel {
                 workspace.set_active(route.project_id, cx)
             });
             if let Some(center) = self.center.upgrade() {
-                center.update(cx, |center, cx| {
-                    center.open_agent(route.agent_id, window, cx)
+                // An Actions banner acknowledges only its watch, never the
+                // conversation's own notices.
+                center.update(cx, |center, cx| match route.ship_actions_id {
+                    Some(watch_id) => center.route_ship_actions_notification(
+                        watch_id,
+                        route.project_id,
+                        route.agent_id,
+                        window,
+                        cx,
+                    ),
+                    None => center.open_agent(route.agent_id, window, cx),
                 });
             }
         }

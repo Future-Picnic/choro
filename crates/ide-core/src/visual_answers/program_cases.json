@@ -1,0 +1,233 @@
+[
+  {
+    "name": "all rendered components with hoisted references",
+    "valid": true,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Answer([section, choices])\nsection = Section(\"Sample activity\", [table, trend, bars, metrics, note])\ntable = DataTable(\"stats\", [\"day\", \"a\"])\ntrend = TrendChart(\"stats\", \"day\", [\"a\"], \"Trend\")\nbars = CategoryChart(\"stats\", \"day\", [\"a\"], \"Categories\", true)\nmetrics = MetricGroup([Metric(\"Signups\", \"stats\", \"a\", \"last\", true), Metric(\"Other\", \"stats\", \"b\")])\nnote = Note(\"Sample data\", \"caution\")\nchoices = DesignOptions(\"section\", 720, 1024)",
+      "datasets": {
+        "stats": {
+          "columns": [
+            {
+              "key": "day",
+              "label": "Day",
+              "kind": "date"
+            },
+            {
+              "key": "a",
+              "label": "Signups",
+              "kind": "number"
+            },
+            {
+              "key": "b",
+              "label": "Other",
+              "kind": "number"
+            }
+          ],
+          "rows": [
+            {
+              "day": "2026-10-01",
+              "a": 10,
+              "b": 4
+            },
+            {
+              "day": "2026-10-02",
+              "a": 12,
+              "b": null
+            }
+          ],
+          "series": [
+            "a"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "label": "Fictional sample data"
+        }
+      ],
+      "options": [
+        {
+          "id": "a",
+          "title": "A",
+          "description": "First style",
+          "html": "<button>A</button>"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "description": "Second style",
+          "html": "<button>B</button>"
+        }
+      ],
+      "actions": []
+    }
+  },
+  {
+    "name": "minimal design comparison",
+    "valid": true,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "design_options",
+      "openui_lang": "root = Answer([choices])\nchoices = DesignOptions()",
+      "datasets": {},
+      "sources": [],
+      "options": [
+        {
+          "id": "a",
+          "title": "A",
+          "description": "First style",
+          "html": "<button>A</button>"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "description": "Second style",
+          "html": "<button>B</button>"
+        }
+      ],
+      "actions": []
+    }
+  },
+  {
+    "name": "component-like text inside an escaped string is just text",
+    "valid": true,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Answer([Note(\"Text(\\\"not code\\\") — café\")])",
+      "datasets": {},
+      "sources": [],
+      "options": [],
+      "actions": []
+    }
+  },
+  {
+    "name": "unsupported Text from the reported screenshot",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "design_options",
+      "openui_lang": "root = Text(\"Four alternatives\")",
+      "datasets": {},
+      "sources": [],
+      "options": [
+        {
+          "id": "a",
+          "title": "A",
+          "description": "First style",
+          "html": "<button>A</button>"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "description": "Second style",
+          "html": "<button>B</button>"
+        }
+      ],
+      "actions": []
+    }
+  },
+  {
+    "name": "unsupported TextContent",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Answer([TextContent(\"Four alternatives\")])",
+      "datasets": {},
+      "sources": [],
+      "options": [],
+      "actions": []
+    }
+  },
+  {
+    "name": "root must be Answer",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Note(\"Four alternatives\")",
+      "datasets": {},
+      "sources": [],
+      "options": [],
+      "actions": []
+    }
+  },
+  {
+    "name": "designs must actually appear in the program",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "design_options",
+      "openui_lang": "root = Answer([Note(\"Four alternatives\")])",
+      "datasets": {},
+      "sources": [],
+      "options": [
+        {
+          "id": "a",
+          "title": "A",
+          "description": "First style",
+          "html": "<button>A</button>"
+        },
+        {
+          "id": "b",
+          "title": "B",
+          "description": "Second style",
+          "html": "<button>B</button>"
+        }
+      ],
+      "actions": []
+    }
+  },
+  {
+    "name": "undefined program reference",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Answer([missing])",
+      "datasets": {},
+      "sources": [],
+      "options": [],
+      "actions": []
+    }
+  },
+  {
+    "name": "unused program statement",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Answer([])\nunused = Note(\"Orphan\")",
+      "datasets": {},
+      "sources": [],
+      "options": [],
+      "actions": []
+    }
+  },
+  {
+    "name": "unfinished program",
+    "valid": false,
+    "document": {
+      "title": "Sample comparison",
+      "summary": "Explicit sample data",
+      "kind": "summary",
+      "openui_lang": "root = Answer([Note(\"Missing bracket\")",
+      "datasets": {},
+      "sources": [],
+      "options": [],
+      "actions": []
+    }
+  }
+]

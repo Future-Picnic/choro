@@ -23,7 +23,7 @@ impl Tool for VisualPresentTool {
         "Present visual answer"
     }
     fn description(&self) -> &'static str {
-        "Publish or revise an OpenUI Visual answer in this agent's conversation. Informational tables, charts and summaries render in the conversation; only explicit choices in document.options attach to the composer. Local search, sorting and optional follow-up actions do not require a composer panel. Keep a short explanation in chat. Supply real data from your existing tools, source labels, units and time range; clearly label sample data. Use null for missing values. Reuse operation_key only for an identical retry; update with id and expected_revision from visual_read. This does not open, reload, register or replace project Preview and does not wait for a user response. The host decides when the answer may open. Never include credentials, executable queries, mutations or live network access."
+        "Publish or revise an interactive Visual answer in this agent's conversation. Use this as the default for requests to show or compare UI design variations (buttons, badges, sidebars, hero sections, layouts or pages); the user need not name this tool or say Visual answers. Deliver selectable HTML/CSS options here rather than substituting a prose list, generated image or HTML attachment, unless the user explicitly requests another format. Informational tables, charts and summaries render in the conversation; only explicit choices in document.options attach to the composer. For choices use openui_lang: root = Answer([choices]) followed by a newline and choices = DesignOptions(). Text and TextContent are not supported; use Note inside Answer for text. Correct validation errors and retry before claiming the visual was presented. Local search, sorting and optional follow-up actions do not require a composer panel. Keep a short explanation in chat. Supply real data, sources, units and time range; clearly label sample data and use null for missing values. Reuse operation_key only for identical retries; revise with id and expected_revision from visual_read. This does not replace Preview or wait for user input. Never include credentials, executable queries, mutations or live network access."
     }
     fn input_schema(&self) -> Value {
         json!({
@@ -40,7 +40,7 @@ impl Tool for VisualPresentTool {
                         "title":{"type":"string","minLength":1,"maxLength":200},
                         "summary":{"type":"string","minLength":1,"maxLength":8192},
                         "kind":{"enum":["table","line_chart","bar_chart","summary","design_options"]},
-                        "openui_lang":{"type":"string","minLength":1,"maxLength":2097152},
+                        "openui_lang":{"type":"string","minLength":1,"maxLength":2097152,"description":"OpenUI Lang, not HTML or Markdown. Required root: Answer([...]). For design choices use root = Answer([choices]) then a newline and choices = DesignOptions(). Actual design HTML belongs in options[].html. Supported components: Answer, Section, Note, DataTable, TrendChart, CategoryChart, MetricGroup, Metric, DesignOptions. Text and TextContent are unsupported.","examples":["root = Answer([choices])\nchoices = DesignOptions()"]},
                         "datasets":{"type":"object","maxProperties":16,"propertyNames":{"$ref":"#/$defs/identifier"},"additionalProperties":{"$ref":"#/$defs/dataset"}},
                         "sources":{"type":"array","maxItems":32,"items":{"$ref":"#/$defs/source"}},
                         "options":{"type":"array","maxItems":4,"items":{"$ref":"#/$defs/option"}},
@@ -153,7 +153,38 @@ mod tests {
         )
     }
     fn payload() -> Value {
-        json!({"operation_key":"sample-table","document":{"title":"Sample projects","summary":"One explicitly labeled sample project.","kind":"table","openui_lang":"root = TextContent(\"Sample projects\")","datasets":{"projects":{"columns":[{"key":"name","label":"Project","kind":"text"}],"rows":[{"name":"Choro"}]}},"sources":[{"label":"Sample data"}]}})
+        json!({"operation_key":"sample-table","document":{"title":"Sample projects","summary":"One explicitly labeled sample project.","kind":"table","openui_lang":"root = Answer([projects])\nprojects = DataTable(\"projects\")","datasets":{"projects":{"columns":[{"key":"name","label":"Project","kind":"text"}],"rows":[{"name":"Choro"}]}},"sources":[{"label":"Sample data"}]}})
+    }
+    #[test]
+    fn invalid_programs_do_not_publish_or_replace_an_answer_and_allow_corrected_retries() {
+        let (_dir, ctx, _) = fixture();
+        let store = ctx.store().unwrap();
+        let project = ctx.project_id.unwrap();
+        let agent = ctx.agent_id.unwrap();
+        let mut invalid = payload();
+        invalid["document"]["openui_lang"] = json!("root = Text(\"Four options\")");
+        let error = VisualPresentTool.call(&ctx, &invalid).unwrap_err().to_string();
+        assert!(error.contains("Unknown component Text"));
+        assert!(error.contains("choices = DesignOptions()"));
+        assert!(store.visual_answer_heads(project, agent).unwrap().is_empty());
+
+        // Rejection reserves no operation key; the corrected same request can publish.
+        let result = VisualPresentTool.call(&ctx, &payload()).unwrap();
+        let published: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        let id = uuid::Uuid::parse_str(published["id"].as_str().unwrap()).unwrap();
+        let before = store.read_visual_answer(project, agent, id, None).unwrap();
+        let mut revision = payload();
+        revision["operation_key"] = json!("revise");
+        revision["id"] = json!(id);
+        revision["expected_revision"] = json!(1);
+        revision["document"]["openui_lang"] = json!("root = Answer([missing])");
+        assert!(VisualPresentTool.call(&ctx, &revision).is_err());
+        assert_eq!(store.read_visual_answer(project, agent, id, None).unwrap(), before);
+
+        revision["document"]["openui_lang"] = payload()["document"]["openui_lang"].clone();
+        let result = VisualPresentTool.call(&ctx, &revision).unwrap();
+        let revised: Value = serde_json::from_str(result[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(revised["revision"], 2);
     }
     #[test]
     fn tools_round_trip_and_enforce_conversation_scope_without_touching_preview() {

@@ -477,6 +477,8 @@ struct GithubRepoMergeSettings {
 struct GithubMergeResponse {
     merged: bool,
     #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
     message: Option<String>,
 }
 
@@ -541,6 +543,7 @@ pub(crate) struct MergePullRequestOutcome {
     pub(crate) number: u64,
     pub(crate) branch: String,
     pub(crate) base_branch: String,
+    pub(crate) merge_sha: Option<String>,
     head_sha: String,
     repository: String,
     github_branch_deleted: bool,
@@ -799,6 +802,7 @@ pub(crate) fn merge_pull_request_with_gh(
     }
 
     Ok(MergePullRequestOutcome {
+        merge_sha: response.sha,
         head_sha: head_oid.to_string(),
         repository: name_with_owner,
         github_branch_deleted: false,
@@ -964,6 +968,7 @@ mod merge_tests {
             number: 42,
             branch: "feature/old-data".into(),
             base_branch: "main".into(),
+            merge_sha: Some("merged456".into()),
             head_sha: "abc123".into(),
             repository: "owner/app".into(),
             github_branch_deleted: false,

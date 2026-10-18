@@ -627,7 +627,7 @@ id: path.into(),
     }
 
     #[gpui::test]
-    fn finished_review_keeps_fixes_and_names_missing_edits_without_expanding_details(cx: &mut gpui::TestAppContext) {
+    fn incomplete_review_keeps_fixes_and_names_missing_edits_without_expanding_details(cx: &mut gpui::TestAppContext) {
         let mut current = run(ReviewRunState::Partial,ReviewFreshness::Current,true);
         current.finalized_by_reviewer = true;
         current.limitations = vec!["Missing earlier edit contents".into()];
@@ -635,7 +635,7 @@ id: path.into(),
         current.files[1].path = "crates/ide-app/src/state/agent_chat/review_controller.rs".into();
         current.files[1].skip_reason = Some("Confirmed mutation lacks inspectable before/after contents".into());
         let (cx,_,fixes) = render(cx,current,false);
-        assert!(cx.debug_bounds("review-state-Finished").is_some());
+        assert!(cx.debug_bounds("review-state-Incomplete").is_some());
         assert!(cx.debug_bounds("review-summary-1 finding").is_some());
         assert!(cx.debug_bounds("review-unavailable").is_some());
         assert!(cx.debug_bounds("review-unreviewed").is_none());

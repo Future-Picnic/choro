@@ -23,6 +23,7 @@ pub mod project;
 pub mod redaction;
 pub mod search;
 pub mod services;
+pub mod ship_actions;
 pub mod studio;
 pub mod task_tracker;
 pub mod visual_review;

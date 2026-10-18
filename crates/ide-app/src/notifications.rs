@@ -82,6 +82,7 @@ pub struct VisibleConversation {
 pub struct NotificationRoute {
     pub project_id: ProjectId,
     pub agent_id: Uuid,
+    pub ship_actions_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,6 +193,10 @@ struct NotificationCoordinator {
     /// attention poll observes them. Consuming an exact revision avoids
     /// suppressing the agent's next real response.
     suppressed_revisions: HashSet<(AttentionKey, String)>,
+    /// An external Actions route is not an acknowledgment of the coding turn.
+    /// Protect only existing revisions; later responses still follow ordinary
+    /// visible-conversation behavior.
+    preserved_visible_revisions: HashSet<(AttentionKey, String)>,
     primed: bool,
 }
 
@@ -218,6 +223,8 @@ impl NotificationCoordinator {
         let mut actions = Vec::new();
         let mut companion_sound: Option<CompanionSound> = None;
         let current_keys: HashSet<_> = events.iter().map(|event| event.key.clone()).collect();
+        let current_revisions: HashSet<_> = events.iter().map(|event|(event.key.clone(),event.revision.clone())).collect();
+        self.preserved_visible_revisions.retain(|revision|current_revisions.contains(revision));
 
         let stale_keys: Vec<_> = self
             .attention
@@ -239,7 +246,7 @@ impl NotificationCoordinator {
                     .map_or(true, |state| state.event.revision != event.revision);
             let suppressed_revision = (event.key.clone(), event.revision.clone());
             let suppressed = self.suppressed_revisions.remove(&suppressed_revision);
-            let exact_agent_visible = app_active
+            let exact_agent_visible = !self.preserved_visible_revisions.contains(&suppressed_revision) && app_active
                 && visible.is_some_and(|visible| {
                     visible.project_id == event.project_id() && visible.agent_id == event.agent_id()
                 });
@@ -364,6 +371,7 @@ impl NotificationCoordinator {
         agent_id: Uuid,
     ) -> Vec<NotificationAction> {
         let mut actions = Vec::new();
+        self.preserved_visible_revisions.retain(|(key,_)|key.project_id!=project_id || key.agent_id!=agent_id);
         for state in self.attention.values_mut().filter(|state| {
             state.event.project_id() == project_id && state.event.agent_id() == agent_id
         }) {
@@ -373,6 +381,15 @@ impl NotificationCoordinator {
             actions.extend(state.remove_platform_banner());
         }
         actions
+    }
+
+    fn preserve_agent_attention_for_actions(&mut self, project_id: ProjectId, agent_id: Uuid) {
+        self.preserved_visible_revisions.extend(
+            self.attention
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id && key.agent_id == agent_id)
+                .map(|(key, state)| (key.clone(), state.event.revision.clone())),
+        );
     }
 
     fn unread_agent_count(&self) -> usize {
@@ -437,6 +454,15 @@ fn notification_copy(event: &AttentionEvent) -> (String, String) {
 }
 
 fn parse_notification_route(identifier: &str) -> Option<NotificationRoute> {
+    if let Some(rest) = identifier.strip_prefix("choro-actions:") {
+        let parts: Vec<_> = rest.split(':').collect();
+        if parts.len() != 3 { return None; }
+        return Some(NotificationRoute {
+            project_id: ProjectId(Uuid::parse_str(parts[0]).ok()?),
+            agent_id: Uuid::parse_str(parts[1]).ok()?,
+            ship_actions_id: Some(Uuid::parse_str(parts[2]).ok()?),
+        });
+    }
     let mut parts = identifier.split(':');
     if parts.next()? != "choro" {
         return None;
@@ -450,11 +476,75 @@ fn parse_notification_route(identifier: &str) -> Option<NotificationRoute> {
     Some(NotificationRoute {
         project_id,
         agent_id,
+        ship_actions_id: None,
     })
 }
 
 pub fn initialize() {
     platform::initialize();
+}
+
+/// Actions have their own durable acknowledgment; never enter the coding-turn
+/// coordinator, whose per-agent visibility rules would clear unrelated notices.
+pub(crate) fn deliver_ship_actions_notice(
+    watch: &ide_core::ship_actions::ShipActionsWatch,
+    preferences: NotificationSettings,
+    companion_enabled: bool,
+) {
+    use ide_core::ship_actions::ActionsOutcome;
+    let attention = matches!(
+        watch.outcome(),
+        ActionsOutcome::Failed | ActionsOutcome::Approval
+    );
+    let enabled = if attention {
+        preferences.questions_and_approvals
+    } else {
+        preferences.completion != CompletionNotifications::Never
+    };
+    if !enabled {
+        return;
+    }
+    if companion_enabled {
+        if preferences.sound {
+            play_companion_sound(if attention {
+                CompanionSound::NeedsAttention
+            } else {
+                CompanionSound::Done
+            });
+        }
+        return;
+    }
+    if !attention
+        && preferences.completion == CompletionNotifications::Background
+        && platform::is_app_active()
+    {
+        return;
+    }
+    let Some(origin) = watch.latest_origin() else {
+        return;
+    };
+    let identifier = format!(
+        "choro-actions:{}:{}:{}",
+        watch.project_id.0, origin.agent_id, watch.id
+    );
+    platform::deliver(
+        &identifier,
+        watch.outcome().label(),
+        &format!(
+            "{} · PR #{} · {}",
+            watch.project_name, watch.pr_number, origin.agent_title
+        ),
+        preferences.sound,
+    );
+}
+
+pub(crate) fn remove_ship_actions_notice(watch: &ide_core::ship_actions::ShipActionsWatch) {
+    for origin in &watch.origins {
+        platform::remove(&format!(
+            "choro-actions:{}:{}:{}",
+            watch.project_id.0, origin.agent_id, watch.id
+        ));
+    }
 }
 
 pub fn synchronize(
@@ -484,6 +574,13 @@ pub fn acknowledge_agent(project_id: ProjectId, agent_id: Uuid) {
         .acknowledge_agent(project_id, agent_id);
     execute_actions(actions);
     update_dock_badge();
+}
+
+pub(crate) fn preserve_agent_attention_for_actions(project_id: ProjectId, agent_id: Uuid) {
+    coordinator()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .preserve_agent_attention_for_actions(project_id, agent_id);
 }
 
 pub fn suppress_agent_attention_revision(
@@ -1324,6 +1421,59 @@ mod tests {
     }
 
     #[test]
+    fn actions_navigation_preserves_existing_coding_attention_only() {
+        let project_id = ProjectId(Uuid::nil());
+        let agent_id = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+        coordinator.synchronize(
+            vec![event(agent_id, AttentionCategory::Completed, "coding-1")],
+            None,
+            false,
+            background_preferences(),
+        );
+        assert_eq!(coordinator.unread_agent_count(), 1);
+        coordinator.preserve_agent_attention_for_actions(project_id, agent_id);
+        let visible = Some(VisibleConversation {
+            project_id,
+            agent_id,
+        });
+        coordinator.synchronize(
+            vec![event(agent_id, AttentionCategory::Completed, "coding-1")],
+            visible,
+            true,
+            background_preferences(),
+        );
+        assert_eq!(coordinator.unread_agent_count(), 1);
+        coordinator.synchronize(
+            vec![event(agent_id, AttentionCategory::Completed, "coding-2")],
+            visible,
+            true,
+            background_preferences(),
+        );
+        assert_eq!(coordinator.unread_agent_count(), 0);
+        assert!(coordinator.preserved_visible_revisions.is_empty());
+    }
+
+    #[test]
+    fn normal_agent_open_clears_actions_visibility_protection() {
+        let project_id = ProjectId(Uuid::nil());
+        let agent_id = Uuid::new_v4();
+        let mut coordinator = NotificationCoordinator::default();
+        coordinator.synchronize(vec![], None, false, background_preferences());
+        coordinator.synchronize(
+            vec![event(agent_id, AttentionCategory::Completed, "coding-1")],
+            None,
+            false,
+            background_preferences(),
+        );
+        coordinator.preserve_agent_attention_for_actions(project_id, agent_id);
+        coordinator.acknowledge_agent(project_id, agent_id);
+        assert!(coordinator.preserved_visible_revisions.is_empty());
+        assert_eq!(coordinator.unread_agent_count(), 0);
+    }
+
+    #[test]
     fn visible_conversation_is_hidden_until_its_attention_revision_changes() {
         let project_id = ProjectId(Uuid::nil());
         let agent_id = Uuid::new_v4();
@@ -1697,6 +1847,25 @@ mod tests {
     }
 
     #[test]
+    fn actions_route_is_separate_and_round_trips_exact_watch() {
+        let project = ProjectId(Uuid::new_v4());
+        let agent = Uuid::new_v4();
+        let watch = Uuid::new_v4();
+        let route =
+            parse_notification_route(&format!("choro-actions:{}:{}:{}", project.0, agent, watch))
+                .unwrap();
+        assert_eq!(route.project_id, project);
+        assert_eq!(route.agent_id, agent);
+        assert_eq!(route.ship_actions_id, Some(watch));
+        assert!(parse_notification_route(&format!(
+            "choro-actions:{}:{}:{}:extra",
+            project.0, agent, watch
+        ))
+        .is_none());
+        assert!(parse_notification_route("choro-actions:bad:bad:bad").is_none());
+    }
+
+    #[test]
     fn route_identifier_round_trips_project_and_agent() {
         let project = ProjectId(Uuid::new_v4());
         let agent = Uuid::new_v4();
@@ -1714,6 +1883,7 @@ mod tests {
             Some(NotificationRoute {
                 project_id: project,
                 agent_id: agent,
+                ship_actions_id: None,
             })
         );
     }

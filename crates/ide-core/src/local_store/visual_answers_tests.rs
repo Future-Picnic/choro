@@ -41,7 +41,7 @@ fn input(key: &str) -> VisualPresentInput {
             title: "Button directions".into(),
             summary: "Two sample button styles.".into(),
             kind: VisualKind::DesignOptions,
-            openui_lang: "root = TextContent(\"Choose a style\")".into(),
+            openui_lang: "root = Answer([choices])\nchoices = DesignOptions()".into(),
             datasets: Default::default(),
             sources: vec![],
             options: ["outline", "tonal"]

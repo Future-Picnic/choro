@@ -17,9 +17,31 @@ async fn inspect() -> Result<()> {
     let replay = flag.as_deref() == Some("--replay");
     let export = flag.as_deref() == Some("--export-run");
     let artifacts = flag.as_deref() == Some("--artifacts");
-    anyhow::ensure!(flag.is_none() || replay || export || artifacts, "Only --replay, --export-run or --artifacts is supported");
+    let identities = flag.as_deref() == Some("--identities");
+    anyhow::ensure!(flag.is_none() || replay || export || artifacts || identities, "Only --replay, --export-run, --artifacts or --identities is supported");
     let database = turso::Builder::new_local(&database).read_only(true).build().await?;
     let connection = database.connect()?;
+    if identities {
+        let mut rows = connection.query(
+            "SELECT payload FROM mutation_evidence WHERE agent_id=?1 ORDER BY sequence LIMIT 8193",
+            [parent.as_str()],
+        ).await?;
+        while let Some(row) = rows.next().await? {
+            let evidence: ide_core::agent_changes::MutationEvidence = serde_json::from_str(&row.get::<String>(0)?)?;
+            for (side, hash, contents) in [
+                ("before", &evidence.before_hash, &evidence.before),
+                ("after", &evidence.after_hash, &evidence.after),
+            ] {
+                if let (Some(hash), Some(contents)) = (hash, contents) {
+                    if hash != &ide_core::code_review::content_hash(contents.as_bytes()) {
+                        println!("{}", json!({"path":evidence.key.path,"side":side,
+                            "identity":hash,"content_bytes":contents.len()}));
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
     if artifacts {
         let mut rows = connection.query(
             "SELECT kind,payload_json FROM chat_timeline_events WHERE agent_id=?1 AND kind IN ('changed_files','proposed_plan') ORDER BY sequence",

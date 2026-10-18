@@ -31,8 +31,8 @@ use crate::task_tracker::{
     TaskTrackerConnection,
 };
 
-const STORE_SCHEMA_VERSION: u32 = 42;
-const EXPORT_FORMAT_VERSION: u32 = 9;
+const STORE_SCHEMA_VERSION: u32 = 43;
+const EXPORT_FORMAT_VERSION: u32 = 10;
 const DIFF_SNAPSHOT_MAX_LINES_PER_FILE: usize = 2_000;
 const PROJECT_REFERENCE_PREVIEW_MAX_SIZE: u32 = 1200;
 
@@ -797,6 +797,7 @@ mod remote;
 pub use remote::RemoteReceipt;
 mod references;
 mod schema;
+mod ship_actions;
 mod support;
 mod tasks;
 

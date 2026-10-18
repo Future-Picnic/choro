@@ -59,7 +59,7 @@ pub fn review_context(run: &ReviewRun, input: &ReviewInput, section: &str, page:
         return Ok(json!({"section":section,"page":page,"total_pages":pages.len(),"entries":pages[page]}));
     }
     ensure!(page == 0, "Overview has only page zero");
-    let files: Vec<_> = run.files.iter().map(|f| json!({"id":f.id,"path":f.path,
+    let files: Vec<_> = run.files.iter().map(|f| json!({"id":f.id,"path":f.path,"author_id":f.author_id,
         "change_kind":f.change_kind,"status":f.status,"diff_pages":f.diff_pages,
         "consumed_pages":f.consumed_pages,"skip_reason":f.skip_reason})).collect();
     let recent_decisions: Vec<_> = input.requirements.decisions.iter().enumerate()
@@ -72,6 +72,7 @@ pub fn review_context(run: &ReviewRun, input: &ReviewInput, section: &str, page:
             "preview":check.description.chars().take(500).collect::<String>(),
             "provenance":check.provenance,"limitation":check.limitation})).collect();
     Ok(json!({"version":REVIEW_VERSION,"run_id":run.id,"snapshot_id":run.snapshot_id,
+        "contributor_ids":run.contributor_ids,
         "deadline_at":run.deadline_at,"seconds_remaining":run.deadline_at.saturating_sub(review_now()),
         "requirements":{"user_requirements":input.requirements.user_requirements,
             "project_rules":input.requirements.project_rules,"supplementary_guidance":input.requirements.supplementary_guidance},

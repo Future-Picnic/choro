@@ -313,6 +313,26 @@ mod tests {
             let (before, mut after, path, requirement) = acceptance_change();
             fs::create_dir_all(root.join(&path).parent().unwrap()).unwrap();
             fs::write(root.join(&path), &after).unwrap();
+            if std::env::var("CHORO_REVIEW_CHECK_CASE").as_deref() == Ok("integration") {
+                // The defect is in a changed control, but its trigger is in
+                // unchanged lifecycle code that only Source/search can expose.
+                fs::write(root.join("model.rs"), r#"
+#[derive(PartialEq)]
+pub enum TrackingStatus { Running, Failed, Paused, Stopped, RefreshError }
+#[derive(PartialEq)]
+pub enum Conclusion { Success, Failure }
+pub struct Card { pub status: TrackingStatus, pub conclusion: Option<Conclusion> }
+impl Card {
+    pub fn pause(&mut self) { self.status = TrackingStatus::Paused; }
+    pub fn stop(&mut self) { self.status = TrackingStatus::Stopped; }
+    pub fn refresh_failed(&mut self) { self.status = TrackingStatus::RefreshError; }
+    pub fn completed(&mut self, conclusion: Conclusion) {
+        self.status = if conclusion == Conclusion::Failure { TrackingStatus::Failed } else { TrackingStatus::Stopped };
+        self.conclusion = Some(conclusion);
+    }
+}
+"#).unwrap();
+            }
             let store = LocalStore::open(base.join("store")).unwrap();
             let model = if provider != AgentKind::OpenCode {
                 std::env::var("CHORO_REVIEW_CHECK_MODEL").ok().map(|wanted| {
@@ -463,6 +483,11 @@ mod tests {
     fn acceptance_change() -> (String, String, String, String) {
         let case = std::env::var("CHORO_REVIEW_CHECK_CASE").unwrap_or_default();
         let (commit, path, requirement) = match case.as_str() {
+            "integration" => return (
+                "use crate::model::{Card, Conclusion, TrackingStatus};\npub fn show_investigate(card: &Card) -> bool {\n    card.conclusion == Some(Conclusion::Failure)\n}\n".into(),
+                "use crate::model::{Card, Conclusion, TrackingStatus};\npub fn show_investigate(card: &Card) -> bool {\n    card.status == TrackingStatus::Failed && card.conclusion == Some(Conclusion::Failure)\n}\n".into(),
+                "controls.rs".into(),
+                "Keep completed workflow failures available for investigation throughout the tracking lifecycle.".into()),
             "tutorials" => ("fdfb03a", "crates/ide-app/src/ui/root_view/chrome.rs", "Refactor Help menus while preserving the Tutorials destination: both menu variants must open Choro's YouTube tutorials at https://www.youtube.com/@chorodev."),
             "test-gating" => ("41a3627", "crates/ide-app/src/ui/center/studio_sections_sidebar.rs", "Refactor Studio sidebar tests while keeping cargo test --locked -p ide-app buildable with default features. GPUI fixtures and tests requiring TestAppContext must remain gated behind ui-layout-tests; that feature enables gpui/test-support."),
             _ => return ("pub fn percent(done: u32, total: u32) -> u32 {\n    if total == 0 { return 0; }\n    100 * done / total\n}\n".into(), "pub fn percent(done: u32, total: u32) -> u32 {\n    100 * done / total\n}\n".into(), "progress.rs".into(), "Simplify the progress calculation while preserving behavior: percent must return zero when total is zero.".into()),

@@ -637,6 +637,13 @@ pub(super) async fn run_migrations(conn: &Connection) -> Result<()> {
             Ok(())
         })).await?;
     }
+    if current < 43 {
+        execute_transaction(conn, |conn| Box::pin(async move {
+            super::ship_actions::ensure_schema(conn).await?;
+            record_schema_version(conn, 43).await?;
+            Ok(())
+        })).await?;
+    }
     Ok(())
 }
 
