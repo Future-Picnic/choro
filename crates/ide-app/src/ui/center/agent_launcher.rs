@@ -98,13 +98,40 @@ impl CenterArea {
     }
 
     pub fn open_agent(&mut self, agent_id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_agent_with_acknowledgment(agent_id, true, window, cx);
+    }
+
+    /// Opens a conversation for an external route (GitHub Actions) whose own
+    /// acknowledgment is separate. The conversation's notices stay unread.
+    pub(crate) fn open_agent_without_acknowledgment(
+        &mut self,
+        agent_id: Uuid,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Becoming the visible conversation must not auto-clear its coding notice.
+        if let Some((project, _)) = self.active_project(cx) {
+            crate::notifications::preserve_agent_attention_for_actions(project, agent_id);
+        }
+        self.open_agent_with_acknowledgment(agent_id, false, window, cx);
+    }
+
+    fn open_agent_with_acknowledgment(
+        &mut self,
+        agent_id: Uuid,
+        acknowledge: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some((project, _)) = self.active_project(cx) else {
             return;
         };
         self.stash_new_agent_composer();
         self.agents
             .update(cx, |agents, cx| agents.select(project, agent_id, cx));
-        crate::notifications::acknowledge_agent(project, agent_id);
+        if acknowledge {
+            crate::notifications::acknowledge_agent(project, agent_id);
+        }
         self.agent_detail_tabs
             .insert(agent_id, AgentDetailTab::Terminal);
         // Opening an agent is a content selection. Keep the user's current
@@ -133,7 +160,7 @@ impl CenterArea {
                             .or_else(|| agent.cli_session_id.clone())
                     })
             });
-            if let Some(session_id) = opened_chat_session_id {
+            if let Some(session_id) = opened_chat_session_id.filter(|_| acknowledge) {
                 self.terminals.update(cx, |manager, cx| {
                     manager.acknowledge_attention(&session_id, cx)
                 });

@@ -13,6 +13,7 @@ pub mod open_code;
 pub mod orbit;
 pub mod quick_ask;
 pub mod services;
+pub(crate) mod ship_actions;
 pub(crate) mod sidebar;
 pub(crate) mod subscription_usage;
 mod snapshot_writer;

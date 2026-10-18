@@ -219,48 +219,70 @@ pub fn review_source(
         serde_json::json!({"path":path,"file_id":file_id,"side":side,"content_hash":hash,"start":start,"end":end,"total_lines":total_lines,"recorded_patch_lines":recorded_patch,"text":numbered,"excerpt":excerpt}),
     )
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewSearchCursor {
+    pub path: PathBuf,
+    /// The next one-based line to inspect in this frozen source file.
+    pub line: u32,
+}
+
 pub fn review_search(
     run: &mut ReviewRun,
     input: &ReviewInput,
     storage: &Path,
     query: &str,
     prefix: Option<&Path>,
+    cursor: Option<&ReviewSearchCursor>,
 ) -> Result<serde_json::Value> {
     validate_input(run, input)?;
     ensure!(
         !query.trim().is_empty() && query.len() <= 256,
         "Search must be 1–256 characters"
     );
+    if let Some(cursor) = cursor {
+        ensure!(cursor.line > 0 && input.source.contains_key(&cursor.path)
+            && prefix.is_none_or(|prefix| cursor.path.starts_with(prefix)), "Invalid search cursor");
+    }
     let mut matches = vec![];
     let mut scanned = 0;
-    let mut limited = false;
-    for (path, hash) in &input.source {
-        if prefix.is_some_and(|prefix| !path.starts_with(prefix)) {
-            continue;
-        }
+    let mut next_cursor = None;
+    let mut sources = input.source.iter().filter(|(path, _)| {
+        prefix.is_none_or(|prefix| path.starts_with(prefix))
+            && cursor.is_none_or(|cursor| *path >= &cursor.path)
+    }).peekable();
+    while let Some((path, hash)) = sources.next() {
         if scanned >= 200 {
-            limited = true;
+            next_cursor = Some(ReviewSearchCursor { path: path.clone(), line: 1 });
             break;
         }
         scanned += 1;
         let text = read_review_blob(storage, hash)?;
         run.consulted_paths.insert(path.clone());
-        for (i, line) in text.lines().enumerate() {
+        let start = cursor.filter(|cursor| cursor.path == *path).map_or(1, |cursor| cursor.line);
+        ensure!(start as usize <= text.lines().count().max(1), "Search cursor is outside snapshot contents");
+        let mut lines = text.lines().enumerate().skip(start as usize - 1).peekable();
+        while let Some((i, line)) = lines.next() {
             if line.contains(query) {
                 matches.push(serde_json::json!({"path":path,"line":i+1,"content_hash":hash,"text":line.chars().take(500).collect::<String>()}));
                 if matches.len() == 100 {
-                    limited = true;
+                    next_cursor = if lines.peek().is_some() {
+                        Some(ReviewSearchCursor { path: path.clone(), line: (i + 2) as u32 })
+                    } else {
+                        sources.peek().map(|(path, _)| ReviewSearchCursor { path: (*path).clone(), line: 1 })
+                    };
                     break;
                 }
             }
         }
-        if limited {
+        if matches.len() == 100 {
             break;
         }
     }
     run.revision += 1;
     Ok(
-        serde_json::json!({"matches":matches,"scanned_files":scanned,"limited":limited,"note":"Literal bounded search; narrow the prefix when limited"}),
+        serde_json::json!({"matches":matches,"scanned_files":scanned,"limited":next_cursor.is_some(),
+            "next_cursor":next_cursor,"note":"Continue with next_cursor and the same query/prefix until it is null. An empty limited page does not mean no matches exist."}),
     )
 }
 pub fn validate_finding(

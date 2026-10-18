@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+mod program;
+pub use program::VISUAL_COMPONENT_NAMES;
+
 pub const MAX_VISUAL_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_VISUAL_STATE_BYTES: usize = 64 * 1024;
 pub const MAX_TABLE_ROWS: usize = 1_000;
@@ -314,6 +317,7 @@ impl VisualDocument {
                 "Charts require a dataset with declared numeric series"
             );
         }
+        program::validate(self)?;
         Ok(())
     }
 
@@ -560,7 +564,7 @@ mod tests {
     fn publication_requires_provenance_and_matching_update_identifiers() {
         let document: VisualDocument = serde_json::from_value(serde_json::json!({
             "title": "Sample signups", "summary": "Explicit sample data", "kind": "line_chart",
-            "openui_lang": "root = TextContent(\"Sample signups\")",
+            "openui_lang": "root = Answer([trend])\ntrend = TrendChart(\"signups\", \"day\", [\"value\"])",
             "datasets": { "signups": dataset() }
         }))
         .unwrap();
@@ -600,7 +604,7 @@ mod tests {
             .to_string()
             .contains("eight series"));
         let document: VisualDocument = serde_json::from_value(serde_json::json!({
-            "title":"Answer", "summary":"A plain answer", "kind":"summary", "openui_lang":"root = TextContent(\"Answer\")"
+            "title":"Answer", "summary":"A plain answer", "kind":"summary", "openui_lang":"root = Answer([Note(\"Answer\")])"
         })).unwrap();
         let state = VisualInteraction {
             selected_option_id: Some("invented".into()),
@@ -671,6 +675,7 @@ mod tests {
         ];
         assert!(!document.requires_user_response());
         document.kind = VisualKind::DesignOptions;
+        document.openui_lang = "root = Answer([choices])\nchoices = DesignOptions()".into();
         document.options = ["solid", "outline"]
             .into_iter()
             .map(|id| VisualOption {

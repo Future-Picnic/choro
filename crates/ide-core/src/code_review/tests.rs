@@ -44,6 +44,127 @@ fn receipt(
         captured_at: 1,
     }
 }
+
+#[test]
+fn bandmate_created_and_deleted_files_accept_absence_identities() {
+    for (before, after) in [("", "new file\n"), ("deleted file\n", "")] {
+        let mut f = fixture(before, after);
+        f.run.files.clear();
+        f.run.state = ReviewRunState::Preparing;
+        let child = Uuid::new_v4();
+        f.run.contributor_ids.push(child);
+        let mut evidence = receipt(&f.run, &f.root, "shared.rs", before, after, "bandmate");
+        evidence.key.agent_id = child;
+        if before.is_empty() { evidence.before_hash = Some("missing".into()); }
+        if after.is_empty() { evidence.after_hash = Some("missing".into()); }
+        f.input = prepare_review(&mut f.run, &f.root, &f.storage, requirements(), &[evidence], &[], &AtomicBool::new(false)).unwrap();
+        assert_eq!(f.run.files[0].author_id, Some(child));
+        assert_eq!(f.run.files[0].status, ReviewFileStatus::Pending);
+        assert!(f.run.limitations.is_empty(), "{:?}", f.run.limitations);
+        let file = &f.run.files[0];
+        assert_eq!(read_review_blob(&f.storage, file.before_hash.as_ref().unwrap()).unwrap(), before);
+        assert_eq!(read_review_blob(&f.storage, file.after_hash.as_ref().unwrap()).unwrap(), after);
+        finish(&mut f);
+        assert!(f.run.is_clean());
+    }
+}
+
+#[test]
+fn replay_of_a_created_file_accepts_absence_without_losing_later_edits() {
+    let mut f = fixture("", "final\n");
+    f.run.files.clear();
+    f.run.state = ReviewRunState::Preparing;
+    let mut created = receipt(&f.run, &f.root, "shared.rs", "", "initial\n", "create");
+    created.before_hash = Some("missing".into());
+    let mut edited = receipt(&f.run, &f.root, "shared.rs", "initial\n", "final\n", "edit");
+    edited.patch = Some(crate::git::diff::diff_from_contents(Path::new("shared.rs"), "initial\n", "final\n").unwrap());
+    edited.before = None;
+    edited.after = None;
+    edited.kind = EvidenceKind::Patch;
+    edited.captured_at = 2;
+    f.input = prepare_review(&mut f.run, &f.root, &f.storage, requirements(), &[created, edited], &[], &AtomicBool::new(false)).unwrap();
+    assert_eq!(f.run.files.len(), 1);
+    assert!(f.run.limitations.is_empty());
+    assert_eq!(read_review_blob(&f.storage, f.run.files[0].before_hash.as_ref().unwrap()).unwrap(), "");
+    finish(&mut f);
+    assert!(f.run.is_clean());
+}
+
+#[test]
+fn absence_marker_and_corrupt_intermediate_hashes_cannot_hide_invalid_evidence() {
+    for invalid in ["missing", "corrupt-digest"] {
+        let mut f = fixture("before\n", "final\n");
+        f.run.files.clear();
+        f.run.state = ReviewRunState::Preparing;
+        let mut first = receipt(&f.run, &f.root, "shared.rs", "before\n", "middle\n", "first");
+        first.after_hash = Some(invalid.into());
+        let mut last = receipt(&f.run, &f.root, "shared.rs", "middle\n", "final\n", "last");
+        last.captured_at = 2;
+        f.input = prepare_review(&mut f.run, &f.root, &f.storage, requirements(), &[first, last], &[], &AtomicBool::new(false)).unwrap();
+        assert_eq!(f.run.files.len(), 2, "Bad intermediate identities must not disappear during coalescing");
+        assert!(f.run.files.iter().any(|file| file.skip_reason.as_deref() == Some("Mutation contents do not match recorded identity")));
+        assert!(f.run.files.iter().any(|file| file.status == ReviewFileStatus::Pending));
+    }
+}
+
+#[test]
+fn search_continues_past_file_and_match_limits_without_skipping_lines() {
+    let mut f = fixture("before\n", "needle\n");
+    let hash = f.input.source[Path::new("shared.rs")].clone();
+    // Reuse a frozen blob to exercise 201 paths without mutable workspace reads.
+    f.input.source = (0..201).map(|i| (PathBuf::from(format!("scope/{i:03}.rs")), hash.clone())).collect();
+    let mut cursor = None;
+    let mut paths = BTreeSet::new();
+    loop {
+        let result = review_search(&mut f.run, &f.input, &f.storage, "needle", Some(Path::new("scope")), cursor.as_ref()).unwrap();
+        for hit in result["matches"].as_array().unwrap() {
+            assert!(paths.insert(hit["path"].as_str().unwrap().to_string()), "Duplicate search result");
+        }
+        cursor = serde_json::from_value(result["next_cursor"].clone()).unwrap();
+        if cursor.is_none() { assert_eq!(result["limited"], false); break; }
+    }
+    assert_eq!(paths.len(), 201);
+    let empty = review_search(&mut f.run, &f.input, &f.storage, "absent", None, None).unwrap();
+    assert_eq!(empty["matches"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["scanned_files"], 200);
+    assert_eq!(empty["limited"], true);
+    let cursor = serde_json::from_value::<ReviewSearchCursor>(empty["next_cursor"].clone()).unwrap();
+    let tail = review_search(&mut f.run, &f.input, &f.storage, "absent", None, Some(&cursor)).unwrap();
+    assert_eq!(tail["scanned_files"], 1);
+    assert_eq!(tail["limited"], false);
+
+    let mut f = fixture("before\n", &"needle\n".repeat(205));
+    let mut cursor = None;
+    let mut lines = Vec::new();
+    loop {
+        let result = review_search(&mut f.run, &f.input, &f.storage, "needle", None, cursor.as_ref()).unwrap();
+        lines.extend(result["matches"].as_array().unwrap().iter().map(|hit| hit["line"].as_u64().unwrap()));
+        cursor = serde_json::from_value(result["next_cursor"].clone()).unwrap();
+        if cursor.is_none() { break; }
+    }
+    assert_eq!(lines, (1..=205).collect::<Vec<_>>());
+    for cursor in [ReviewSearchCursor { path: "../secret".into(), line: 1 },
+        ReviewSearchCursor { path: "shared.rs".into(), line: 0 },
+        ReviewSearchCursor { path: "shared.rs".into(), line: 999 }] {
+        assert!(review_search(&mut f.run, &f.input, &f.storage, "needle", None, Some(&cursor)).is_err());
+    }
+}
+
+#[test]
+fn ledger_recovers_new_and_deleted_files_with_absence_markers() {
+    let f = fixture("old\n", "new\n");
+    for (before, after) in [("", "new\n"), ("old\n", "")] {
+        let mut entry = ledger_entry(f.run.parent_id, before, after);
+        if before.is_empty() { entry.baseline_hash = Some("missing".into()); }
+        if after.is_empty() { entry.result_hash = Some("missing".into()); }
+        let recovered = confirmed_ledger_evidence(&entry, f.run.project_id, &f.root, &[]);
+        assert_eq!(recovered.len(), 1);
+        assert!(confirmed_ledger_evidence(&entry, f.run.project_id, &f.root, &recovered).is_empty());
+        entry.baseline_content = Some("nonempty\n".into());
+        entry.baseline_hash = Some("missing".into());
+        assert!(confirmed_ledger_evidence(&entry, f.run.project_id, &f.root, &[]).is_empty());
+    }
+}
 struct Fixture {
     _dir: tempfile::TempDir,
     root: std::path::PathBuf,
@@ -498,7 +619,7 @@ fn read_search_and_freshness_use_snapshot_not_the_live_workspace() {
     .unwrap();
     assert_eq!(read["excerpt"], "new");
     assert_eq!(
-        review_search(&mut f.run, &f.input, &f.storage, "new", None).unwrap()["matches"]
+        review_search(&mut f.run, &f.input, &f.storage, "new", None, None).unwrap()["matches"]
             .as_array()
             .unwrap()
             .len(),

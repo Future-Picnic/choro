@@ -214,6 +214,14 @@ impl CenterArea {
             })
             .detach();
             cx.observe(&designs, |_, _, cx| cx.notify()).detach();
+            if let Some(watcher) = agent_chat_ship_actions::ship_actions_state(cx) {
+                cx.observe(&watcher, |this: &mut Self, _, cx| {
+                    this.sync_ship_actions_layout(cx);
+                    this.retry_pending_actions_route(cx);
+                    cx.notify();
+                })
+                .detach();
+            }
             cx.observe(&tasks, |_, _, cx| cx.notify()).detach();
             cx.observe(&services, |_, _, cx| cx.notify()).detach();
             cx.observe(&orbit, |_, _, cx| cx.notify()).detach();
@@ -880,6 +888,10 @@ impl CenterArea {
                 agent_chat_history: HashMap::new(),
                 agent_chat_prepended_rows: HashMap::new(),
                 agent_chat_scrolled_up: HashMap::new(),
+                pending_ship_reveal: None,
+                pending_actions_route: None,
+                ship_actions_expanded: HashSet::new(),
+                ship_actions_layout: HashMap::new(),
                 agent_chat_search: None,
                 agent_chat_reveal: HashMap::new(),
                 agent_chat_reveal_pending: HashSet::new(),

@@ -25,6 +25,16 @@ pub const DIFF_PAGE_CHARS: usize = 40_000;
 pub const MAX_REVIEW_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_REVIEW_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
 
+/// Providers record an absent file as empty content with a `missing`
+/// identity. It is an existence marker, not a malformed content digest.
+fn recorded_content_matches(hash: Option<&str>, contents: &str) -> bool {
+    match hash {
+        None => true,
+        Some("missing") => contents.is_empty(),
+        Some(hash) => hash == content_hash(contents.as_bytes()),
+    }
+}
+
 /// Construct rather than clone: session IDs, Bandmate presets, linked services
 /// and coding authority must not survive into the internal review role.
 pub fn fresh_reviewer_record(
@@ -351,6 +361,10 @@ Start with review_context once: it gives all frozen user requirements, project r
 Read every assigned diff page. Prefer review_read kind=batch with a batch ID and zero-based page to read up to five related files together, with pages bounded to 40,000 diff characters. Read further batch pages when total_pages is greater than one. Scan the full changed code, then investigate surrounding source, callers, guards and tests where the change or a suspected defect warrants it. Report completed groups using review_report files_complete with up to five file IDs. Files with no suspected defect need no candidate or extra narrative. Group independent read/report calls in a single response when possible; completion may be reported alongside requests for the next group. Review the current net changes where Choro has verified exact reverse replay. Historical receipt views are a fallback; check suspected historical bugs against frozen current Source so already-fixed issues are not reported. Concentrate on actionable correctness failures: data loss, authorization, concurrency, cancellation, resource lifetimes and material regressions. Do not report style preferences, speculative concerns or generic requests for more tests.
 
 Missing files, unavailable change records and read errors do not cancel the remaining review. Review every readable assigned change and preserve checked findings. Explicitly skipped files need no read or completion report. If a batch read fails, try its files individually and continue with the readable files; do not blindly retry the same failure. Use the frozen Before/After evidence when current Source is missing, and state the limitation. Never invent file contents or mark an unread page complete. Finalize the available results with gaps rather than discarding them or claiming complete coverage.
+
+Review the combined behavior of the lead and every included Bandmate contribution. For each related group, trace changed entry points through their callers and downstream consumers in frozen Source before marking the group complete. Check how identifiers, persisted state and UI actions connect across files, including unchanged integration code affected by the new behavior. Exercise concrete failure scenarios in your reasoning: stale or reused identifiers, cancellation, pause/resume, errors and retries, and whether actions remain available in each state. Inspect relevant guards and tests; a passing build or another agent's no-issues summary does not establish correctness. After the file pass, make a separate integration pass over interactions between groups before finalizing. Report only supported defects; there is no finding quota and an empty result is valid after this investigation.
+
+Source search is paginated. If review_search returns next_cursor, continue with that cursor and the same query/prefix, or narrow the prefix deliberately. An empty page with limited=true is not evidence that a caller, guard or test is absent. Read matching source ranges to understand behavior; search snippets alone are not a review.
 
 For patch_only_files, Before/After reads contain only the original numbered lines recorded in that receipt's patch; unknown ranges are unavailable, never empty source. Use Source reads for surrounding frozen code, and respect any limitation that it differs from the historical patch. Do not assume a whole shared file belongs to this conversation.
 

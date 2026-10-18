@@ -315,6 +315,15 @@ impl CenterArea {
             suggested_status: suggested_status.clone(),
             applied: None,
         };
+        if let Some(handle) = cx.try_global::<crate::state::ship_actions::ShipActionsHandle>().cloned() {
+            if let Some(agent) = self.agents.read(cx).agent(agent_id).cloned() {
+                if let Some(path) = self.ship_result_repository_path(&agent, &ship_result, cx) {
+                    let project_name = self.workspace.read(cx).projects.iter().find(|p| p.id == agent.project_id)
+                        .map(|p| p.name.clone()).unwrap_or_default();
+                    handle.0.update(cx, |state, cx| state.register(&agent, &ship_result, path, project_name, cx));
+                }
+            }
+        }
         self.agent_chats.update(cx, |chats, cx| {
             let Some(session) = chats.sessions.get_mut(&agent_id) else {
                 return;

@@ -28,8 +28,8 @@ pub fn confirmed_ledger_evidence(entry: &StoredChatFileLedgerEntry, project: Uui
         if let Some((before, after)) = projection.baseline_content.zip(projection.result_content) {
             if before.len() > MAX_SOURCE_BYTES || after.len() > MAX_SOURCE_BYTES || before.contains('\0') || after.contains('\0') { continue; }
             let before_hash = content_hash(before.as_bytes()); let after_hash = content_hash(after.as_bytes());
-            if projection.baseline_hash.as_ref().is_some_and(|hash| hash != &before_hash)
-                || projection.result_hash.as_ref().is_some_and(|hash| hash != &after_hash)
+            if !recorded_content_matches(projection.baseline_hash.as_deref(), &before)
+                || !recorded_content_matches(projection.result_hash.as_deref(), &after)
                 || before == after { continue; }
             if existing.iter().any(|e| e.key.path == entry.path &&
                 (e.before_hash.as_ref() == Some(&before_hash) && e.after_hash.as_ref() == Some(&after_hash)

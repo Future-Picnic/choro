@@ -219,7 +219,7 @@ and dark themes. Record results here; do not mark an item done without doing it.
 | [ ] | Empty result | “Show an empty sample dataset with columns Project and Open issues.” | A useful empty state without invented rows. |
 | [ ] | Restricted interaction | Trigger an approval or structured question while an answer is open. | The native decision UI replaces the panel; the answer returns afterwards with its state. |
 | [ ] | Keyboard and themes | Tab into and out of the answer, select with arrow keys, expand and collapse, in both themes and a small window. | Visible focus, readable contrast, reachable composer; no trapped focus. |
-| [ ] | Malformed program | Ask the agent to present a program using an unknown component. | “This visual answer can’t be shown.” with reasons; the composer keeps working. |
+| [ ] | Malformed program | Ask the agent to present a program using an unknown component. | Publication returns a correction error before saving; the agent can retry with supported components, and previous answers remain intact. |
 | [ ] | Older revision | Create two answers in one chat, reopen the first and ask for a change. | Its new revision comes forward; the other answer remains available. |
 | [ ] | Screen containment | With a visual answer visible, open New agent, then return; repeat with another tab or agent and scroll its result past the composer/header. | No visual overlay outside its agent or visible result region; saved state returns on the correct screen. |
 
@@ -324,3 +324,45 @@ Tracking disclosure for this follow-up: the designer reported one shell edit
 to `web/visual-answer/src/compare.ts` (the stage inset constant and its comment)
 in the first revision. It may be missing from Choro's Files/review attribution.
 The subsequent corrections used dedicated editing tools; no files were removed.
+
+### Natural-language comparisons and publication preflight
+
+User QA showed that an ordinary request for four sidebar variations took an
+image-generation path until the user named Visual answers. The resulting
+publication then used an unsupported `Text` component and failed in the renderer.
+
+The shared Codex/Claude instructions and tool description now make native
+selectable comparisons the default for ordinary requests to see UI alternatives,
+without a feature-name keyword. Explicit requests for images, exports or other
+formats retain their requested output. Design skills may inform the alternatives;
+they do not replace delivery through `visual_present`. The instructions include
+a minimal valid `Answer`/`DesignOptions` program and require correction/retry of
+tool errors before reporting that a visual answer was presented.
+
+Publication now performs a bounded structural OpenUI Lang preflight in core
+before persisting a revision or reserving its operation key. It rejects unknown
+components, malformed roots/syntax, undefined/cyclic/orphaned references and
+options without a reachable `DesignOptions` component, returning an actionable
+error to the agent. Rejected revisions preserve the prior saved answer. The
+frontend still uses the actual OpenUI parser for component props and dataset
+references; preflight is not a replacement for that parser. A shared fixture
+corpus is checked by both Rust and the OpenUI SDK, and the catalog is compared
+against the renderer's generated component list.
+
+These changes do not repair historical malformed publications automatically,
+and no live-provider behavior or installed-app QA is implied by the tests.
+
+Verification for this follow-up: combined default-feature tests passed for
+`ide-app` (1,017), `ide-core` (568 plus 9 integration), and `ide-mcp` (65).
+Frontend tests passed (47), as did type checking, bundling and generated
+instructions. `git diff --check` passed. Existing ignored tests remain ignored.
+The initial focused check exposed an old invalid fixture; it was corrected and
+the complete suites passed. No native app build/install/restart, live Codex or
+Claude session, UI-layout suite or release-readiness check was run this pass.
+
+Manual retest after updating the running app: start a normal Codex chat, attach
+the sidebar screenshot, and ask “The waiting support count is too subtle. Show
+me four variations that make it stand out.” Expect four selectable designs
+without mentioning Visual answers; repeat with Claude. Also ask for two hero
+sections, and separately request an image file to check that explicit output
+preferences still take precedence. These model-behavior checks remain pending.

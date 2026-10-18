@@ -99,8 +99,8 @@ Choro can render one interactive visualization at a time inside the conversation
 const VISUAL_ANSWER_COMPONENTS: &str =
     include_str!("../../../web/visual-answer/dist/instructions.md");
 
-/// Visual answers render in a conversation's own composer. Reviews, Studio and
-/// hidden document assistants have no such composer (and no tool access).
+/// Results render in the conversation; choices attach to its composer.
+/// Reviews, Studio and hidden document assistants do not expose this surface.
 fn visual_answers_available(agent: &AgentRecord) -> bool {
     ide_core::visual_answers::VISUAL_ANSWERS_READY
         && agent.review_run_id.is_none()
@@ -118,11 +118,19 @@ fn append_visual_answer_instructions(instructions: String, agent: &AgentRecord) 
 
 <choro_visual_answers>
 Choro can show a Visual answer in this agent's conversation with the visual_present tool. Informational tables, charts and summaries appear inside the conversation; only explicit user choices (document.options, such as design alternatives) attach to the composer. Local search, sorting, chart inspection and optional follow-up actions do not make a result a choice panel. Use visual answers when comparisons across several items, values over time, category breakdowns, or choosing a visual direction would materially help. Answer simple facts in plain text without a Visual answer.
+- For requests to SHOW or COMPARE UI design alternatives, use visual_present as the default delivery. This includes ordinary requests such as "show me four variations", "show four ways to make support stand out", "compare two hero sections", or "what would these different layouts look like?" The user does not need to name Choro, OpenUI, Visual answers, or this tool. Interpret the request's meaning in context, not a keyword list.
+- Present the actual selectable HTML/CSS alternatives in document.options before claiming you have shown the variations. A design skill can guide your work, but a prose list, generated image, Markdown image, HTML attachment, or Preview is not a substitute for this interactive comparison. Do not ask the user to request Visual answers again. Respect an explicit request for image files, Figma, an export, or a different format; photography, illustrations and other bitmap assets can use their appropriate image tools.
+- Asking to compare designs authorizes showing options, not applying a design to the project. Keep existing app changes for an explicit implementation request or follow-up selection. For data, prefer an interactive table for multi-item rankings, charts for trends or category breakdowns, and metrics with supporting data for summaries. Ordinary explanations and simple facts remain text.
 - Always also write a short chat reply that summarizes the answer.
 - Use real data from your existing tools. If you use sample or illustrative data, say so in the source label and in chat. Never invent values; use null for missing values. State units and the time range.
 - Visual answers never open, reload or replace Preview. Do not call preview_open to show them, and do not use the HTML visualization directive for content that fits a Visual answer.
 - Kinds: "table" (DataTable), "line_chart" (TrendChart, declare dataset series), "bar_chart" (CategoryChart, declare dataset series), "summary" (MetricGroup followed by its supporting chart or table), "design_options" (DesignOptions).
 - Design alternatives go in document.options: two to four, each with a stable id, title, short description and self-contained HTML/CSS that shows the actual design. No scripts, external URLs, fonts or images; they render in an isolated sandbox. Include the action {{"id":"use","label":"Use this style","kind":"select"}}. Selecting an option sends nothing; the user sends explicitly.
+- For design options, use this minimal openui_lang program exactly (with a real newline):
+root = Answer([choices])
+choices = DesignOptions()
+For hero sections use DesignOptions("section", 720, 1024); for full pages use DesignOptions("page", 2000, 1280), adjusting height and width to the complete design. Put the design HTML in document.options[].html, never in openui_lang. Use only the components in the generated catalog below. There is no Text or TextContent component; use Note("...") inside Answer([...]) for short text.
+- If visual_present returns a validation error, correct the program and retry before reporting the visual answer as presented. A stored publication is not evidence that you personally inspected the rendered UI; do not claim visual verification you did not perform.
 - Optional follow_up actions add a button with a fixed request (for example "Show the last seven days"). The user can always type a refinement in the composer.
 - Treat follow-ups about an existing visual answer as revisions, including ordinary chat follow-ups about an informational table or chart. Use its id from your earlier visual_present result. A message containing "[Choro visual answer: <id>; revision <n>; …]" explicitly identifies an answer and may include the user's current view. Call visual_read, then visual_present with that same id and expected_revision, keeping stable dataset names, column keys and option ids where they still apply. Create a new answer only for an unrelated request.
 - Use a new operation_key for every new publication or revision; reuse one only to retry the identical call.
@@ -1774,6 +1782,29 @@ mod tests {
         for component in library["components"].as_array().unwrap() {
             let name = component.as_str().unwrap();
             assert!(VISUAL_ANSWER_COMPONENTS.contains(&format!("{name}(")), "{name} is documented");
+        }
+        let rendered: Vec<&str> = library["components"].as_array().unwrap()
+            .iter().map(|name| name.as_str().unwrap()).collect();
+        assert_eq!(rendered, ide_core::visual_answers::VISUAL_COMPONENT_NAMES,
+            "The publication preflight must use the renderer's actual component catalog");
+    }
+
+    #[test]
+    fn ordinary_design_requests_receive_native_comparison_guidance_for_both_providers() {
+        for provider in [AgentKind::Codex, AgentKind::Claude] {
+            let agent = AgentRecord::new(
+                ide_core::ProjectId(uuid::Uuid::new_v4()), PathBuf::from("/tmp/project"),
+                "Designer", "Show four ways to make support stand out", provider,
+                AgentModel::default_for(provider), AgentEffort::default(), AgentAccessMode::FullAccess,
+            );
+            let instructions = append_visual_answer_instructions("base".into(), &agent);
+            if ide_core::visual_answers::VISUAL_ANSWERS_READY {
+                assert!(instructions.contains("use visual_present as the default delivery"));
+                assert!(instructions.contains("The user does not need to name Choro"));
+                assert!(instructions.contains("a prose list, generated image"));
+                assert!(instructions.contains("root = Answer([choices])\nchoices = DesignOptions()"));
+                assert!(instructions.contains("correct the program and retry"));
+            }
         }
     }
 

@@ -20,6 +20,8 @@ mod agent_chat_review_status;
 mod agent_chat_runtime;
 pub(crate) mod agent_chat_search;
 mod agent_chat_ship;
+mod agent_chat_ship_actions;
+mod agent_chat_ship_reveal;
 mod agent_chat_timeline;
 mod agent_chat_usage;
 mod agent_chat_verification;
@@ -66,6 +68,7 @@ mod quick_ask_history;
 mod remote_bridge;
 mod remote_agents;
 mod services;
+pub(crate) mod ship_actions_model;
 mod shutdown;
 mod studio;
 mod studio_composer;
@@ -2112,6 +2115,15 @@ pub struct CenterArea {
     /// Per-agent flag: true when the chat list is scrolled up from the bottom,
     /// so a "jump to latest" affordance is shown.
     agent_chat_scrolled_up: HashMap<Uuid, bool>,
+    /// Exact Ship an Actions route is scrolling to, paging history as needed.
+    pending_ship_reveal: Option<agent_chat_ship_reveal::PendingShipReveal>,
+    /// Actions banner clicked before the watcher restored its saved state.
+    pending_actions_route: Option<agent_chat_ship_reveal::PendingActionsRoute>,
+    /// Actions cards showing every workflow, keyed by watch.
+    ship_actions_expanded: HashSet<Uuid>,
+    /// Per-conversation Actions geometry, so external watcher updates
+    /// remeasure only the conversations whose cards changed height.
+    ship_actions_layout: HashMap<Uuid, u64>,
     /// Transient find-in-conversation UI. Historical matches remain as compact
     /// store results until navigation asks the paged transcript to reveal one.
     agent_chat_search: Option<agent_chat_search::AgentChatSearchState>,
