@@ -48,6 +48,11 @@ pub(crate) enum ShipActionsInline {
     Resumable,
 }
 
+/// A known failure remains actionable even when tracking is muted or offline.
+pub(crate) fn failure_notice_visible(watch: &ShipActionsWatch) -> bool {
+    watch.outcome() == ActionsOutcome::Failed
+}
+
 pub(crate) fn watch_tone(watch: &ShipActionsWatch) -> ActionsTone {
     match watch.phase {
         TrackingPhase::Stopped
@@ -274,6 +279,7 @@ pub(crate) fn layout_signature(
     watch.id.hash(&mut hasher);
     inline_state(watch).hash(&mut hasher);
     watch_tone(watch).hash(&mut hasher);
+    failure_notice_visible(watch).hash(&mut hasher);
     let shown = visible_runs(&watch.runs, expanded);
     shown.len().hash(&mut hasher);
     shown.iter().any(|run| run.attempt > 1).hash(&mut hasher);
@@ -462,6 +468,33 @@ mod tests {
             agent_title: "Agent".into(),
             created_at,
         }
+    }
+
+    #[test]
+    fn failure_investigation_survives_stopping_pausing_and_refresh_errors() {
+        let mut w = watch();
+        w.runs = vec![run(1, "completed", Some("failure"))];
+        for phase in [
+            TrackingPhase::Tracking,
+            TrackingPhase::Stopped,
+            TrackingPhase::Paused,
+        ] {
+            w.phase = phase;
+            for error in [None, Some("offline".to_string())] {
+                w.refresh_error = error;
+                assert!(failure_notice_visible(&w));
+                if phase != TrackingPhase::Tracking || w.refresh_error.is_some() {
+                    assert_eq!(watch_tone(&w), ActionsTone::Muted);
+                }
+            }
+        }
+        w.runs = vec![run(1, "in_progress", None)];
+        assert!(!failure_notice_visible(&w));
+        let without_notice = layout_signature(&w, false, false);
+        w.runs = vec![run(1, "completed", Some("failure"))];
+        assert_ne!(layout_signature(&w, false, false), without_notice);
+        w.runs = vec![run(1, "completed", Some("success"))];
+        assert!(!failure_notice_visible(&w));
     }
 
     #[test]
