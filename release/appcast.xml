@@ -7,18 +7,19 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
     <item>
-      <title>Choro 0.102</title>
-      <pubDate>Sat, 17 Oct 2026 19:41:37 +0300</pubDate>
-      <sparkle:version>102</sparkle:version>
-      <sparkle:shortVersionString>0.102</sparkle:shortVersionString>
+      <title>Choro 0.103</title>
+      <pubDate>Sun, 18 Oct 2026 09:56:15 +0300</pubDate>
+      <sparkle:version>103</sparkle:version>
+      <sparkle:shortVersionString>0.103</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #44 from Future-Picnic/feat-add-interactive-visual-answers-to-age
-- chore: publish update feed for 0.101]]></description>
-      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/650990128" length="121717285" type="application/octet-stream" sparkle:edSignature="KhVo0VFmWE5lWFOVZI1j0r/bmZoQsVXcjDASLrA6vwIjXnGH/c4eXemm5jBQg2JcIyQguhMeOc+jYESSAitJDg=="></enclosure>
+      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #46 from Future-Picnic/fix-pin-ship-merges-to-the-expected-pull-request
+- Merge pull request #45 from Future-Picnic/feat-add-durable-ship-action-tracking-and-design-comparisons
+- chore: publish update feed for 0.102]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/652737011" length="121916144" type="application/octet-stream" sparkle:edSignature="uG6RkYQ4Tb59nj3FC1TlEXEaZyNGJ27GG2tCxFEdp5DGQC78pLlxlRB64TL2xCgJ5sUR1v9G0MXMX889bCaxAQ=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: C56uoQwyXMEQlHcHTqxScwJiak4FR7r+PgM6wY2VBwjJc7vADV8j3sZmGsnJ/Z0/LgwdJsJAuklnP2mJyzdYDw==
-length: 1435
+edSignature: wLVm6LW1Ih1zPWP8iK3iGcm9NW/9qIO60JpcZYTcfe0I7+DBGH9Kjk9R6CABq2OWYF2+CSZuIpVX+zDC1ux1AQ==
+length: 1546
 -->
