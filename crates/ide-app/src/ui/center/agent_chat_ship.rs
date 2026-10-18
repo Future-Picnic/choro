@@ -53,7 +53,7 @@ impl CenterArea {
         let tracked_pr = self
             .agent_ship_prs
             .get(&agent.id)
-            .filter(|pr| pr.branch == result.branch);
+            .filter(|pr| pr.branch == result.branch && Some(&pr.url) == pr_url.as_ref());
         let pr_base_branch = result
             .pr_base_branch
             .clone()
@@ -63,8 +63,13 @@ impl CenterArea {
                     .map(|pr| pr.base_branch.clone())
                     .filter(|branch| !branch.trim().is_empty())
             });
-        let can_merge =
-            tracked_pr.is_none_or(|pr| pr.state.eq_ignore_ascii_case("OPEN") && !pr.is_draft);
+        let watch = self.ship_actions_watch(agent.id, &result.id, cx);
+        let can_merge = tracked_pr
+            .is_none_or(|pr| pr.state.eq_ignore_ascii_case("OPEN") && !pr.is_draft)
+            && watch.as_ref().is_none_or(|watch| {
+                watch.merge_sha.is_none()
+                    && watch.phase != ide_core::ship_actions::TrackingPhase::Closed
+            });
         let merge_git = repo_path.as_ref().and_then(|path| {
             self.git_states
                 .read(cx)
@@ -130,8 +135,9 @@ impl CenterArea {
                             .zip(pr_base_branch.clone())
                             .zip(repo_path.clone())
                             .zip(merge_git.clone()),
-                        |row, (((_, base_branch), repo_path), git)| {
+                        |row, (((pr_url, base_branch), repo_path), git)| {
                             let branch = result.branch.clone();
+                            let expected_head_sha = result.commit_sha.clone();
                             let pr_number = tracked_pr.map(|pr| pr.number);
                             let pr_title = pr_title.clone();
                             // This Ship's own watch (project, repository, PR),
@@ -156,6 +162,8 @@ impl CenterArea {
                                         git.clone(),
                                         branch.clone(),
                                         base_branch.clone(),
+                                        pr_url.clone(),
+                                        expected_head_sha.clone(),
                                         pr_number,
                                         pr_title.clone(),
                                         actions_watch,
@@ -426,6 +434,8 @@ impl CenterArea {
         git: Entity<GitState>,
         branch: String,
         base_branch: String,
+        pr_url: String,
+        expected_head_sha: String,
         pr_number: Option<u64>,
         pr_title: Option<String>,
         actions_watch: Option<(Uuid, u64)>,
@@ -468,8 +478,9 @@ impl CenterArea {
                 let window_handle = window.window_handle();
                 let merge_git = git.clone();
                 let repo_path = repo_path.clone();
-                let branch = branch.clone();
                 let base_branch = base_branch.clone();
+                let pr_url = pr_url.clone();
+                let expected_head_sha = expected_head_sha.clone();
                 center.update(cx, |_center, cx| {
                     if merge_git.read(cx).is_busy {
                         window.push_notification(
@@ -492,9 +503,9 @@ impl CenterArea {
                             .spawn(async move {
                                 crate::ui::git::git_panel::merge_pull_request_with_branch_cleanup(
                                     &repo_path,
-                                    &branch,
+                                    &pr_url,
                                     Some(&base_branch),
-                                    None,
+                                    Some(&expected_head_sha),
                                     delete_branch,
                                 )
                             })

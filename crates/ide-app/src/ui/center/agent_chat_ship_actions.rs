@@ -358,7 +358,7 @@ impl CenterArea {
         let expanded = self.ship_actions_expanded.contains(&watch_id);
         let global_error = ship_actions_state(cx).and_then(|state| state.read(cx).error.clone());
         let elapsed = model::watch_elapsed(&watch, now).map(compact_duration);
-        let failed = tone == ActionsTone::Failure;
+        let failed = model::failure_notice_visible(&watch);
         let approval = watch.outcome() == ide_core::ship_actions::ActionsOutcome::Approval;
         let view = cx.entity();
 

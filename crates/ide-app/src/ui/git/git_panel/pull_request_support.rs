@@ -696,10 +696,34 @@ fn delete_merged_github_branch(
     Ok(())
 }
 
+/// Verify both a pinned PR selector and the repository receiving the merge.
+/// A historical Ship URL must never resolve to a newer PR on a reused branch,
+/// or merge the same PR number in a repository whose remote has changed.
+fn validate_merge_target(
+    pr: &BranchPullRequest,
+    selector: &str,
+    repository: &str,
+) -> anyhow::Result<()> {
+    let actual = url::Url::parse(&pr.url)?;
+    if let Ok(expected) = url::Url::parse(selector) {
+        anyhow::ensure!(
+            expected == actual,
+            "The pull request changed; reopen its Ship card before merging"
+        );
+    }
+    let expected_path = format!("/{repository}/pull/{}", pr.number);
+    anyhow::ensure!(
+        actual.path().eq_ignore_ascii_case(&expected_path),
+        "The pull request belongs to a different repository; refresh before merging"
+    );
+    Ok(())
+}
+
 /// Immediately merges an open PR using the repository's preferred allowed
 /// method. This uses GitHub's direct merge endpoint so a protected branch can
 /// reject the attempt without `gh pr merge` silently enabling auto-merge or a
 /// merge queue. It never bypasses protections or deletes the source branch.
+/// `branch` accepts gh's branch, number, or exact PR URL selectors.
 pub(crate) fn merge_pull_request_with_gh(
     repo: &Path,
     branch: &str,
@@ -770,6 +794,7 @@ pub(crate) fn merge_pull_request_with_gh(
     }
 
     let (name_with_owner, method) = repository_identity_and_merge_method(repo)?;
+    validate_merge_target(&pr, branch, &name_with_owner)?;
 
     let endpoint = format!("repos/{name_with_owner}/pulls/{}/merge", pr.number);
     let sha_field = format!("sha={head_oid}");
@@ -962,6 +987,34 @@ pub(crate) fn pull_request_url_with_text(url: &str, pull_request: &GeneratedPull
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    #[test]
+    fn pinned_ship_pr_rejects_a_new_pr_on_the_same_branch_or_another_repository() {
+        let mut pr = branch_pull_request_from_github(
+            serde_json::from_value::<GithubPullRequest>(serde_json::json!({
+                "number": 42,
+                "title": "Original ship",
+                "url": "https://github.com/owner/app/pull/42",
+                "state": "OPEN",
+                "isDraft": false,
+                "headRefName": "feature/reused",
+                "baseRefName": "main",
+                "headRefOid": "abc123"
+            }))
+            .unwrap(),
+            "feature/reused",
+        );
+        let original_url = pr.url.clone();
+        assert!(validate_merge_target(&pr, &original_url, "owner/app").is_ok());
+        assert!(validate_merge_target(&pr, &original_url, "other/app").is_err());
+        // The same branch is later reused for a different PR.
+        pr.number = 43;
+        pr.url = "https://github.com/owner/app/pull/43".into();
+        assert!(validate_merge_target(&pr, &original_url, "owner/app").is_err());
+        // Other merge surfaces may still select a branch or PR number.
+        assert!(validate_merge_target(&pr, "feature/reused", "owner/app").is_ok());
+        assert!(validate_merge_target(&pr, "43", "owner/app").is_ok());
+    }
 
     fn merged_outcome() -> MergePullRequestOutcome {
         MergePullRequestOutcome {
