@@ -143,6 +143,14 @@ pub struct AgentChatSession {
 }
 
 impl AgentChatSession {
+    /// Provider startup/usage bookkeeping is not a new answer to acknowledge.
+    pub(crate) fn completed_response_at(&self) -> Option<u64> {
+        self.messages.iter().rev().find_map(|message| match message {
+            AgentChatMessage::Assistant { created_at, .. } => Some(*created_at),
+            _ => None,
+        })
+    }
+
     fn remember_plan(&mut self, mut plan: ProposedPlan) -> ProposedPlan {
         plan.revision = self.latest_plan.as_ref().map_or(1, |latest| latest.revision.saturating_add(1));
         self.latest_plan = Some(plan.clone());
@@ -2235,6 +2243,23 @@ mod retirement_tests {
         assert!(apply_changed_files_summary(&mut session, receipt).is_none());
         assert_eq!(session.changed_files.files[0].additions, 2);
         assert_eq!(session.changed_files.ledger_revision, 1);
+    }
+
+    #[test]
+    fn runtime_bookkeeping_does_not_create_new_completion_attention() {
+        let mut session = retirable_session();
+        session.last_activity_at = 200;
+        assert_eq!(session.completed_response_at(), None);
+        session.messages.push(AgentChatMessage::Assistant {
+            message_id: None, text: "Old answer".into(), created_at: 100,
+        });
+        assert_eq!(session.completed_response_at(), Some(100));
+        session.last_activity_at = 300;
+        assert_eq!(session.completed_response_at(), Some(100));
+        session.messages.push(AgentChatMessage::Assistant {
+            message_id: None, text: "New answer".into(), created_at: 400,
+        });
+        assert_eq!(session.completed_response_at(), Some(400));
     }
 
     #[test]

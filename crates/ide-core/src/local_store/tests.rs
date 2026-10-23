@@ -20,6 +20,25 @@ fn sample_project() -> Project {
 }
 
 #[test]
+fn database_busy_classification_preserves_turso_error_types_and_context() {
+    for error in [
+        turso::Error::Busy("database is locked".into()),
+        turso::Error::BusySnapshot("database is locked".into()),
+    ] {
+        let error = anyhow::Error::new(error).context("could not prepare teammate");
+        assert!(is_database_busy(&error));
+    }
+    for error in [
+        anyhow!("database is locked"),
+        anyhow!("Provider blocked this request"),
+        anyhow::Error::new(turso::Error::DatabaseFull("database is full".into())),
+        anyhow::Error::new(turso::Error::Corrupt("database is corrupt".into())),
+    ] {
+        assert!(!is_database_busy(&error));
+    }
+}
+
+#[test]
 fn ship_actions_are_durable_versioned_and_archived() {
     use crate::ship_actions::{tests::watch, ShipActionsOrigin};
     let dir = tempfile::tempdir().unwrap();

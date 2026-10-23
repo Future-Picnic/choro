@@ -565,8 +565,11 @@ impl CenterArea {
                             this.process_native_messages(window, cx);
                             if let Some((project, _)) = this.active_project(cx) {
                                 let effective_mode = this.view_mode;
+                                let catalog_interval = if effective_mode == CenterMode::Design {
+                                    Duration::from_secs(2)
+                                } else { Duration::from_secs(30) };
                                 if matches!(effective_mode, CenterMode::Design | CenterMode::Tasks | CenterMode::MyTasks | CenterMode::Docs | CenterMode::Agents)
-                                    && this.studio_catalog_refreshed.get(&project).is_none_or(|last| last.elapsed() > Duration::from_secs(2)) {
+                                    && this.studio_catalog_refreshed.get(&project).is_none_or(|last| last.elapsed() > catalog_interval) {
                                     this.refresh_studio_catalog(project, cx);
                                 }
                             }

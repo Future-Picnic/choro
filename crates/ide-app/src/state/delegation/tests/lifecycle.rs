@@ -1,6 +1,80 @@
 use super::*;
 
 #[test]
+fn committed_startup_repairs_missing_lead_adoption_without_duplicate_delivery() {
+    let mut f = Fixture::new();
+    assert!(lead_configuration_required(&f.load(), &f.parent));
+    // Activation committed, but applying its adoption effect was interrupted.
+    let _effect = f.job(Job::Configure(f.load(), f.parent.clone())).unwrap();
+    let run = f.load();
+    assert_eq!(run.status, RunStatus::Active);
+    assert!(lead_configuration_required(&run, &f.parent));
+    let effect = f.job(Job::Configure(run.clone(), f.parent.clone())).unwrap();
+    f.adopt(effect);
+    assert!(!lead_configuration_required(&f.load(), &f.parent));
+    assert_eq!(serde_json::to_value(f.load()).unwrap(), serde_json::to_value(run).unwrap());
+}
+
+#[test]
+fn database_contention_retries_startup_without_failing_dependents_or_duplicating_work() {
+    let mut f = Fixture::new();
+    // Hold a real Turso writer while another thread tries to acquire it. This
+    // exercises the actual error type/context returned by LocalStore, without
+    // touching the live app's database or starting an AI provider.
+    let competing = f.store.clone();
+    let run_id = f.run;
+    let error = f.store.update_delegation(run_id, None, |_| {
+        Ok(std::thread::spawn(move || {
+            competing.update_delegation(run_id, None, |_| Ok(()))
+        }).join().unwrap().unwrap_err())
+    }).unwrap().context("could not start teammate");
+    assert!(ide_core::local_store::is_database_busy(&error), "{error:#}");
+
+    f.store.update_delegation(f.run, None, |run| {
+        run.tasks[1].plan.dependencies = vec![run.tasks[0].plan.key.clone()];
+        Ok(())
+    }).unwrap();
+    let id = f.load().tasks[0].id;
+    for stage in 0..4 {
+        let run = f.load();
+        let job = match stage {
+            0 => Job::Configure(run.clone(), f.parent.clone()),
+            1 => Job::Provision(run.clone(), id, f.parent.clone()),
+            2 => Job::BeginPrepare(run.clone(), id, f.parent.clone()),
+            _ => Job::Prepare(run.clone(), id, f.parent.clone()),
+        };
+        // Repeated contention must not turn a pending assignment into Failed
+        // or consume attempts, revisions, or deliveries.
+        for _ in 0..2 {
+            let waiting = preparation::record_job_failure(&f.store, &job, &error).unwrap_err();
+            assert!(waiting.to_string().contains("retry automatically"));
+            assert_eq!(serde_json::to_value(f.load()).unwrap(), serde_json::to_value(&run).unwrap());
+        }
+        let effect = f.job(job).unwrap();
+        f.adopt(effect);
+        let current = f.load();
+        assert_eq!(current.tasks[1].status, TaskStatus::Queued);
+        assert!(!current.events.iter().any(|e| e.kind == "failed"));
+    }
+    let run = f.load();
+    let task = run.task(id).unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(task.attempts.len(), 1);
+    let child = task.attempt().unwrap().child_agent_id;
+    assert_eq!(run.deliveries.iter().filter(|d| d.target == child).count(), 1);
+    assert!(run.deliveries.iter().filter(|d| d.target == child)
+        .all(|d| d.status == DeliveryStatus::Queued && d.runtime_generation.is_none()));
+
+    // Delivery is deliberately excluded: a lock after sending must not cause
+    // the provider command to be replayed automatically.
+    let child_record = f.store.load_agents().unwrap().into_iter().find(|a| a.id == child).unwrap();
+    let deliveries = run.deliveries.iter().filter(|d| d.target == child).map(|d| d.id).collect();
+    let job = Job::Deliver(run, child_record, deliveries, AgentInteractionMode::Default);
+    preparation::record_job_failure(&f.store, &job, &error).unwrap();
+    assert_eq!(f.load().task(id).unwrap().status, TaskStatus::Failed);
+}
+
+#[test]
 fn queued_and_blocked_assignments_have_a_chat_before_any_copy_or_provider() {
     let mut f = Fixture::new();
     for blocked in [false, true] {
@@ -93,7 +167,7 @@ fn stopped_preparation_cannot_block_or_fail_a_replacement() {
     f.adopt(effect);
     let job = Job::Prepare(f.load(), id, f.parent.clone());
     f.store.update_delegation(f.run, None, |r| r.control(r.parent_agent_id, id, "cancel", "Use the other Bandmate")).unwrap();
-    preparation::record_job_failure(&f.store, &job, "Preparation stopped").unwrap();
+    preparation::record_job_failure(&f.store, &job, &anyhow::anyhow!("Preparation stopped")).unwrap();
     let run = f.load();
     assert_eq!(run.status, RunStatus::Active);
     assert_eq!(run.task(id).unwrap().status, TaskStatus::Cancelled);
@@ -109,7 +183,7 @@ fn setup_failure_is_actionable_and_does_not_stop_sibling_work() {
     let effect = f.job(Job::BeginPrepare(f.load(), id, f.parent.clone())).unwrap();
     let child = f.adopt(effect);
     let job = Job::Prepare(f.load(), id, f.parent.clone());
-    preparation::record_job_failure(&f.store, &job, "Could not prepare selected skills: disk full").unwrap();
+    preparation::record_job_failure(&f.store, &job, &anyhow::anyhow!("Could not prepare selected skills: disk full")).unwrap();
     let run = f.load();
     assert_eq!(run.status, RunStatus::Active);
     assert_eq!(run.task(id).unwrap().status, TaskStatus::Failed);
@@ -131,7 +205,7 @@ fn an_unavailable_child_provider_still_has_an_openable_chat_and_does_not_stop_th
     let child = f.adopt(effect);
     let job = Job::Prepare(f.load(), task, f.parent.clone());
     let error = execute_in_store(&f.store, job.clone(), |_| anyhow::bail!("Sign in to the selected provider"), None).err().unwrap();
-    preparation::record_job_failure(&f.store, &job, &error.to_string()).unwrap();
+    preparation::record_job_failure(&f.store, &job, &error).unwrap();
     let run = f.load();
     assert_eq!(run.status, RunStatus::Active);
     assert_eq!(run.task(task).unwrap().attempt().unwrap().child_agent_id, child.id);
@@ -214,6 +288,8 @@ fn a_slow_preparation_keeps_refresh_live_and_does_not_gate_another_task_on_the_l
             settled: HashMap::new(), cursor: 0, stopped_parents: HashSet::new(), wake,
             reload_epoch: 0, snapshot: vec![],
             in_flight: HashMap::from([((run.id, id), Job::Prepare(run.clone(), id, parent.clone()))]),
+            telemetry_in_flight: HashSet::new(),
+            stop_requested: HashSet::new(), stop_in_flight: HashSet::new(),
         });
         coordinator.update(cx, |s, cx| {
             run.task_mut(id).unwrap().attempt_mut().unwrap().progress = "Checking selected skills".into();

@@ -32,8 +32,14 @@ fn try_persist_agent_store(revision: u64, store: AgentStoreFile) -> anyhow::Resu
 }
 
 fn persist_agent_store(revision: u64, store: AgentStoreFile) {
-    if let Err(error) = try_persist_agent_store(revision, store) {
-        eprintln!("failed to save agents: {error:#}");
+    for attempt in 0..3 {
+        match try_persist_agent_store(revision, store.clone()) {
+            Ok(()) => return,
+            Err(error) if attempt < 2 && ide_core::local_store::is_database_busy(&error) => {
+                std::thread::sleep(Duration::from_millis(100 * (attempt + 1)));
+            }
+            Err(error) => { eprintln!("failed to save agents: {error:#}"); return; }
+        }
     }
 }
 
@@ -803,7 +809,7 @@ impl AgentRecords {
         }
         agent.status = status;
         agent.updated_at = agents::unix_now();
-        self.schedule_save(cx);
+        self.save_durable(cx);
         self.publish_record_change(id, cx);
         cx.notify();
     }

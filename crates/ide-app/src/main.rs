@@ -3,6 +3,7 @@ mod app_assets;
 mod app_update;
 mod companion_music;
 mod demo;
+mod diagnostics;
 #[cfg(target_os = "macos")]
 mod dock;
 mod keymap;
@@ -33,6 +34,7 @@ fn main() {
     if let Some(exit_code) = ide_core::git::handle_git_credential() {
         std::process::exit(exit_code);
     }
+    diagnostics::initialize();
     // Seed an isolated demo before application startup.
     if let Err(error) = demo::prepare() {
         eprintln!("failed to prepare Choro Demo: {error:#}");
@@ -41,6 +43,7 @@ fn main() {
         eprintln!("failed to prepare Choro onboarding: {error:#}");
     }
     newsletter::record_launch();
+    notifications::restore_history();
     let app = Application::new().with_assets(AppAssets);
 
     app.run(move |cx: &mut App| {
