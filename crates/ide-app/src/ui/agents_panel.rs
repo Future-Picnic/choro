@@ -342,7 +342,7 @@ impl AgentsPanel {
                     created_at,
                     agent.title,
                     project_name,
-                ));
+                ).with_source(agent.id));
                 continue;
             }
 

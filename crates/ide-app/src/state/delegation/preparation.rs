@@ -72,7 +72,17 @@ pub(super) fn provision(store: &LocalStore, run: DelegationRun, task_id: Uuid, p
 
 /// Expected cancellation is not a failure. A failed workspace/provider setup
 /// affects its assignment only; unrelated queued work remains dispatchable.
-pub(super) fn record_job_failure(store: &LocalStore, job: &Job, reason: &str) -> Result<()> {
+pub(super) fn record_job_failure(store: &LocalStore, job: &Job, error: &anyhow::Error) -> Result<()> {
+    // Startup has not sent anything to a provider. Leave its durable state
+    // pending so the next coordinator poll retries from fresh state, including
+    // any intervening Stop, cancellation or correction. Never replay Deliver:
+    // its provider command may already have been sent before persistence failed.
+    if matches!(job, Job::Configure(..) | Job::Provision(..) | Job::BeginPrepare(..) | Job::Prepare(..))
+        && ide_core::local_store::is_database_busy(error)
+    {
+        anyhow::bail!("Choro's database is busy. Teammate startup will retry automatically: {error:#}");
+    }
+    let reason = error.to_string();
     store.update_delegation(job.run().id, None, |run| {
         if run.status.stopped() || run.status.terminal() { return Ok(()); }
         if let Some(id) = job.task_id() {
@@ -88,12 +98,12 @@ pub(super) fn record_job_failure(store: &LocalStore, job: &Job, reason: &str) ->
                 let task = run.task_mut(id)?;
                 task.status = TaskStatus::Failed;
                 task.reason = Some(reason.to_owned());
-                run.event(run.parent_agent_id, Some(id), "failed", reason);
+                run.event(run.parent_agent_id, Some(id), "failed", &reason);
                 run.queue(run.parent_agent_id, Some(id), format!("Bandmate assignment {id} could not continue: {reason}. Other assignments can continue. Inspect this assignment and retry or revise it."));
                 return Ok(());
             }
         }
-        run.block(reason);
+        run.block(&reason);
         Ok(())
     })
 }

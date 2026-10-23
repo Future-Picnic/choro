@@ -50,8 +50,8 @@ pub fn provider_navigation_runtime(
             Some(AgentChatStatus::Idle) if chats.has_authoritative_status(agent.id) => {
                 let session = chats.session(agent.id).unwrap();
                 let session_id = session.chat_session_id.as_deref().or(session.cli_session_id.as_deref());
-                if session.last_activity_at > 0 && session_id.is_some_and(|id|
-                    !terminals.attention_suppressed(id, UNIX_EPOCH + Duration::from_secs(session.last_activity_at))) {
+                if session.completed_response_at().is_some_and(|at| at > 0 && session_id.is_some_and(|id|
+                    !terminals.attention_suppressed(id, UNIX_EPOCH + Duration::from_secs(at)))) {
                     AgentNavigationRuntime::Waiting
                 } else {
                     AgentNavigationRuntime::Idle

@@ -137,6 +137,8 @@ pub(crate) fn managed_send(
     chats: &mut AgentChatState,
     agent: AgentRecord,
     timeline: Vec<AgentChatTimelineItem>,
+    saved_files: Option<ChangedFilesSummary>,
+    saved_plan: Option<ProposedPlan>,
     text: String,
     mode: AgentInteractionMode,
     cx: &mut Context<AgentChatState>,
@@ -147,7 +149,7 @@ pub(crate) fn managed_send(
     let mode = protocol::managed::interaction_mode(&agent, mode);
     let session = chats.ensure_session(id, agent.title.clone(), cx);
     if session.timeline.is_empty() {
-        hydrate(session, timeline);
+        hydrate_with_artifacts(session, timeline, saved_files, saved_plan);
     }
     session.chat_session_id = agent
         .chat_session_id

@@ -6,6 +6,8 @@ mod code_import;
 mod comments;
 #[path = "lifecycle.rs"]
 mod lifecycle;
+#[path = "recovery.rs"]
+mod recovery;
 use super::*;
 use anyhow::{bail, ensure, Context, Result};
 use sha2::{Digest, Sha256};
@@ -1001,21 +1003,7 @@ impl StudioStore {
         atomic(journal_path, &serde_json::to_vec(journal)?)
     }
     fn recover(&self) -> Result<()> {
-        let directory = self.cache.join("transactions");
-        if !directory.exists() {
-            return Ok(());
-        }
-        for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.extension().and_then(|v| v.to_str()) != Some("json") {
-                continue;
-            }
-            let mut journal: Journal = serde_json::from_slice(&fs::read(&path)?)?;
-            if !journal.committed {
-                self.finish_journal(&mut journal, &path)?;
-            }
-        }
-        Ok(())
+        self.recover_journals().map(|_| ())
     }
     pub fn undo_latest(&self, id: Uuid) -> Result<StudioDesign> {
         self.move_history(id, false)

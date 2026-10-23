@@ -16,6 +16,24 @@ pub(super) enum ShutdownPurpose {
     InstallUpdate,
 }
 
+fn accepts_save_completion(state: &ShutdownState, current: u64, completed: u64) -> bool {
+    current == completed && matches!(state, ShutdownState::Saving)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn late_save_cannot_quit_after_timeout_return_or_retry() {
+        assert!(accepts_save_completion(&ShutdownState::Saving, 1, 1));
+        assert!(!accepts_save_completion(&ShutdownState::Failed("Timed out".into()), 1, 1));
+        assert!(!accepts_save_completion(&ShutdownState::Idle, 2, 1));
+        assert!(!accepts_save_completion(&ShutdownState::Saving, 3, 1));
+        assert!(!accepts_save_completion(&ShutdownState::Finishing, 2, 1));
+    }
+}
+
 impl RootView {
     pub(crate) fn handle_close_request(&mut self, cx: &mut Context<Self>) -> bool {
         match self.shutdown_state {
@@ -42,7 +60,23 @@ impl RootView {
             return;
         }
         self.shutdown_state = ShutdownState::Saving;
+        self.shutdown_attempt = self.shutdown_attempt.wrapping_add(1);
+        let attempt = self.shutdown_attempt;
         cx.notify();
+
+        // A stalled database save must leave an actionable window. The write
+        // may finish later, but must never close a window the user returned to.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(15)).await;
+            let _ = this.update(cx, |this, cx| {
+                if accepts_save_completion(&this.shutdown_state, this.shutdown_attempt, attempt) {
+                    eprintln!("Shutdown save attempt {attempt} exceeded 15 seconds");
+                    this.shutdown_state = ShutdownState::Failed(
+                        "Saving is taking longer than expected. You can return to Choro, or quit anyway. Quitting now may lose unsaved changes.".into());
+                    cx.notify();
+                }
+            });
+        }).detach();
 
         cx.spawn(async move |this, cx| {
             // Give the dimmed overlay and branded spinner one frame to appear.
@@ -69,6 +103,7 @@ impl RootView {
                 Ok(((workspace_revision, config), (agent_revision, agents))) => {
                     cx.background_executor()
                         .spawn(async move {
+                            crate::notifications::flush_history()?;
                             crate::state::workspace::persist_workspace_snapshot(
                                 workspace_revision,
                                 config,
@@ -82,6 +117,11 @@ impl RootView {
                 }
                 Err(error) => Err(error),
             };
+
+            if !this.update(cx, |this, _| accepts_save_completion(
+                &this.shutdown_state, this.shutdown_attempt, attempt)).unwrap_or(false) {
+                return;
+            }
 
             if let Err(error) = save_result {
                 let message: SharedString = format!("Could not save safely: {error}").into();
@@ -164,6 +204,7 @@ impl RootView {
     }
 
     fn finish_after_failed_save(&mut self, cx: &mut Context<Self>) {
+        self.shutdown_attempt = self.shutdown_attempt.wrapping_add(1);
         self.shutdown_state = ShutdownState::StoppingProcesses;
         self.stop_processes(cx);
         self.shutdown_state = ShutdownState::Finishing;
@@ -318,6 +359,7 @@ impl RootView {
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
+                                this.shutdown_attempt = this.shutdown_attempt.wrapping_add(1);
                                 this.shutdown_state = ShutdownState::Idle;
                                 this.shutdown_purpose = ShutdownPurpose::Quit;
                                 cx.notify();

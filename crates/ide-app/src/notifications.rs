@@ -6,8 +6,12 @@ use std::sync::{Mutex, OnceLock};
 
 use ide_core::{CompletionNotifications, NotificationSettings, ProjectId};
 use uuid::Uuid;
+mod history;
+#[cfg(test)]
+mod stability_tests;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AttentionCategory {
     NeedsAction,
     Completed,
@@ -24,11 +28,12 @@ impl AttentionCategory {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct AttentionKey {
     project_id: ProjectId,
     agent_id: Uuid,
     category: AttentionCategory,
+    source_agent_id: Uuid,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +60,7 @@ impl AttentionEvent {
                 project_id,
                 agent_id,
                 category,
+                source_agent_id: agent_id,
             },
             revision: revision.into(),
             created_at,
@@ -69,6 +75,11 @@ impl AttentionEvent {
 
     pub fn agent_id(&self) -> Uuid {
         self.key.agent_id
+    }
+
+    pub(crate) fn with_source(mut self, source_agent_id: Uuid) -> Self {
+        self.key.source_agent_id = source_agent_id;
+        self
     }
 }
 
@@ -198,9 +209,31 @@ struct NotificationCoordinator {
     /// visible-conversation behavior.
     preserved_visible_revisions: HashSet<(AttentionKey, String)>,
     primed: bool,
+    acknowledged: HashSet<(AttentionKey, String)>,
+    acknowledgement_order: std::collections::VecDeque<(AttentionKey, String)>,
+    acknowledgements_dirty: bool,
 }
 
 impl NotificationCoordinator {
+    fn remember(&mut self, revision: (AttentionKey, String)) {
+        if self.acknowledged.insert(revision.clone()) {
+            self.acknowledgement_order.push_back(revision);
+            while self.acknowledgement_order.len() > 16_384 {
+                if let Some(old) = self.acknowledgement_order.pop_front() {
+                    self.acknowledged.remove(&old);
+                }
+            }
+            self.acknowledgements_dirty = true;
+        }
+    }
+
+    fn queue_history_save(&mut self) {
+        if self.acknowledgements_dirty {
+            history::save(self.acknowledgement_order.iter().cloned().collect());
+            self.acknowledgements_dirty = false;
+        }
+    }
+
     #[cfg(test)]
     fn synchronize(
         &mut self,
@@ -250,6 +283,10 @@ impl NotificationCoordinator {
                 && visible.is_some_and(|visible| {
                     visible.project_id == event.project_id() && visible.agent_id == event.agent_id()
                 });
+            if suppressed || exact_agent_visible {
+                self.remember(suppressed_revision.clone());
+            }
+            let acknowledged = self.acknowledged.contains(&suppressed_revision);
             let state = self
                 .attention
                 .entry(event.key.clone())
@@ -267,7 +304,7 @@ impl NotificationCoordinator {
             }
             state.event = event;
 
-            if suppressed {
+            if acknowledged {
                 state.unread = false;
                 state.delivered_revision = Some(state.event.revision.clone());
                 state.companion_seen_revision = Some(state.event.revision.clone());
@@ -346,8 +383,10 @@ impl NotificationCoordinator {
             project_id,
             agent_id,
             category,
+            source_agent_id: agent_id,
         };
         let revision_key = (key.clone(), revision.clone());
+        self.remember(revision_key.clone());
         self.suppressed_revisions.insert(revision_key.clone());
 
         let mut actions = Vec::new();
@@ -372,6 +411,10 @@ impl NotificationCoordinator {
     ) -> Vec<NotificationAction> {
         let mut actions = Vec::new();
         self.preserved_visible_revisions.retain(|(key,_)|key.project_id!=project_id || key.agent_id!=agent_id);
+        let revisions = self.attention.values().filter(|state| {
+            state.event.project_id() == project_id && state.event.agent_id() == agent_id
+        }).map(|state| (state.event.key.clone(), state.event.revision.clone())).collect::<Vec<_>>();
+        for revision in revisions { self.remember(revision); }
         for state in self.attention.values_mut().filter(|state| {
             state.event.project_id() == project_id && state.event.agent_id() == agent_id
         }) {
@@ -418,6 +461,18 @@ impl NotificationCoordinator {
                 project_name: state.event.project_name.clone(),
             })
             .collect::<Vec<_>>();
+        // Several Bandmates can route to one lead. Keep their identities in
+        // state, but present one actionable row per destination conversation.
+        let priority = |category| match category {
+            AttentionCategory::NeedsAction => 0,
+            AttentionCategory::Failed => 1,
+            AttentionCategory::Completed => 2,
+        };
+        attention.sort_by(|a, b| priority(a.category).cmp(&priority(b.category))
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.revision.cmp(&b.revision)));
+        let mut destinations = HashSet::new();
+        attention.retain(|event| destinations.insert((event.project_id, event.agent_id)));
         attention.sort_by(|a, b| {
             b.created_at
                 .cmp(&a.created_at)
@@ -433,12 +488,14 @@ fn coordinator() -> &'static Mutex<NotificationCoordinator> {
 }
 
 fn notification_identifier(event: &AttentionEvent) -> String {
-    format!(
+    let base = format!(
         "choro:{}:{}:{}",
         event.project_id().0,
         event.agent_id(),
         event.key.category.identifier()
-    )
+    );
+    if event.key.source_agent_id == event.agent_id() { base }
+    else { format!("{base}:{}", event.key.source_agent_id) }
 }
 
 fn notification_copy(event: &AttentionEvent) -> (String, String) {
@@ -470,6 +527,7 @@ fn parse_notification_route(identifier: &str) -> Option<NotificationRoute> {
     let project_id = ProjectId(Uuid::parse_str(parts.next()?).ok()?);
     let agent_id = Uuid::parse_str(parts.next()?).ok()?;
     let category = parts.next()?;
+    if let Some(source) = parts.next() { Uuid::parse_str(source).ok()?; }
     if parts.next().is_some() || !matches!(category, "action" | "completed" | "failed") {
         return None;
     }
@@ -483,6 +541,16 @@ fn parse_notification_route(identifier: &str) -> Option<NotificationRoute> {
 pub fn initialize() {
     platform::initialize();
 }
+
+/// Called before the native event loop; subsequent saves run on one worker.
+pub(crate) fn restore_history() {
+    let entries = history::initialize();
+    let mut state = coordinator().lock().unwrap_or_else(|e| e.into_inner());
+    for entry in entries { state.remember(entry); }
+    state.acknowledgements_dirty = false;
+}
+
+pub(crate) fn flush_history() -> anyhow::Result<()> { history::flush() }
 
 /// Actions have their own durable acknowledgment; never enter the coding-turn
 /// coordinator, whose per-agent visibility rules would clear unrelated notices.
@@ -553,25 +621,29 @@ pub fn synchronize(
     preferences: NotificationSettings,
     companion_enabled: bool,
 ) {
-    let actions = coordinator()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .synchronize_with_companion(
+    let actions = {
+        let mut state = coordinator().lock().unwrap_or_else(|error| error.into_inner());
+        let actions = state.synchronize_with_companion(
             events,
             visible,
             platform::is_app_active(),
             preferences,
             companion_enabled,
         );
+        state.queue_history_save();
+        actions
+    };
     execute_actions(actions);
     update_dock_badge();
 }
 
 pub fn acknowledge_agent(project_id: ProjectId, agent_id: Uuid) {
-    let actions = coordinator()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .acknowledge_agent(project_id, agent_id);
+    let actions = {
+        let mut state = coordinator().lock().unwrap_or_else(|error| error.into_inner());
+        let actions = state.acknowledge_agent(project_id, agent_id);
+        state.queue_history_save();
+        actions
+    };
     execute_actions(actions);
     update_dock_badge();
 }
@@ -589,10 +661,12 @@ pub fn suppress_agent_attention_revision(
     category: AttentionCategory,
     revision: String,
 ) {
-    let actions = coordinator()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .suppress_revision(project_id, agent_id, category, revision);
+    let actions = {
+        let mut state = coordinator().lock().unwrap_or_else(|error| error.into_inner());
+        let actions = state.suppress_revision(project_id, agent_id, category, revision);
+        state.queue_history_save();
+        actions
+    };
     execute_actions(actions);
     update_dock_badge();
 }

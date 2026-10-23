@@ -2,6 +2,8 @@
 //! durable commands it consumes. No selected-chat state drives scheduling.
 pub mod display;
 mod preparation;
+mod effects;
+mod stopping;
 #[cfg(test)]
 mod tests;
 use super::agent_chat::protocol::managed;
@@ -36,6 +38,9 @@ pub(crate) struct DelegationCoordinator {
     /// Slow work never owns the refresh/scheduling loop. One job per task;
     /// durable task state still decides whether any result may be dispatched.
     in_flight: HashMap<(Uuid, Uuid), Job>,
+    telemetry_in_flight: HashSet<(Uuid, Uuid)>,
+    stop_requested: HashSet<Uuid>,
+    stop_in_flight: HashSet<Uuid>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -156,6 +161,9 @@ impl DelegationCoordinator {
                 reload_epoch: 0,
                 snapshot: Vec::new(),
                 in_flight: HashMap::new(),
+                telemetry_in_flight: HashSet::new(),
+                stop_requested: HashSet::new(),
+                stop_in_flight: HashSet::new(),
             }
         });
         cx.set_global(DelegationHandle(entity.clone()));
@@ -215,25 +223,23 @@ impl DelegationCoordinator {
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(work, owner)))
                                     .unwrap_or_else(|_| Err(anyhow::anyhow!("Bandmate preparation stopped unexpectedly. Retry the assignment.")))
                             }).await;
-                            let _ = weak.update(cx, |s, cx| {
-                                s.in_flight.remove(&key);
-                                s.finish_job(job, result, cx);
-                            });
+                            Self::finish_job(weak.clone(), job, result, cx).await;
+                            let _ = weak.update(cx, |s, _| { s.in_flight.remove(&key); });
                         }).detach();
                         continue;
                     }
                     let work = job.clone();
                     let result = cx.background_executor().spawn(async move { execute(work,owner) }).await;
-                    if this.update(cx, |s,cx| s.finish_job(job, result, cx)).is_err() { break; }
+                    Self::finish_job(this.clone(), job, result, cx).await;
                 }
             }).detach();
         });
         entity
     }
 
-    fn accept_snapshot(&mut self, epoch: u64, runs: Vec<DelegationRun>, snapshot: Vec<RunStamp>, cx: &mut Context<Self>) -> bool {
+    fn accept_snapshot(&mut self, epoch: u64, mut runs: Vec<DelegationRun>, snapshot: Vec<RunStamp>, cx: &mut Context<Self>) -> bool {
         if self.reload_epoch != epoch { let _ = self.wake.try_send(()); return false; }
-        let error_changed = self.error.is_some();
+        let error_changed = self.error.is_some() && self.stop_requested.is_empty();
         let changed = self.snapshot != snapshot || error_changed;
         let parents = if changed {
             let old_by_id = self.snapshot.iter().map(|stamp| (stamp.id, stamp)).collect::<HashMap<_, _>>();
@@ -242,31 +248,21 @@ impl DelegationCoordinator {
                 .chain(snapshot.iter().filter(|new| old_by_id.get(&new.id).copied() != Some(*new)))
                 .map(|stamp| stamp.parent).collect::<HashSet<_>>().into_iter().collect()
         } else { vec![] };
+        for run in &mut runs {
+            if self.stop_requested.contains(&run.id) {
+                run.status = RunStatus::Paused;
+                run.pause_reason = Some(if self.stop_in_flight.contains(&run.id) {
+                    "Stopped locally — saving Stop"
+                } else { "Stopped locally — Stop could not be saved; Resume retries the save first" }.into());
+            }
+        }
         self.runs = runs;
         self.snapshot = snapshot;
-        self.error = None;
+        if self.stop_requested.is_empty() { self.error = None; }
         if changed { cx.emit(DelegationChanged { parents, error_changed }); cx.notify(); }
         true
     }
 
-    fn finish_job(&mut self, job: Job, result: Result<Effect>, cx: &mut Context<Self>) {
-        if let Some(id) = job.reserved_agent() {
-            self.chats.update(cx, |chats, _| { chats.delegation_reservations.remove(&id); });
-        }
-        let result = result.and_then(|effect| self.apply_effect(job.run().id, effect, cx));
-        if let Err(error) = result {
-            if let Err(error) = LocalStore::open_default()
-                .and_then(|store| preparation::record_job_failure(&store, &job, &error.to_string())) {
-                self.error = Some(error.to_string());
-                cx.emit(DelegationChanged { parents: vec![job.run().parent_agent_id], error_changed: true });
-                cx.notify();
-            }
-        }
-        if let Some(id) = job.reserved_agent() {
-            self.chats.update(cx, |chats, cx| chats.release_delegation_reservation(id, cx));
-        }
-        self.request_reload();
-    }
 
     fn accept_error(&mut self, epoch: u64, error: String, cx: &mut Context<Self>) {
         if self.reload_epoch != epoch { return; }
@@ -314,14 +310,21 @@ impl DelegationCoordinator {
     /// remains stopped. Observe the pause before dispatch so the next poll
     /// cannot kill that newly requested turn.
     pub fn prepare_parent_message(&mut self, parent: Uuid, cx: &mut Context<Self>) -> Result<bool> {
-        let runs = LocalStore::open_default()?.load_delegations()?;
-        let Some(run) = runs
+        // UI submission must not wait behind a database writer. Scheduling
+        // remains governed by durable state; a pending local Stop wins here.
+        let Some(run) = self.runs
             .iter()
-            .find(|r| r.parent_agent_id == parent && r.status.stopped())
+            .find(|r| r.parent_agent_id == parent
+                && (r.status.stopped() || self.stop_requested.contains(&r.id)))
+            .cloned()
         else {
             return Ok(false);
         };
-        if parent_stop_required(&mut self.stopped_parents, run) {
+        if self.stop_requested.contains(&run.id) {
+            self.stopped_parents.insert(run.id);
+            return Ok(true);
+        }
+        if parent_stop_required(&mut self.stopped_parents, &run) {
             self.stop_runtime(parent, cx);
         }
         Ok(true)
@@ -371,16 +374,10 @@ impl DelegationCoordinator {
                             attempt.session_id != session_id || attempt.usage != usage
                         });
                     if changed {
-                        if let Ok(store) = LocalStore::open_default() {
-                            if let Some(attempt) = b.attempt_id {
-                                let _ = store.update_delegation_telemetry(
-                                    b.run_id,
-                                    b.task_id.unwrap(),
-                                    attempt,
-                                    session_id,
-                                    usage,
-                                );
-                            }
+                        if let Some(attempt) = b.attempt_id {
+                            let (run_id, task_id) = (b.run_id, b.task_id.unwrap());
+                            // Coalesce each attempt while its previous write is pending.
+                            self.queue_telemetry(run_id, task_id, attempt, session_id, usage, cx);
                         }
                     }
                 }
@@ -405,6 +402,7 @@ impl DelegationCoordinator {
         for offset in 0..n {
             let index = (self.cursor + offset) % n;
             let run = self.runs[index].clone();
+            if self.stop_requested.contains(&run.id) { continue; }
             let Some(parent) = self.agents.read(cx).agent(run.parent_agent_id).cloned() else {
                 continue;
             };
@@ -448,7 +446,7 @@ impl DelegationCoordinator {
                 continue;
             }
             let safe = self.chats.read(cx).safe_for_delegation(parent.id);
-            let job = if run.status == RunStatus::Preparing {
+            let job = if lead_configuration_required(&run, &parent) {
                 (safe && !run.tasks.is_empty() && !self.in_flight.keys().any(|(id, _)| *id == run.id))
                     .then(|| Job::Configure(run.clone(), parent.clone()))
             } else {
@@ -597,186 +595,14 @@ impl DelegationCoordinator {
         None
     }
 
-    fn apply_effect(&mut self, run_id: Uuid, effect: Effect, cx: &mut Context<Self>) -> Result<()> {
-        let store = LocalStore::open_default()?;
-        let run = store.load_delegation(run_id)?;
-        if matches!(effect, Effect::None) {
-            return Ok(());
-        }
-        if let Effect::Send(agent, _, _, _, ids) = &effect {
-            let task_allowed = agent
-                .delegation
-                .as_ref()
-                .and_then(|b| b.task_id.map(|id| (id, b.attempt_id)))
-                .is_none_or(|(id, attempt)| {
-                    run.task(id).is_ok_and(|t| {
-                        matches!(
-                            t.status,
-                            TaskStatus::Running
-                                | TaskStatus::WaitingForLead
-                                | TaskStatus::CompletionRequested
-                        ) && t.attempt().is_some_and(|a| Some(a.id) == attempt)
-                    })
-                });
-            if !run.status.dispatchable() || !task_allowed {
-                // This effect has not reached the provider. Preserve it as
-                // queued input instead of inventing an uncertain execution.
-                store.update_delegation(run_id, None, |r| {
-                    for d in &mut r.deliveries {
-                        if ids.contains(&d.id) && d.runtime_generation.is_none() {
-                            d.status = DeliveryStatus::Queued;
-                        }
-                    }
-                    Ok(())
-                })?;
-                return Ok(());
-            }
-        }
-        match effect {
-            Effect::None => (),
-            Effect::Adopt(agent) => {
-                // Record adoption is safe while stopped, but a stale attempt
-                // must never replace the current chat configuration.
-                if let Some(binding) = agent.delegation.as_ref().filter(|b| b.task_id.is_some()) {
-                    if run.task(binding.task_id.unwrap())?.attempt()
-                        .is_none_or(|a| Some(a.id) != binding.attempt_id) { return Ok(()); }
-                } else if run.status.stopped() || run.status.terminal() {
-                    return Ok(());
-                }
-                // Reconfiguration never substitutes a fresh provider session.
-                if self.chats.read(cx).has_backend(agent.id) {
-                    ensure!(
-                        self.chats
-                            .update(cx, |chats, cx| chats.retire_idle_backend(agent.id, cx)),
-                        "The provider has not reached a safe reconfiguration boundary."
-                    );
-                }
-                self.agents.update(cx, |records, cx| {
-                    records.adopt_managed(agent, cx);
-                    records.try_save_now()
-                })?;
-            }
-            Effect::Send(agent, history, text, _, ids) => {
-                let target = agent.id;
-                // A lead can change mode while the background delivery is
-                // loading. Apply the latest durable policy at dispatch time.
-                let mode = if target == run.parent_agent_id && run.plan_mode {
-                    AgentInteractionMode::Plan
-                } else {
-                    AgentInteractionMode::Default
-                };
-                if !self.chats.read(cx).safe_for_delegation(target) {
-                    // No provider command has been sent. A queued user turn
-                    // wins without turning a known non-delivery into uncertainty.
-                    store.update_delegation(run_id, None, |r| {
-                        for d in &mut r.deliveries {
-                            if ids.contains(&d.id) && d.runtime_generation.is_none() {
-                                d.status = DeliveryStatus::Queued;
-                            }
-                        }
-                        Ok(())
-                    })?;
-                    return Ok(());
-                }
-                // Legacy records did not carry consultation scope. Reconfigure
-                // only at this reserved idle boundary and preserve resume IDs.
-                let policy_changed = self
-                    .agents
-                    .read(cx)
-                    .agent(target)
-                    .is_some_and(|stored| stored.delegation != agent.delegation);
-                if policy_changed {
-                    if self.chats.read(cx).has_backend(target) {
-                        ensure!(
-                            self.chats
-                                .update(cx, |chats, cx| chats.retire_idle_backend(target, cx)),
-                            "The bandmate has not reached a safe policy boundary."
-                        );
-                    }
-                    self.agents.update(cx, |records, cx| {
-                        records.adopt_managed(agent.clone(), cx);
-                        records.try_save_now()
-                    })?;
-                }
-                let agent = self
-                    .agents
-                    .read(cx)
-                    .agent(target)
-                    .cloned()
-                    .context("The conversation was removed before dispatch.")?;
-                self.settled.remove(&target);
-                let generation = self.chats.update(cx, |chats, cx| {
-                    super::chat_dispatch::managed_send(chats, agent, history, text, mode, cx)
-                })?;
-                self.agents
-                    .update(cx, |a, cx| a.mark_started(target, None, cx));
-                store.update_delegation(run_id, None, |r| {
-                    for d in &mut r.deliveries {
-                        if ids.contains(&d.id) {
-                            d.runtime_generation = Some(generation);
-                        }
-                    }
-                    for t in &mut r.tasks {
-                        if let Some(a) = t.attempt_mut() {
-                            if a.child_agent_id == target {
-                                a.generation = generation;
-                                a.progress = "Working".into();
-                            }
-                        }
-                    }
-                    Ok(())
-                })?;
-            }
-        }
-        Ok(())
+
+    /// Stop providers immediately; the durable gate is saved off the UI thread.
+    pub fn end_run(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
+        self.request_stop(run_id, true, cx)
     }
 
-    /// UI-only durable Stop gate. Agent tools have no route to clear it.
-    pub fn end_run(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
-        self.pause(run_id, cx)?;
-        let store = LocalStore::open_default()?;
-        store.update_delegation(run_id, None, |r| {
-            r.status = RunStatus::Cancelled;
-            r.pause_reason = Some("Ended by user; conversations and files retained".into());
-            for t in &mut r.tasks {
-                if !t.status.terminal() {
-                    t.status = TaskStatus::Cancelled;
-                    t.reason = Some("User ended delegation".into());
-                }
-            }
-            r.event(
-                r.parent_agent_id,
-                None,
-                "cancelled",
-                "User ended delegation; shared project edits retained",
-            );
-            Ok(())
-        })?;
-        let run = store.load_delegation(run_id)?;
-        self.chats.update(cx, |chats, _| {
-            chats.allow_managed_resume(run.parent_agent_id)
-        });
-        self.runs = store.load_delegations()?;
-        self.notify_run_changed(run_id, cx);
-        Ok(())
-    }
     pub fn pause(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
-        let store = LocalStore::open_default()?;
-        store.update_delegation(run_id, None, |r| {
-            r.pause("Stopped by user", false);
-            Ok(())
-        })?;
-        let run = store.load_delegation(run_id)?;
-        self.stop_runtime(run.parent_agent_id, cx);
-        self.stopped_parents.insert(run_id);
-        for task in &run.tasks {
-            if let Some(a) = task.attempt() {
-                self.stop_runtime(a.child_agent_id, cx);
-            }
-        }
-        self.runs = store.load_delegations()?;
-        self.notify_run_changed(run_id, cx);
-        Ok(())
+        self.request_stop(run_id, false, cx)
     }
     pub fn pause_task(
         &mut self,
@@ -806,8 +632,16 @@ impl DelegationCoordinator {
         if let Some(child) = run.task(task_id)?.attempt().map(|a| a.child_agent_id)
             .filter(|id| self.agents.read(cx).agent(*id).is_some()) { return Ok(child); }
         let parent = self.agents.read(cx).agent(run.parent_agent_id).cloned().context("Lead conversation is missing")?;
-        let effect = preparation::provision(&store, run, task_id, parent, false)?;
-        self.apply_effect(run_id, effect, cx)?;
+        let effect = preparation::provision(&store, run.clone(), task_id, parent, false)?;
+        let run = store.load_delegation(run_id)?;
+        let snapshot = self.stage_effect(&run, &effect, cx)?;
+        if let Some((revision, snapshot)) = snapshot {
+            cx.background_executor().spawn(async move {
+                if let Err(error) = super::agents::persist_agent_store_snapshot(revision, snapshot) {
+                    eprintln!("Could not save assignment conversation: {error:#}");
+                }
+            }).detach();
+        }
         self.runs = store.load_delegations()?;
         self.notify_run_changed(run_id, cx);
         Ok(store.load_delegation(run_id)?.task(task_id)?.attempt().context("Bandmate conversation is missing")?.child_agent_id)
@@ -953,6 +787,11 @@ impl DelegationCoordinator {
         Ok(notice)
     }
     pub fn resume(&mut self, run_id: Uuid, cx: &mut Context<Self>) -> Result<()> {
+        ensure!(!self.stop_in_flight.contains(&run_id), "Stop is still being saved. Try Resume again shortly.");
+        if self.stop_requested.contains(&run_id) {
+            self.request_stop(run_id, false, cx)?;
+            anyhow::bail!("Retrying the Stop save. Resume again after it finishes.");
+        }
         let store = LocalStore::open_default()?;
         let run = store.load_delegation(run_id)?;
         run.require_shared()?;
@@ -1057,10 +896,19 @@ impl DelegationCoordinator {
             }
         });
         self.stopped_parents.remove(&run_id);
+        self.stop_requested.remove(&run_id);
         self.runs = store.load_delegations()?;
         self.notify_run_changed(run_id, cx);
         Ok(())
     }
+}
+
+fn lead_configuration_required(run: &DelegationRun, parent: &AgentRecord) -> bool {
+    run.status == RunStatus::Preparing
+        || (run.status.dispatchable()
+            && parent.delegation.as_ref().is_none_or(|binding| {
+                binding.run_id != run.id || binding.task_id.is_some()
+            }))
 }
 
 /// Historical runs must never retire or detach the lead of a newer run.
@@ -1207,7 +1055,12 @@ fn execute_in_store(
                 workspace: None,
                 task_kind: None,
             });
-            store.update_delegation(id,Some(run.revision),|r| { r.status=RunStatus::Active; r.queue(r.parent_agent_id,None,format!("Managed Bandmates are ready. Run {id}. Continue your share of the task, coordinate responsibilities and review results. Use delegation_wait and end the turn when there is no independent work.")); Ok(()) })?;
+            // A lock can interrupt adoption after the activation was committed.
+            // Repair that configuration before dispatch, without queueing the
+            // lead's startup prompt a second time.
+            if run.status == RunStatus::Preparing {
+                store.update_delegation(id,Some(run.revision),|r| { r.status=RunStatus::Active; r.queue(r.parent_agent_id,None,format!("Managed Bandmates are ready. Run {id}. Continue your share of the task, coordinate responsibilities and review results. Use delegation_wait and end the turn when there is no independent work.")); Ok(()) })?;
+            }
             Ok(Effect::Adopt(parent))
         }
         Job::Prepare(run, task_id, parent) => {

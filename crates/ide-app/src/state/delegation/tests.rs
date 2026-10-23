@@ -1,5 +1,6 @@
 use super::*;
 mod lifecycle;
+mod stability;
 use ide_core::{
     experts::ExpertProfile, AgentAccessMode, AgentKind, AgentModel, AppConfig, Project,
 };
@@ -31,6 +32,8 @@ fn reload_hints_reject_stale_results_and_unchanged_polls_are_silent(cx: &mut gpu
             runs: vec![], error: None, agents, chats, terminals, settled: HashMap::new(), cursor: 0,
             stopped_parents: HashSet::new(), wake, reload_epoch: 0, snapshot: vec![],
             in_flight: HashMap::new(),
+            telemetry_in_flight: HashSet::new(),
+            stop_requested: HashSet::new(), stop_in_flight: HashSet::new(),
         });
         let count = notifications.clone();
         cx.observe(&coordinator, move |_, _| count.set(count.get() + 1)).detach();

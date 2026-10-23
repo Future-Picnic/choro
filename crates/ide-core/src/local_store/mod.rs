@@ -43,6 +43,18 @@ pub struct LocalStore {
     rt: Arc<Runtime>,
 }
 
+/// Recognize database contention without confusing provider errors or user
+/// messages mentioning a lock with an error from the local store. Context
+/// wrappers must retain the underlying Turso error for this check.
+pub fn is_database_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<turso::Error>(),
+            Some(turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredChatMessage {
     pub id: Uuid,
