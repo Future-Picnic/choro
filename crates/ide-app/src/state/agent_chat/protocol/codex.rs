@@ -1,6 +1,26 @@
 use super::*;
 
 #[derive(Default)]
+pub(super) struct CodexCapacityRetry {
+    params: Option<Value>,
+    attempts: usize,
+    error: Option<String>,
+    error_reported: bool,
+    deadline: Option<Instant>,
+}
+
+impl CodexCapacityRetry {
+    const DELAYS: [u64; 3] = [5, 10, 20];
+
+    fn can_retry(&self, message: &str) -> bool {
+        self.params.is_some()
+            && !self.error_reported
+            && self.attempts < Self::DELAYS.len()
+            && codex_model_at_capacity(message)
+    }
+}
+
+#[derive(Default)]
 pub(super) struct CodexTurnControl {
     starting: bool,
     active_id: Option<String>,
@@ -41,21 +61,84 @@ impl CodexTurnControl {
 }
 
 impl CodexRuntime {
+    pub(super) fn resolve_model_selection(&mut self) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut models = catalog::read_models(|params| self.request_with_timeout("model/list", params, deadline.saturating_duration_since(Instant::now())))?;
+        models.retain(|model| !self.rejected_models.contains(&model.id));
+        let selected = ide_core::agents::codex::resolve_model(&models, self.model.as_deref())?.clone();
+        let requested_effort = AgentEffort::from_cli_value(&self.effort).unwrap_or_default();
+        let effort = selected.normalize_effort(requested_effort);
+        if self.model.as_deref() != Some(selected.id.as_str()) {
+            let title = match self.model.as_deref() {
+                Some(previous) => format!("{previous} is unavailable in this Codex catalog · using {}", selected.name),
+                None => format!("Codex selected {}", selected.name),
+            };
+            self.events.send_blocking(ChatBackendEvent::WorkLog(WorkLogEntry::new(
+                next_request_id(), "codex-model-selection", WorkLogEntryKind::System, title, WorkLogStatus::Completed))).ok();
+        }
+        self.model = Some(selected.id.clone());
+        self.effort = effort.map(|effort| effort.cli_value().to_string()).unwrap_or_default();
+        self.events.send_blocking(ChatBackendEvent::CodexModelSelected {
+            model: selected, effort: effort.unwrap_or_default(),
+        }).ok();
+        Ok(())
+    }
+
+    fn mark_model_unavailable(&mut self, message: &str) {
+        if ide_core::agents::codex::model_unavailable(message) {
+            if let Some(id) = self.model.clone().filter(|id| self.rejected_models.insert(id.clone())) {
+                self.events.send_blocking(ChatBackendEvent::CodexModelRejected { id, project_path: self.agent.project_path.clone() }).ok();
+            }
+        }
+    }
+
     pub(super) fn run_loop(&mut self) -> anyhow::Result<()> {
         loop {
             if self.shutdown.load(Ordering::SeqCst) {
                 self.assistant_stream.flush(&self.events);
                 break;
             }
-            if let Some(command) = self.deferred_turns.pop_front() {
-                self.handle_command(command)?;
-                continue;
+            if self
+                .capacity_retry
+                .deadline
+                .is_some_and(|at| Instant::now() >= at)
+            {
+                // Stop wins even when it arrives as the backoff expires.
+                self.handle_commands_while_blocked()?;
+                if self.capacity_retry.deadline.is_some() {
+                    self.retry_capacity_turn()?;
+                    continue;
+                }
             }
-            match next_backend_inbound(
-                &self.commands,
-                &self.messages,
-                self.assistant_stream.has_pending(),
-            ) {
+            if !self.turn_control.starting
+                && self.turn_control.active_id.is_none()
+                && self.capacity_retry.deadline.is_none()
+            {
+                if let Some(command) = self.deferred_turns.pop_front() {
+                    self.handle_command(command)?;
+                    continue;
+                }
+            }
+            let inbound = if let Some(deadline) = self.capacity_retry.deadline {
+                crossbeam_channel::select_biased! {
+                    recv(self.commands) -> command => match command {
+                        Ok(command) => BackendInbound::Command(command),
+                        Err(_) => BackendInbound::CommandsClosed,
+                    },
+                    recv(self.messages) -> message => match message {
+                        Ok(message) => BackendInbound::Message(message),
+                        Err(_) => BackendInbound::MessagesClosed,
+                    },
+                    default(deadline.saturating_duration_since(Instant::now())) => BackendInbound::FlushTick,
+                }
+            } else {
+                next_backend_inbound(
+                    &self.commands,
+                    &self.messages,
+                    self.assistant_stream.has_pending(),
+                )
+            };
+            match inbound {
                 BackendInbound::Command(ChatBackendCommand::Shutdown) => {
                     self.assistant_stream.flush(&self.events);
                     return Ok(());
@@ -127,7 +210,9 @@ impl CodexRuntime {
             if message.get("id").and_then(Value::as_str) == Some(id.as_str()) {
                 if let Some(error) = message.get("error") {
                     self.assistant_stream.flush(&self.events);
-                    return Err(anyhow!("{method} returned error: {error}"));
+                    let message = error.get("message").and_then(Value::as_str).unwrap_or("Codex rejected the request.");
+                    if method == "turn/start" { self.mark_model_unavailable(message); }
+                    return Err(anyhow!("{method}: {}", ide_core::agents::codex::readable_error(message)));
                 }
                 self.assistant_stream.flush(&self.events);
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
@@ -155,6 +240,7 @@ impl CodexRuntime {
         read_only: bool,
         turn_id: String,
     ) -> anyhow::Result<()> {
+        self.resolve_model_selection()?;
         let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
         let consultation = super::managed::consultation(&self.agent);
@@ -223,23 +309,29 @@ impl CodexRuntime {
             self.access_mode.codex_approval_policy()
         };
         self.turn_control.begin();
+        self.capacity_retry = CodexCapacityRetry::default();
         let mut params = json!({
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": text}],
                 "approvalPolicy": approval_policy,
                 "sandboxPolicy": sandbox_policy,
                 "model": self.model,
-                "effort": self.effort,
+                "effort": (!self.effort.is_empty()).then_some(&self.effort),
                 "collaborationMode": {
                     "mode": mode_name,
                     "settings": {
-                        "model": self.model.clone().unwrap_or_else(|| "gpt-5.5".to_string()),
-                        "reasoning_effort": self.effort,
+                        "model": self.model,
+                        "reasoning_effort": (!self.effort.is_empty()).then_some(&self.effort),
                         "developer_instructions": developer_instructions
                     }
                 }
             });
         if self.agent.review_run_id.is_some() { params["environments"] = json!([]); }
+        // Codex has already recorded the original input before a capacity
+        // failure. An empty input resumes that history without duplicating it.
+        let mut retry_params = params.clone();
+        retry_params["input"] = json!([]);
+        self.capacity_retry.params = Some(retry_params);
         let result = self.request("turn/start", params)?;
         // Normally turn/started supplies the id while the request is pending.
         // Also accept the response, without resurrecting an already completed turn.
@@ -272,8 +364,8 @@ impl CodexRuntime {
             ChatBackendCommand::UpdateAccessMode { access_mode } => {
                 self.access_mode = access_mode;
             }
-            ChatBackendCommand::UpdateModelEffort { model, effort, .. } => {
-                self.model = model.cli_value().map(str::to_string);
+            ChatBackendCommand::UpdateModelEffort { model, effort, external_model } => {
+                self.model = external_model.map(|(id, _)| id).or_else(|| model.cli_value().map(str::to_string));
                 self.effort = effort.cli_value().to_string();
             }
             ChatBackendCommand::SubmitUserInput {
@@ -303,8 +395,8 @@ impl CodexRuntime {
                 Ok(ChatBackendCommand::UpdateAccessMode { access_mode }) => {
                     self.access_mode = access_mode;
                 }
-                Ok(ChatBackendCommand::UpdateModelEffort { model, effort, .. }) => {
-                    self.model = model.cli_value().map(str::to_string);
+                Ok(ChatBackendCommand::UpdateModelEffort { model, effort, external_model }) => {
+                    self.model = external_model.map(|(id, _)| id).or_else(|| model.cli_value().map(str::to_string));
                     self.effort = effort.cli_value().to_string();
                 }
                 Ok(ChatBackendCommand::SubmitUserInput {
@@ -408,6 +500,10 @@ impl CodexRuntime {
     }
 
     fn cancel_turn(&mut self) -> anyhow::Result<()> {
+        if self.capacity_retry.deadline.is_some() {
+            self.emit_pending_changed_files();
+        }
+        self.capacity_retry = CodexCapacityRetry::default();
         self.studio_review.cancel();
         self.deferred_turns.clear();
         self.turn_control.cancel_requested = true;
@@ -486,7 +582,19 @@ impl CodexRuntime {
         if !codex_notification_for_thread(&params, self.thread_id.as_deref()) {
             return Ok(());
         }
-        if codex_event_confirms_recovery(method) {
+        let notification_turn_id = match method {
+            "turn/completed" => params.pointer("/turn/id").and_then(Value::as_str),
+            "error" => params.get("turnId").or_else(|| params.get("turn_id")).and_then(Value::as_str),
+            _ => None,
+        };
+        if notification_turn_id.is_some_and(|id| self.turn_control.active_id.as_deref() != Some(id))
+        {
+            return Ok(());
+        }
+        if codex_event_confirms_recovery(method)
+            && !(method == "turn/completed"
+                && params.pointer("/turn/status").and_then(Value::as_str) != Some("completed"))
+        {
             self.finish_reconnect(WorkLogStatus::Completed, "Reconnected to Codex", None);
         }
         if method != "item/agentMessage/delta" {
@@ -637,6 +745,13 @@ impl CodexRuntime {
                 }
             }
             "turn/completed" => {
+                if self.schedule_capacity_retry(&params) {
+                    return Ok(());
+                }
+                if params.pointer("/turn/status").and_then(Value::as_str) == Some("failed") {
+                    self.finish_reconnect(WorkLogStatus::Failed, "Codex could not continue", None);
+                }
+                self.capacity_retry = CodexCapacityRetry::default();
                 self.turn_control.completed();
                 let was_cancelled = self.studio_review.cancelled;
                 let interrupted = was_cancelled
@@ -759,6 +874,13 @@ impl CodexRuntime {
                             .ok();
                     }
                     CodexErrorDisposition::Terminal { message } => {
+                        self.mark_model_unavailable(&message);
+                        self.capacity_retry.error = Some(message.clone());
+                        if !self.turn_control.cancel_requested && self.capacity_retry.can_retry(&message) {
+                            // Wait for turn/completed before starting another
+                            // provider turn; starting here would steer the failed one.
+                            return Ok(());
+                        }
                         self.emit_pending_changed_files();
                         self.finish_reconnect(
                             WorkLogStatus::Failed,
@@ -766,6 +888,7 @@ impl CodexRuntime {
                             Some(message.clone()),
                         );
                         self.pending_approvals.clear();
+                        self.capacity_retry.error_reported = true;
                         self.events
                             .send_blocking(ChatBackendEvent::Error(message))
                             .ok();
@@ -773,6 +896,104 @@ impl CodexRuntime {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    fn schedule_capacity_retry(&mut self, params: &Value) -> bool {
+        if self.turn_control.cancel_requested
+            || params.pointer("/turn/status").and_then(Value::as_str) != Some("failed")
+        {
+            return false;
+        }
+        let completion_error = params
+            .pointer("/turn/error")
+            .filter(|error| !error.is_null());
+        let message = completion_error
+            .map(|error| match codex_error_disposition(error) {
+                CodexErrorDisposition::Terminal { message }
+                | CodexErrorDisposition::Retry { message, .. } => message,
+            })
+            .or_else(|| self.capacity_retry.error.clone());
+        let Some(message) = message else {
+            return false;
+        };
+        self.mark_model_unavailable(&message);
+        if !self.capacity_retry.can_retry(&message) {
+            // Some app-server versions only include the error in completion.
+            if !self.capacity_retry.error_reported {
+                self.events
+                    .send_blocking(ChatBackendEvent::Error(message))
+                    .ok();
+            }
+            self.finish_reconnect(WorkLogStatus::Failed, "Codex could not continue", None);
+            return false;
+        }
+        let delay = CodexCapacityRetry::DELAYS[self.capacity_retry.attempts];
+        self.capacity_retry.attempts += 1;
+        self.capacity_retry.error = None;
+        self.capacity_retry.deadline = Some(Instant::now() + Duration::from_secs(delay));
+        self.turn_control.completed();
+        let id = self
+            .active_reconnect_work_log_id
+            .get_or_insert_with(next_request_id)
+            .clone();
+        self.events
+            .send_blocking(ChatBackendEvent::WorkLog(
+                WorkLogEntry::new(
+                    id.clone(),
+                    id,
+                    WorkLogEntryKind::System,
+                    format!(
+                        "Model at capacity · retrying in {delay}s ({}/3)",
+                        self.capacity_retry.attempts
+                    ),
+                    WorkLogStatus::InProgress,
+                )
+                .detail(Some(message)),
+            ))
+            .ok();
+        self.events
+            .send_blocking(ChatBackendEvent::Status(AgentChatStatus::Running))
+            .ok();
+        true
+    }
+
+    fn retry_capacity_turn(&mut self) -> anyhow::Result<()> {
+        self.capacity_retry.deadline = None;
+        let Some(mut params) = self.capacity_retry.params.clone() else {
+            return Ok(());
+        };
+        // Honor settings changed while waiting, retaining any read-only scope
+        // and the original turn's collaboration/developer instructions.
+        params["model"] = json!(self.model);
+        params["effort"] = json!((!self.effort.is_empty()).then_some(&self.effort));
+        params["collaborationMode"]["settings"]["model"] =
+            json!(self.model);
+        params["collaborationMode"]["settings"]["reasoning_effort"] = json!((!self.effort.is_empty()).then_some(&self.effort));
+        if params
+            .pointer("/sandboxPolicy/type")
+            .and_then(Value::as_str)
+            != Some("readOnly")
+        {
+            let mut policy =
+                codex_turn_sandbox_policy(self.access_mode, self.visualization_dir.as_deref());
+            allow_pocketcomet_chat_network(&mut policy, self.agent.origin.as_ref());
+            params["sandboxPolicy"] = policy;
+        }
+        if self.agent.studio_context.is_none()
+            && self.agent.review_run_id.is_none()
+            && !super::managed::consultation(&self.agent)
+        {
+            params["approvalPolicy"] = json!(self.access_mode.codex_approval_policy());
+        }
+        self.turn_control.begin();
+        let result = self.request("turn/start", params)?;
+        if self.turn_control.starting {
+            if let Some(id) = result.pointer("/turn/id").and_then(Value::as_str) {
+                self.turn_control.started(id);
+                self.send_pending_interrupt()?;
+            }
         }
         Ok(())
     }
@@ -948,6 +1169,8 @@ mod interruption_tests {
             ),
             thread_id: Some("test-thread".into()),
             turn_control: CodexTurnControl::default(),
+            capacity_retry: CodexCapacityRetry::default(),
+            rejected_models: HashSet::new(),
             assistant_buffer: String::new(),
             assistant_stream: StreamChunkBuffer::new(),
             studio_review: StudioReviewGate::default(),
@@ -968,6 +1191,308 @@ mod interruption_tests {
             visualization_dir: None,
         };
         (runtime, event_rx)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejected_models_are_excluded_without_replaying_input_or_changing_thread_identity() {
+        let (mut runtime, events) = echo_runtime();
+        let (_commands, receiver) = crossbeam_channel::unbounded();
+        runtime.commands = receiver;
+        runtime.model = Some("rejected".into());
+        runtime.effort = "max".into();
+        runtime.mark_model_unavailable("The model is not supported for this account");
+        runtime.mark_model_unavailable("The model is not supported for this account");
+        let (replies, incoming) = crossbeam_channel::unbounded();
+        let requests = std::mem::replace(&mut runtime.messages, incoming);
+        let responder = thread::spawn(move || {
+            let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(request["method"], "model/list");
+            replies.send(json!({"id":request["id"],"result":{"data":[
+                {"model":"rejected","isDefault":true},
+                {"model":"available","supportedReasoningEfforts":[{"reasoningEffort":"low"}],"defaultReasoningEffort":"low"}
+            ]}}).into()).unwrap();
+        });
+        runtime.resolve_model_selection().unwrap();
+        responder.join().unwrap();
+        assert_eq!(runtime.model.as_deref(), Some("available"));
+        assert_eq!(runtime.effort, "low");
+        assert_eq!(runtime.thread_id.as_deref(), Some("test-thread"));
+        assert_eq!(runtime.active_turn_id, "local-receipt-id");
+        assert!(runtime.capacity_retry.params.is_none());
+        let emitted: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        assert_eq!(emitted.iter().filter(|event| matches!(event, ChatBackendEvent::CodexModelRejected { .. })).count(), 1);
+        assert!(emitted.iter().any(|event| matches!(event, ChatBackendEvent::CodexModelSelected { model, effort: AgentEffort::Low } if model.id == "available")));
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn capacity_retries_resume_history_preserve_identity_and_eventually_fail() {
+        let (mut runtime, events) = echo_runtime();
+        let (_commands, receiver) = crossbeam_channel::unbounded();
+        runtime.commands = receiver;
+        let (replies, incoming) = crossbeam_channel::unbounded();
+        let requests = std::mem::replace(&mut runtime.messages, incoming);
+        let (captured, received) = crossbeam_channel::unbounded();
+        thread::spawn(move || {
+            let mut turn = 0;
+            while let Ok(request) = requests.recv() {
+                if request["method"] == "model/list" {
+                    replies.send(json!({"id":request["id"],"result":{"data":[{
+                        "model":"test-model", "displayName":"Test model", "isDefault":true,
+                        "defaultReasoningEffort":"medium", "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]
+                    }]}}).into()).unwrap();
+                    continue;
+                }
+                turn += 1;
+                captured.send(request.value.clone()).unwrap();
+                if replies
+                    .send(
+                        json!({"id": request["id"], "result": {
+                            "turn": {"id": format!("provider-{turn}")}
+                        }})
+                        .into(),
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        runtime
+            .send_turn(
+                "Fix the bug".into(),
+                AgentInteractionMode::Plan,
+                true,
+                "local-turn".into(),
+            )
+            .unwrap();
+        let original = received.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut expected = original["params"].clone();
+        expected["input"] = json!([]);
+        let message = "Selected model is at capacity. Please try a different model.";
+        for attempt in 0..=3 {
+            let provider_id = runtime.turn_control.active_id.clone().unwrap();
+            runtime
+                .handle_message(json!({"method": "error", "params": {
+                    "turnId": provider_id, "willRetry": false, "error": {"message": message}
+                }}))
+                .unwrap();
+            assert!(
+                runtime.capacity_retry.deadline.is_none(),
+                "must wait for provider completion"
+            );
+            let completed = json!({"method": "turn/completed", "params": {
+                "turn": {"id": provider_id, "status": "failed", "error": {"message": message}}
+            }});
+            runtime.handle_message(completed.clone()).unwrap();
+            let emitted: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+            if attempt == 3 {
+                assert_eq!(
+                    emitted
+                        .iter()
+                        .filter(|event| matches!(event, ChatBackendEvent::Error(_)))
+                        .count(),
+                    1
+                );
+                assert!(emitted.iter().any(|event| matches!(
+                    event,
+                    ChatBackendEvent::Status(AgentChatStatus::Failed)
+                )));
+                assert!(runtime.capacity_retry.deadline.is_none());
+                break;
+            }
+            assert!(!emitted.iter().any(|event| matches!(
+                event,
+                ChatBackendEvent::Error(_)
+                    | ChatBackendEvent::Status(AgentChatStatus::Failed | AgentChatStatus::Idle)
+            )));
+            assert!(emitted
+                .iter()
+                .any(|event| matches!(event, ChatBackendEvent::Status(AgentChatStatus::Running))));
+            let deadline = runtime.capacity_retry.deadline.unwrap();
+            assert!(deadline > Instant::now());
+            assert!(
+                deadline
+                    <= Instant::now() + Duration::from_secs(CodexCapacityRetry::DELAYS[attempt])
+            );
+            runtime.handle_message(completed).unwrap();
+            assert_eq!(
+                runtime.capacity_retry.attempts,
+                attempt + 1,
+                "duplicate completion must not consume another retry"
+            );
+            if attempt == 1 {
+                runtime.model = Some("another-model".into());
+                runtime.effort = "high".into();
+                expected["model"] = json!("another-model");
+                expected["effort"] = json!("high");
+                expected["collaborationMode"]["settings"]["model"] = json!("another-model");
+                expected["collaborationMode"]["settings"]["reasoning_effort"] = json!("high");
+            }
+            runtime.retry_capacity_turn().unwrap();
+            let retried = received.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(retried["method"], "turn/start");
+            assert_eq!(
+                retried["params"], expected,
+                "retry must retain model, plan mode and sandbox with no repeated input"
+            );
+            assert_eq!(runtime.active_turn_id, "local-turn");
+        }
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn backoff_timer_dispatches_retry_without_user_input() {
+        let (mut runtime, events) = echo_runtime();
+        let (commands, receiver) = crossbeam_channel::unbounded();
+        runtime.commands = receiver;
+        runtime.capacity_retry.params = Some(json!({"threadId": "test-thread", "input": []}));
+        runtime.capacity_retry.deadline = Some(Instant::now() + Duration::from_millis(5));
+        let (replies, incoming) = crossbeam_channel::unbounded();
+        let requests = std::mem::replace(&mut runtime.messages, incoming);
+        let reply_sender = replies.clone();
+        let responder = thread::spawn(move || {
+            let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(request["method"], "turn/start");
+            assert_eq!(request["params"]["input"], json!([]));
+            reply_sender
+                .send(
+                    json!({"id": request["id"], "result": {
+                        "turn": {"id": "retried-turn"}
+                    }})
+                    .into(),
+                )
+                .unwrap();
+            reply_sender
+                .send(
+                    json!({"method": "turn/completed", "params": {
+                        "turn": {"id": "retried-turn", "status": "completed"}
+                    }})
+                    .into(),
+                )
+                .unwrap();
+        });
+        let stopper = thread::spawn(move || {
+            while let Ok(event) = events.recv_blocking() {
+                if matches!(event, ChatBackendEvent::Status(AgentChatStatus::Idle)) {
+                    commands.send(ChatBackendCommand::Shutdown).unwrap();
+                    return;
+                }
+            }
+        });
+        runtime.run_loop().unwrap();
+        responder.join().unwrap();
+        stopper.join().unwrap();
+        assert!(runtime.capacity_retry.params.is_none());
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ordinary_failure_is_reported_once_without_retrying() {
+        let (mut runtime, events) = echo_runtime();
+        runtime.turn_control.started("provider-1");
+        runtime.capacity_retry.params = Some(json!({"threadId": "test-thread", "input": []}));
+        runtime
+            .handle_message(json!({"method": "error", "params": {
+                "willRetry": false, "error": {"message": "Authentication failed"}
+            }}))
+            .unwrap();
+        runtime.handle_message(json!({"method": "turn/completed", "params": {
+            "turn": {"id": "provider-1", "status": "failed", "error": {"message": "Authentication failed"}}
+        }})).unwrap();
+        let emitted: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        assert_eq!(
+            emitted
+                .iter()
+                .filter(|event| matches!(event, ChatBackendEvent::Error(_)))
+                .count(),
+            1
+        );
+        assert!(runtime.capacity_retry.deadline.is_none());
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn capacity_completion_without_error_notification_retries_and_can_recover() {
+        let (mut runtime, events) = echo_runtime();
+        runtime.turn_control.started("provider-1");
+        runtime.capacity_retry.params = Some(json!({"threadId": "test-thread", "input": []}));
+        runtime
+            .handle_message(json!({"method": "turn/completed", "params": {
+                "turn": {"id": "provider-1", "status": "failed", "error": {
+                    "message": "Selected model is at capacity. Please try a different model."
+                }}
+            }}))
+            .unwrap();
+        assert!(runtime.capacity_retry.deadline.is_some());
+        assert!(!std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, ChatBackendEvent::Error(_))));
+        runtime.capacity_retry.deadline = None;
+        runtime.turn_control.started("provider-2");
+        runtime
+            .handle_message(json!({"method": "turn/completed", "params": {
+                "turn": {"id": "provider-2", "status": "completed"}
+            }}))
+            .unwrap();
+        assert!(runtime.capacity_retry.params.is_none());
+        assert_eq!(runtime.capacity_retry.attempts, 0);
+        assert!(std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, ChatBackendEvent::Status(AgentChatStatus::Idle))));
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_cancels_expired_capacity_backoff_before_dispatch() {
+        let (mut runtime, events) = echo_runtime();
+        let (commands, receiver) = crossbeam_channel::unbounded();
+        runtime.commands = receiver;
+        runtime.capacity_retry.params = Some(json!({"threadId": "test-thread", "input": []}));
+        runtime.capacity_retry.deadline = Some(Instant::now());
+        commands.send(ChatBackendCommand::CancelTurn).unwrap();
+        commands.send(ChatBackendCommand::Shutdown).unwrap();
+        // Shutdown during the command drain ends the loop before any request.
+        assert!(runtime.run_loop().is_err());
+        assert!(runtime.capacity_retry.params.is_none());
+        assert!(runtime.messages.try_recv().is_err());
+        assert!(std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, ChatBackendEvent::Status(AgentChatStatus::Idle))));
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn provider_owned_retry_does_not_schedule_a_second_retry() {
+        let (mut runtime, events) = echo_runtime();
+        runtime.turn_control.started("provider-1");
+        runtime.capacity_retry.params = Some(json!({"threadId": "test-thread", "input": []}));
+        runtime
+            .handle_message(json!({"method": "error", "params": {
+                "turnId": "provider-1", "willRetry": true,
+                "error": {"message": "Selected model is at capacity. Please try a different model."}
+            }}))
+            .unwrap();
+        assert!(runtime.capacity_retry.error.is_none());
+        assert!(runtime.capacity_retry.deadline.is_none());
+        assert_eq!(
+            runtime.turn_control.active_id.as_deref(),
+            Some("provider-1")
+        );
+        assert!(!std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, ChatBackendEvent::Error(_))));
+        let _ = runtime.child.kill();
+        let _ = runtime.child.wait();
     }
 
     #[test]
@@ -1094,6 +1619,13 @@ mod interruption_tests {
         thread::spawn(move || {
             while let Ok(request) = requests.recv() {
                 let method = request["method"].as_str().unwrap_or_default().to_string();
+                if method == "model/list" {
+                    reply_tx.send(json!({"id":request["id"],"result":{"data":[{
+                        "model":"test-model", "isDefault":true,
+                        "defaultReasoningEffort":"medium", "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]
+                    }]}}).into()).unwrap();
+                    continue;
+                }
                 let result = if method == "turn/start" {
                     json!({"turn":{"id":"provider-turn"}})
                 } else {

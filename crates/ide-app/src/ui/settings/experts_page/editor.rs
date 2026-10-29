@@ -227,7 +227,7 @@ impl SettingsView {
                                 let view = view.clone();
                                 move |mut menu, window, _| {
                                     for candidate in
-                                        AgentModel::models_for(provider).iter().copied()
+                                        AgentModel::picker_models_for(provider).iter().copied()
                                     {
                                         menu = menu.item(
                                             PopupMenuItem::new(candidate.menu_label())

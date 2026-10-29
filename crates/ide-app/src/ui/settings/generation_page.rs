@@ -111,7 +111,7 @@ impl SettingsView {
             let mut model_buttons_choices = if generation_agent.provider == AgentKind::OpenCode {
                 vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
             } else {
-                AgentModel::models_for(generation_agent.provider)
+                AgentModel::picker_models_for(generation_agent.provider)
                     .iter()
                     .filter(|_| generation_agent.provider.is_visible_in_picker())
                     .map(|model| (*model, model.menu_label().to_string()))
@@ -182,7 +182,7 @@ impl SettingsView {
                 if quick_ask_agent.provider == AgentKind::OpenCode {
                     vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
                 } else {
-                    AgentModel::models_for(quick_ask_agent.provider)
+                    AgentModel::picker_models_for(quick_ask_agent.provider)
                         .iter()
                         .filter(|_| quick_ask_agent.provider.is_visible_in_picker())
                         .map(|model| (*model, model.menu_label().to_string()))
@@ -252,7 +252,7 @@ impl SettingsView {
                 if agent_defaults.provider == AgentKind::OpenCode {
                     vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
                 } else {
-                    AgentModel::models_for(agent_defaults.provider)
+                    AgentModel::picker_models_for(agent_defaults.provider)
                         .iter()
                         .filter(|_| agent_defaults.provider.is_visible_in_picker())
                         .map(|model| (*model, model.menu_label().to_string()))

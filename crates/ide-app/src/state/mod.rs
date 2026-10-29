@@ -10,6 +10,7 @@ pub mod doc_assistant;
 pub mod docs;
 pub mod git_state;
 pub mod open_code;
+pub(crate) mod codex;
 pub mod orbit;
 pub mod quick_ask;
 pub mod services;

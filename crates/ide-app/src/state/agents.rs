@@ -15,6 +15,9 @@ use uuid::Uuid;
 
 use super::agent_chat::FileChangeStat;
 
+mod conversation_migration;
+pub(crate) use conversation_migration::persist_conversation_migration;
+
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 static AGENT_SAVE_REVISION: AtomicU64 = AtomicU64::new(0);
 static AGENT_WRITER: super::snapshot_writer::SnapshotWriter =
@@ -99,7 +102,7 @@ impl AgentRecords {
         for agent in &mut records {
             if agent.model == AgentModel::CodexDefault {
                 agent.model = AgentModel::default_for(AgentKind::Codex);
-                agent.effort = agent.model.normalize_effort(agent.effort);
+                agent.effort = agent.normalize_effort_for_model(agent.model, agent.effort);
             }
         }
         Self {
@@ -441,6 +444,23 @@ impl AgentRecords {
             return;
         };
         agent.set_external_model(model_id, label, variants);
+        agent.updated_at = agents::unix_now();
+        self.schedule_save(cx);
+        self.publish_record_change(id, cx);
+        cx.notify();
+    }
+
+    pub fn update_codex_model(&mut self, id: Uuid, model: Option<&ide_core::agents::codex::CodexModel>, effort: AgentEffort, cx: &mut Context<Self>) {
+        let Some(agent) = self.records.iter_mut().find(|agent| agent.id == id && agent.provider == AgentKind::Codex) else { return; };
+        if let Some(model) = model {
+            agent.set_codex_model(model, effort);
+        } else {
+            agent.model = AgentModel::CodexDefault;
+            agent.external_model_id = None;
+            agent.external_model_label = None;
+            agent.external_model_variants.clear();
+            agent.effort = effort;
+        }
         agent.updated_at = agents::unix_now();
         self.schedule_save(cx);
         self.publish_record_change(id, cx);

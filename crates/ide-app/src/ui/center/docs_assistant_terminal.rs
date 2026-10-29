@@ -202,7 +202,7 @@ impl CenterArea {
                             move |mut menu, window, cx| {
                                 let workspace = center.read(cx).workspace.clone();
                                 let choices = crate::ui::model_favorites::grouped_choices(
-                                    AgentModel::models_for(provider)
+                                    AgentModel::picker_models_for(provider)
                                         .iter()
                                         .copied()
                                         .filter(|_| provider.is_visible_in_picker())

@@ -106,7 +106,7 @@ impl DocAssistantRecord {
     }
 
     pub fn model_cli_value(&self) -> Option<&str> {
-        if self.provider == AgentKind::OpenCode {
+        if self.provider == AgentKind::OpenCode || (self.provider == AgentKind::Codex && self.external_model_id.is_some()) {
             self.external_model_id.as_deref()
         } else {
             self.model.cli_value()
@@ -114,7 +114,7 @@ impl DocAssistantRecord {
     }
 
     pub fn supported_efforts(&self) -> Vec<AgentEffort> {
-        if self.provider == AgentKind::OpenCode {
+        if self.provider == AgentKind::OpenCode || (self.provider == AgentKind::Codex && self.external_model_id.is_some()) {
             AgentEffort::supported_variants(&self.external_model_variants)
         } else {
             self.model.efforts()
@@ -334,7 +334,7 @@ pub fn start_command(record: &DocAssistantRecord, prompt: &str) -> String {
                 "-a".to_string(),
                 record.access_mode.codex_approval_policy().to_string(),
             ];
-            if let Some(model) = record.model.cli_value() {
+            if let Some(model) = record.model_cli_value() {
                 parts.push("-m".to_string());
                 parts.push(shell_quote(model));
             }
@@ -441,15 +441,47 @@ pub fn read_chat_transcript_messages(
     let Some(path) = agents::chat_transcript_path(kind, cwd, session_id) else {
         return Vec::new();
     };
-    let Ok(file) = fs::File::open(path) else {
-        return Vec::new();
-    };
-    BufReader::new(file)
-        .lines()
-        .map_while(|line| line.ok())
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
-        .filter_map(|value| transcript_message_from_json(&value))
-        .collect()
+    read_chat_transcript_file(&path).unwrap_or_default()
+}
+
+/// Read a transcript without resolving it through the recent-session cache.
+pub fn read_chat_transcript_file(path: &Path) -> Result<Vec<DocAssistantTranscriptMessage>> {
+    read_transcript_file(path, false)
+}
+
+/// Migration preserves prose accompanying a tool call while excluding the
+/// tool's arguments/results. Docs intentionally use a more selective reader.
+pub fn read_migration_transcript_file(path: &Path) -> Result<Vec<DocAssistantTranscriptMessage>> {
+    read_transcript_file(path, true)
+}
+
+fn read_transcript_file(path: &Path, migration: bool) -> Result<Vec<DocAssistantTranscriptMessage>> {
+    let file = fs::File::open(path).with_context(|| format!("Could not open {}", path.display()))?;
+    let mut messages = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line.with_context(|| format!("Could not read {}", path.display()))?;
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&line) {
+            if migration {
+                for pointer in [
+                    "/message/content",
+                    "/content",
+                    "/payload/message/content",
+                    "/payload/item/content",
+                    "/payload/content",
+                ] {
+                    if let Some(serde_json::Value::Array(blocks)) = value.pointer_mut(pointer) {
+                        blocks.retain(|block| {
+                            !matches!(block["type"].as_str(), Some("tool_use" | "tool_result"))
+                        });
+                    }
+                }
+            }
+            if let Some(message) = transcript_message_from_json_with_mode(&value, migration) {
+                messages.push(message);
+            }
+        }
+    }
+    Ok(messages)
 }
 
 #[cfg(test)]
@@ -460,8 +492,16 @@ fn message_from_json(value: &serde_json::Value) -> Option<DocAssistantMessage> {
     })
 }
 
+#[cfg(test)]
 fn transcript_message_from_json(
     value: &serde_json::Value,
+) -> Option<DocAssistantTranscriptMessage> {
+    transcript_message_from_json_with_mode(value, false)
+}
+
+fn transcript_message_from_json_with_mode(
+    value: &serde_json::Value,
+    migration: bool,
 ) -> Option<DocAssistantTranscriptMessage> {
     if is_tool_transcript_entry(value) {
         return None;
@@ -471,7 +511,7 @@ fn transcript_message_from_json(
     let text = text.trim().to_string();
     if text.is_empty()
         || is_internal_context_message(&text)
-        || is_assistant_tool_preamble(value, &role, &text)
+        || (!migration && is_assistant_tool_preamble(value, &role, &text))
     {
         return None;
     }
@@ -558,6 +598,7 @@ fn role_from_value(value: &serde_json::Value) -> Option<DocAssistantRole> {
         value.pointer("/payload/message/role"),
         value.pointer("/payload/item/role"),
         value.pointer("/payload/role"),
+        value.pointer("/payload/type"),
         value.pointer("/type"),
     ];
     candidates
@@ -581,6 +622,7 @@ fn text_from_value(value: &serde_json::Value) -> Option<String> {
         value.pointer("/payload/item/content"),
         value.pointer("/payload/content"),
         value.pointer("/payload/text"),
+        value.pointer("/payload/message"),
         value.pointer("/text"),
         value.pointer("/message"),
     ];
@@ -726,7 +768,7 @@ mod tests {
 
         // Resolves to the current default, so this must not pin a generation.
         let expected = AgentModel::default_for(AgentKind::Codex);
-        assert_ne!(expected, AgentModel::CodexDefault);
+        assert_eq!(expected, AgentModel::CodexDefault);
         assert_eq!(loaded.assistants[0].model, expected);
         let saved =
             serde_json::from_str::<DocAssistantStoreFile>(&fs::read_to_string(path).unwrap())
@@ -753,7 +795,7 @@ mod tests {
         codex.cli_session_id = Some("def".into());
         assert_eq!(
             codex.start_command("hello"),
-            "codex -s danger-full-access -a never -m 'gpt-6-sol' -c 'model_reasoning_effort=\"medium\"' 'hello'"
+            "codex -s danger-full-access -a never -c 'model_reasoning_effort=\"medium\"' 'hello'"
         );
         assert_eq!(
             codex.resume_command(),

@@ -143,9 +143,10 @@ impl DocAssistantState {
         if record.provider == provider && record.model == model && record.effort == effort {
             return;
         }
+        let keep_codex_model = record.provider == provider && record.model == model && provider == AgentKind::Codex;
         record.provider = provider;
         record.model = model;
-        if provider != AgentKind::OpenCode {
+        if provider != AgentKind::OpenCode && !keep_codex_model {
             record.external_model_id = None;
             record.external_model_label = None;
             record.external_model_variants.clear();
@@ -201,6 +202,19 @@ impl DocAssistantState {
         record.external_model_label = Some(model_label);
         record.external_model_variants = model_variants;
         record.effort = effort;
+        record.updated_at = ide_core::agents::unix_now();
+        self.schedule_save(cx);
+        cx.emit(DocAssistantEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn update_codex_model(&mut self, project: ProjectId, relative_doc_path: &Path, model: Option<&ide_core::agents::codex::CodexModel>, effort: AgentEffort, cx: &mut Context<Self>) {
+        self.update_runtime(project, relative_doc_path, AgentKind::Codex, AgentModel::CodexDefault, effort, cx);
+        let Some(record) = self.records.iter_mut().find(|record| record.project_id == project && record.relative_doc_path == relative_doc_path) else { return; };
+        record.external_model_id = model.map(|model| model.id.clone());
+        record.external_model_label = model.map(|model| model.name.clone());
+        record.external_model_variants = model.map(|model| model.variants()).unwrap_or_default();
+        record.effort = model.and_then(|model| model.normalize_effort(effort)).unwrap_or(effort);
         record.updated_at = ide_core::agents::unix_now();
         self.schedule_save(cx);
         cx.emit(DocAssistantEvent::Changed);

@@ -25,6 +25,7 @@ impl OnboardingTour {
             ProviderConnectionStatus::Checking => ("Checking…", crate::ui::design::sky(cx)),
             ProviderConnectionStatus::Connected => ("Connected", crate::ui::design::sage(cx)),
             ProviderConnectionStatus::Ready => ("Ready", crate::ui::design::sage(cx)),
+            ProviderConnectionStatus::UpdateRequired => ("Update Codex", crate::ui::design::amber(cx)),
             ProviderConnectionStatus::NeedsSignIn => {
                 ("Sign in needed", crate::ui::design::amber(cx))
             }
@@ -169,6 +170,7 @@ pub(super) enum ProviderConnectionStatus {
     Checking,
     Connected,
     Ready,
+    UpdateRequired,
     NeedsSignIn,
     NotInstalled,
     Unavailable,
@@ -290,6 +292,10 @@ pub(super) fn detect_provider_connection_statuses() -> ProviderConnectionStatuse
         .unwrap_or(ProviderConnectionStatus::NotInstalled);
     let codex = crate::state::agent_chat::protocol::find_agent_cli_executable("codex")
         .map(|path| {
+            if crate::state::agent_chat::protocol::catalog::executable_version(&path)
+                .is_none_or(|version| version < crate::state::agent_chat::protocol::catalog::MIN_CODEX_VERSION) {
+                return ProviderConnectionStatus::UpdateRequired;
+            }
             provider_status_output(&path, &["login", "status"])
                 .map(|output| {
                     if output.status.success() {

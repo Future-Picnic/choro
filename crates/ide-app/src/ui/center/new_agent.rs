@@ -144,7 +144,7 @@ impl CenterArea {
         let (model_short_label, model_label, open_code_efforts) = self
             .new_agent_composer
             .as_ref()
-            .filter(|composer| composer.provider == AgentKind::OpenCode)
+            .filter(|composer| composer.provider == AgentKind::OpenCode || (composer.provider == AgentKind::Codex && composer.external_model_id.is_some()))
             .map(|composer| {
                 let label = composer
                     .external_model_label

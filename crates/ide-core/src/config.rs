@@ -491,7 +491,7 @@ impl GenerationAgent {
             },
             AgentKind::Codex => Self {
                 provider,
-                model: AgentModel::CodexGpt56Luna,
+                model: AgentModel::CodexDefault,
                 external_model_id: None,
                 external_model_label: None,
             },
@@ -513,12 +513,12 @@ impl GenerationAgent {
     pub fn model_label(&self) -> &str {
         self.external_model_label
             .as_deref()
-            .filter(|_| self.provider == AgentKind::OpenCode)
+            .filter(|_| self.provider == AgentKind::OpenCode || (self.provider == AgentKind::Codex && self.model == AgentModel::CodexDefault))
             .unwrap_or_else(|| self.model.label())
     }
 
     pub fn model_cli_value(&self) -> Option<&str> {
-        if self.provider == AgentKind::OpenCode {
+        if self.provider == AgentKind::OpenCode || (self.provider == AgentKind::Codex && self.model == AgentModel::CodexDefault && self.external_model_id.is_some()) {
             self.external_model_id.as_deref()
         } else {
             self.model.cli_value()
@@ -531,7 +531,7 @@ impl GenerationAgent {
         {
             return Self::for_provider(self.provider);
         }
-        if self.provider != AgentKind::OpenCode {
+        if self.provider != AgentKind::OpenCode && !(self.provider == AgentKind::Codex && self.model == AgentModel::CodexDefault) {
             self.external_model_id = None;
             self.external_model_label = None;
         }
@@ -573,7 +573,7 @@ impl NewAgentDefaults {
         if !self.model.belongs_to(self.provider) {
             return Self::for_provider(self.provider);
         }
-        if self.provider != AgentKind::OpenCode {
+        if self.provider != AgentKind::OpenCode && !(self.provider == AgentKind::Codex && self.model == AgentModel::CodexDefault) {
             self.external_model_id = None;
             self.external_model_label = None;
         }

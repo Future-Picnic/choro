@@ -32,6 +32,7 @@ use crate::ui::center::CenterArea;
 use activity_layer::{ActivityAnchors, SidebarActivityLayer};
 mod activity_layer;
 mod virtual_rows;
+mod conversation_migration;
 #[cfg(all(test, feature = "ui-layout-tests"))]
 mod performance_tests;
 use crate::ui::project_visuals::{
@@ -1832,6 +1833,7 @@ impl ProjectList {
         window: &mut Window,
         cx: &mut Context<PopupMenu>,
         workspace: Entity<Workspace>,
+        agents: Entity<AgentRecords>,
         row: RowInfo,
     ) -> PopupMenu {
         let id = row.id;
@@ -1905,6 +1907,18 @@ impl ProjectList {
         });
 
         menu.separator()
+            .item(
+                PopupMenuItem::new("Migrate conversations")
+                    .icon(IconName::ArrowDown)
+                    .on_click({
+                        let workspace = workspace.clone();
+                        move |_, window, cx| {
+                            conversation_migration::open(
+                                workspace.clone(), agents.clone(), id, window, cx,
+                            );
+                        }
+                    }),
+            )
             .item(
                 PopupMenuItem::new("Rename")
                     .icon(IconName::ALargeSmall)
@@ -2342,6 +2356,8 @@ impl ProjectList {
         let workspace = self.workspace.clone();
         let dropdown_workspace = self.workspace.clone();
         let context_workspace = self.workspace.clone();
+        let dropdown_agents = self.agents.clone();
+        let context_agents = self.agents.clone();
         let id = row.id;
         let has_changes = row.changes > 0;
         let has_scripts = !row.scripts.is_empty();
@@ -2561,6 +2577,7 @@ impl ProjectList {
                                             window,
                                             cx,
                                             dropdown_workspace.clone(),
+                                            dropdown_agents.clone(),
                                             dropdown_row.clone(),
                                         )
                                     })
@@ -2585,6 +2602,7 @@ impl ProjectList {
                             window,
                             cx,
                             context_workspace.clone(),
+                            context_agents.clone(),
                             context_row.clone(),
                         )
                     }),

@@ -1,6 +1,7 @@
 mod change_tracking;
 mod claude;
 mod codex;
+pub(crate) mod catalog;
 mod events;
 pub(crate) mod gemini;
 pub(crate) mod managed;
@@ -359,6 +360,11 @@ pub enum ChatBackendCommand {
 
 #[derive(Clone, Debug)]
 pub enum ChatBackendEvent {
+    CodexModelRejected { id: String, project_path: PathBuf },
+    CodexModelSelected {
+        model: ide_core::agents::codex::CodexModel,
+        effort: AgentEffort,
+    },
     ReservedEvidence {
         event: Box<ChatBackendEvent>,
         reservation: Arc<ide_core::agent_changes::EvidenceReservation>,
@@ -602,9 +608,15 @@ fn spawn_codex_app_server(
             if !wait_for_previous_backend(previous_stop, &shutdown) {
                 return;
             }
-            if let Err(error) =
-                run_codex_app_server(agent, initial_mode, command_rx, event_tx.clone(), shutdown)
-            {
+            let had_resume_id = agent.chat_session_id.is_some() || agent.cli_session_id.is_some();
+            let mut thread_ready = false;
+            if let Err(error) = run_codex_app_server_with_startup_status(agent, initial_mode, command_rx, event_tx.clone(), shutdown, &mut thread_ready) {
+                if !had_resume_id && !thread_ready {
+                    let _ = event_tx.send_blocking(ChatBackendEvent::WorkLog(WorkLogEntry::new(
+                        next_request_id(), "codex-startup-before-thread", WorkLogEntryKind::System,
+                        "Codex could not start · this conversation can be retried", WorkLogStatus::Failed,
+                    )));
+                }
                 let _ = event_tx.send_blocking(ChatBackendEvent::Error(format!(
                     "Codex app-server failed: {error:#}"
                 )));
@@ -643,6 +655,8 @@ struct CodexRuntime {
     agent: AgentRecord,
     thread_id: Option<String>,
     turn_control: codex::CodexTurnControl,
+    capacity_retry: codex::CodexCapacityRetry,
+    rejected_models: HashSet<String>,
     assistant_buffer: String,
     assistant_stream: StreamChunkBuffer,
     studio_review: StudioReviewGate,
@@ -1232,10 +1246,28 @@ fn run_codex_app_server(
     event_tx: EventSender,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    run_codex_app_server_with_startup_status(
+        agent, initial_mode, command_rx, event_tx, shutdown, &mut false,
+    )
+}
+
+fn run_codex_app_server_with_startup_status(
+    agent: AgentRecord,
+    initial_mode: AgentInteractionMode,
+    command_rx: Receiver<ChatBackendCommand>,
+    event_tx: EventSender,
+    shutdown: Arc<AtomicBool>,
+    thread_ready: &mut bool,
+) -> anyhow::Result<()> {
     let path_env = command_path_env();
     let codex_path = find_codex_app_server_executable().ok_or_else(|| {
         anyhow!("Codex executable was not found. Install Codex or add it to your shell PATH.")
     })?;
+    let version = catalog::executable_version(&codex_path)
+        .context("Could not read the Codex version. Update Codex, then retry in this conversation.")?;
+    anyhow::ensure!(version >= catalog::MIN_CODEX_VERSION,
+        "Codex {}.{}.{} at {} needs an update. Choro requires Codex 0.159.0 or newer. Update Codex, then retry in this conversation.",
+        version.0, version.1, version.2, codex_path.display());
     let mut command = Command::new(&codex_path);
     if agent.delegation.is_some() {
         managed::preflight(agent.provider)?;
@@ -1249,7 +1281,7 @@ fn run_codex_app_server(
         ]);
     }
     command
-        .args(["app-server", "--stdio"])
+        .arg("app-server")
         .env("PATH", &path_env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1326,6 +1358,8 @@ fn run_codex_app_server(
         agent: agent.clone(),
         thread_id: None,
         turn_control: codex::CodexTurnControl::default(),
+        capacity_retry: codex::CodexCapacityRetry::default(),
+        rejected_models: HashSet::new(),
         assistant_buffer: String::new(),
         assistant_stream: StreamChunkBuffer::new(),
         studio_review: StudioReviewGate::default(),
@@ -1340,7 +1374,7 @@ fn run_codex_app_server(
         pending_approvals: std::collections::HashMap::new(),
         deferred_turns: VecDeque::new(),
         active_reconnect_work_log_id: None,
-        model: agent.model.cli_value().map(str::to_string),
+        model: agent.model_cli_value().map(str::to_string),
         effort: agent.effort.cli_value().to_string(),
         access_mode: agent.access_mode,
         visualization_dir,
@@ -1360,6 +1394,7 @@ fn run_codex_app_server(
         }),
     )?;
     runtime.notify("initialized", Value::Null)?;
+    runtime.resolve_model_selection()?;
     let design_assistant = agent.studio_context.is_some() || agent.review_run_id.is_some();
     let approval_policy = if design_assistant {
         "never"
@@ -1425,6 +1460,7 @@ fn run_codex_app_server(
         .and_then(Value::as_str)
         .map(str::to_string);
     if let Some(thread_id) = runtime.thread_id.clone() {
+        *thread_ready = true;
         runtime
             .events
             .send_blocking(ChatBackendEvent::ChatSessionReady {

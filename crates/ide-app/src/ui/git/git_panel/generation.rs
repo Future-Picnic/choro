@@ -42,24 +42,10 @@ fn codex_cli_path() -> anyhow::Result<PathBuf> {
         return validate_codex_cli_path(PathBuf::from(path), "CODEX_CLI");
     }
 
-    let mut candidates = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        candidates.push(home.join(".local/bin/codex"));
-        candidates.push(home.join(".codex/bin/codex"));
-    }
-    candidates.extend([
-        PathBuf::from("/opt/homebrew/bin/codex"),
-        PathBuf::from("/usr/local/bin/codex"),
-        PathBuf::from("/usr/bin/codex"),
-    ]);
-
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
+    crate::state::agent_chat::protocol::find_agent_cli_executable("codex")
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Codex CLI not found in trusted locations. Set CODEX_CLI to an absolute path."
+                "Codex CLI not found. Install Codex or set CODEX_CLI to an absolute path."
             )
         })
 }
@@ -84,13 +70,15 @@ const CODEX_QUICK_ASK_PERMISSION_CONFIG: [&str; 3] = [
 fn codex_exec_command(
     working_directory: &Path,
     output_path: &Path,
-    model: &str,
+    executable: &Path,
+    model: &ide_core::agents::codex::CodexModel,
     images: &[PathBuf],
     access: GenerationAccess,
 ) -> anyhow::Result<Command> {
-    let mut command = Command::new(codex_cli_path()?);
+    let mut command = Command::new(executable);
     command
         .arg("exec")
+        .env("PATH", crate::state::agent_chat::protocol::agent_command_path_env())
         .arg("--ignore-user-config")
         .arg("--ignore-rules")
         .arg("--skip-git-repo-check");
@@ -106,11 +94,11 @@ fn codex_exec_command(
     }
     command
         .arg("--model")
-        .arg(model)
-        .arg("--config")
-        .arg(format!(
-            "model_reasoning_effort=\"{CODEX_GENERATION_REASONING_EFFORT}\""
-        ))
+        .arg(&model.id);
+    if let Some(effort) = model.normalize_effort(ide_core::AgentEffort::from_cli_value(CODEX_GENERATION_REASONING_EFFORT).unwrap_or_default()) {
+        command.arg("--config").arg(format!("model_reasoning_effort=\"{}\"", effort.cli_value()));
+    }
+    command
         .arg("--config")
         .arg("approval_policy=\"never\"")
         .arg("--ephemeral")
@@ -139,7 +127,9 @@ fn run_codex_generation(
     access: GenerationAccess,
 ) -> anyhow::Result<String> {
     let output_path = codex_output_path();
-    let mut child = codex_exec_command(repo, &output_path, model, images, access)?
+    let discovery = crate::state::agent_chat::protocol::catalog::discover_at(codex_cli_path()?, repo)?;
+    let model = ide_core::agents::codex::resolve_model(&discovery.models, (!model.is_empty()).then_some(model))?;
+    let mut child = codex_exec_command(repo, &output_path, &discovery.executable, model, images, access)?
         .spawn()
         .map_err(|error| anyhow::anyhow!("Failed to start Codex CLI: {error}"))?;
 
@@ -180,7 +170,7 @@ fn run_codex_generation(
             if stderr.is_empty() {
                 format!(" with status {status}")
             } else {
-                format!(": {stderr}")
+                format!(": {}", ide_core::agents::codex::readable_error(stderr))
             }
         );
     }
@@ -339,7 +329,7 @@ fn run_streamed_generation_with_images(
             anyhow::anyhow!("failed to create an isolated generation directory: {error}")
         })?;
     let working_directory = sandbox.path();
-    let model = generation_agent.model_cli_value().ok_or_else(|| {
+    let model = generation_agent.model_cli_value().or_else(|| (generation_agent.provider == AgentKind::Codex).then_some("")).ok_or_else(|| {
         anyhow::anyhow!(
             "No model is configured for {} generation",
             generation_agent.provider.label()
@@ -419,7 +409,7 @@ pub(crate) fn run_quick_ask_generation_with_images(
             .expect("general Quick Ask sandbox must exist")
             .path()
     });
-    let model = generation_agent.model_cli_value().ok_or_else(|| {
+    let model = generation_agent.model_cli_value().or_else(|| (generation_agent.provider == AgentKind::Codex).then_some("")).ok_or_else(|| {
         anyhow::anyhow!(
             "No model is configured for Quick Ask with {}",
             generation_agent.provider.label()
@@ -1674,6 +1664,39 @@ pub(crate) fn generate_pull_request_for_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_generation_uses_discovered_capabilities_without_weakening_permissions() {
+        let mut model = ide_core::agents::codex::CodexModel {
+            id: "future-model".into(),
+            name: "Future".into(),
+            efforts: vec![ide_core::AgentEffort::High],
+            default_effort: Some(ide_core::AgentEffort::High),
+            is_default: true,
+        };
+        let command = codex_exec_command(
+            Path::new("/tmp"), Path::new("/tmp/unused-output"),
+            Path::new("/selected/codex"), &model, &[], GenerationAccess::ToolFree,
+        ).unwrap();
+        let args = command.get_args().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>();
+        assert_eq!(command.get_program(), "/selected/codex");
+        assert!(args.windows(2).any(|pair| pair == ["--model", "future-model"]));
+        assert!(args.contains(&"model_reasoning_effort=\"high\"".into()));
+        assert!(args.windows(2).any(|pair| pair == ["--sandbox", "read-only"]));
+        assert!(args.contains(&"approval_policy=\"never\"".into()));
+        assert!(args.contains(&"--ignore-user-config".into()));
+
+        model.efforts.clear();
+        let command = codex_exec_command(
+            Path::new("/tmp"), Path::new("/tmp/unused-output"),
+            Path::new("/selected/codex"), &model, &[], GenerationAccess::QuickAsk,
+        ).unwrap();
+        let args = command.get_args().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>();
+        assert!(!args.iter().any(|arg| arg.starts_with("model_reasoning_effort=")));
+        for config in CODEX_QUICK_ASK_PERMISSION_CONFIG {
+            assert!(args.iter().any(|arg| arg == config));
+        }
+    }
 
     #[test]
     fn large_pr_diffs_keep_a_sample_from_every_changed_file() {

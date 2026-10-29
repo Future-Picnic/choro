@@ -121,6 +121,38 @@ fn stopped_before_provider_response(session: &crate::state::agent_chat::AgentCha
             .any(|entry| entry.collapse_key == "agent-chat-cancelled")
 }
 
+/// The backend emits this marker only before it can send a user turn. Retain
+/// the resume guard whenever any real provider history or action exists.
+fn failed_before_provider_thread(session: &crate::state::agent_chat::AgentChatSession) -> bool {
+    let local_message = |message: &AgentChatMessage| match message {
+        AgentChatMessage::User { .. } => true,
+        AgentChatMessage::Assistant { message_id: Some(id), .. } => id.starts_with("error-"),
+        _ => false,
+    };
+    session.status == AgentChatStatus::Failed
+        && session.chat_session_id.is_none() && session.cli_session_id.is_none()
+        && session.usage.is_none() && session.pending_approval.is_none() && session.pending_user_input.is_none()
+        && session.proposed_plan.is_none() && session.latest_plan.is_none()
+        && session.changed_files.conversation_files().next().is_none()
+        && session.messages.iter().all(local_message)
+        && session.work_log.iter().all(|entry| entry.kind == WorkLogEntryKind::System)
+        && session.work_log.iter().any(|entry| entry.collapse_key == "codex-startup-before-thread")
+        && session.timeline.iter().all(|item| match item {
+            AgentChatTimelineItem::Message(message) => local_message(message),
+            AgentChatTimelineItem::WorkLog(entry) => entry.kind == WorkLogEntryKind::System,
+            _ => false,
+        })
+}
+
+fn prepare_codex_startup_retry(agent: &mut AgentRecord, submission: &mut String) {
+    if agent.provider == AgentKind::Codex && !agent.doc.trim().is_empty() {
+        // No provider thread received the original request. Carry its context
+        // into this submission and suppress the backend's automatic first turn.
+        let original = std::mem::take(&mut agent.doc);
+        *submission = format!("Original request (Codex did not start):\n{original}\n\nCurrent user message:\n{submission}");
+    }
+}
+
 impl CenterArea {
     pub(super) fn schedule_pocketcomet_handoff(
         &mut self,
@@ -420,8 +452,18 @@ impl CenterArea {
         self.agents.update(cx, |agents, cx| {
             agents.update_model_effort(agent_id, model, effort, cx);
         });
+        let dynamic = self.agents.read(cx).agent(agent_id).filter(|agent| agent.provider == AgentKind::Codex && agent.has_dynamic_model()).map(|agent| {
+            crate::state::codex::CodexModel {
+                id: agent.model_cli_value().unwrap().to_string(), name: agent.model_label().to_string(),
+                efforts: agent.supported_efforts(), default_effort: Some(agent.effort), is_default: false,
+            }
+        });
         self.agent_chats.update(cx, |chats, cx| {
-            chats.update_model_effort(agent_id, model, effort, cx);
+            if let Some(dynamic) = dynamic.as_ref() {
+                chats.update_codex_model(agent_id, Some(dynamic), effort, cx);
+            } else {
+                chats.update_model_effort(agent_id, model, effort, cx);
+            }
         });
         cx.notify();
     }
@@ -468,7 +510,7 @@ impl CenterArea {
                 return;
             }
         }
-        let effort = if provider == AgentKind::OpenCode {
+        let effort = if provider == AgentKind::OpenCode || (provider == AgentKind::Codex && record.external_model_id.is_some()) {
             let supported = AgentEffort::supported_variants(&record.external_model_variants);
             if supported.is_empty() || supported.contains(&effort) {
                 effort
@@ -485,7 +527,16 @@ impl CenterArea {
         });
         if !provider_changed {
             self.agent_chats.update(cx, |chats, cx| {
-                chats.update_model_effort(agent_id, model, effort, cx);
+                if provider == AgentKind::Codex && record.external_model_id.is_some() {
+                    let dynamic = crate::state::codex::CodexModel {
+                        id: record.model_cli_value().unwrap().to_string(),
+                        name: record.external_model_label.clone().unwrap_or_else(|| record.model_cli_value().unwrap().to_string()),
+                        efforts: record.supported_efforts(), default_effort: Some(record.effort), is_default: false,
+                    };
+                    chats.update_codex_model(agent_id, Some(&dynamic), effort, cx);
+                } else {
+                    chats.update_model_effort(agent_id, model, effort, cx);
+                }
             });
         }
         cx.notify();
@@ -2342,7 +2393,7 @@ impl CenterArea {
                     .agent_chats
                     .read(cx)
                     .session(agent_id)
-                    .is_some_and(stopped_before_provider_response);
+                    .is_some_and(|session| stopped_before_provider_response(session) || failed_before_provider_thread(session));
             if !agent_has_backend_resume_id(&agent)
                 && !stopped_during_startup
                 && (agent.started_at.is_some()
@@ -2373,6 +2424,9 @@ impl CenterArea {
                 false,
                 has_loaded_history,
             );
+            if stopped_during_startup && !agent_has_backend_resume_id(&agent) {
+                prepare_codex_startup_retry(&mut agent, &mut submission_text);
+            }
             if let Err(error) = self
                 .agent_chats
                 .update(cx, |chats, cx| chats.start_backend(agent.clone(), mode, cx))
@@ -3886,6 +3940,20 @@ mod startup_retry_tests {
         AgentChatSession, WorkLogEntry, WorkLogEntryKind, WorkLogStatus,
     };
 
+    #[test]
+    fn startup_retry_carries_the_original_request_in_only_one_turn() {
+        let project = ide_core::Project::from_path(PathBuf::from("/tmp/startup-retry"));
+        let mut agent = AgentRecord::new(
+            project.id, project.path, "Retry", "Original task", AgentKind::Codex,
+            AgentModel::CodexDefault, AgentEffort::Medium, AgentAccessMode::FullAccess,
+        );
+        let mut submission = "Try again".to_string();
+        prepare_codex_startup_retry(&mut agent, &mut submission);
+        assert!(agent.doc.is_empty(), "backend must not auto-send another turn");
+        assert_eq!(submission.matches("Original task").count(), 1);
+        assert!(submission.ends_with("Try again"));
+    }
+
     fn stopped_startup() -> AgentChatSession {
         let user = AgentChatMessage::User {
             text: "Make a screen".into(),
@@ -3968,5 +4036,23 @@ mod startup_retry_tests {
         let mut session = stopped_startup();
         session.work_log.clear();
         assert!(!stopped_before_provider_response(&session));
+    }
+
+    #[test]
+    fn compatibility_failure_can_retry_only_before_any_provider_history() {
+        let mut session = stopped_startup();
+        session.status = AgentChatStatus::Failed;
+        let marker = WorkLogEntry::new("preflight", "codex-startup-before-thread", WorkLogEntryKind::System, "Update Codex", WorkLogStatus::Failed);
+        session.work_log.push(marker.clone());
+        session.timeline.push(AgentChatTimelineItem::WorkLog(marker));
+        session.messages.push(AgentChatMessage::Assistant {
+            message_id: Some("error-1".into()), text: "Codex needs an update".into(), created_at: 0,
+        });
+        assert!(failed_before_provider_thread(&session));
+        session.chat_session_id = Some("provider-thread".into());
+        assert!(!failed_before_provider_thread(&session));
+        session.chat_session_id = None;
+        session.messages.push(AgentChatMessage::Assistant { message_id: None, text: "Provider answer".into(), created_at: 0 });
+        assert!(!failed_before_provider_thread(&session));
     }
 }

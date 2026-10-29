@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 use crate::{config::AppConfig, task_tracker::TaskRef, ProjectId};
 
+pub mod migration;
+pub mod codex;
+
 /// A session file written to within this window counts as "working".
 pub const WORKING_WINDOW: Duration = Duration::from_secs(10);
 
@@ -329,9 +332,9 @@ pub enum AgentModel {
     CodexGpt56Terra,
     CodexGpt56Luna,
     CodexGpt55,
-    // Retired: absent from the Codex CLI's served catalog. Retained only so
-    // agents persisted against them still load and name their model.
+    /// Automatic, or a dynamically discovered model in external_model_id.
     CodexDefault,
+    // Retired variants remain readable in persisted records.
     CodexGpt54,
     CodexGpt54Mini,
     CodexGpt54Nano,
@@ -360,7 +363,7 @@ impl AgentModel {
             Self::CodexGpt56Sol => "Sol 5.6",
             Self::CodexGpt56Terra => "Terra 5.6",
             Self::CodexGpt56Luna => "Luna 5.6",
-            Self::CodexDefault => "Default",
+            Self::CodexDefault => "Automatic",
             Self::CodexGpt55 => "GPT-5.5",
             Self::CodexGpt54 => "GPT-5.4",
             Self::CodexGpt54Mini => "GPT-5.4 mini",
@@ -419,7 +422,7 @@ impl AgentModel {
     pub fn default_for(kind: AgentKind) -> Self {
         match kind {
             AgentKind::Claude => Self::ClaudeOpus55,
-            AgentKind::Codex => Self::CodexGpt6Sol,
+            AgentKind::Codex => Self::CodexDefault,
             AgentKind::OpenCode => Self::OpenCode,
             AgentKind::Gemini => Self::Gemini38FlashMedium,
         }
@@ -472,6 +475,12 @@ impl AgentModel {
                 Self::Gemini38FlashHigh,
             ],
         }
+    }
+
+    /// Surfaces without live discovery offer Automatic for Codex. Historical
+    /// enum entries stay in models_for for parsing old records and expert ids.
+    pub fn picker_models_for(kind: AgentKind) -> &'static [Self] {
+        if kind == AgentKind::Codex { &[Self::CodexDefault] } else { Self::models_for(kind) }
     }
 
     pub fn belongs_to(&self, kind: AgentKind) -> bool {
@@ -817,19 +826,19 @@ impl AgentRecord {
     pub fn model_label(&self) -> &str {
         self.external_model_label
             .as_deref()
-            .filter(|_| self.provider == AgentKind::OpenCode)
+            .filter(|_| self.has_dynamic_model())
             .unwrap_or_else(|| self.model.label())
     }
 
     pub fn model_short_label(&self) -> &str {
         self.external_model_label
             .as_deref()
-            .filter(|_| self.provider == AgentKind::OpenCode)
+            .filter(|_| self.has_dynamic_model())
             .unwrap_or_else(|| self.model.short_label())
     }
 
     pub fn model_cli_value(&self) -> Option<&str> {
-        if self.provider == AgentKind::OpenCode {
+        if self.has_dynamic_model() {
             self.external_model_id.as_deref()
         } else {
             self.model.cli_value()
@@ -839,7 +848,7 @@ impl AgentRecord {
     /// Efforts supported by this exact model selection. OpenCode models are
     /// dynamic, so their variants come from the discovered local catalog.
     pub fn supported_efforts(&self) -> Vec<AgentEffort> {
-        if self.provider == AgentKind::OpenCode {
+        if self.has_dynamic_model() {
             AgentEffort::supported_variants(&self.external_model_variants)
         } else {
             self.model.efforts()
@@ -854,7 +863,7 @@ impl AgentRecord {
         model: AgentModel,
         effort: AgentEffort,
     ) -> AgentEffort {
-        let efforts = if self.provider == AgentKind::OpenCode && model == AgentModel::OpenCode {
+        let efforts = if self.has_dynamic_model() && model == self.model {
             AgentEffort::supported_variants(&self.external_model_variants)
         } else {
             model.efforts()
@@ -876,6 +885,21 @@ impl AgentRecord {
                 .iter()
                 .any(|variant| variant == effort))
         .then_some(effort)
+    }
+
+    pub fn has_dynamic_model(&self) -> bool {
+        self.provider == AgentKind::OpenCode
+            || (self.provider == AgentKind::Codex && self.model == AgentModel::CodexDefault
+                && self.external_model_id.is_some())
+    }
+
+    pub fn set_codex_model(&mut self, model: &codex::CodexModel, effort: AgentEffort) {
+        self.provider = AgentKind::Codex;
+        self.model = AgentModel::CodexDefault;
+        self.external_model_id = Some(model.id.clone());
+        self.external_model_label = Some(model.name.clone());
+        self.external_model_variants = model.variants();
+        self.effort = model.normalize_effort(effort).unwrap_or_default();
     }
 
     pub fn set_external_model(
@@ -1111,7 +1135,7 @@ impl AgentStoreFile {
             }
             if agent.model == AgentModel::CodexDefault {
                 agent.model = AgentModel::default_for(AgentKind::Codex);
-                agent.effort = agent.model.normalize_effort(agent.effort);
+                agent.effort = agent.normalize_effort_for_model(agent.model, agent.effort);
             }
         }
         self
@@ -1189,7 +1213,7 @@ pub fn start_command(agent: &AgentRecord, prompt: &str) -> String {
         ),
         AgentKind::Codex => {
             let mut parts = vec!["codex".to_string()];
-            if let Some(model) = agent.model.cli_value() {
+            if let Some(model) = agent.model_cli_value() {
                 parts.push("-m".to_string());
                 parts.push(shell_quote(model));
             }
@@ -1238,7 +1262,7 @@ pub fn resume_command_with_settings(agent: &AgentRecord, session_id: &str) -> St
         ),
         AgentKind::Codex => {
             let mut parts = vec!["codex".to_string(), "resume".to_string()];
-            if let Some(model) = agent.model.cli_value() {
+            if let Some(model) = agent.model_cli_value() {
                 parts.push("-m".to_string());
                 parts.push(shell_quote(model));
             }
@@ -2015,7 +2039,7 @@ mod tests {
         );
         assert_eq!(
             AgentModel::default_for(AgentKind::Codex),
-            AgentModel::CodexGpt6Sol
+            AgentModel::CodexDefault
         );
         assert_eq!(AgentModel::CodexGpt6Sol.label(), "Sol 6");
         assert_eq!(AgentModel::CodexGpt6Sol.short_label(), "Sol 6");
@@ -2399,7 +2423,29 @@ mod tests {
             loaded.agents[0].model,
             AgentModel::default_for(AgentKind::Codex)
         );
-        assert_ne!(loaded.agents[0].model, AgentModel::CodexDefault);
+        assert_eq!(loaded.agents[0].model, AgentModel::CodexDefault);
+    }
+
+    #[test]
+    fn discovered_codex_models_survive_storage_with_their_exact_identity_and_capabilities() {
+        let mut agent = sample_agent(AgentKind::Codex, AgentModel::CodexDefault);
+        let model = codex::CodexModel {
+            id: "future-wire-id".into(), name: "Future model".into(),
+            efforts: vec![AgentEffort::Low], default_effort: Some(AgentEffort::Low), is_default: true,
+        };
+        agent.set_codex_model(&model, AgentEffort::Max);
+        assert_eq!(agent.model_cli_value(), Some("future-wire-id"));
+        assert_eq!(agent.model_label(), "Future model");
+        assert_eq!(agent.supported_efforts(), vec![AgentEffort::Low]);
+        assert_eq!(agent.effort, AgentEffort::Low);
+        assert!(agent.start_command().contains("future-wire-id"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.json");
+        AgentStoreFile::new(vec![agent]).save_to(&path).unwrap();
+        let loaded = AgentStoreFile::load_from(&path);
+        assert_eq!(loaded.agents[0].model_cli_value(), Some("future-wire-id"));
+        assert_eq!(loaded.agents[0].model_label(), "Future model");
+        assert_eq!(loaded.agents[0].effort, AgentEffort::Low);
     }
 
     #[test]

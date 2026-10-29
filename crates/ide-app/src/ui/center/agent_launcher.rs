@@ -624,7 +624,16 @@ impl CenterArea {
                 expert_snapshot.clone(),
                 cx,
             );
-            if provider == AgentKind::OpenCode {
+            if provider == AgentKind::Codex {
+                if let Some(id) = &external_model_id {
+                    let selected = crate::state::codex::CodexModel {
+                        id: id.clone(), name: external_model_label.clone().unwrap_or_else(|| id.clone()),
+                        efforts: AgentEffort::supported_variants(&external_model_variants),
+                        default_effort: Some(effort), is_default: false,
+                    };
+                    agents.update_codex_model(agent_id, Some(&selected), effort, cx);
+                }
+            } else if provider == AgentKind::OpenCode {
                 if let (Some(id), Some(label)) =
                     (external_model_id.clone(), external_model_label.clone())
                 {

@@ -1862,7 +1862,7 @@ impl CenterArea {
             .map(|provider| ProviderConfigurationDto {
                 id: wire_value(provider),
                 label: provider.label().to_string(),
-                models: AgentModel::models_for(provider)
+                models: AgentModel::picker_models_for(provider)
                     .iter()
                     .copied()
                     .map(|model| ModelConfigurationDto {
