@@ -7,18 +7,18 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
     <item>
-      <title>Choro 0.104</title>
-      <pubDate>Fri, 23 Oct 2026 14:57:45 +0300</pubDate>
-      <sparkle:version>104</sparkle:version>
-      <sparkle:shortVersionString>0.104</sparkle:shortVersionString>
+      <title>Choro 0.105</title>
+      <pubDate>Thu, 29 Oct 2026 19:42:14 +0200</pubDate>
+      <sparkle:version>105</sparkle:version>
+      <sparkle:shortVersionString>0.105</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #47 from Future-Picnic/fix-make-bandmate-delegation-recover-across-local-database-contention
-- chore: publish update feed for 0.103]]></description>
-      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/668984787" length="121989044" type="application/octet-stream" sparkle:edSignature="74KEvu5bIGCrCPnVrA9QJBCI/wEX8X07LHjPRLoWhCvwfw47dPXItT5ofswLiLWmDzzcRnLO1u+qipMmHZZgCg=="></enclosure>
+      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #48 from Future-Picnic/feat-add-codex-model-discovery-and-automatic-capacity-recovery
+- chore: publish update feed for 0.104]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/689374761" length="122110940" type="application/octet-stream" sparkle:edSignature="DHjXphP1JJG/WpqYpLaBAffTMffI5yUW+72OF/v3D8XJcX344ladVxipxHoZsqhq6Uuy4VNO0gouSr6ZkDk+DA=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: vefV6g/PYQtm/6wdgE9o0zwAytMr5Oe8i+io7dDmycR4q4/57sxzCehkyteSvJyM/EGun8YZIdJs6TcsPf8uCA==
-length: 1462
+edSignature: vZ6796gB3v2naMY+z8hlnY44Sv3RWc5G7ag7Wo6qCBPYYwMp7oxvMt+rr667MTWeM9rRGQ0TuauNJOWWgqHfAw==
+length: 1455
 -->
