@@ -9,11 +9,16 @@ use crate::AgentModel;
 pub enum ModelFavorite {
     BuiltIn(AgentModel),
     OpenCode(String),
+    Codex(String),
 }
 
 impl ModelFavorite {
     pub fn new(model: AgentModel, external_id: Option<&str>) -> Self {
-        if model == AgentModel::OpenCode {
+        if model == AgentModel::CodexDefault && external_id.is_some() {
+            AgentModel::models_for(crate::AgentKind::Codex).iter()
+                .find(|known| known.cli_value() == external_id).map(|known| Self::BuiltIn(*known))
+                .unwrap_or_else(|| Self::Codex(external_id.unwrap().to_string()))
+        } else if model == AgentModel::OpenCode {
             Self::OpenCode(
                 external_id
                     .unwrap_or(crate::config::DEFAULT_OPENCODE_GENERATION_MODEL_ID)
@@ -48,6 +53,15 @@ mod tests {
             serde_json::from_str::<ModelFavorite>(&serde_json::to_string(&first).unwrap()).unwrap(),
             first
         );
+    }
+
+    #[test]
+    fn discovered_codex_favorites_preserve_legacy_keys_and_distinguish_future_models() {
+        assert_eq!(ModelFavorite::new(AgentModel::CodexDefault, Some("gpt-6-sol")),
+            ModelFavorite::BuiltIn(AgentModel::CodexGpt6Sol));
+        let future = ModelFavorite::new(AgentModel::CodexDefault, Some("future-model"));
+        assert_ne!(future, ModelFavorite::new(AgentModel::CodexDefault, Some("other-model")));
+        assert_eq!(serde_json::from_str::<ModelFavorite>(&serde_json::to_string(&future).unwrap()).unwrap(), future);
     }
 
     #[test]

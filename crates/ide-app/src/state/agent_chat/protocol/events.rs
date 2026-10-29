@@ -500,11 +500,16 @@ pub(super) fn codex_error_disposition(params: &Value) -> CodexErrorDisposition {
         Some(detail) if detail != message => format!("{message}\n\n{detail}"),
         _ => message.to_string(),
     };
-    CodexErrorDisposition::Terminal { message }
+    CodexErrorDisposition::Terminal { message: ide_core::agents::codex::readable_error(&message) }
 }
 
 pub(super) fn codex_event_confirms_recovery(method: &str) -> bool {
     method == "turn/completed" || method == "turn/plan/updated" || method.starts_with("item/")
+}
+
+pub(super) fn codex_model_at_capacity(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("selected model is at capacity")
 }
 
 pub(super) fn format_plan_summary(params: &Value) -> String {
@@ -1176,6 +1181,15 @@ mod approval_tests {
 #[cfg(test)]
 mod codex_error_tests {
     use super::*;
+
+    #[test]
+    fn capacity_detection_does_not_retry_other_terminal_errors() {
+        assert!(codex_model_at_capacity("Selected model is at capacity. Please try a different model."));
+        assert!(codex_model_at_capacity("SELECTED MODEL IS AT CAPACITY"));
+        for message in ["Usage limit reached", "Authentication failed", "Invalid model", "Unable to reconnect"] {
+            assert!(!codex_model_at_capacity(message));
+        }
+    }
 
     #[test]
     fn retryable_disconnect_is_not_a_terminal_error() {

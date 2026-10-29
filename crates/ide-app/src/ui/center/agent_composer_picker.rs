@@ -1,5 +1,6 @@
 use super::*;
 use ide_core::model_favorites::{favorites_first, ModelFavorite};
+use crate::state::codex::CodexModel;
 
 /// Every provider the composer can start an agent with. Ordered as the rail
 /// lists them.
@@ -15,6 +16,7 @@ const OTHER_PROVIDER_NEW_CHAT_TOOLTIP: &str =
 #[derive(Clone)]
 enum ComposerModelRow {
     BuiltIn(AgentKind, AgentModel),
+    Codex(CodexModel),
     OpenCode(OpenCodeModel),
 }
 
@@ -56,6 +58,7 @@ impl ComposerModelRow {
     fn favorite_key(&self) -> ModelFavorite {
         match self {
             Self::BuiltIn(_, model) => ModelFavorite::new(*model, None),
+            Self::Codex(model) => ModelFavorite::new(AgentModel::CodexDefault, Some(&model.id)),
             Self::OpenCode(model) => ModelFavorite::new(AgentModel::OpenCode, Some(&model.id)),
         }
     }
@@ -63,6 +66,7 @@ impl ComposerModelRow {
     fn label(&self) -> &str {
         match self {
             Self::BuiltIn(_, model) => model.short_label(),
+            Self::Codex(model) => &model.name,
             Self::OpenCode(model) => &model.name,
         }
     }
@@ -70,6 +74,7 @@ impl ComposerModelRow {
     fn provider_label(&self) -> String {
         match self {
             Self::BuiltIn(provider, _) => provider.label().to_string(),
+            Self::Codex(_) => AgentKind::Codex.label().to_string(),
             Self::OpenCode(model) => model.provider_label(),
         }
     }
@@ -93,7 +98,85 @@ fn open_code_effort(variants: &[String], current: AgentEffort) -> AgentEffort {
 }
 
 impl CenterArea {
+    pub fn refresh_codex_models(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some((_, path)) = self.active_project(cx) else { return; };
+        if self.codex_catalog.loading || (!force && !self.codex_catalog.stale_for(&path)) { return; }
+        self.codex_catalog.loading = true;
+        self.codex_catalog.project_path = Some(path.clone());
+        self.codex_catalog.models.clear();
+        self.codex_catalog.error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let requested = path.clone();
+            let discovery = cx.background_executor().spawn(async move { crate::state::codex::discover(&path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.codex_catalog.loading = false;
+                if this.active_project(cx).is_none_or(|(_, path)| path != requested) {
+                    this.codex_catalog.refreshed_at = None;
+                    this.refresh_codex_models(false, cx);
+                    return;
+                }
+                this.codex_catalog.refreshed_at = Some(Instant::now());
+                match discovery {
+                    Ok(Some(discovery)) => {
+                        this.codex_catalog.models = discovery.models;
+                        this.codex_catalog.executable = Some(discovery.executable);
+                        this.codex_catalog.version = Some(discovery.version);
+                    }
+                    Ok(None) => this.codex_catalog.error = Some("Codex is not installed. Install Codex and sign in, then refresh models.".into()),
+                    Err(error) => this.codex_catalog.error = Some(ide_core::redact_sensitive_text(&format!("{error:#}"))),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    fn select_codex_model(&mut self, target: &ComposerModelPickerTarget, model: Option<&CodexModel>, effort: AgentEffort, cx: &mut Context<Self>) {
+        match target {
+            ComposerModelPickerTarget::NewAgent => {
+                if let Some(composer) = &mut self.new_agent_composer {
+                    if composer.provider != AgentKind::Codex { composer.expert_snapshot = None; }
+                    composer.provider = AgentKind::Codex;
+                    composer.model = AgentModel::CodexDefault;
+                    composer.external_model_id = model.map(|model| model.id.clone());
+                    composer.external_model_label = model.map(|model| model.name.clone());
+                    composer.external_model_variants = model.map(CodexModel::variants).unwrap_or_default();
+                    composer.effort = model.and_then(|model| model.normalize_effort(effort)).unwrap_or(effort);
+                    composer.error = None;
+                }
+            }
+            ComposerModelPickerTarget::AgentChat { surface, agent_id, .. } => {
+                if let Some((project, _)) = self.active_project(cx) {
+                    if let Some(id) = self.terminals.read(cx).agent_record_terminal(project, *agent_id) {
+                        self.terminals.update(cx, |terminals, cx| terminals.close(id, cx));
+                    }
+                }
+                match surface {
+                    AgentChatSurface::Document { project, relative_doc_path } => {
+                        let provider_changed = self.doc_assistants.read(cx).record_for(*project, relative_doc_path)
+                            .is_some_and(|record| record.provider != AgentKind::Codex);
+                        let chats = self.agent_chats.read(cx);
+                        if provider_changed && (chats.has_backend(*agent_id) || chats.session(*agent_id)
+                            .is_some_and(|session| session.chat_session_id.is_some() || session.cli_session_id.is_some() || !session.messages.is_empty())) { return; }
+                        self.doc_assistants.update(cx, |records, cx| records.update_codex_model(*project, relative_doc_path, model, effort, cx));
+                    }
+                    _ => self.agents.update(cx, |records, cx| records.update_codex_model(*agent_id, model, effort, cx)),
+                }
+                self.agent_chats.update(cx, |chats, cx| chats.update_codex_model(*agent_id, model, effort, cx));
+            }
+        }
+    }
+
+    pub(super) fn persist_codex_selection(&mut self, agent_id: Uuid, model: &CodexModel, effort: AgentEffort, cx: &mut Context<Self>) {
+        self.agents.update(cx, |records, cx| records.update_codex_model(agent_id, Some(model), effort, cx));
+        let record = self.doc_assistants.read(cx).records().iter().find(|record| record.chat_agent_id == agent_id).cloned();
+        if let Some(record) = record {
+            self.doc_assistants.update(cx, |records, cx| records.update_codex_model(record.project_id, &record.relative_doc_path, Some(model), effort, cx));
+        }
+    }
+
     pub fn refresh_open_code_models(&mut self, force: bool, cx: &mut Context<Self>) {
+        self.refresh_codex_models(force, cx);
         let Some((_, project_path)) = self.active_project(cx) else {
             return;
         };
@@ -239,6 +322,9 @@ impl CenterArea {
                         .cloned()
                         .map(ComposerModelRow::OpenCode),
                 );
+            } else if kind == AgentKind::Codex {
+                rows.push(ComposerModelRow::BuiltIn(kind, AgentModel::CodexDefault));
+                rows.extend(self.codex_catalog.models.iter().cloned().map(ComposerModelRow::Codex));
             } else {
                 rows.extend(
                     AgentModel::models_for(kind)
@@ -260,6 +346,7 @@ impl CenterArea {
                     || row.provider_label().to_lowercase().contains(&query)
                     || matches!(row, ComposerModelRow::BuiltIn(_, model) if model.cli_value().is_some_and(|id| id.replace('-', " ").contains(&normalized_query)))
                     || matches!(row, ComposerModelRow::OpenCode(model) if model.id.to_lowercase().contains(&query))
+                    || matches!(row, ComposerModelRow::Codex(model) if model.id.to_lowercase().contains(&query))
             });
         }
 
@@ -416,13 +503,18 @@ impl CenterArea {
                                     "composer-opencode-model-refresh",
                                     cx,
                                 )
-                                .tooltip("Refresh models from OpenCode")
+                                .tooltip("Refresh models from Codex and OpenCode")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.refresh_open_code_models(true, cx);
                                 })),
                             ),
                     )
+                    .when((filter.is_none() || filter == Some(AgentKind::Codex)) && (self.codex_catalog.loading || self.codex_catalog.error.is_some()), |panel| {
+                        panel.child(div().px_2().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::t3(cx))
+                            .child(if self.codex_catalog.loading { "Checking Codex models…".to_string() }
+                                else { self.codex_catalog.error.clone().unwrap_or_default() }))
+                    })
                     .child(
                         v_flex()
                             .id("composer-model-picker-scroll")
@@ -466,8 +558,9 @@ impl CenterArea {
                                     *previous_provider = Some(provider_label.clone());
                                     let selected = match &row {
                                         ComposerModelRow::BuiltIn(kind, model) => {
-                                            current_provider == *kind && *model == current
+                                            current_provider == *kind && *model == current && current_external_id.is_none()
                                         }
+                                        ComposerModelRow::Codex(model) => current_provider == AgentKind::Codex && (current_external_id.as_deref() == Some(model.id.as_str()) || (current_external_id.is_none() && current.cli_value() == Some(model.id.as_str()))),
                                         ComposerModelRow::OpenCode(model) => {
                                             current_provider == AgentKind::OpenCode
                                                 && current_external_id.as_deref()
@@ -476,6 +569,7 @@ impl CenterArea {
                                     };
                                     let row_provider = match &row {
                                         ComposerModelRow::BuiltIn(kind, _) => *kind,
+                                        ComposerModelRow::Codex(_) => AgentKind::Codex,
                                         ComposerModelRow::OpenCode(_) => AgentKind::OpenCode,
                                     };
                                     let disabled =
@@ -574,12 +668,29 @@ impl CenterArea {
                                                             if disabled {
                                                                 return;
                                                             }
+                                                            match &click_row {
+                                                                ComposerModelRow::Codex(model) => {
+                                                                    this.select_codex_model(&click_target, Some(model), current_effort, cx);
+                                                                    this.composer_model_expanded = false;
+                                                                    cx.notify();
+                                                                    return;
+                                                                }
+                                                                ComposerModelRow::BuiltIn(AgentKind::Codex, AgentModel::CodexDefault) => {
+                                                                    let automatic = ide_core::agents::codex::resolve_model(&this.codex_catalog.models, None).ok().cloned();
+                                                                    this.select_codex_model(&click_target, automatic.as_ref(), current_effort, cx);
+                                                                    this.composer_model_expanded = false;
+                                                                    cx.notify();
+                                                                    return;
+                                                                }
+                                                                _ => {}
+                                                            }
                                                             match &click_target {
                                                                 ComposerModelPickerTarget::NewAgent => {
                                                                     if let Some(composer) =
                                                                         this.new_agent_composer.as_mut()
                                                                     {
                                                                         match &click_row {
+                                                                            ComposerModelRow::Codex(_) => unreachable!(),
                                                                             ComposerModelRow::BuiltIn(
                                                                                 kind,
                                                                                 model,
@@ -642,6 +753,7 @@ impl CenterArea {
                                                                     agent_id,
                                                                     ..
                                                                 } => match &click_row {
+                                                                    ComposerModelRow::Codex(_) => unreachable!(),
                                                                     ComposerModelRow::BuiltIn(
                                                                         provider,
                                                                         model,

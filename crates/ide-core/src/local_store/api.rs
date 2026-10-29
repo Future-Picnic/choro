@@ -280,6 +280,42 @@ impl LocalStore {
         })
     }
 
+    /// Commit a migration's agent snapshot and copied messages atomically.
+    /// A newer snapshot may already have committed; in that case `agents` is
+    /// None and only history for still-existing parents is inserted. Stable
+    /// message IDs make retrying a failed import idempotent.
+    pub fn save_conversation_migration(
+        &self,
+        agents: Option<&[AgentRecord]>,
+        messages: &[StoredChatMessage],
+    ) -> Result<()> {
+        self.rt.block_on(async {
+            let conn = self.connect().await?;
+            execute_transaction(&conn, |conn| {
+                Box::pin(async move {
+                    if let Some(agents) = agents {
+                        save_agents_async(conn, agents).await?;
+                    }
+                    let mut rows = conn.query("SELECT id FROM agents", ()).await?;
+                    let mut parents = HashSet::new();
+                    while let Some(row) = rows.next().await? {
+                        parents.insert(row.get::<String>(0)?);
+                    }
+                    drop(rows);
+                    for message in messages {
+                        anyhow::ensure!(
+                            parents.contains(&message.agent_id.to_string()),
+                            "The conversation's project or agent no longer exists"
+                        );
+                        insert_chat_message_async(conn, message).await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+        })
+    }
+
     /// Register the durable parent for a Studio/Docs conversation without
     /// replacing the ordinary agent snapshot or overwriting newer metadata.
     /// Project removal and parent registration share the write transaction.

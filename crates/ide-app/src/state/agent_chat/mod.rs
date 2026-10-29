@@ -69,6 +69,8 @@ mod changes;
 pub use changes::{ChatChange, ChatChangeCategories};
 
 pub enum AgentChatEvent {
+    CodexModelRejected { id: String, project_path: std::path::PathBuf },
+    CodexModelSelected { agent_id: Uuid, model: ide_core::agents::codex::CodexModel, effort: AgentEffort },
     SessionChanged(ChatChange),
     /// A provider-backed work turn settled normally. Unlike `TurnFinished`,
     /// this does not require a user message or changed-files receipt, so
@@ -1050,6 +1052,16 @@ impl AgentChatState {
         self.publish_change(agent_id, ChatChangeCategories::CONTROLS, cx);
     }
 
+    pub fn update_codex_model(&mut self, agent_id: Uuid, model: Option<&ide_core::agents::codex::CodexModel>, effort: AgentEffort, cx: &mut Context<Self>) {
+        if let Some(controller) = self.controllers.get(&agent_id) {
+            let _ = controller.send(ChatBackendCommand::UpdateModelEffort {
+                model: AgentModel::CodexDefault, effort,
+                external_model: model.map(|model| (model.id.clone(), model.variants())),
+            });
+        }
+        self.publish_change(agent_id, ChatChangeCategories::CONTROLS, cx);
+    }
+
     pub fn update_title(&mut self, agent_id: Uuid, title: String, cx: &mut Context<Self>) {
         let Some(session) = self.sessions.get_mut(&agent_id) else {
             return;
@@ -1556,6 +1568,17 @@ impl AgentChatState {
         let now = unix_now();
         let current_generation =
             self.backend_generations.get(&agent_id).copied() == Some(generation);
+        if let ChatBackendEvent::CodexModelRejected { id, project_path } = &event {
+            if current_generation { cx.emit(AgentChatEvent::CodexModelRejected { id: id.clone(), project_path: project_path.clone() }); }
+            return;
+        }
+        if let ChatBackendEvent::CodexModelSelected { model, effort } = &event {
+            if current_generation {
+                cx.emit(AgentChatEvent::CodexModelSelected { agent_id, model: model.clone(), effort: *effort });
+                self.publish_change(agent_id, ChatChangeCategories::CONTROLS, cx);
+            }
+            return;
+        }
         // Receipts belong to immutable turns, including retired backends. They
         // cannot change provider status, consume queued prompts, or end new work.
         match &event {
@@ -1710,6 +1733,8 @@ impl AgentChatState {
         let session = self.ensure_backend_event_session(agent_id, now);
         session.last_activity_at = now;
         match event {
+            ChatBackendEvent::CodexModelRejected { .. } => unreachable!("handled before session mutation"),
+            ChatBackendEvent::CodexModelSelected { .. } => unreachable!("handled before session mutation"),
             ChatBackendEvent::ChatSessionReady { session_id } => {
                 if is_real_cli_session_id(agent_id, &session_id) {
                     session.chat_session_id = Some(session_id);

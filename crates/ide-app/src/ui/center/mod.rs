@@ -2293,6 +2293,7 @@ pub struct CenterArea {
     composer_model_provider: Option<AgentKind>,
     composer_model_favorites_only: bool,
     open_code_catalog: OpenCodeCatalog,
+    codex_catalog: crate::state::codex::CodexCatalog,
     // When the new-agent control rail is too narrow to fit every labeled
     // button, it collapses the icon-bearing controls to icon-only (Codex-style)
     // so the row never overflows past the send button.

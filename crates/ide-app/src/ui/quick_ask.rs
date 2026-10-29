@@ -514,7 +514,7 @@ impl QuickAskPanel {
                 if !provider.is_visible_in_picker() {
                     continue;
                 }
-                for model in AgentModel::models_for(provider) {
+                for model in AgentModel::picker_models_for(provider) {
                     choices.push(if provider == AgentKind::OpenCode {
                         GenerationAgent::for_provider(provider)
                     } else {

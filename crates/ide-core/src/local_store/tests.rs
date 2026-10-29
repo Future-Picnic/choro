@@ -20,6 +20,42 @@ fn sample_project() -> Project {
 }
 
 #[test]
+fn conversation_migration_is_durable_retryable_and_rolls_back_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    let project = sample_project();
+    let mut config = AppConfig::default();
+    config.projects.push(project.clone());
+    store.save_workspace_config(&config).unwrap();
+    let existing = sample_agent(&project);
+    store.save_agents(std::slice::from_ref(&existing)).unwrap();
+    store.append_chat_message(existing.id, "user", "Keep existing history", 1, None).unwrap();
+    let mut imported = sample_agent(&project);
+    imported.cli_session_id = Some("provider-session".into());
+    imported.chat_session_id = imported.cli_session_id.clone();
+    let message = StoredChatMessage {
+        id: Uuid::new_v4(), agent_id: imported.id, role: "user".into(),
+        text: "Copied local history".into(), sequence: 1, created_at: 42,
+        backend_message_id: Some("original-message".into()),
+    };
+    let snapshot = vec![existing.clone(), imported.clone()];
+    store.save_conversation_migration(Some(&snapshot), std::slice::from_ref(&message)).unwrap();
+    store.save_conversation_migration(None, std::slice::from_ref(&message)).unwrap();
+    assert_eq!(store.load_chat_messages(imported.id).unwrap(), vec![message.clone()]);
+    assert_eq!(store.load_chat_messages(existing.id).unwrap()[0].text, "Keep existing history");
+    // A bad parent must roll back the entire snapshot, including deletions of
+    // unrelated conversations. Retrying must not append duplicate messages.
+    let invalid = StoredChatMessage { agent_id: Uuid::new_v4(), ..message.clone() };
+    assert!(store.save_conversation_migration(Some(&[imported.clone()]), &[invalid]).is_err());
+    assert_eq!(store.load_agents().unwrap().len(), 2);
+    assert_eq!(store.load_chat_messages(existing.id).unwrap().len(), 1);
+    drop(store);
+    let reopened = LocalStore::open(dir.path().to_path_buf()).unwrap();
+    assert_eq!(reopened.load_chat_messages(imported.id).unwrap(), vec![message]);
+    assert_eq!(reopened.load_agents().unwrap().iter().find(|agent| agent.id == imported.id).unwrap().cli_session_id.as_deref(), Some("provider-session"));
+}
+
+#[test]
 fn database_busy_classification_preserves_turso_error_types_and_context() {
     for error in [
         turso::Error::Busy("database is locked".into()),

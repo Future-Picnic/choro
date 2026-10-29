@@ -64,12 +64,18 @@ pub(super) fn find_executable(name: &str) -> Option<PathBuf> {
 }
 
 pub(super) fn find_codex_app_server_executable() -> Option<PathBuf> {
-    for candidate in codex_app_server_candidates() {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    find_executable("codex")
+    let mut candidates = std::env::split_paths(&command_path_env())
+        .map(|directory| directory.join("codex"))
+        .chain(codex_app_server_candidates())
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    candidates.retain(|path| seen.insert(fs::canonicalize(path).unwrap_or_else(|_| path.clone())));
+    // Respect the user's PATH when compatible; a stale plugin copy must not
+    // mask a working installation. Retain an old candidate for an update error.
+    candidates.iter().find(|path| catalog::executable_version(path)
+        .is_some_and(|version| version >= catalog::MIN_CODEX_VERSION)).cloned()
+        .or_else(|| candidates.first().cloned())
 }
 
 pub(super) fn command_path_env() -> String {
@@ -143,6 +149,7 @@ pub(super) fn codex_app_server_candidates() -> Vec<PathBuf> {
         candidates.push(home.join(".codex/plugins/.plugin-appserver/codex"));
         candidates.push(home.join(".codex/packages/standalone/current/bin/codex"));
         candidates.push(home.join(".local/bin/codex"));
+        candidates.push(home.join(".codex/bin/codex"));
         candidates.push(home.join(".superset/bin/codex"));
     }
     candidates.push(PathBuf::from(
