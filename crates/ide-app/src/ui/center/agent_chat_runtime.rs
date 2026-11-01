@@ -24,7 +24,7 @@ pub(super) const AGENT_CODE_REVIEW_FIX_PREFIX: &str =
 /// timeline collapses the turn to a "Sent for verification" chip.
 pub(super) const AGENT_VERIFY_REQUEST_MARKER: &str = "<!-- choro:verify -->";
 
-/// Marks the read-only maintenance turn that turns a finished PocketComet task
+/// Marks the read-only result turn that turns a finished Tumble task
 /// into one purpose-written handoff instead of mirroring Choro's transcript.
 pub(super) const POCKETCOMET_HANDOFF_REQUEST_MARKER: &str = "<!-- choro:pocketcomet-handoff -->";
 
@@ -188,17 +188,14 @@ impl CenterArea {
             .session(agent_id)
             .map(|session| session.interaction_mode)
             .unwrap_or(AgentInteractionMode::Default);
-        self.agent_summary_silent_requests.insert(agent_id);
-        let sent = self.dispatch_agent_chat_read_only_submission(
+        // This is the user-facing task result. Let normal completion handling
+        // keep it unread until the user sees it, including in the companion.
+        self.dispatch_agent_chat_read_only_submission(
             agent_id,
             pocketcomet_handoff_prompt(),
             mode,
             cx,
-        );
-        if !sent {
-            self.agent_summary_silent_requests.remove(&agent_id);
-        }
-        sent
+        )
     }
 
     pub(super) fn maybe_start_pending_pocketcomet_handoffs(&mut self, cx: &mut Context<Self>) {

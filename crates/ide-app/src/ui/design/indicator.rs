@@ -84,20 +84,25 @@ pub fn bandmate_icon(index: usize, color: Hsla, size: gpui::Pixels) -> Div {
     lucide_icon(INSTRUMENTS[index % INSTRUMENTS.len()], color, size)
 }
 
-/// The PocketComet origin mark. Orbit is a concrete link between a task and
-/// its running Choro agent, and remains distinct from Choro's Solo fork mark.
-pub fn pocketcomet_icon(color: Hsla, size: gpui::Pixels) -> Div {
-    lucide_icon(lucide_icons::Icon::Orbit, color, size)
+/// Tumble's origin mark. Keep the legacy integration name for callers, but
+/// always use the app's yellow brand color, matching the main navigation rail.
+pub fn pocketcomet_icon(_color: Hsla, size: gpui::Pixels) -> Div {
+    tumble_icon(size)
+}
+
+/// Tumble's app-icon silhouette without its tile, at the caller's token size.
+pub fn tumble_icon(size: gpui::Pixels) -> Div {
+    gpui::div().flex_none().size(size).child(
+        gpui::svg()
+            .path("brand/tumble.svg")
+            .size(size)
+            .text_color(super::palette::tumble_brand()),
+    )
 }
 
 /// Tumble's app-icon silhouette without its tile; the label stays rail-colored.
 pub fn tumble_rail_icon() -> Div {
-    gpui::div().flex_none().size(scale::icon_lg()).child(
-        gpui::svg()
-            .path("brand/tumble.svg")
-            .size(scale::icon_lg())
-            .text_color(super::palette::tumble_brand()),
-    )
+    tumble_icon(scale::icon_lg())
 }
 
 /// A header-subline indicator with a supplied icon element. This keeps custom

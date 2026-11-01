@@ -6,7 +6,7 @@ use super::{
     REVIEW_CHECKLIST_REQUEST_MARKER,
 };
 
-pub(crate) const TIMELINE_SEARCH_TEXT_VERSION: u64 = 2;
+pub(crate) const TIMELINE_SEARCH_TEXT_VERSION: u64 = 3;
 
 /// Recognise the coordinator's durable envelope, including restored provider
 /// history that no longer has its display label. This is presentation only;
@@ -97,7 +97,7 @@ fn searchable_user_message_text(text: &str, display_text: Option<&str>) -> Optio
         return Some("Sent for verification".to_string());
     }
     if text.starts_with(POCKETCOMET_HANDOFF_REQUEST_MARKER) {
-        return Some("Preparing PocketComet update".to_string());
+        return Some("Preparing Tumble update".to_string());
     }
     if text.starts_with(VERIFY_FIX_PREFIX) {
         return Some("Addressing verification gaps".to_string());

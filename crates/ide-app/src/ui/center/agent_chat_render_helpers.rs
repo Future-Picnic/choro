@@ -115,7 +115,7 @@ pub(super) fn chat_submission_action_chip(text: &str) -> Option<(&'static str, I
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_REQUEST_MARKER) {
         Some(("Sent for verification", IconName::CircleCheck))
     } else if text.starts_with(super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER) {
-        Some(("Preparing PocketComet update", IconName::ArrowUp))
+        Some(("Preparing Tumble update", IconName::ArrowUp))
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_FIX_PREFIX) {
         Some(("Addressing verification gaps", IconName::Replace))
     } else if text.starts_with(super::agent_chat_runtime::AGENT_VERIFY_DISMISS_MARKER)
@@ -375,7 +375,7 @@ mod tests {
                 super::super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER
             ))
             .map(|(label, _)| label),
-            Some("Preparing PocketComet update")
+            Some("Preparing Tumble update")
         );
     }
 
