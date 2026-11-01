@@ -136,6 +136,73 @@ fn transcript_navigation_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "ui-layout-tests")]
+    #[gpui::test]
+    fn completed_chat_answers_need_attention_immediately_for_local_and_tumble_tasks(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{App, AppContext};
+        use ide_core::{AgentKind, AgentModel, AgentOrigin, AgentStatus};
+
+        cx.update(|cx| {
+            let mut agent = AgentRecord::new(
+                ProjectId::new(),
+                "/in-memory/completion".into(),
+                "Task",
+                "",
+                AgentKind::Codex,
+                AgentModel::default_for(AgentKind::Codex),
+                Default::default(),
+                Default::default(),
+            );
+            agent.runtime = AgentRuntimeKind::Chat;
+            agent.status = AgentStatus::InProgress;
+            agent.started_at = Some(1);
+            let records = cx.new(|_| super::super::AgentRecords::in_memory(vec![agent.clone()]));
+            let terminals = cx.new(|_| TerminalManager::new());
+            let chats = cx.new(|_| AgentChatState::new());
+            let activity = cx.new(|_| {
+                AgentActivityCache::in_memory(records, chats.clone(), terminals.clone())
+            });
+            // A deterministic response newer than the terminal manager's startup
+            // baseline, without a real backend, filesystem polling, or sleeps.
+            let completed_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 60;
+            let now = UNIX_EPOCH + Duration::from_secs(completed_at);
+            activity.update(cx, |activity, cx| activity.set_fixture_activity(agent.id, now, cx));
+            chats.update(cx, |chats, cx| {
+                chats.fixture_change(agent.id, AgentChatStatus::Idle, "", cx);
+                chats.ensure_session(agent.id, "Task", cx).chat_session_id = Some("completion-fixture".into());
+            });
+            let runtime = |agent: &AgentRecord, cx: &App| {
+                provider_navigation_runtime(agent, agent.project_id, chats.read(cx), activity.read(cx), terminals.read(cx), now)
+            };
+            assert_eq!(runtime(&agent, cx), AgentNavigationRuntime::Idle,
+                "runtime bookkeeping alone is not a completed answer");
+            chats.update(cx, |chats, _| {
+                chats.sessions.get_mut(&agent.id).unwrap().messages.push(
+                    super::super::agent_chat::AgentChatMessage::Assistant {
+                        message_id: Some("answer-1".into()),
+                        text: "Finished the task".into(),
+                        created_at: completed_at,
+                    },
+                );
+            });
+            for origin in [None, Some(AgentOrigin::PocketComet {
+                workspace_id: "workspace".into(),
+                project_id: "project".into(),
+                task_id: "task".into(),
+                task_title: "Task".into(),
+            })] {
+                agent.origin = origin;
+                assert_eq!(runtime(&agent, cx), AgentNavigationRuntime::Waiting,
+                    "a completed answer needs attention even while transcript activity is fresh");
+            }
+            chats.update(cx, |chats, cx| chats.fixture_change(agent.id, AgentChatStatus::Running, "", cx));
+            assert_eq!(runtime(&agent, cx), AgentNavigationRuntime::Working);
+        });
+    }
+
     #[test]
     fn navigation_attention_follows_activity_and_acknowledgement() {
         let updated = UNIX_EPOCH + Duration::from_secs(100);

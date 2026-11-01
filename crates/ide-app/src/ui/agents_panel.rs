@@ -432,96 +432,24 @@ impl AgentsPanel {
         project: ProjectId,
         cx: &App,
     ) -> AgentRunStatus {
-        if agent.status.is_finished() {
-            return AgentRunStatus::Idle;
-        }
-        if agent.runtime == AgentRuntimeKind::Chat {
-            let (status, session_id, last_activity_at) = self
-                .agent_chats
-                .read(cx)
-                .session(agent.id)
-                .map(|session| {
-                    (
-                        Some(session.status),
-                        session
-                            .chat_session_id
-                            .clone()
-                            .or_else(|| session.cli_session_id.clone()),
-                        Some(session.last_activity_at),
-                    )
-                })
-                .unwrap_or((None, None, None));
-            return match status {
-                Some(AgentChatStatus::Running | AgentChatStatus::Cancelling) => {
-                    AgentRunStatus::Working
-                }
-                Some(AgentChatStatus::WaitingForUser | AgentChatStatus::PlanReady) => {
-                    AgentRunStatus::Waiting
-                }
-                Some(AgentChatStatus::Failed) => AgentRunStatus::Ended,
-                _ if agent.started_at.is_some() => {
-                    let manager = self.terminals.read(cx);
-                    if let Some(session_id) = session_id
-                        .as_deref()
-                        .or(agent.chat_session_id.as_deref())
-                        .or(agent.cli_session_id.as_deref())
-                    {
-                        let updated_at =
-                            self.agent_activity
-                                .read(cx)
-                                .updated_at(agent.id)
-                                .or_else(|| {
-                                    last_activity_at
-                                        .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
-                                });
-                        if let Some(updated_at) = updated_at {
-                            let working = std::time::SystemTime::now()
-                                .duration_since(updated_at)
-                                .map(|age| age < agents::WORKING_WINDOW)
-                                .unwrap_or(false);
-                            if working {
-                                return AgentRunStatus::Working;
-                            }
-                            if !manager.attention_suppressed(session_id, updated_at) {
-                                return AgentRunStatus::Waiting;
-                            }
-                        }
-                    }
-                    AgentRunStatus::Idle
-                }
-                _ => AgentRunStatus::NotStarted,
-            };
-        }
+        use crate::state::agent_navigation::{provider_navigation_runtime, AgentNavigationRuntime};
 
-        let manager = self.terminals.read(cx);
-        if let Some(session) = manager.agent_record_session(project, agent.id) {
-            if session.exited {
-                return AgentRunStatus::Ended;
-            }
-            let session_id = session
-                .agent_session_id
-                .as_deref()
-                .or(agent.cli_session_id.as_deref());
-            if let Some(session_id) = session_id {
-                if let Some(updated_at) = self.agent_activity.read(cx).updated_at(agent.id) {
-                    let working = std::time::SystemTime::now()
-                        .duration_since(updated_at)
-                        .map(|age| age < agents::WORKING_WINDOW)
-                        .unwrap_or(false);
-                    if working {
-                        return AgentRunStatus::Working;
-                    }
-                    if !manager.attention_suppressed(session_id, updated_at) {
-                        return AgentRunStatus::Waiting;
-                    }
-                }
-            }
-            return AgentRunStatus::Open;
-        }
-        if agent.started_at.is_some() || agent.cli_session_id.is_some() {
-            AgentRunStatus::Idle
-        } else {
-            AgentRunStatus::NotStarted
+        // Use the same authoritative completion state as the sidebar and remote
+        // home, rather than guessing whether a finished answer is still working.
+        match provider_navigation_runtime(
+            agent,
+            project,
+            self.agent_chats.read(cx),
+            self.agent_activity.read(cx),
+            self.terminals.read(cx),
+            SystemTime::now(),
+        ) {
+            AgentNavigationRuntime::NotStarted => AgentRunStatus::NotStarted,
+            AgentNavigationRuntime::Working => AgentRunStatus::Working,
+            AgentNavigationRuntime::Waiting => AgentRunStatus::Waiting,
+            AgentNavigationRuntime::Open => AgentRunStatus::Open,
+            AgentNavigationRuntime::Idle => AgentRunStatus::Idle,
+            AgentNavigationRuntime::Ended => AgentRunStatus::Ended,
         }
     }
 

@@ -1701,9 +1701,13 @@ impl CenterArea {
         let title = if matches!(
             request.origin.as_ref(),
             Some(AgentOriginDto::PocketComet { .. })
-        ) && !title.starts_with("PocketComet · ")
-        {
-            format!("PocketComet · {title}")
+        ) {
+            let title = title.strip_prefix("PocketComet · ").unwrap_or(&title);
+            if title.starts_with("Tumble · ") {
+                title.to_string()
+            } else {
+                format!("Tumble · {title}")
+            }
         } else {
             title
         };

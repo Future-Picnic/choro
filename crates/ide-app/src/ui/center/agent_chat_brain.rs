@@ -237,10 +237,9 @@ fn is_silent_summary_completion(
 
 fn latest_user_turn_is_summary_request(timeline: &[AgentChatTimelineItem]) -> bool {
     timeline.iter().rev().find_map(|item| match item {
-        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => Some(
-            text.starts_with(SUMMARY_REQUEST_MARKER)
-                || text.starts_with(super::agent_chat_runtime::POCKETCOMET_HANDOFF_REQUEST_MARKER),
-        ),
+        AgentChatTimelineItem::Message(AgentChatMessage::User { text, .. }) => {
+            Some(text.starts_with(SUMMARY_REQUEST_MARKER))
+        }
         _ => None,
     }) == Some(true)
 }
@@ -1585,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn pocketcomet_handoff_is_silent_maintenance_too() {
+    fn tumble_task_result_is_not_silently_acknowledged_as_summary_maintenance() {
         let timeline = vec![AgentChatTimelineItem::Message(AgentChatMessage::User {
             text: format!(
                 "{}\nPrepare the task update.",
@@ -1596,7 +1595,7 @@ mod tests {
             created_at: 1,
         })];
 
-        assert!(latest_user_turn_is_summary_request(&timeline));
+        assert!(!latest_user_turn_is_summary_request(&timeline));
     }
 
     fn stored_message(kind: &str, text: &str) -> StoredAgentMessage {

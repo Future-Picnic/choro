@@ -100,6 +100,13 @@ impl AgentRecords {
         // make dispatch prefer stale metadata over the assistant's record.
         records.retain(|agent| !agent.hidden_doc_assistant);
         for agent in &mut records {
+            // Refresh the old generated brand prefix while preserving custom
+            // titles and conversations unrelated to the Tumble integration.
+            if agent.origin.as_ref().is_some_and(|origin| origin.is_pocketcomet()) {
+                if let Some(title) = agent.title.strip_prefix("PocketComet · ") {
+                    agent.title = format!("Tumble · {title}");
+                }
+            }
             if agent.model == AgentModel::CodexDefault {
                 agent.model = AgentModel::default_for(AgentKind::Codex);
                 agent.effort = agent.normalize_effort_for_model(agent.model, agent.effort);
