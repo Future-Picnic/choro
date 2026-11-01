@@ -7,18 +7,18 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
     <item>
-      <title>Choro 0.105</title>
-      <pubDate>Thu, 29 Oct 2026 19:42:14 +0200</pubDate>
-      <sparkle:version>105</sparkle:version>
-      <sparkle:shortVersionString>0.105</sparkle:shortVersionString>
+      <title>Choro 0.106</title>
+      <pubDate>Sun, 01 Nov 2026 16:55:49 +0200</pubDate>
+      <sparkle:version>106</sparkle:version>
+      <sparkle:shortVersionString>0.106</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #48 from Future-Picnic/feat-add-codex-model-discovery-and-automatic-capacity-recovery
-- chore: publish update feed for 0.104]]></description>
-      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/689374761" length="122110940" type="application/octet-stream" sparkle:edSignature="DHjXphP1JJG/WpqYpLaBAffTMffI5yUW+72OF/v3D8XJcX344ladVxipxHoZsqhq6Uuy4VNO0gouSr6ZkDk+DA=="></enclosure>
+      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #49 from Future-Picnic/fix-surface-completed-tumble-task-results-as-unread
+- chore: publish update feed for 0.105]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/698629170" length="122084331" type="application/octet-stream" sparkle:edSignature="TFHchM/s/bDkQ079lyhIfgzYYR0OpkX9CZvkvgRaUxf3mmvdrkPpmsllOTPdtvFipE4CbmpiJ5etiV3S2pQZAw=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: vZ6796gB3v2naMY+z8hlnY44Sv3RWc5G7ag7Wo6qCBPYYwMp7oxvMt+rr667MTWeM9rRGQ0TuauNJOWWgqHfAw==
-length: 1455
+edSignature: QwItRPs6i2V3wyJ3nfPoX6MLRhhU9FkZk8eeU9/XCERIvqnjYNSIjoRHcempbDY2ZmhOyV1YIYRn5MiTMG9tDg==
+length: 1444
 -->
