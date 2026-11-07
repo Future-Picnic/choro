@@ -336,7 +336,7 @@ impl CenterArea {
                                         ))
                                         .when_some(pocketcomet_task.clone(), |row, task| {
                                             let tooltip = SharedString::from(format!(
-                                                "Open “{}” in PocketComet",
+                                                "Open “{}” in Tumble",
                                                 task.full_title
                                             ));
                                             let url = task.url.clone();

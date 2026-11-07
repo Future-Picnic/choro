@@ -40,6 +40,7 @@ mod branches;
 mod commit_area;
 mod generation;
 mod history;
+mod merge_return;
 mod panel_state;
 mod pull_request_dialog;
 mod pull_request_support;
@@ -61,6 +62,7 @@ pub(crate) use generation::{
     GeneratedPullRequest, MemoryDecisionContext,
 };
 pub(crate) use generation::{run_quick_ask_generation_with_images, run_safe_text_generation};
+pub(crate) use merge_return::{return_to_base_option, with_local_return};
 use pull_request_dialog::{confirm_git_action, GitConfirmation};
 #[cfg(test)]
 use pull_request_support::merge_pull_request_with_gh;

@@ -46,6 +46,7 @@ mod design;
 mod experts_page;
 mod generation_page;
 mod memory;
+mod merge_preferences;
 mod notifications;
 mod orbit_page;
 mod process_monitor;
@@ -104,7 +105,7 @@ impl SettingsSection {
         match self {
             Self::Design => "Manage the skills and design preferences Studio uses across your projects.",
             Self::Generation => {
-                "Choose defaults for agents, Quick Ask, and generated content, plus review behavior."
+                "Choose defaults for agents, Quick Ask, and generated content, plus review and merge behavior."
             }
             Self::Voice => "Manage local speech models, spoken feedback, and patient turn-taking.",
             Self::Companion => {

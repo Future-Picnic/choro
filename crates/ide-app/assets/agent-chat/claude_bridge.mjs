@@ -32,6 +32,8 @@ let pendingMutationTasks = new Set();
 let cancelRequested = false;
 let currentAccessMode = "bypassPermissions";
 let currentStudioAssistant = false;
+let currentStudioIntegrationServers = [];
+let currentStudioAllowedTools = new Set();
 let currentReviewAssistant = false;
 let currentManagedDelegation = false;
 let currentManagedChild = false;
@@ -291,6 +293,12 @@ async function ensureRuntime(command) {
   const requestedStudioAssistant = Boolean(command.studioAssistant);
   if (runtime && currentStudioAssistant !== requestedStudioAssistant) throw new Error("Studio role changed. Reconnect before continuing.");
   currentStudioAssistant = requestedStudioAssistant;
+  const integrationServers = command.studioIntegrationServers || [];
+  if (currentStudioAssistant && JSON.stringify(integrationServers) !== JSON.stringify(currentStudioIntegrationServers)) {
+    await closeRuntimeForPlanBoundary();
+    currentStudioAllowedTools = new Set();
+  }
+  currentStudioIntegrationServers = integrationServers;
   const requestedManagedDelegation = Boolean(command.managedDelegation);
   const requestedManagedChild = requestedManagedDelegation && Boolean(command.managedChild);
   const requestedManagedConsultation = requestedManagedChild && Boolean(command.managedConsultation);
@@ -317,7 +325,7 @@ async function ensureRuntime(command) {
     if (typeof runtime.setModel === "function") {
       await runtime.setModel(command.model || undefined);
     }
-    if (currentStudioAssistant) await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {}));
+    if (currentStudioAssistant) currentStudioAllowedTools = await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {}), {integrationServers});
     return;
   }
 
@@ -334,7 +342,7 @@ async function ensureRuntime(command) {
       model: command.model || undefined,
       effort: command.effort || undefined,
       ...managedDelegationOptions(currentManagedDelegation, currentManagedChild, currentManagedConsultation),
-      ...(currentStudioAssistant ? {tools: ["Read", "Glob", "Grep", "AskUserQuestion"], disallowedTools: ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", ...MANAGED_SPAWN_TOOLS]} : {}),
+      ...(currentStudioAssistant ? {tools: ["Read", "Glob", "Grep", "AskUserQuestion", "ToolSearch"], disallowedTools: ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", ...MANAGED_SPAWN_TOOLS]} : {}),
       ...(currentReviewAssistant ? reviewRuntimeOptions() : {}),
       permissionMode: currentStudioAssistant || currentReviewAssistant ? "default" : permissionModeFor(command.mode, command.accessMode, currentManagedChild),
       allowDangerouslySkipPermissions: !currentReviewAssistant,
@@ -342,7 +350,7 @@ async function ensureRuntime(command) {
       canUseTool,
       hooks: currentReviewAssistant ? undefined : fileAttributionHooks(),
       mcpServers: command.mcpServers || undefined,
-      strictMcpConfig: currentStudioAssistant || currentReviewAssistant,
+      strictMcpConfig: currentReviewAssistant || (currentStudioAssistant && !integrationServers.length),
       settingSources: currentStudioAssistant || currentReviewAssistant ? [] : undefined,
       systemPrompt: currentReviewAssistant ? command.systemPrompt : {
         type: "preset",
@@ -358,7 +366,7 @@ async function ensureRuntime(command) {
     catch (error) { await closeRuntimeForPlanBoundary(); throw error; }
   }
   if (currentStudioAssistant) {
-    try { await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {})); }
+    try { currentStudioAllowedTools = await preflightStudioRuntime(runtime, Object.keys(command.mcpServers || {}), {integrationServers}); }
     catch (error) { await closeRuntimeForPlanBoundary(); throw error; }
   }
 }
@@ -432,27 +440,49 @@ export async function preflightReviewRuntime(candidate, expectedServers, { timeo
   } finally {finished = true; clearTimeout(timer);}
 }
 
-export async function preflightStudioRuntime(candidate, expectedServers, { timeoutMs = 30000, pollIntervalMs = 100 } = {}) {
+export async function preflightStudioRuntime(candidate, expectedServers, { timeoutMs = 30000, pollIntervalMs = 100, integrationServers = [], optionalWaitMs = 5000 } = {}) {
   const failure = detail => new Error(`Claude could not connect to Choro's design tools. ${detail}`);
   if (typeof candidate?.initializationResult !== "function" || typeof candidate?.mcpServerStatus !== "function") {
     throw failure("The bundled Claude bridge lacks startup verification. Update Choro, then reconnect.");
   }
-  if (!expectedServers.length || expectedServers.some(name => !["choro", "ide"].includes(name))) {
+  const firstParty = expectedServers.filter(name => ["choro", "ide"].includes(name));
+  if (!firstParty.length || (!integrationServers.length && firstParty.length !== expectedServers.length)) {
     throw failure("Choro's scoped tool server was not configured correctly. Reconnect and try again.");
   }
   let timer;
   let finished = false;
+  let allowedTools = new Set();
+  const startedAt = Date.now();
   try {
     await Promise.race([ (async () => {
       await candidate.initializationResult();
       while (!finished) {
         const servers = await candidate.mcpServerStatus();
-        if (!Array.isArray(servers) || servers.length > expectedServers.length
-            || servers.some(server => !expectedServers.includes(server.name))
+        if (!Array.isArray(servers) || (!integrationServers.length && (servers.length > expectedServers.length
+            || servers.some(server => !expectedServers.includes(server.name))))
             || new Set(servers.map(server => server.name)).size !== servers.length) {
           throw failure("Claude reported an unexpected tool server. Reconnect to restore the Studio restrictions.");
         }
-        for (const server of servers) {
+        const designServers = servers.filter(server => firstParty.includes(server.name));
+        allowedTools = new Set();
+        let integrationsPending = false;
+        for (const server of servers.filter(server => !firstParty.includes(server.name))) {
+          const permitted = integrationServers.find(entry => sameStudioEndpoint(entry.url, server.config?.url));
+          if (!permitted) {
+            if (server.status !== "disabled") {
+              if (typeof candidate.toggleMcpServer !== "function") throw failure("Update Claude Code to select Studio integrations.");
+              await candidate.toggleMcpServer(server.name, false);
+            }
+            continue;
+          }
+          if (server.status === "pending") { integrationsPending ||= Date.now() - startedAt < optionalWaitMs; continue; }
+          if (server.status !== "connected") continue; // Optional connections never prevent local design work.
+          const prefix = `mcp__${server.name.replace(/[^a-zA-Z0-9_-]/g, "_")}__`;
+          for (const tool of server.tools || []) {
+            if (permitted.tools.includes(tool.name)) allowedTools.add(`${prefix}${tool.name}`);
+          }
+        }
+        for (const server of designServers) {
           if (!["connected", "pending"].includes(server.status)) {
             throw failure(`The ${server.name} tool server is ${server.status}. Reconnect and try again.`);
           }
@@ -460,8 +490,8 @@ export async function preflightStudioRuntime(candidate, expectedServers, { timeo
         // SDK initialization starts MCP connections; it does not await them.
         // Do not send the prompt until every expected server has connected and
         // its complete tool list has passed the same restriction checks.
-        if (servers.length === expectedServers.length && servers.every(server => server.status === "connected")) {
-          for (const server of servers) {
+        if (designServers.length === firstParty.length && designServers.every(server => server.status === "connected") && !integrationsPending) {
+          for (const server of designServers) {
             const names = (server.tools || []).map(tool => tool.name);
             for (const required of ["studio_context", "studio_apply", "studio_snapshot", "studio_review"]) {
               if (!names.includes(required)) throw failure(`Missing ${required}. Update Choro, then reconnect.`);
@@ -475,6 +505,14 @@ export async function preflightStudioRuntime(candidate, expectedServers, { timeo
       }
     })(), new Promise((_, reject) => { timer=setTimeout(() => reject(failure("The tool server did not finish connecting. Reconnect and try again.")), timeoutMs); }) ]);
   } finally { finished = true; clearTimeout(timer); }
+  return allowedTools;
+}
+
+function sameStudioEndpoint(allowed, actual) {
+  try {
+    const url = new URL(actual);
+    return !url.username && !url.password && !url.search && !url.hash && new URL(allowed).href === url.href;
+  } catch { return false; }
 }
 
 function resumeSessionIdForCommand(requestedSessionId, activeSessionId) {
@@ -501,7 +539,7 @@ async function canUseTool(toolName, input, options) {
   }
   if (currentStudioAssistant) {
     if (toolName === "AskUserQuestion") return handleAskUserQuestion(input, options);
-    const denial = toolPolicyDenial(toolName, { studio: true });
+    const denial = toolPolicyDenial(toolName, { studio: true, studioTools: currentStudioAllowedTools });
     return denial ? {behavior:"deny",message:denial} : {behavior:"allow",updatedInput:input};
   }
   const denial = toolPolicyDenial(toolName, currentToolPolicy());
@@ -847,15 +885,15 @@ async function finishCancelledTurn(capturePending, flushChanges, finish) {
 
 function currentToolPolicy() {
   return { managed: currentManagedDelegation, child: currentManagedChild,
-    consultation: currentManagedConsultation, readOnly: currentReadOnly, studio: currentStudioAssistant, review: currentReviewAssistant };
+    consultation: currentManagedConsultation, readOnly: currentReadOnly, studio: currentStudioAssistant, studioTools: currentStudioAllowedTools, review: currentReviewAssistant };
 }
 
 export function toolPolicyDenial(toolName, policy) {
   if (policy.review) return /^mcp__(?:choro|ide)__review_(?:context|read|search|report)$/.test(toolName)
     ? null : "Independent review permits only Choro's four scoped review tools.";
   // Keep in sync with ide-mcp's studio::allowed; the server validates the bound role and scope.
-  if (policy.studio && !["Read", "Glob", "Grep", "AskUserQuestion"].includes(toolName) && !/^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read|import_propose)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) {
-    return "Studio permits only context reads and host-scoped design operations.";
+  if (policy.studio && !["Read", "Glob", "Grep", "AskUserQuestion", "ToolSearch"].includes(toolName) && !policy.studioTools?.has(toolName) && !/^mcp__(?:choro|ide)__(?:studio_(?:context|read|apply|snapshot|review|project_read|import_propose|import_asset|browser|generate_image)|task_(?:read|list|image)|summary_(?:read|save))$/.test(toolName)) {
+    return "Studio permits its scoped design operations and explicitly enabled reference and image tools.";
   }
   if (policy.managed && MANAGED_SPAWN_TOOLS.has(toolName)) {
     return "Use Choro delegation tools to coordinate this managed task.";

@@ -91,6 +91,45 @@ test("Studio preflight rejects missing capabilities, disconnected or unrestricte
   await assert.rejects(preflightStudioRuntime(runtime([server,{name:'other',status:'connected'}]),['choro']),/unexpected tool server/);
 });
 
+test("Studio selects connected reference tools by endpoint and denies remote mutations", async () => {
+  const { preflightStudioRuntime } = await import("./claude_bridge.mjs");
+  const choro = {name:"choro",status:"connected",tools:["studio_context","studio_apply","studio_snapshot","studio_review"].map(name=>({name}))};
+  const mobbin = {name:"references",status:"connected",config:{url:"https://api.mobbin.com/mcp"},tools:[{name:"search_screens"},{name:"save_content"}]};
+  const image = {name:"claude.ai Higgsfield",status:"connected",config:{url:"https://mcp.higgsfield.ai/mcp"},tools:[{name:"generate_image"},{name:"sandbox_exec"}]};
+  const spoof = {name:"mobbin",status:"connected",config:{url:"https://example.test/mcp"},tools:[{name:"search_screens"}]};
+  const disabled = [];
+  const studioTools = await preflightStudioRuntime({
+    initializationResult:async()=>({}),mcpServerStatus:async()=>[choro,mobbin,image,spoof],
+    toggleMcpServer:async(name,enabled)=>disabled.push([name,enabled]),
+  },["choro","references"],{integrationServers:[
+    {url:"https://api.mobbin.com/mcp",tools:["search_screens"]},
+    {url:"https://mcp.higgsfield.ai/mcp",tools:["generate_image"]},
+  ]});
+  assert.deepEqual(disabled,[["mobbin",false]]);
+  const policy = {studio:true,studioTools};
+  assert.equal(toolPolicyDenial("mcp__references__search_screens",policy),null);
+  assert.equal(toolPolicyDenial("mcp__claude_ai_Higgsfield__generate_image",policy),null);
+  for (const name of ["mcp__references__save_content","mcp__mobbin__search_screens","mcp__claude_ai_Higgsfield__sandbox_exec","Write"]) {
+    assert.ok(toolPolicyDenial(name,policy),name);
+    assert.equal(toolPolicyHook(name,policy).hookSpecificOutput.permissionDecision,"deny");
+  }
+  assert.ok(toolPolicyDenial("mcp__references__search_screens",{studio:true,studioTools:new Set()}));
+});
+
+test("unavailable optional integrations do not block Studio design tools", async () => {
+  const { preflightStudioRuntime } = await import("./claude_bridge.mjs");
+  for (const status of ["needs-auth","failed","pending"]) {
+    const tools = await preflightStudioRuntime({
+      initializationResult:async()=>({}),
+      mcpServerStatus:async()=>[
+        {name:"choro",status:"connected",tools:["studio_context","studio_apply","studio_snapshot","studio_review"].map(name=>({name}))},
+        {name:"references",status,config:{url:"https://api.mobbin.com/mcp"}},
+      ],
+    },["choro","references"],{integrationServers:[{url:"https://api.mobbin.com/mcp",tools:["search_screens"]}],optionalWaitMs:0});
+    assert.equal(tools.size,0);
+  }
+});
+
 test("Studio waits for the SDK's pending MCP startup before validating design tools", async () => {
   const { preflightStudioRuntime } = await import("./claude_bridge.mjs");
   const names = ["studio_context", "studio_apply", "studio_snapshot", "studio_review"];

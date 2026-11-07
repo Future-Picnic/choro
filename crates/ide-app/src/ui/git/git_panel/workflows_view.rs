@@ -107,6 +107,9 @@ impl GitPanel {
         };
         let git = self.active_git(cx);
         let workspace = self.workspace.clone();
+        let (return_label, return_description) =
+            super::return_to_base_option(&run.destination_branch);
+        let return_by_default = workspace.read(cx).return_to_base_after_merge;
         ConfirmDialog::new(
             format!("Merge pull request #{number}?"),
             "Choro will re-read the exact pull request and source commit, then use the repository's preferred allowed merge method. GitHub protections still apply.",
@@ -118,9 +121,12 @@ impl GitPanel {
             "Delete GitHub branch after merge",
             "Delete the source branch on GitHub only. Your local branch, files, and history are kept.",
         )
+        .checkbox_with_default(return_label, return_description, return_by_default)
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-git-workflow")
-        .on_confirm_with_checkbox(move |delete_branch, window, cx| {
+        .on_confirm_with_checkboxes(move |options, window, cx| {
+            let delete_branch = options.first().copied().unwrap_or(false);
+            let return_to_base = options.get(1).copied().unwrap_or(false);
             let repo_path = repo_path.clone();
             let mut pending_run = run.clone();
             let pull_request_selector = number.to_string();
@@ -140,6 +146,9 @@ impl GitPanel {
                             expected_head.as_deref(),
                             delete_branch,
                         )
+                        .map(|outcome| {
+                            super::with_local_return(outcome, &repo_path, return_to_base)
+                        })
                     })
                     .await;
                 pending_run.updated_at = SystemTime::now()

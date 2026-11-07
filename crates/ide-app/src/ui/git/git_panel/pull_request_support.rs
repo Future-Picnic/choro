@@ -1,4 +1,6 @@
 use super::*;
+use super::merge_return::with_local_return_sentence;
+use ide_core::git::merge_return::ReturnOutcome;
 
 pub(super) fn gh_output(command: &mut Command) -> anyhow::Result<std::process::Output> {
     ide_core::process::output_with_timeout(command, Duration::from_secs(60))
@@ -548,15 +550,24 @@ pub(crate) struct MergePullRequestOutcome {
     repository: String,
     github_branch_deleted: bool,
     branch_cleanup_error: Option<String>,
+    /// The optional local follow-up; `None` when it was not requested.
+    local_return: Option<Result<ReturnOutcome, String>>,
 }
 
 impl MergePullRequestOutcome {
+    pub(super) fn with_local_return_result(self, local: Result<ReturnOutcome, String>) -> Self {
+        Self {
+            local_return: Some(local),
+            ..self
+        }
+    }
+
     pub(crate) fn message(&self) -> String {
         let merged = format!(
             "Merged pull request #{} into {}",
             self.number, self.base_branch
         );
-        if let Some(error) = &self.branch_cleanup_error {
+        let remote = if let Some(error) = &self.branch_cleanup_error {
             format!("{merged}, but the GitHub branch could not be deleted: {error}. Your local branch is kept.")
         } else if self.github_branch_deleted {
             format!(
@@ -565,11 +576,17 @@ impl MergePullRequestOutcome {
             )
         } else {
             merged
+        };
+        match &self.local_return {
+            Some(local) => with_local_return_sentence(remote, local),
+            None => remote,
         }
     }
 
     pub(crate) fn notification(&self) -> Notification {
-        if self.branch_cleanup_error.is_some() {
+        if self.branch_cleanup_error.is_some()
+            || self.local_return.as_ref().is_some_and(Result::is_err)
+        {
             Notification::warning(self.message())
         } else {
             Notification::success(self.message())
@@ -832,6 +849,7 @@ pub(crate) fn merge_pull_request_with_gh(
         repository: name_with_owner,
         github_branch_deleted: false,
         branch_cleanup_error: None,
+        local_return: None,
         number: pr.number,
         branch: pr.branch,
         base_branch: pr.base_branch,
@@ -849,6 +867,8 @@ impl GitPanel {
         let title = format!("Merge pull request #{}?", pr.number);
         let panel = cx.entity();
         let expected_head_sha = pr.head_oid.clone();
+        let (return_label, return_description) = super::return_to_base_option(&pr.base_branch);
+        let return_by_default = self.workspace.read(cx).return_to_base_after_merge;
         ConfirmDialog::new(
             title,
             "Choro will attempt the merge now using the repository's preferred allowed method. Required reviews, checks, and branch protections still apply.",
@@ -860,9 +880,12 @@ impl GitPanel {
             "Delete GitHub branch after merge",
             "Delete the source branch on GitHub only. Your local branch, files, and history are kept.",
         )
+        .checkbox_with_default(return_label, return_description, return_by_default)
         .confirm_label("Merge PR")
         .confirm_id("confirm-merge-branch-pr")
-        .on_confirm_with_checkbox(move |delete_branch, window, cx| {
+        .on_confirm_with_checkboxes(move |options, window, cx| {
+            let delete_branch = options.first().copied().unwrap_or(false);
+            let return_to_base = options.get(1).copied().unwrap_or(false);
             let window_handle = window.window_handle();
             let repo = git.read(cx).repo_path.clone();
             let branch = pr.branch.clone();
@@ -898,6 +921,9 @@ impl GitPanel {
                                 expected_head_sha.as_deref(),
                                 delete_branch,
                             )
+                            .map(|outcome| {
+                                super::with_local_return(outcome, &repo, return_to_base)
+                            })
                         })
                         .await;
                     git_for_result
@@ -947,9 +973,11 @@ impl GitPanel {
 
 pub(crate) fn open_url(url: &str) {
     let mut command = Command::new("open");
-    if is_pocketcomet_deep_link(url) {
-        let (selector, application) =
-            pocketcomet_open_target_for(Path::new(POCKETCOMET_APPLICATION_PATH).is_dir());
+    if is_tumble_deep_link(url) {
+        let (selector, application) = tumble_open_target_for(
+            Path::new(TUMBLE_APPLICATION_PATH).is_dir(),
+            Path::new(POCKETCOMET_APPLICATION_PATH).is_dir(),
+        );
         command.arg(selector).arg(application);
     }
     if let Err(error) = command.arg("--").arg(url).spawn() {
@@ -957,23 +985,29 @@ pub(crate) fn open_url(url: &str) {
     }
 }
 
+const TUMBLE_APPLICATION_PATH: &str = "/Applications/Tumble.app";
 const POCKETCOMET_APPLICATION_PATH: &str = "/Applications/PocketComet.app";
-const POCKETCOMET_BUNDLE_ID: &str = "com.futurepicnic.dailybob";
+const TUMBLE_BUNDLE_ID: &str = "com.futurepicnic.pocketcomet";
 
-fn pocketcomet_open_target_for(installed_application_exists: bool) -> (&'static str, &'static str) {
-    if installed_application_exists {
-        // DailyBob.app and PocketComet.app can share the legacy bundle id.
-        // Select the renamed production app by path so Launch Services cannot
-        // send the deep link to the obsolete DailyBob build.
+fn tumble_open_target_for(
+    tumble_exists: bool,
+    pocketcomet_exists: bool,
+) -> (&'static str, &'static str) {
+    if tumble_exists {
+        // Prefer the current production app even when an older build is registered.
+        ("-a", TUMBLE_APPLICATION_PATH)
+    } else if pocketcomet_exists {
         ("-a", POCKETCOMET_APPLICATION_PATH)
     } else {
         // Development builds may only be registered with Launch Services.
-        ("-b", POCKETCOMET_BUNDLE_ID)
+        ("-b", TUMBLE_BUNDLE_ID)
     }
 }
 
-fn is_pocketcomet_deep_link(url: &str) -> bool {
-    url.starts_with("pocketcomet://") || url.starts_with("dailybob://")
+fn is_tumble_deep_link(url: &str) -> bool {
+    url.starts_with("tumble://")
+        || url.starts_with("pocketcomet://")
+        || url.starts_with("dailybob://")
 }
 
 pub(crate) fn pull_request_url_with_text(url: &str, pull_request: &GeneratedPullRequest) -> String {
@@ -1026,6 +1060,7 @@ mod merge_tests {
             repository: "owner/app".into(),
             github_branch_deleted: false,
             branch_cleanup_error: None,
+            local_return: None,
         }
     }
 
@@ -1159,6 +1194,27 @@ mod merge_tests {
     }
 
     #[test]
+    fn local_return_result_is_reported_after_the_merge_summary() {
+        assert_eq!(merged_outcome().message(), "Merged pull request #42 into main");
+
+        let switched = merged_outcome().with_local_return_result(Ok(ReturnOutcome::Updated {
+            base: "main".into(),
+            switched: true,
+        }));
+        assert_eq!(
+            switched.message(),
+            "Merged pull request #42 into main. Switched to main and pulled the latest."
+        );
+
+        let failed = merged_outcome()
+            .with_local_return_result(Err("Couldn't switch to main: local changes".into()));
+        assert!(failed.message().starts_with("Merged pull request #42 into main."));
+        assert!(failed
+            .message()
+            .contains("Your checkout was not updated: Couldn't switch to main"));
+    }
+
+    #[test]
     fn cleanup_parses_github_headers_json_empty_delete_and_not_found() {
         use std::os::unix::process::ExitStatusExt;
 
@@ -1193,21 +1249,33 @@ mod merge_tests {
     }
 
     #[test]
-    fn recognizes_only_pocketcomet_deep_links_for_app_targeting() {
-        assert!(is_pocketcomet_deep_link("pocketcomet://document/123"));
-        assert!(is_pocketcomet_deep_link("dailybob://task/123"));
-        assert!(!is_pocketcomet_deep_link("https://example.com"));
+    fn recognizes_current_and_legacy_tumble_deep_links_for_app_targeting() {
+        assert!(is_tumble_deep_link("tumble://task/123"));
+        assert!(is_tumble_deep_link("pocketcomet://document/123"));
+        assert!(is_tumble_deep_link("dailybob://task/123"));
+        assert!(!is_tumble_deep_link("https://example.com"));
+        assert!(!is_tumble_deep_link(
+            "https://example.com/tumble://task/123"
+        ));
     }
 
     #[test]
-    fn pocketcomet_open_target_prefers_the_renamed_installed_app() {
+    fn tumble_open_target_prefers_tumble_over_older_installs() {
         assert_eq!(
-            pocketcomet_open_target_for(true),
+            tumble_open_target_for(true, true),
+            ("-a", "/Applications/Tumble.app")
+        );
+        assert_eq!(
+            tumble_open_target_for(true, false),
+            ("-a", "/Applications/Tumble.app")
+        );
+        assert_eq!(
+            tumble_open_target_for(false, true),
             ("-a", "/Applications/PocketComet.app")
         );
         assert_eq!(
-            pocketcomet_open_target_for(false),
-            ("-b", "com.futurepicnic.dailybob")
+            tumble_open_target_for(false, false),
+            ("-b", "com.futurepicnic.pocketcomet")
         );
     }
 

@@ -6,6 +6,7 @@ pub use background::BackgroundGitPermit;
 pub mod diff;
 pub mod ignore;
 pub mod log;
+pub mod merge_return;
 pub mod read;
 pub mod remote;
 pub mod repository;

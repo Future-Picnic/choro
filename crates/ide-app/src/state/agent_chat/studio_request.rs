@@ -13,6 +13,7 @@ pub struct StudioChatRequest {
     pub current_section_id: Option<Uuid>,
     pub selected_element: Option<String>,
     pub design_guidance: String,
+    pub integrations: StudioIntegrations,
     pub target_label: String,
 }
 
@@ -62,6 +63,7 @@ impl StudioChatRequest {
             Some(id) => scope_for_section_request(&design, id),
             None => scope_for_request(&design, self.current_screen_id, self.selected_element.clone()),
         };
+        scope.integrations = self.integrations.clone();
         if self.context.target == StudioAgentTarget::Design {
             scope.design_guidance = self.design_guidance.clone();
         }
@@ -92,6 +94,7 @@ pub(super) mod tests {
             current_screen_id: Some(design.manifest.screens[0].id),
             current_section_id: None,
             selected_element: Some("heading".into()), design_guidance: "Preserve the product theme".into(),
+            integrations: StudioIntegrations::default(),
             target_label: design.manifest.screens[0].name.clone(),
         };
         (store, design, agent, request)
@@ -124,6 +127,7 @@ pub(super) mod tests {
         assert_eq!(active.current_screen_id, request.current_screen_id);
         assert_eq!(active.selected_element, request.selected_element);
         assert_eq!(active.design_guidance, request.design_guidance);
+        assert_eq!(active.integrations, request.integrations);
         assert!(active.allow_create && active.allow_design_metadata);
         let frozen = store.request_context(agent).unwrap();
         assert_eq!(frozen["scope"]["current_screen_id"], serde_json::json!(request.current_screen_id));

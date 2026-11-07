@@ -10,6 +10,7 @@ impl CenterArea {
             return Ok(Some(StudioChatRequest {
                 context: context.clone(), project: store.project, cache: store.cache,
                 current_screen_id: None, current_section_id: None, selected_element: None, design_guidance: String::new(),
+                integrations: ide_core::studio::StudioIntegrations::disabled(),
                 target_label: "From code".into(),
             }));
         }
@@ -33,6 +34,7 @@ impl CenterArea {
             current_screen_id: screen_id, current_section_id: section.map(|s| s.id),
             selected_element: screen_id.and(studio.selected_element.clone()),
             design_guidance: self.workspace.read(cx).studio.request_guidance(), target_label,
+            integrations: self.workspace.read(cx).studio.integrations.clone(),
         }))
     }
 

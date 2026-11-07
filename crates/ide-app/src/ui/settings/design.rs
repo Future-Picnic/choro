@@ -333,8 +333,41 @@ impl SettingsView {
                 }
                 menu
             });
+        let mut integrations = style::expert_settings_list_frame(cx);
+        for (index, (name, description, enabled)) in [
+            ("Mobbin", "Search real screens, flows and website sections; read your saved collections.", settings.integrations.mobbin),
+            ("Figma", "Read connected designs, screenshots, components and design tokens to build screens in Studio.", settings.integrations.figma),
+            ("Image generation", "Create and edit assets with Codex image generation or an existing Higgsfield connection.", settings.integrations.image_generation),
+            ("Aside", "Read reference websites and capture screenshots through your existing browser connection.", settings.integrations.aside),
+        ].into_iter().enumerate() {
+            integrations = integrations.child(studio_integration_row(index, name, description, cx)
+                .child(h_flex().flex_none().gap_1()
+                .child(style::ghost_button_compact(("studio-integration-setup", index), "Setup")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let (title, help) = studio_integration_setup(index);
+                        this.studio_settings.detail = Some((title.into(), help.into()));
+                        cx.notify();
+                    })))
+                .child(style::settings_option_button(("studio-integration-toggle", index), if enabled { "Enabled" } else { "Disabled" }, enabled)
+                    .tooltip(format!("{} {name} in new Studio sessions", if enabled { "Disable" } else { "Enable" }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let mut settings = this.workspace.read(cx).studio.clone();
+                        let value = match index {
+                            0 => &mut settings.integrations.mobbin,
+                            1 => &mut settings.integrations.figma,
+                            2 => &mut settings.integrations.image_generation,
+                            _ => &mut settings.integrations.aside,
+                        };
+                        *value = !*value;
+                        this.persist_studio_settings(settings, cx);
+                    })))));
+        }
         v_flex().flex_1().min_h(px(0.)).w_full().child(style::expert_settings_scroll_body("studio-settings-overview", window, cx).gap_5()
             .child(hint("Applies to Studio screen designs in every project, starting with your next request. Project instructions and the design system take priority.", cx))
+            .child(v_flex().flex_none().gap_3()
+                .child(heading("Integrations", "Use accounts already connected to your agent provider. Reconnect open Studio chats after changing access.", cx))
+                .child(integrations)
+                .child(hint("Mobbin and Figma use configured MCP connections. Image generation uses Codex, a connected image service, or the signed-in Higgsfield CLI. Aside needs its CLI and browser connection. Generated and downloaded assets are saved locally through Studio. External publishing and account changes are unavailable.", cx)))
             .child(v_flex().flex_none().gap_3()
                 .child(heading("Built-in guidance", "Always active. Studio uses these instructions to design and review your screens.", cx))
                 .child(builtins))
@@ -615,5 +648,21 @@ impl SettingsView {
                         })),
                     ),
             )
+    }
+}
+
+fn studio_integration_row(index: usize, name: &str, description: &str, cx: &App) -> gpui::Stateful<Div> {
+    style::expert_settings_list_row(("studio-integration", index), cx)
+        .child(v_flex().flex_1().min_w(px(0.)).gap_1()
+            .child(div().text_size(tokens::text_ui()).font_weight(FontWeight::MEDIUM).child(name.to_owned()))
+            .child(hint(description.to_owned(), cx)))
+}
+
+fn studio_integration_setup(index: usize) -> (&'static str, &'static str) {
+    match index {
+        0 => ("Connect Mobbin", "Use your existing paid Mobbin account.\n\nFor Codex, run in your terminal:\n```sh\ncodex mcp add mobbin --url https://api.mobbin.com/mcp\ncodex mcp login mobbin\n```\nFor Claude, run:\n```sh\nclaude mcp add mobbin --scope user --transport http https://api.mobbin.com/mcp\n```\nThen open Claude Code, run `/mcp`, select Mobbin and authenticate. Your provider stores and refreshes the connection. Reconnect your Studio conversation after setup.\n\n[Mobbin setup documentation](https://docs.mobbin.com/mcp/clients/overview)"),
+        1 => ("Connect Figma", "Connect the official Figma MCP using the provider you use in Studio.\n\nFor Codex, run in your terminal:\n```sh\ncodex mcp add figma --url https://mcp.figma.com/mcp\ncodex mcp login figma\n```\nFor Claude, run:\n```sh\nclaude mcp add figma --scope user --transport http https://mcp.figma.com/mcp\n```\nThen open Claude Code, run `/mcp`, select Figma and authenticate. Existing configured Figma desktop connections on port 3845 also work.\n\nReconnect Studio, then paste a Figma frame link and ask Studio to recreate it. Studio can read the design, screenshot and tokens, and build editable screens without changing the Figma source. Access follows your Figma account permissions."),
+        2 => ("Connect image generation", "Codex Studio sessions can use native Codex image generation when it is available on your existing account. No new API key is required.\n\nClaude can use a connected Higgsfield MCP image service. Studio also provides a shared image tool through an already installed, signed-in Higgsfield CLI. To connect that CLI, run `higgsfield auth login` in your terminal. This uses your existing Higgsfield account; generation uses that service's credits.\n\nAsk Studio to create or edit an image asset and use it in an editable screen. Generated images are imported as local Studio assets through the normal save and undo history. Reconnect open Studio conversations after changing access."),
+        _ => ("Connect Aside", "Connect your browser in Aside and install its official CLI. Studio uses the CLI's saved browser profile, including your existing signed-in websites.\n\nAsk Studio to inspect a reference URL or an existing tab. Its browser tool can list tabs, open a reference, read a page snapshot and capture a screenshot. Follow your usual authorization requirements for browser use.\n\nReconnect an open Studio conversation after changing access.\n\n[Aside](https://aside.com)"),
     }
 }
