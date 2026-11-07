@@ -240,6 +240,10 @@ impl CodexRuntime {
         read_only: bool,
         turn_id: String,
     ) -> anyhow::Result<()> {
+        if let Some(started) = &self.studio_integrations {
+            anyhow::ensure!(*started == super::studio_integrations::settings(&self.agent)?,
+                "Studio integration settings changed. Reconnect this conversation to apply them before continuing.");
+        }
         self.resolve_model_selection()?;
         let text = ide_core::studio::attach_request_context(&self.agent, text)?;
         let mode = super::managed::interaction_mode(&self.agent, mode);
@@ -1151,6 +1155,7 @@ mod interruption_tests {
         let (_, commands) = crossbeam_channel::unbounded();
         let (events, event_rx) = async_channel::unbounded();
         let runtime = CodexRuntime {
+            studio_integrations: None,
             child,
             stdin,
             messages,

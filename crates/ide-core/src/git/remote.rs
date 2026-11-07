@@ -27,7 +27,7 @@ impl RemoteOutput {
 
 /// Network operations go through the system `git` CLI so the user's
 /// ssh-agent, credential helpers and hooks all work as in their shell.
-fn run_git(repo_path: &Path, args: &[&str]) -> Result<RemoteOutput> {
+pub(super) fn run_git(repo_path: &Path, args: &[&str]) -> Result<RemoteOutput> {
     run_git_with_timeout(repo_path, args, GIT_OPERATION_TIMEOUT)
 }
 

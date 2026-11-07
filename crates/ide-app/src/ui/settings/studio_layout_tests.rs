@@ -4,6 +4,32 @@ use super::*;
 struct StudioFixture {
     preferences: Entity<InputState>,
 }
+
+struct StudioIntegrationsFixture;
+impl Render for StudioIntegrationsFixture {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().p_4().child(studio_integration_row(0, "Image generation", "Create and edit assets with Codex image generation or your existing connected image service.", cx)
+            .debug_selector(|| "integration-row".into())
+            .child(h_flex().flex_none().gap_1()
+                .child(style::ghost_button_compact("integration-setup", "Setup"))
+                .child(style::settings_option_button("integration-toggle", "Enabled", true)
+                    .debug_selector(|| "integration-toggle".into()))))
+    }
+}
+
+#[gpui::test]
+fn integration_access_control_stays_inside_narrow_settings_rows(cx: &mut gpui::TestAppContext) {
+    cx.update(gpui_component::init);
+    let (_, cx) = cx.add_window_view(|_, _| StudioIntegrationsFixture);
+    for width in [420., 560., 912.] {
+        cx.simulate_resize(gpui::size(px(width), px(300.)));
+        cx.run_until_parked();
+        let row = cx.debug_bounds("integration-row").unwrap();
+        let action = cx.debug_bounds("integration-toggle").unwrap();
+        assert!(action.right() <= row.right(), "Integration toggle clipped at {width}");
+        assert!(action.size.width > px(40.), "Integration toggle collapsed at {width}");
+    }
+}
 impl Render for StudioFixture {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut list =

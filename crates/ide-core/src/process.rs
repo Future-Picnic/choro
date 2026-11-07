@@ -13,6 +13,11 @@ use std::os::unix::process::CommandExt as _;
 /// for inherited pipes to close, even if the direct child has already exited.
 /// Call this on a background thread, never on the UI thread.
 pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output> {
+    output_while(command, timeout, || true)
+}
+
+/// As above, but stop the entire process group when its host scope is revoked.
+pub fn output_while(command: &mut Command, timeout: Duration, mut active: impl FnMut() -> bool) -> Result<Output> {
     crate::blocking_guard::debug_warn_if_ui_thread("process::output_with_timeout");
     command
         .stdin(Stdio::null())
@@ -28,6 +33,9 @@ pub fn output_with_timeout(command: &mut Command, timeout: Duration) -> Result<O
     let stderr_reader = thread::spawn(move || read_output(stderr));
     let started = Instant::now();
     let result = (|| loop {
+        if !active() {
+            anyhow::bail!("Command cancelled because its scope ended");
+        }
         let status = child.try_wait().context("Could not poll the command")?;
         if let Some(status) = status {
             if stdout_reader.is_finished() && stderr_reader.is_finished() {
@@ -75,6 +83,15 @@ fn read_output(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_stops_a_running_process_without_waiting_for_its_deadline() {
+        let started = Instant::now();
+        let error = output_while(Command::new("/bin/sh").args(["-c", "sleep 5"]),
+            Duration::from_secs(5), || started.elapsed() < Duration::from_millis(100)).unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn captures_output_larger_than_both_pipe_buffers() {

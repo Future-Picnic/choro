@@ -464,6 +464,9 @@ impl CenterArea {
                     .to_string()
             });
         let center = cx.entity();
+        let (return_label, return_description) =
+            crate::ui::git::git_panel::return_to_base_option(&base_branch);
+        let return_by_default = self.workspace.read(cx).return_to_base_after_merge;
         ConfirmDialog::new(title, message)
             .tone(ConfirmTone::Primary)
             .icon(IconName::GitHub)
@@ -472,9 +475,12 @@ impl CenterArea {
                 "Delete GitHub branch after merge",
                 "Delete the source branch on GitHub only. Your local branch, files, and history are kept.",
             )
+            .checkbox_with_default(return_label, return_description, return_by_default)
             .confirm_label("Merge PR")
             .confirm_id("confirm-merge-agent-ship-pr")
-            .on_confirm_with_checkbox(move |delete_branch, window, cx| {
+            .on_confirm_with_checkboxes(move |options, window, cx| {
+                let delete_branch = options.first().copied().unwrap_or(false);
+                let return_to_base = options.get(1).copied().unwrap_or(false);
                 let window_handle = window.window_handle();
                 let merge_git = git.clone();
                 let repo_path = repo_path.clone();
@@ -508,6 +514,13 @@ impl CenterArea {
                                     Some(&expected_head_sha),
                                     delete_branch,
                                 )
+                                .map(|outcome| {
+                                    crate::ui::git::git_panel::with_local_return(
+                                        outcome,
+                                        &repo_path,
+                                        return_to_base,
+                                    )
+                                })
                             })
                             .await;
                         merge_git

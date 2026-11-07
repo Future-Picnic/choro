@@ -89,6 +89,7 @@ pub struct Workspace {
     pub verification_mode: VerificationMode,
     pub review_checklist_mode: ReviewChecklistMode,
     pub design_browser_open_prompt_dismissed: bool,
+    pub return_to_base_after_merge: bool,
     pub keymap: std::collections::HashMap<String, String>,
     pub expanded_projects: HashSet<ProjectId>,
     pub favorites_collapsed: bool,
@@ -201,6 +202,7 @@ impl Workspace {
             verification_mode: config.verification_mode,
             review_checklist_mode: config.review_checklist_mode,
             design_browser_open_prompt_dismissed: config.design_browser_open_prompt_dismissed,
+            return_to_base_after_merge: config.return_to_base_after_merge,
             keymap: config.keymap,
             expanded_projects,
             favorites_collapsed: config.favorites_collapsed,
@@ -399,6 +401,15 @@ impl Workspace {
             return;
         }
         self.verification_mode = mode;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub fn set_return_to_base_after_merge(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.return_to_base_after_merge == enabled {
+            return;
+        }
+        self.return_to_base_after_merge = enabled;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1255,6 +1266,7 @@ impl Workspace {
             verification_mode: self.verification_mode,
             review_checklist_mode: self.review_checklist_mode,
             design_browser_open_prompt_dismissed: self.design_browser_open_prompt_dismissed,
+            return_to_base_after_merge: self.return_to_base_after_merge,
             keymap: self.keymap.clone(),
             expanded_projects: self.expanded_projects.iter().copied().collect(),
             favorites_collapsed: self.favorites_collapsed,

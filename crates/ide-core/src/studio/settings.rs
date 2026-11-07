@@ -1,4 +1,4 @@
-//! User-selected craft guidance. It never changes Studio's write scope.
+//! User-selected guidance and integrations. Design writes remain scoped.
 use super::*;
 
 pub const PREFERENCES_MAX_BYTES: usize = 8_000;
@@ -10,6 +10,7 @@ pub const SKILLS_MAX_BYTES: usize = 128_000;
 pub struct StudioSettings {
     pub preferences: String,
     pub skills: Vec<StudioSkill>,
+    pub integrations: StudioIntegrations,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +110,7 @@ mod tests {
     fn settings_round_trip_and_legacy_defaults() {
         let mut config = crate::config::AppConfig::default();
         config.studio.preferences = "Use compact layouts".into();
+        config.studio.integrations.figma = false;
         config.studio.skills.push(StudioSkill {
             id: Uuid::new_v4(),
             name: "Accessible forms".into(),
@@ -129,6 +131,10 @@ mod tests {
         let mut json = serde_json::to_value(&config).unwrap();
         let restored: crate::config::AppConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(restored.studio, config.studio);
+        let mut legacy_studio = json["studio"].clone();
+        legacy_studio.as_object_mut().unwrap().remove("integrations");
+        let legacy_studio: StudioSettings = serde_json::from_value(legacy_studio).unwrap();
+        assert_eq!(legacy_studio.integrations, StudioIntegrations::default());
         json.as_object_mut().unwrap().remove("studio");
         let legacy: crate::config::AppConfig = serde_json::from_value(json).unwrap();
         assert_eq!(legacy.studio, StudioSettings::default());

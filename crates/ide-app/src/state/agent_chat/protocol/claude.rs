@@ -143,6 +143,7 @@ impl ClaudeBridgeRuntime {
             "visualizationDir": self.visualization_dir,
             "claudePath": self.claude_path.display().to_string(),
             "mcpServers": choro_mcp_servers_json(&self.agent),
+            "studioIntegrationServers": if self.agent.studio_context.is_some() { serde_json::to_value(super::studio_integrations::settings(&self.agent)?.servers())? } else { json!([]) },
             "studioAssistant": self.agent.studio_context.is_some(),
             "reviewAssistant": self.agent.review_run_id.is_some(),
             "readOnly": read_only,

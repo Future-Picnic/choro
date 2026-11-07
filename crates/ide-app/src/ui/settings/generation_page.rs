@@ -11,6 +11,7 @@ impl SettingsView {
         let code_review_prompt = self.code_review_prompt.clone();
         let code_review_prompt_dirty = self.code_review_prompt_dirty;
         let code_review_prompt_empty = code_review_prompt.read(cx).value().trim().is_empty();
+        let merge_preferences = self.render_merge_preferences_card(cx);
         {
             let verification_buttons = [
                 (
@@ -522,6 +523,7 @@ impl SettingsView {
                                                 .children(verification_buttons),
                                         ),
                                 )
+                                .child(merge_preferences)
                                 .child(
                                     v_flex()
                                         .w_full()

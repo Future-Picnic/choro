@@ -12,6 +12,9 @@ pub(super) fn tools() -> Vec<Box<dyn Tool>> {
         "studio_snapshot",
         "studio_review",
         "studio_handoff_read",
+        "studio_import_asset",
+        "studio_browser",
+        "studio_generate_image",
     ]
     .into_iter()
     .map(|name| Box::new(StudioTool(name)) as Box<dyn Tool>)
@@ -40,6 +43,9 @@ pub(super) fn allowed(name: &str) -> bool {
             | "studio_apply"
             | "studio_snapshot"
             | "studio_review"
+            | "studio_import_asset"
+            | "studio_browser"
+            | "studio_generate_image"
             | "task_read"
             | "task_list"
             | "task_image"
@@ -69,6 +75,9 @@ impl Tool for StudioTool {
     }
     fn description(&self) -> &'static str {
         match self.0 {
+            "studio_import_asset" => "Import a reference/generated image or font into this Studio design as a local undoable asset. Accepts a public HTTPS URL, connected Figma desktop asset URL, or local PNG/JPEG/GIF/WebP/WOFF/WOFF2 under 4 MB. Provide a NEW plain filename with matching extension, transaction_id, scope_id, expected_revision and expected_fingerprint from studio_context. Returns assets/name for screen HTML/CSS. Uses the original high-resolution URL, not the preview. No arbitrary output paths or overwrites.",
+            "studio_browser" => "Read reference websites through the user's existing Aside connection. Follow the user's browser authorization requirements before use. Actions: list_tabs; open {url} returns a snapshot; read {tab_id} returns a snapshot; screenshot {tab_id} returns a PNG. Inspect existing tabs before opening another. Cannot click, fill forms, run arbitrary code or modify websites.",
+            "studio_generate_image" => "Generate a design asset using an existing signed-in Higgsfield CLI account (GPT Image 2). Provide prompt, optional aspect_ratio (default 4:3) and optional local reference_path for editing. Prefer Codex native image generation or a connected image MCP when available. Add the result to the design with studio_import_asset. No new API key. If unavailable, explain how to connect an existing service; never invent an image or install services automatically.",
             "studio_import_propose" => "Save results of an authorized From code analysis for native review. Does not create or publish systems. Provide summary and systems: [{name,platform,description,sources:{project_relative_file:evidence},system:{schema_version:1,revision:0,tokens,recipes,font_faces},assets?:{font_filename:project_relative_file},existing_system_id?:uuid}]. Recover distinct systems from real UI evidence; shared app themes are one system. Up to 16 systems; an empty list explains no UI found. Only From code agents can call this tool.",
             "studio_project_read" => "Read project context without shell access. Optional path is a contained project-relative file or directory (default root). Files return up to 200 lines starting at optional start_line. Directories return up to 200 children. No writes.",
             "studio_context" => "Read this Studio agent's exact design, current host-authorized turn scope, effective tokens, screen list, ordered sections, the frozen current section (if the user selected one), revision and fingerprint. Call before editing. Scope cannot be expanded through MCP.",
@@ -81,6 +90,9 @@ impl Tool for StudioTool {
     }
     fn input_schema(&self) -> Value {
         match self.0 {
+            "studio_import_asset" => json!({"type":"object","properties":{"source":{"type":"string","maxLength":8192},"name":{"type":"string","maxLength":160},"transaction_id":{"type":"string","format":"uuid"},"scope_id":{"type":"string","format":"uuid"},"expected_revision":{"type":"integer","minimum":0},"expected_fingerprint":{"type":"string"}},"required":["source","name","transaction_id","scope_id","expected_revision","expected_fingerprint"],"additionalProperties":false}),
+            "studio_browser" => json!({"type":"object","properties":{"action":{"enum":["list_tabs","open","read","screenshot"]},"url":{"type":"string","maxLength":8192},"tab_id":{"type":"string","maxLength":256}},"required":["action"],"additionalProperties":false}),
+            "studio_generate_image" => json!({"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":8000},"aspect_ratio":{"enum":["1:1","4:3","3:4","16:9","9:16","3:2","2:3"]},"reference_path":{"type":"string"},"transparent_background":{"type":"boolean","default":false,"description":"Use true for cutouts and transparent-background assets"}},"required":["prompt"],"additionalProperties":false}),
             "studio_import_propose" => {
                 json!({"type":"object","properties":{"scope_id":{"type":"string","format":"uuid"},"summary":{"type":"string","maxLength":4000},"systems":{"type":"array","maxItems":16,"items":{"type":"object","properties":{"name":{"type":"string"},"platform":{"type":"string"},"description":{"type":"string"},"sources":{"type":"object","additionalProperties":{"type":"string"}},"system":{"type":"object"},"assets":{"type":"object","additionalProperties":{"type":"string"}},"existing_system_id":{"type":"string","format":"uuid"}},"required":["name","platform","description","sources","system"],"additionalProperties":false}}},"required":["scope_id","summary","systems"],"additionalProperties":false})
             }
@@ -159,6 +171,10 @@ impl Tool for StudioTool {
             scope.design_id == role.design_id,
             "Studio role and scope do not match"
         );
+        if matches!(self.0, "studio_import_asset" | "studio_browser" | "studio_generate_image") {
+            ensure!(role.target != StudioAgentTarget::DesignSystemImport, "From code analysis cannot use external integrations");
+            return super::studio_integrations::call(ctx, self.0, args);
+        }
         if role.target == StudioAgentTarget::DesignSystemImport {
             match self.0 {
                 "studio_context" => return Ok(vec![text_content(store.request_context(ctx.agent_id()?)?.to_string())]),
@@ -421,6 +437,41 @@ fn parse_id(args: &Value, name: &str) -> Result<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn imported_images_use_revisioned_asset_writes_and_stop_revokes_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = LocalStore::open(temp.path().join("store")).unwrap();
+        let root = temp.path().join("project"); fs::create_dir_all(&root).unwrap();
+        let project = ide_core::Project::from_path(root.clone());
+        let mut config = ide_core::AppConfig::default(); config.projects.push(project.clone());
+        local.save_workspace_config(&config).unwrap();
+        let store = StudioStore::new(root, local.root()).unwrap();
+        let design = store.create("Imported reference").unwrap();
+        let agent = uuid::Uuid::new_v4();
+        let conversation = store.conversations(design.manifest.id).unwrap().selected;
+        let role = StudioAgentContext { target: StudioAgentTarget::Design, design_id: design.manifest.id, conversation_id: conversation };
+        atomic(&store.cache.join("roles").join(format!("{agent}.json")), &serde_json::to_vec(&role).unwrap()).unwrap();
+        let mut scope = scope_for_request(&design, None, None);
+        store.save_scope(agent, &scope).unwrap();
+        let source = temp.path().join("reference.png");
+        let bytes = b"\x89PNG\r\n\x1a\nfixture";
+        fs::write(&source, bytes).unwrap();
+        let ctx = ServerContext { review_run: None, studio: true, delegation_scope: None, project_id: Some(project.id.0), agent_id: Some(agent), store: Some(local) };
+        let registry = ToolRegistry::default();
+        let args = json!({"source":source,"name":"reference.png","transaction_id":uuid::Uuid::new_v4(),"scope_id":scope.id,"expected_revision":design.manifest.revision,"expected_fingerprint":design.fingerprint});
+        let call = |args: Value| registry.call(&ctx, &json!({"name":"studio_import_asset","arguments":args}));
+        let imported = call(args.clone());
+        assert_ne!(imported["isError"], true, "{imported}");
+        assert_eq!(store.assets(design.manifest.id).unwrap()["assets/reference.png"], bytes);
+        assert_ne!(store.load(design.manifest.id).unwrap().fingerprint, design.fingerprint);
+        assert_ne!(call(args.clone())["isError"], true, "Exact import retries are idempotent");
+        let mut duplicate = args.clone(); duplicate["transaction_id"] = json!(uuid::Uuid::new_v4());
+        assert_eq!(call(duplicate)["isError"], true, "An existing asset cannot be overwritten");
+        scope.active = false; store.save_scope(agent, &scope).unwrap();
+        assert_eq!(call(args)["isError"], true, "Stop revokes asset import too");
+        assert_eq!(store.assets(design.manifest.id).unwrap()["assets/reference.png"], bytes);
+    }
+
     #[test]
     fn from_code_agent_can_read_and_propose_but_cannot_write_designs() {
         let temp = tempfile::tempdir().unwrap();

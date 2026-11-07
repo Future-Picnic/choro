@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 mod delegation_tools;
 #[path = "studio.rs"]
 mod studio_tools;
+#[path = "studio_integrations.rs"]
+mod studio_integrations;
 #[path = "code_review.rs"]
 mod review_tools;
 #[path = "visual_answers.rs"]

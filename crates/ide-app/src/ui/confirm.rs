@@ -33,7 +33,15 @@ pub enum ConfirmTone {
     Primary,
 }
 
-type ConfirmHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+type ConfirmHandler = Rc<dyn Fn(&[bool], &mut Window, &mut App)>;
+
+/// One opt-in option rendered as a checkbox above the footer.
+#[derive(Clone)]
+struct ConfirmOption {
+    label: SharedString,
+    description: SharedString,
+    checked: bool,
+}
 
 /// A reusable confirmation modal.
 pub struct ConfirmDialog {
@@ -43,7 +51,7 @@ pub struct ConfirmDialog {
     message: SharedString,
     detail: Option<SharedString>,
     route: Option<(SharedString, SharedString)>,
-    checkbox: Option<(SharedString, SharedString)>,
+    options: Vec<ConfirmOption>,
     confirm_label: SharedString,
     cancel_label: SharedString,
     confirm_id: SharedString,
@@ -62,7 +70,7 @@ impl ConfirmDialog {
             message: message.into(),
             detail: None,
             route: None,
-            checkbox: None,
+            options: Vec::new(),
             confirm_label: "Confirm".into(),
             cancel_label: "Cancel".into(),
             confirm_id: "confirm-dialog-ok".into(),
@@ -108,11 +116,27 @@ impl ConfirmDialog {
 
     /// An opt-in option that starts unchecked each time the dialog opens.
     pub fn checkbox(
-        mut self,
+        self,
         label: impl Into<SharedString>,
         description: impl Into<SharedString>,
     ) -> Self {
-        self.checkbox = Some((label.into(), description.into()));
+        self.checkbox_with_default(label, description, false)
+    }
+
+    /// An option whose initial state comes from the caller, typically a user
+    /// preference. Options are reported to the confirm handler in the order
+    /// they were added.
+    pub fn checkbox_with_default(
+        mut self,
+        label: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+        checked: bool,
+    ) -> Self {
+        self.options.push(ConfirmOption {
+            label: label.into(),
+            description: description.into(),
+            checked,
+        });
         self
     }
 
@@ -140,9 +164,11 @@ impl ConfirmDialog {
         self
     }
 
-    pub fn on_confirm_with_checkbox(
+    /// Runs when the user accepts, with every option's state in the order the
+    /// options were added.
+    pub fn on_confirm_with_checkboxes(
         mut self,
-        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&[bool], &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_confirm = Some(Rc::new(handler));
         self
@@ -157,14 +183,17 @@ impl ConfirmDialog {
             message,
             detail,
             route,
-            checkbox,
+            options,
             confirm_label,
             cancel_label,
             confirm_id,
             width,
             on_confirm,
         } = self;
-        let checked = Rc::new(Cell::new(false));
+        let checked: Rc<[Cell<bool>]> = options
+            .iter()
+            .map(|option| Cell::new(option.checked))
+            .collect();
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let accent = tone_color(tone, cx);
@@ -176,27 +205,11 @@ impl ConfirmDialog {
             let detail = detail.clone();
             let route = route.clone();
             let checked_for_footer = checked.clone();
-            let checkbox = checkbox.clone().map(|(label, description)| {
-                let checked_for_click = checked.clone();
-                v_flex()
-                    .gap_1()
-                    .child(
-                        Checkbox::new("confirm-dialog-checkbox")
-                            .small()
-                            .label(label)
-                            .checked(checked.get())
-                            .on_click(move |value, _, cx| {
-                                checked_for_click.set(*value);
-                                cx.refresh_windows();
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_size(crate::ui::design::text_label())
-                            .text_color(crate::ui::design::t3(cx))
-                            .child(description),
-                    )
-            });
+            let checkboxes = options
+                .iter()
+                .enumerate()
+                .map(|(index, option)| option_row(index, option, checked.clone(), cx))
+                .collect::<Vec<_>>();
 
             dialog
                 .w(px(width))
@@ -221,7 +234,7 @@ impl ConfirmDialog {
                         )
                         .children(detail.map(|detail| detail_chip(detail, cx)))
                         .children(route.map(|(from, into)| route_chip(from, into, cx)))
-                        .children(checkbox),
+                        .children(checkboxes),
                 )
                 .footer(move |_, _, _, cx| {
                     let on_confirm = on_confirm.clone();
@@ -244,7 +257,8 @@ impl ConfirmDialog {
                     .on_click(move |_, window, cx| {
                         window.close_dialog(cx);
                         if let Some(handler) = on_confirm.clone() {
-                            handler(checked.get(), window, cx);
+                            let values: Vec<bool> = checked.iter().map(Cell::get).collect();
+                            handler(&values, window, cx);
                         }
                     });
                     vec![
@@ -263,6 +277,37 @@ impl ConfirmDialog {
                 })
         });
     }
+}
+
+/// One labelled checkbox with its supporting line. The shared `checked` cells
+/// survive re-renders, so toggling never resets to the option's default.
+fn option_row(
+    index: usize,
+    option: &ConfirmOption,
+    checked: Rc<[Cell<bool>]>,
+    cx: &App,
+) -> impl IntoElement {
+    let value = checked.get(index).is_some_and(Cell::get);
+    v_flex()
+        .gap_1()
+        .child(
+            Checkbox::new(("confirm-dialog-checkbox", index))
+                .small()
+                .label(option.label.clone())
+                .checked(value)
+                .on_click(move |value, _, cx| {
+                    if let Some(cell) = checked.get(index) {
+                        cell.set(*value);
+                    }
+                    cx.refresh_windows();
+                }),
+        )
+        .child(
+            div()
+                .text_size(crate::ui::design::text_label())
+                .text_color(crate::ui::design::t3(cx))
+                .child(option.description.clone()),
+        )
 }
 
 /// Resolves the accent color for a tone from the active theme.

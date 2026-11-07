@@ -1,6 +1,10 @@
 //! Local, revisioned HTML design documents. Every writer (UI or MCP) uses this service.
 mod settings;
 pub use settings::*;
+mod integrations;
+pub use integrations::*;
+mod asset_source;
+pub use asset_source::{read_studio_asset, validate_studio_import};
 mod activity;
 mod agent;
 mod canvas;
@@ -269,6 +273,8 @@ pub enum StudioAgentTarget {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioTurnScope {
     #[serde(default)]
+    pub integrations: StudioIntegrations,
+    #[serde(default)]
     pub design_guidance: String,
     pub id: Uuid,
     pub design_id: Uuid,
@@ -301,6 +307,7 @@ impl StudioTurnScope {
             id: Uuid::new_v4(),
             design_id,
             design_guidance: String::new(),
+            integrations: StudioIntegrations::default(),
             screen_ids: [screen_id].into(),
             selected_element: None,
             current_screen_id: Some(screen_id),

@@ -699,9 +699,17 @@ pub struct AppConfig {
     /// the user's browser without showing the explanatory confirmation first.
     #[serde(default)]
     pub design_browser_open_prompt_dismissed: bool,
+    /// Whether Merge PR dialogs start with "return to the base branch and
+    /// pull" selected. The choice can still be changed for each merge.
+    #[serde(default = "default_return_to_base_after_merge")]
+    pub return_to_base_after_merge: bool,
 }
 
 fn default_memory_proposals_enabled() -> bool {
+    true
+}
+
+fn default_return_to_base_after_merge() -> bool {
     true
 }
 
@@ -745,6 +753,7 @@ impl Default for AppConfig {
             verification_mode: VerificationMode::Ask,
             review_checklist_mode: ReviewChecklistMode::Automatic,
             design_browser_open_prompt_dismissed: false,
+            return_to_base_after_merge: true,
         }
     }
 }
@@ -939,6 +948,7 @@ mod tests {
             verification_mode: VerificationMode::Ask,
             review_checklist_mode: ReviewChecklistMode::Automatic,
             design_browser_open_prompt_dismissed: false,
+            return_to_base_after_merge: false,
         }
     }
 

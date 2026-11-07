@@ -1765,6 +1765,7 @@ impl CenterArea {
             return self.prepare_code_import_turn(agent, cx);
         }
         let design_guidance = self.workspace.read(cx).studio.request_guidance();
+        let integrations = self.workspace.read(cx).studio.integrations.clone();
         let Some(studio) = self
             .studio
             .as_mut()
@@ -1787,6 +1788,7 @@ impl CenterArea {
                 Some(section) => scope_for_section_request(&design, section),
                 None => scope_for_request(&design, studio.editing_screen().or(studio.canvas.layout.selected_screen_id), studio.selected_element.clone()),
             };
+            scope.integrations = integrations;
             if context.target == StudioAgentTarget::Design {
                 scope.design_guidance = design_guidance;
             }

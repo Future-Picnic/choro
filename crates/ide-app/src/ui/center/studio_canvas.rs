@@ -1152,7 +1152,7 @@ impl CenterArea {
                 let Some(context) = agent.studio_context.clone() else {
                     this.studio_comment_result(request, editor, Some(comments), Some("Open a design assistant conversation before sending.".into()), false, cx); return;
                 };
-                let target = comment_agent_request(context, root, cache, &pin, screen_name.clone(), this.workspace.read(cx).studio.request_guidance());
+                let target = comment_agent_request(context, root, cache, &pin, screen_name.clone(), this.workspace.read(cx).studio.request_guidance(), this.workspace.read(cx).studio.integrations.clone());
                 let prompt = comment_agent_prompt(&pin, &screen_name);
                 let accepted = this.dispatch_agent_chat_submission_with_studio_request(agent.id, prompt, None, Vec::new(), AgentInteractionMode::Default, Some(agent), false, Some(target), cx);
                 if accepted {
@@ -1170,8 +1170,8 @@ fn comment_agent_prompt(pin: &StudioCommentPin, screen: &str) -> String {
     format!("Fix the feedback in this Studio comment on screen {screen:?} (screen ID {}, comment ID {}).\nPinned location: {:.1}% from the left, {:.1}% from the top.\n\n{}\n\nApply the fix to this screen using the existing design system. Leave the comment open for my review.", pin.screen_id, pin.id, pin.x * 100., pin.y * 100., pin.body)
 }
 
-fn comment_agent_request(context: StudioAgentContext, project: std::path::PathBuf, cache: std::path::PathBuf, pin: &StudioCommentPin, target_label: String, design_guidance: String) -> crate::state::agent_chat::StudioChatRequest {
-    crate::state::agent_chat::StudioChatRequest { context, project, cache, current_screen_id: Some(pin.screen_id), current_section_id: None, selected_element: None, design_guidance, target_label }
+fn comment_agent_request(context: StudioAgentContext, project: std::path::PathBuf, cache: std::path::PathBuf, pin: &StudioCommentPin, target_label: String, design_guidance: String, integrations: ide_core::studio::StudioIntegrations) -> crate::state::agent_chat::StudioChatRequest {
+    crate::state::agent_chat::StudioChatRequest { context, project, cache, current_screen_id: Some(pin.screen_id), current_section_id: None, selected_element: None, design_guidance, target_label, integrations }
 }
 
 #[cfg(test)]
@@ -1251,13 +1251,14 @@ mod tests {
         let design = store.create("Comment handoff").unwrap();
         let pin = StudioCommentPin { id: Uuid::new_v4(), screen_id: design.manifest.screens[0].id, x: 0.25, y: 0.75, body: "Fix the action".into(), resolved: false, created_at: 1 };
         let context = StudioAgentContext { target: StudioAgentTarget::Design, design_id: design.manifest.id, conversation_id: store.conversations(design.manifest.id).unwrap().selected };
-        let request = comment_agent_request(context, store.project.clone(), store.cache.clone(), &pin, "Pinned screen".into(), "Preserve the theme".into());
+        let request = comment_agent_request(context, store.project.clone(), store.cache.clone(), &pin, "Pinned screen".into(), "Preserve the theme".into(), ide_core::studio::StudioIntegrations::disabled());
         let agent = Uuid::new_v4();
         request.activate(agent, &comment_agent_prompt(&pin, "Pinned screen")).unwrap();
         let scope = store.scope(agent).unwrap();
         assert_eq!(scope.current_screen_id, Some(pin.screen_id));
         assert_eq!(scope.selected_element, None);
         assert_eq!(scope.design_guidance, "Preserve the theme");
+        assert_eq!(scope.integrations, ide_core::studio::StudioIntegrations::disabled());
         assert!(comment_agent_prompt(&pin, "Pinned screen").contains(&pin.body));
     }
     #[test]

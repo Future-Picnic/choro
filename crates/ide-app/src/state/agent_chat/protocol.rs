@@ -6,6 +6,7 @@ mod events;
 pub(crate) mod gemini;
 pub(crate) mod managed;
 mod open_code;
+mod studio_integrations;
 mod process;
 pub(super) mod review;
 #[cfg(test)]
@@ -646,6 +647,7 @@ impl StudioReviewGate {
 }
 
 struct CodexRuntime {
+    studio_integrations: Option<ide_core::studio::StudioIntegrations>,
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
     messages: Receiver<ProviderMessage>,
@@ -973,6 +975,12 @@ fn configured_codex_mcp_names(
     cwd: &Path,
     path_env: &str,
 ) -> anyhow::Result<Vec<String>> {
+    Ok(configured_codex_mcp_entries(codex_path, cwd, path_env)?.iter()
+        .filter(|entry| entry["enabled"].as_bool().unwrap_or(false))
+        .filter_map(|entry| entry["name"].as_str().map(str::to_owned)).collect())
+}
+
+fn configured_codex_mcp_entries(codex_path: &Path, cwd: &Path, path_env: &str) -> anyhow::Result<Vec<Value>> {
     let output = ide_core::process::output_with_timeout(Command::new(codex_path)
         .args([
             "-c",
@@ -996,7 +1004,6 @@ fn configured_codex_mcp_names(
     let entries = entries
         .as_array()
         .context("Codex returned an invalid MCP server list")?;
-    let mut names = Vec::new();
     for entry in entries {
         if !entry
             .get("enabled")
@@ -1017,9 +1024,8 @@ fn configured_codex_mcp_names(
                 "Codex has an MCP server name that cannot be isolated safely"
             ));
         }
-        names.push(name.to_string());
     }
-    Ok(names)
+    Ok(entries.clone())
 }
 
 fn validate_codex_studio_features(output: &str) -> anyhow::Result<()> {
@@ -1077,10 +1083,11 @@ fn configure_codex_studio(
         "Studio could not read Codex capabilities. Reconnect or repair the Codex installation."
     );
     validate_codex_studio_features(&features)?;
-    for name in configured_codex_mcp_names(codex, agent.runtime_path(), path_env)? {
-        command
-            .arg("-c")
-            .arg(format!("mcp_servers.{name}.enabled=false"));
+    let integrations = studio_integrations::settings(agent)?;
+    command.args(["-c", &format!("features.image_generation={}", integrations.image_generation)]);
+    let entries = configured_codex_mcp_entries(codex, agent.runtime_path(), path_env)?;
+    for restriction in studio_integrations::codex_server_overrides(&entries, &integrations) {
+        command.args(["-c", &restriction]);
     }
     let mcp = choro_mcp_binary_path().context("Choro MCP is unavailable")?;
     let name = format!("studio_{}", agent.id.simple());
@@ -1094,14 +1101,22 @@ fn configure_codex_studio(
         .arg("-c")
         .arg(format!("mcp_servers.{name}.required=true"))
         .arg("-c")
+        .arg(format!("mcp_servers.{name}.tool_timeout_sec=660"))
+        .arg("-c")
         .arg(codex_scoped_mcp_approval_config_arg(&name));
     Ok(())
 }
 
 /// The `mcpServers` object handed to the Claude Agent SDK, scoped to this Choro
-/// chat and project. Studio roles use the scoped first-party server.
+/// chat and project. Studio adds only supported reference-service transports;
+/// its first-party design operations remain bound to the host-issued scope.
 fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
     let mut servers = serde_json::Map::new();
+    if agent.studio_context.is_some() && agent.review_run_id.is_none() {
+        if let Ok(settings) = studio_integrations::settings(agent) {
+            servers.extend(studio_integrations::claude_servers(agent.runtime_path(), &settings));
+        }
+    }
     if let Some(mcp) = choro_mcp_binary_path() {
         servers.insert(
             "choro".to_string(),
@@ -1109,6 +1124,7 @@ fn choro_mcp_servers_json(agent: &AgentRecord) -> Value {
                 "type": "stdio",
                 "command": mcp.display().to_string(),
                 "args": agent_choro_mcp_scope_args(agent),
+                "timeout": if agent.studio_context.is_some() { 660_000 } else { 60_000 },
             }),
         );
     }
@@ -1259,6 +1275,8 @@ fn run_codex_app_server_with_startup_status(
     shutdown: Arc<AtomicBool>,
     thread_ready: &mut bool,
 ) -> anyhow::Result<()> {
+    let studio_integrations_at_start = agent.studio_context.as_ref()
+        .map(|_| studio_integrations::settings(&agent)).transpose()?;
     let path_env = command_path_env();
     let codex_path = find_codex_app_server_executable().ok_or_else(|| {
         anyhow!("Codex executable was not found. Install Codex or add it to your shell PATH.")
@@ -1349,6 +1367,7 @@ fn run_codex_app_server_with_startup_status(
     let visualization_dir = agent_visualization_dir(&agent);
 
     let mut runtime = CodexRuntime {
+        studio_integrations: studio_integrations_at_start,
         child,
         stdin,
         messages: message_rx,
