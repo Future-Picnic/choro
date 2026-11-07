@@ -7,18 +7,18 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Signed stable updates for Choro.</description>
     <language>en</language>
     <item>
-      <title>Choro 0.106</title>
-      <pubDate>Sun, 01 Nov 2026 16:55:49 +0200</pubDate>
-      <sparkle:version>106</sparkle:version>
-      <sparkle:shortVersionString>0.106</sparkle:shortVersionString>
+      <title>Choro 0.107</title>
+      <pubDate>Sat, 07 Nov 2026 21:29:48 +0200</pubDate>
+      <sparkle:version>107</sparkle:version>
+      <sparkle:shortVersionString>0.107</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #49 from Future-Picnic/fix-surface-completed-tumble-task-results-as-unread
-- chore: publish update feed for 0.105]]></description>
-      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/698629170" length="122084331" type="application/octet-stream" sparkle:edSignature="TFHchM/s/bDkQ079lyhIfgzYYR0OpkX9CZvkvgRaUxf3mmvdrkPpmsllOTPdtvFipE4CbmpiJ5etiV3S2pQZAw=="></enclosure>
+      <description sparkle:format="plain-text"><![CDATA[- Merge pull request #50 from Future-Picnic/feat-add-studio-integrations-and-merge-return-preferences
+- chore: publish update feed for 0.106]]></description>
+      <enclosure url="https://api.github.com/repos/Future-Picnic/choro/releases/assets/721708623" length="122189831" type="application/octet-stream" sparkle:edSignature="OUbpAlysu8rQBK3YuGBB81Ar58UiHPi5YamSjFuHzc/J6Ve0GR8q2Hcqf5Q8ilhw/7jFIUl0fyxLBXIrXNAUDw=="></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: QwItRPs6i2V3wyJ3nfPoX6MLRhhU9FkZk8eeU9/XCERIvqnjYNSIjoRHcempbDY2ZmhOyV1YIYRn5MiTMG9tDg==
-length: 1444
+edSignature: rzVqpQbzzLqboVwB5sEeLYruil2x4bd06iIXzcmbmaAjfYhpIwAewuI2YvcVsjYuBfs/rhDu4HkGHZB0VEYdDw==
+length: 1450
 -->
