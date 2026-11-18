@@ -2,10 +2,16 @@ use gpui::{
     div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString,
     Styled, Window,
 };
-use gpui_component::{h_flex, menu::PopupMenuItem};
+use gpui_component::{h_flex, menu::{PopupMenu, PopupMenuItem}};
 use ide_core::model_favorites::ModelFavorite;
 
 use crate::state::Workspace;
+
+/// Catalogs can contain hundreds of live entries. Keep every model dropdown
+/// within the window and make its remaining rows reachable by scrolling.
+pub(crate) fn configure_model_menu(menu: PopupMenu) -> PopupMenu {
+    menu.scrollable(true).max_h(px(420.)).min_w(px(260.))
+}
 
 pub(crate) fn grouped_choices<T>(
     mut rows: Vec<T>,

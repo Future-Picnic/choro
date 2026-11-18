@@ -126,6 +126,10 @@ mod tests {
             AgentModel::CodexGpt6Astra
         );
         assert_eq!(
+            resolve_model_request("astara 6.2").unwrap().1,
+            AgentModel::CodexGpt62Astra
+        );
+        assert_eq!(
             resolve_model_request("Sonnnet 5").unwrap().1,
             AgentModel::ClaudeSonnet
         );
@@ -151,6 +155,9 @@ mod tests {
             "Opus",
             "GPT-6",
             "GPT-6.1 Astra",
+            "Sol 6.3",
+            "Astra 6.3",
+            "Fable 5.3",
             "Sonnet 9",
             "Gemini",
             "",

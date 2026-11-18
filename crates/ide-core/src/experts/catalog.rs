@@ -93,6 +93,7 @@ impl CatalogExpert {
             description: self.description.clone(),
             provider: self.provider,
             model: self.model,
+            codex_model: None,
             effort: self.effort,
             instructions: self.instructions.clone(),
             skills: Vec::new(),

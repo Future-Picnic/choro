@@ -1,7 +1,58 @@
 use super::*;
 
 impl SettingsView {
+    fn render_shared_model_catalog(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let workspace = self.workspace.clone();
+        let state = workspace.read(cx);
+        let path = state.model_catalog_path();
+        let statuses = AgentKind::ALL
+            .into_iter()
+            .filter_map(|provider| state.model_catalog.status(provider, &path))
+            .collect::<Vec<_>>();
+        let manage_workspace = workspace.clone();
+        v_flex().w_full().gap_3().p_4()
+            .rounded(crate::ui::design::r_lg()).border_1().border_color(crate::ui::design::line_2(cx))
+            .bg(crate::ui::design::surface(cx).opacity(0.55))
+            .child(div().text_size(crate::ui::design::text_body()).font_weight(FontWeight::SEMIBOLD).child("Shared models"))
+            .child(div().text_size(crate::ui::design::text_body()).text_color(crate::ui::design::t3(cx))
+                .child("Choose which models appear in every picker: chats, Assistant, Ask, Designer, and Bandmates. Stars are shared favorites. Hiding a model keeps existing conversations and defaults intact."))
+            .child(h_flex().gap_2()
+                .child(crate::ui::style::dialog_neutral_button("manage-shared-models", "Manage models", cx)
+                    .icon(IconName::ChevronDown)
+                    .dropdown_menu(move |mut menu, _, cx| {
+                        menu = crate::ui::model_favorites::configure_model_menu(menu);
+                        let state = manage_workspace.read(cx);
+                        let path = state.model_catalog_path();
+                        let hidden = state.hidden_models.clone();
+                        let favorites = state.favorite_models.clone();
+                        let catalogs = AgentKind::ALL.into_iter().filter(|provider| provider.is_visible_in_picker())
+                            .map(|provider| (provider, state.model_catalog.choices(provider, &path))).collect::<Vec<_>>();
+                        for (provider, rows) in catalogs {
+                            menu = menu.item(PopupMenuItem::label(provider.label()));
+                            let choices = crate::ui::model_favorites::grouped_choices(
+                                rows, &favorites, |choice| choice.favorite_key());
+                            if choices.is_empty() { menu = menu.item(PopupMenuItem::label("No models reported. Refresh to retry.")); }
+                            for (_, choice, key) in choices {
+                                let visible = !hidden.contains(&key);
+                                let automatic = matches!(choice, crate::state::model_catalog::ModelChoice::BuiltIn(AgentKind::Codex, AgentModel::CodexDefault));
+                                let target = manage_workspace.clone();
+                                menu = menu.item(crate::ui::model_favorites::model_menu_item(
+                                    choice.label().to_string(), key.clone(), visible, manage_workspace.clone(), cx)
+                                    .disabled(automatic)
+                                    .on_click(move |_, _, cx| target.update(cx, |state, cx| state.toggle_model_visibility(key.clone(), cx))));
+                            }
+                        }
+                        menu
+                    }))
+                .child(crate::ui::style::dialog_neutral_button("refresh-shared-models", "Refresh models", cx)
+                    .on_click(move |_, _, cx| workspace.update(cx, |state, cx| state.refresh_model_catalog(true, cx)))))
+            .children(statuses.into_iter().map(|status| div().text_size(crate::ui::design::text_ui())
+                .text_color(crate::ui::design::t3(cx)).child(status)))
+            .into_any_element()
+    }
+
     pub(super) fn render_generation_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let shared_models = self.render_shared_model_catalog(cx);
         let verification_mode = self.workspace.read(cx).verification_mode;
         let review_checklist_mode = self.workspace.read(cx).review_checklist_mode;
         let generation_agent = self.workspace.read(cx).generation_agent.clone();
@@ -109,25 +160,19 @@ impl SettingsView {
                         }))
                 })
                 .collect::<Vec<_>>();
-            let mut model_buttons_choices = if generation_agent.provider == AgentKind::OpenCode {
-                vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
-            } else {
-                AgentModel::picker_models_for(generation_agent.provider)
-                    .iter()
-                    .filter(|_| generation_agent.provider.is_visible_in_picker())
-                    .map(|model| (*model, model.menu_label().to_string()))
-                    .collect::<Vec<_>>()
-            };
+            let mut model_buttons_choices = self.workspace.read(cx).model_choices(generation_agent.provider);
             ide_core::model_favorites::favorites_first(
                 &mut model_buttons_choices,
                 &self.workspace.read(cx).favorite_models,
-                |(model, _)| ide_core::model_favorites::ModelFavorite::new(*model, None),
+                |choice| choice.favorite_key(),
             );
             let model_buttons = model_buttons_choices
                 .into_iter()
                 .enumerate()
-                .map(|(index, (model, label))| {
-                    let selected = generation_agent.model == model;
+                .map(|(index, choice)| {
+                    let label = choice.menu_label().to_string();
+                    let key = choice.favorite_key();
+                    let selected = choice.matches(generation_agent.provider, generation_agent.model, generation_agent.external_model_id.as_deref());
                     let button = if selected {
                         crate::ui::style::primary_button_compact(
                             ("settings-generation-model", index),
@@ -144,11 +189,11 @@ impl SettingsView {
                     h_flex()
                         .gap_0p5()
                         .child(button.on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_generation_model(model, cx);
+                            this.select_generation_model(choice.clone(), cx);
                         })))
                         .child(crate::ui::model_favorites::favorite_toggle(
                             self.workspace.clone(),
-                            ide_core::model_favorites::ModelFavorite::new(model, None),
+                            key,
                             cx,
                         ))
                 })
@@ -179,26 +224,19 @@ impl SettingsView {
                             }))
                     })
                     .collect::<Vec<_>>();
-            let mut quick_ask_model_buttons_choices =
-                if quick_ask_agent.provider == AgentKind::OpenCode {
-                    vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
-                } else {
-                    AgentModel::picker_models_for(quick_ask_agent.provider)
-                        .iter()
-                        .filter(|_| quick_ask_agent.provider.is_visible_in_picker())
-                        .map(|model| (*model, model.menu_label().to_string()))
-                        .collect::<Vec<_>>()
-                };
+            let mut quick_ask_model_buttons_choices = self.workspace.read(cx).model_choices(quick_ask_agent.provider);
             ide_core::model_favorites::favorites_first(
                 &mut quick_ask_model_buttons_choices,
                 &self.workspace.read(cx).favorite_models,
-                |(model, _)| ide_core::model_favorites::ModelFavorite::new(*model, None),
+                |choice| choice.favorite_key(),
             );
             let quick_ask_model_buttons = quick_ask_model_buttons_choices
                 .into_iter()
                 .enumerate()
-                .map(|(index, (model, label))| {
-                    let button = if quick_ask_agent.model == model {
+                .map(|(index, choice)| {
+                    let label = choice.menu_label().to_string();
+                    let key = choice.favorite_key();
+                    let button = if choice.matches(quick_ask_agent.provider, quick_ask_agent.model, quick_ask_agent.external_model_id.as_deref()) {
                         crate::ui::style::primary_button_compact(
                             ("settings-quick-ask-model", index),
                             label,
@@ -214,11 +252,11 @@ impl SettingsView {
                     h_flex()
                         .gap_0p5()
                         .child(button.on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_quick_ask_model(model, cx);
+                            this.select_quick_ask_model(choice.clone(), cx);
                         })))
                         .child(crate::ui::model_favorites::favorite_toggle(
                             self.workspace.clone(),
-                            ide_core::model_favorites::ModelFavorite::new(model, None),
+                            key,
                             cx,
                         ))
                 })
@@ -249,26 +287,19 @@ impl SettingsView {
                             }))
                     })
                     .collect::<Vec<_>>();
-            let mut default_model_buttons_choices =
-                if agent_defaults.provider == AgentKind::OpenCode {
-                    vec![(AgentModel::OpenCode, "Big Pickle".to_string())]
-                } else {
-                    AgentModel::picker_models_for(agent_defaults.provider)
-                        .iter()
-                        .filter(|_| agent_defaults.provider.is_visible_in_picker())
-                        .map(|model| (*model, model.menu_label().to_string()))
-                        .collect::<Vec<_>>()
-                };
+            let mut default_model_buttons_choices = self.workspace.read(cx).model_choices(agent_defaults.provider);
             ide_core::model_favorites::favorites_first(
                 &mut default_model_buttons_choices,
                 &self.workspace.read(cx).favorite_models,
-                |(model, _)| ide_core::model_favorites::ModelFavorite::new(*model, None),
+                |choice| choice.favorite_key(),
             );
             let default_model_buttons = default_model_buttons_choices
                 .into_iter()
                 .enumerate()
-                .map(|(index, (model, label))| {
-                    let button = if agent_defaults.model == model {
+                .map(|(index, choice)| {
+                    let label = choice.menu_label().to_string();
+                    let key = choice.favorite_key();
+                    let button = if choice.matches(agent_defaults.provider, agent_defaults.model, agent_defaults.external_model_id.as_deref()) {
                         crate::ui::style::primary_button_compact(
                             ("settings-agent-default-model", index),
                             label,
@@ -284,16 +315,18 @@ impl SettingsView {
                     h_flex()
                         .gap_0p5()
                         .child(button.on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_default_agent_model(model, cx);
+                            this.select_default_agent_model(choice.clone(), cx);
                         })))
                         .child(crate::ui::model_favorites::favorite_toggle(
                             self.workspace.clone(),
-                            ide_core::model_favorites::ModelFavorite::new(model, None),
+                            key,
                             cx,
                         ))
                 })
                 .collect::<Vec<_>>();
-            let default_effort_buttons = AgentEffort::ALL
+            let default_effort_buttons = self.workspace.read(cx).model_catalog.choices(agent_defaults.provider, &self.workspace.read(cx).model_catalog_path()).iter()
+                .find(|choice| choice.matches(agent_defaults.provider, agent_defaults.model, agent_defaults.external_model_id.as_deref()))
+                .map(|choice| choice.efforts()).unwrap_or_default()
                 .into_iter()
                 .enumerate()
                 .map(|(index, effort)| {
@@ -315,6 +348,18 @@ impl SettingsView {
                     }))
                 })
                 .collect::<Vec<_>>();
+            let default_effort_controls = if default_effort_buttons.is_empty() {
+                div().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::t3(cx))
+                    .child(if agent_defaults.model == AgentModel::CodexDefault && agent_defaults.external_model_id.is_none() {
+                        "Automatic uses the provider’s recommended model and reasoning."
+                    } else {
+                        "Reasoning options will appear when this model is available."
+                    }).into_any_element()
+            } else {
+                v_flex().gap_2()
+                    .child(div().text_size(crate::ui::design::text_label()).text_color(crate::ui::design::t4(cx)).child("Effort"))
+                    .child(h_flex().w_full().gap_2().flex_wrap().children(default_effort_buttons)).into_any_element()
+            };
             let label_size = crate::ui::design::text_label();
             let label_color = crate::ui::design::t4(cx);
             let row_label = move |label: &'static str| {
@@ -327,6 +372,7 @@ impl SettingsView {
             v_flex()
                                 .w_full()
                                 .gap_4()
+                                .child(shared_models)
                                 .child(
                                     v_flex()
                                         .w_full()
@@ -352,8 +398,7 @@ impl SettingsView {
                                         .child(h_flex().w_full().gap_2().flex_wrap().children(default_provider_buttons))
                                         .child(row_label("Model"))
                                         .child(h_flex().w_full().gap_2().flex_wrap().children(default_model_buttons))
-                                        .child(row_label("Effort"))
-                                        .child(h_flex().w_full().gap_2().flex_wrap().children(default_effort_buttons)),
+                                        .child(default_effort_controls),
                                 )
                                 .child(
                                     v_flex()

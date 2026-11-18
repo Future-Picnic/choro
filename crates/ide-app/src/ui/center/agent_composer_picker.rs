@@ -1,6 +1,7 @@
 use super::*;
-use ide_core::model_favorites::{favorites_first, ModelFavorite};
+use ide_core::model_favorites::favorites_first;
 use crate::state::codex::CodexModel;
+use crate::state::model_catalog::ModelChoice as ComposerModelRow;
 
 /// Every provider the composer can start an agent with. Ordered as the rail
 /// lists them.
@@ -12,13 +13,6 @@ const COMPOSER_PROVIDERS: [AgentKind; 4] = AgentKind::ALL;
 const COMPOSER_MODEL_PICKER_H: f32 = 320.0;
 const OTHER_PROVIDER_NEW_CHAT_TOOLTIP: &str =
     "Choose a model from another provider in a new chat.";
-
-#[derive(Clone)]
-enum ComposerModelRow {
-    BuiltIn(AgentKind, AgentModel),
-    Codex(CodexModel),
-    OpenCode(OpenCodeModel),
-}
 
 #[derive(Clone)]
 enum ComposerModelPickerTarget {
@@ -54,32 +48,6 @@ impl ComposerModelPickerTarget {
     }
 }
 
-impl ComposerModelRow {
-    fn favorite_key(&self) -> ModelFavorite {
-        match self {
-            Self::BuiltIn(_, model) => ModelFavorite::new(*model, None),
-            Self::Codex(model) => ModelFavorite::new(AgentModel::CodexDefault, Some(&model.id)),
-            Self::OpenCode(model) => ModelFavorite::new(AgentModel::OpenCode, Some(&model.id)),
-        }
-    }
-
-    fn label(&self) -> &str {
-        match self {
-            Self::BuiltIn(_, model) => model.short_label(),
-            Self::Codex(model) => &model.name,
-            Self::OpenCode(model) => &model.name,
-        }
-    }
-
-    fn provider_label(&self) -> String {
-        match self {
-            Self::BuiltIn(provider, _) => provider.label().to_string(),
-            Self::Codex(_) => AgentKind::Codex.label().to_string(),
-            Self::OpenCode(model) => model.provider_label(),
-        }
-    }
-}
-
 fn open_code_effort(variants: &[String], current: AgentEffort) -> AgentEffort {
     let supported = AgentEffort::supported_variants(variants);
     if supported.is_empty() || supported.contains(&current) {
@@ -99,36 +67,38 @@ fn open_code_effort(variants: &[String], current: AgentEffort) -> AgentEffort {
 
 impl CenterArea {
     pub fn refresh_codex_models(&mut self, force: bool, cx: &mut Context<Self>) {
-        let Some((_, path)) = self.active_project(cx) else { return; };
-        if self.codex_catalog.loading || (!force && !self.codex_catalog.stale_for(&path)) { return; }
-        self.codex_catalog.loading = true;
-        self.codex_catalog.project_path = Some(path.clone());
-        self.codex_catalog.models.clear();
-        self.codex_catalog.error = None;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let requested = path.clone();
-            let discovery = cx.background_executor().spawn(async move { crate::state::codex::discover(&path) }).await;
-            let _ = this.update(cx, |this, cx| {
-                this.codex_catalog.loading = false;
-                if this.active_project(cx).is_none_or(|(_, path)| path != requested) {
-                    this.codex_catalog.refreshed_at = None;
-                    this.refresh_codex_models(false, cx);
-                    return;
+        self.workspace.update(cx, |workspace, cx| workspace.refresh_model_catalog(force, cx));
+        // Defaults persist the exact id. Hydrate capabilities from the shared
+        // catalog when it arrives, without substituting another model.
+        let catalog = {
+            let workspace = self.workspace.read(cx);
+            workspace.model_catalog.project(&workspace.model_catalog_path())
+        };
+        if let Some(composer) = &mut self.new_agent_composer {
+            if composer.provider == AgentKind::Codex {
+                if let Some(model) = catalog.codex.models.iter().find(|model| Some(model.id.as_str()) == composer.external_model_id.as_deref()) {
+                    composer.external_model_label = Some(model.name.clone());
+                    composer.external_model_variants = model.variants();
+                    composer.effort = model.normalize_effort(composer.effort).unwrap_or(composer.effort);
                 }
-                this.codex_catalog.refreshed_at = Some(Instant::now());
-                match discovery {
-                    Ok(Some(discovery)) => {
-                        this.codex_catalog.models = discovery.models;
-                        this.codex_catalog.executable = Some(discovery.executable);
-                        this.codex_catalog.version = Some(discovery.version);
-                    }
-                    Ok(None) => this.codex_catalog.error = Some("Codex is not installed. Install Codex and sign in, then refresh models.".into()),
-                    Err(error) => this.codex_catalog.error = Some(ide_core::redact_sensitive_text(&format!("{error:#}"))),
+            } else if composer.provider == AgentKind::OpenCode {
+                if let Some(model) = catalog.open_code.models.iter().find(|model| Some(model.id.as_str()) == composer.external_model_id.as_deref()) {
+                    composer.external_model_label = Some(model.name.clone());
+                    composer.external_model_variants = model.variants.clone();
+                    composer.effort = open_code_effort(&model.variants, composer.effort);
                 }
-                cx.notify();
-            });
-        }).detach();
+            }
+        }
+    }
+
+    fn codex_catalog(&self, cx: &App) -> crate::state::codex::CodexCatalog {
+        let workspace = self.workspace.read(cx);
+        workspace.model_catalog.project(&workspace.model_catalog_path()).codex
+    }
+
+    fn open_code_catalog(&self, cx: &App) -> OpenCodeCatalog {
+        let workspace = self.workspace.read(cx);
+        workspace.model_catalog.project(&workspace.model_catalog_path()).open_code
     }
 
     fn select_codex_model(&mut self, target: &ComposerModelPickerTarget, model: Option<&CodexModel>, effort: AgentEffort, cx: &mut Context<Self>) {
@@ -177,62 +147,6 @@ impl CenterArea {
 
     pub fn refresh_open_code_models(&mut self, force: bool, cx: &mut Context<Self>) {
         self.refresh_codex_models(force, cx);
-        let Some((_, project_path)) = self.active_project(cx) else {
-            return;
-        };
-        if self.open_code_catalog.state == OpenCodeCatalogState::Loading
-            || (!force && !self.open_code_catalog.is_stale_for(&project_path))
-        {
-            return;
-        }
-
-        self.open_code_catalog.state = OpenCodeCatalogState::Loading;
-        self.open_code_catalog.project_path = Some(project_path.clone());
-        self.open_code_catalog.error = None;
-        cx.notify();
-
-        let requested_path = project_path.clone();
-        cx.spawn(async move |this, cx| {
-            let discovery =
-                cx.background_executor()
-                    .spawn(async move {
-                        crate::state::open_code::discover_open_code_models(&project_path)
-                    })
-                    .await;
-            let _ = this.update(cx, |this, cx| {
-                if this
-                    .active_project(cx)
-                    .is_none_or(|(_, active_path)| active_path != requested_path)
-                {
-                    this.open_code_catalog.state = OpenCodeCatalogState::NotLoaded;
-                    this.open_code_catalog.refreshed_at = None;
-                    this.refresh_open_code_models(false, cx);
-                    return;
-                }
-                this.open_code_catalog.refreshed_at = Some(Instant::now());
-                match discovery {
-                    Ok(Some(discovery)) => {
-                        this.open_code_catalog.state = OpenCodeCatalogState::Ready;
-                        this.open_code_catalog.executable = Some(discovery.executable);
-                        this.open_code_catalog.models = discovery.models;
-                        this.open_code_catalog.error = None;
-                    }
-                    Ok(None) => {
-                        this.open_code_catalog.state = OpenCodeCatalogState::NotInstalled;
-                        this.open_code_catalog.executable = None;
-                        this.open_code_catalog.models.clear();
-                        this.open_code_catalog.error = None;
-                    }
-                    Err(error) => {
-                        this.open_code_catalog.state = OpenCodeCatalogState::Failed;
-                        this.open_code_catalog.models.clear();
-                        this.open_code_catalog.error = Some(format!("{error:#}"));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     /// The composer's model picker: a provider rail, a search field, and the
@@ -314,25 +228,7 @@ impl CenterArea {
             if filter.is_some_and(|only| only != kind) {
                 continue;
             }
-            if kind == AgentKind::OpenCode {
-                rows.extend(
-                    self.open_code_catalog
-                        .models
-                        .iter()
-                        .cloned()
-                        .map(ComposerModelRow::OpenCode),
-                );
-            } else if kind == AgentKind::Codex {
-                rows.push(ComposerModelRow::BuiltIn(kind, AgentModel::CodexDefault));
-                rows.extend(self.codex_catalog.models.iter().cloned().map(ComposerModelRow::Codex));
-            } else {
-                rows.extend(
-                    AgentModel::models_for(kind)
-                        .iter()
-                        .copied()
-                        .map(|model| ComposerModelRow::BuiltIn(kind, model)),
-                );
-            }
+            rows.extend(self.workspace.read(cx).model_choices(kind));
         }
         if favorites_only {
             rows.retain(|row| favorites.contains(&row.favorite_key()));
@@ -350,13 +246,14 @@ impl CenterArea {
             });
         }
 
-        let open_code_empty_message = match self.open_code_catalog.state {
+        let open_code_catalog = self.open_code_catalog(cx);
+        let codex_catalog = self.codex_catalog(cx);
+        let open_code_empty_message = match open_code_catalog.state {
             OpenCodeCatalogState::Loading => "Reading models from OpenCode…".to_string(),
             OpenCodeCatalogState::NotInstalled => {
                 "OpenCode is not installed on this computer.".to_string()
             }
-            OpenCodeCatalogState::Failed => self
-                .open_code_catalog
+            OpenCodeCatalogState::Failed => open_code_catalog
                 .error
                 .as_deref()
                 .map(|error| format!("Could not read OpenCode models: {error}"))
@@ -510,10 +407,10 @@ impl CenterArea {
                                 })),
                             ),
                     )
-                    .when((filter.is_none() || filter == Some(AgentKind::Codex)) && (self.codex_catalog.loading || self.codex_catalog.error.is_some()), |panel| {
+                    .when((filter.is_none() || filter == Some(AgentKind::Codex)) && (codex_catalog.loading || codex_catalog.error.is_some()), |panel| {
                         panel.child(div().px_2().text_size(crate::ui::design::text_ui()).text_color(crate::ui::design::t3(cx))
-                            .child(if self.codex_catalog.loading { "Checking Codex models…".to_string() }
-                                else { self.codex_catalog.error.clone().unwrap_or_default() }))
+                            .child(if codex_catalog.loading { "Checking Codex models…".to_string() }
+                                else { codex_catalog.error.clone().unwrap_or_default() }))
                     })
                     .child(
                         v_flex()
@@ -676,8 +573,7 @@ impl CenterArea {
                                                                     return;
                                                                 }
                                                                 ComposerModelRow::BuiltIn(AgentKind::Codex, AgentModel::CodexDefault) => {
-                                                                    let automatic = ide_core::agents::codex::resolve_model(&this.codex_catalog.models, None).ok().cloned();
-                                                                    this.select_codex_model(&click_target, automatic.as_ref(), current_effort, cx);
+                                                                    this.select_codex_model(&click_target, None, current_effort, cx);
                                                                     this.composer_model_expanded = false;
                                                                     cx.notify();
                                                                     return;

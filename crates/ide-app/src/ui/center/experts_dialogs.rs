@@ -517,7 +517,7 @@ fn completion_summary(run_id: Uuid, task_id: Uuid, cx: &App) -> Option<Completio
     Some(CompletionSummary {
         expert: task.expert.profile.name.clone(),
         bandmate_index: display::bandmate_index(run, task_id)?,
-        model: task.expert.profile.model.label().to_string(),
+        model: task.expert.profile.model_label().to_string(),
         goal: task.plan.goal.clone(),
         stage: if report == ReportState::Stale {
             "Earlier report"

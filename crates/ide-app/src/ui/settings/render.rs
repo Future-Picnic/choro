@@ -3,6 +3,9 @@ use super::*;
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let section = self.section;
+        if matches!(section, SettingsSection::Generation | SettingsSection::Experts) {
+            self.workspace.update(cx, |workspace, cx| workspace.refresh_model_catalog(false, cx));
+        }
         let contained_page = matches!(
             section,
             SettingsSection::AgentSkills | SettingsSection::Experts | SettingsSection::Design

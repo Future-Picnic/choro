@@ -539,6 +539,7 @@ impl DelegationRun {
                 {
                     expert.profile.provider = existing.expert.profile.provider;
                     expert.profile.model = existing.expert.profile.model;
+                    expert.profile.codex_model = existing.expert.profile.codex_model.clone();
                     expert.profile.effort = existing.expert.profile.effort;
                 }
             }
@@ -551,6 +552,7 @@ impl DelegationRun {
                 let (provider, model) = crate::experts::models::resolve_model_request(request)?;
                 expert.profile.provider = provider;
                 expert.profile.model = model;
+                expert.profile.codex_model = None;
                 // Keep the inherited effort when supported; otherwise use the
                 // selected model's normal effort rather than an invalid setting.
                 if !model.efforts().contains(&expert.profile.effort) {
@@ -575,6 +577,7 @@ impl DelegationRun {
                 ensure!(existing.attempts.is_empty() || (
                     existing.expert.profile.provider == expert.profile.provider
                     && existing.expert.profile.model == expert.profile.model
+                    && existing.expert.profile.codex_model.as_ref().map(|model| &model.id) == expert.profile.codex_model.as_ref().map(|model| &model.id)
                 ), "A started task cannot switch models. Create another assignment to preserve its session and history.");
                 existing.plan = plan;
                 existing.revision += 1;
@@ -1077,6 +1080,7 @@ mod tests {
             description: String::new(),
             provider: AgentKind::Codex,
             model,
+            codex_model: None,
             effort: AgentEffort::default(),
             instructions: "Build it".into(),
             skills: vec![],

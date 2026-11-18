@@ -40,6 +40,7 @@ fn fixture() -> (tempfile::TempDir, ServerContext, Uuid, ExpertProfile) {
                 description: "Build".into(),
                 provider: AgentKind::Codex,
                 model,
+                codex_model: None,
                 effort: model.default_effort(),
                 instructions: "Build the assigned files".into(),
                 skills: vec![],

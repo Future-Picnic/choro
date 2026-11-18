@@ -220,25 +220,32 @@ impl SettingsView {
                             }),
                     )
                     .child(
-                        style::dialog_neutral_button("expert-model", model.label(), cx)
+                        style::dialog_neutral_button("expert-model", profile.model_label().to_string(), cx)
                             .icon(IconName::ChevronDown)
                             .tooltip("Model")
                             .dropdown_menu({
                                 let view = view.clone();
+                                let choices = self.workspace.read(cx).model_choices(provider);
+                                let selected_id = profile.codex_model.as_ref().map(|model| model.id.clone());
                                 move |mut menu, window, _| {
-                                    for candidate in
-                                        AgentModel::picker_models_for(provider).iter().copied()
-                                    {
+                                    menu = crate::ui::model_favorites::configure_model_menu(menu);
+                                    for candidate in choices.clone() {
+                                        let selection = candidate.selection();
                                         menu = menu.item(
-                                            PopupMenuItem::new(candidate.menu_label())
-                                                .checked(model == candidate)
+                                            PopupMenuItem::new(candidate.menu_label().to_string())
+                                                .checked(candidate.matches(provider, model, selected_id.as_deref()))
                                                 .on_click(window.listener_for(
                                                     &view,
                                                     move |this: &mut Self, _, _, cx| {
                                                         if let Some(e) = &mut this.expert_editor {
-                                                            e.profile.model = candidate;
-                                                            e.profile.effort = candidate
-                                                                .normalize_effort(e.profile.effort);
+                                                            e.profile.model = selection.model;
+                                                            e.profile.codex_model = match &candidate {
+                                                                crate::state::model_catalog::ModelChoice::Codex(model) => Some(model.clone()),
+                                                                _ => None,
+                                                            };
+                                                            if !candidate.efforts().contains(&e.profile.effort) {
+                                                                e.profile.effort = candidate.default_effort();
+                                                            }
                                                         }
                                                         cx.notify();
                                                     },
@@ -257,8 +264,10 @@ impl SettingsView {
                         )
                         .icon(IconName::ChevronDown)
                         .tooltip("Reasoning effort")
-                        .dropdown_menu(move |mut menu, window, _| {
-                            for candidate in model.efforts().iter().copied() {
+                        .dropdown_menu({
+                            let efforts = profile.model_efforts();
+                            move |mut menu, window, _| {
+                            for candidate in efforts.iter().copied() {
                                 menu = menu.item(
                                     PopupMenuItem::new(candidate.label())
                                         .checked(effort == candidate)
@@ -274,7 +283,7 @@ impl SettingsView {
                                 );
                             }
                             menu
-                        }),
+                        }}),
                     ),
             )
     }
@@ -284,6 +293,7 @@ impl SettingsView {
             if e.profile.provider != candidate {
                 e.profile.provider = candidate;
                 e.profile.model = AgentModel::default_for(candidate);
+                e.profile.codex_model = None;
                 e.profile.effort = e.profile.model.default_effort();
                 if e.profile.skills.iter().any(|s| s.provider != candidate) {
                     self.experts_status = Some(ExpertsNotice::error(
@@ -309,6 +319,7 @@ impl SettingsView {
             description: String::new(),
             provider: AgentKind::Claude,
             model,
+            codex_model: None,
             effort: model.default_effort(),
             instructions: String::new(),
             skills: vec![],

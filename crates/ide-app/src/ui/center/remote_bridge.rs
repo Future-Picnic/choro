@@ -466,9 +466,9 @@ impl CenterArea {
                         .cloned()
                         .ok_or_else(|| RemoteError::not_found("agent not found"))?;
                     let mut selected_external = None;
+                    let mut selected_codex = None;
                     let model = if agent.provider == AgentKind::OpenCode {
-                        let external = self
-                            .open_code_catalog
+                        let external = self.workspace.read(cx).model_catalog.project(&agent.project_path).open_code
                             .models
                             .iter()
                             .find(|m| m.id == request.model)
@@ -478,6 +478,17 @@ impl CenterArea {
                             })?;
                         selected_external = Some(external.clone());
                         AgentModel::OpenCode
+                    } else if agent.provider == AgentKind::Codex {
+                        if request.model == wire_value(AgentModel::CodexDefault) {
+                            selected_codex = Some(None);
+                            AgentModel::CodexDefault
+                        } else if let Some(model) = self.workspace.read(cx).model_catalog.project(&agent.project_path).codex.models
+                            .iter().find(|model| model.id == request.model).cloned() {
+                            selected_codex = Some(Some(model));
+                            AgentModel::CodexDefault
+                        } else {
+                            parse_wire_value::<AgentModel>(&request.model, "model")?
+                        }
                     } else {
                         parse_wire_value::<AgentModel>(&request.model, "model")?
                     };
@@ -490,6 +501,9 @@ impl CenterArea {
                     let mut normalized_agent = agent.clone();
                     if let Some(external) = &selected_external {
                         normalized_agent.external_model_variants = external.variants.clone();
+                    }
+                    if let Some(Some(model)) = &selected_codex {
+                        normalized_agent.set_codex_model(model, effort);
                     }
                     let effort = normalized_agent.normalize_effort_for_model(model, effort);
                     let access_mode =
@@ -514,7 +528,10 @@ impl CenterArea {
                             )
                         });
                     }
-                    if agent.model != model || agent.effort != effort {
+                    if let Some(selected) = &selected_codex {
+                        self.agents.update(cx, |agents, cx| agents.update_codex_model(agent_id, selected.as_ref(), effort, cx));
+                        self.agent_chats.update(cx, |chats, cx| chats.update_codex_model(agent_id, selected.as_ref(), effort, cx));
+                    } else if agent.model != model || agent.effort != effort {
                         self.update_agent_chat_model_effort(agent_id, model, effort, cx);
                     }
                     if agent.access_mode != access_mode {
@@ -1491,11 +1508,7 @@ impl CenterArea {
             title: agent.title.clone(),
             backend: agent.provider_label().to_ascii_lowercase(),
             model: agent.model_label().to_string(),
-            model_id: agent
-                .external_model_id
-                .clone()
-                .filter(|_| agent.provider == AgentKind::OpenCode)
-                .unwrap_or_else(|| wire_value(agent.model)),
+            model_id: model_wire_value(agent.provider, agent.model, agent.external_model_id.as_deref()),
             effort: wire_value(agent.effort),
             access_mode: wire_value(agent.access_mode),
             status,
@@ -1645,7 +1658,8 @@ impl CenterArea {
             .map_err(|e| RemoteError::conflict(e.to_string()))?;
         if let Some(snapshot) = &expert_snapshot {
             request.provider = Some(wire_value(snapshot.profile.provider));
-            request.model = Some(wire_value(snapshot.profile.model));
+            request.model = Some(snapshot.profile.codex_model.as_ref().map(|model| model.id.clone())
+                .unwrap_or_else(|| wire_value(snapshot.profile.model)));
             request.effort = Some(wire_value(snapshot.profile.effort));
         }
         if !request.delegation_recipient_ids.is_empty()
@@ -1725,7 +1739,7 @@ impl CenterArea {
                 .or(defaults.external_model_id.as_deref())
                 .ok_or_else(|| RemoteError::bad_request("choose an OpenCode model"))?;
             Some(
-                self.open_code_catalog
+                self.workspace.read(cx).model_catalog.project(&project.path).open_code
                     .models
                     .iter()
                     .find(|model| model.id == requested)
@@ -1735,8 +1749,20 @@ impl CenterArea {
         } else {
             None
         };
+        let codex_model = if provider == AgentKind::Codex {
+            let requested = request.model.as_deref().or_else(|| (defaults.provider == provider).then_some(defaults.external_model_id.as_deref()).flatten());
+            requested.and_then(|id| self.workspace.read(cx).model_catalog.project(&project.path).codex.models.into_iter().find(|model| model.id == id))
+                .or_else(|| expert_snapshot.as_ref().and_then(|snapshot| snapshot.profile.codex_model.clone()))
+                .or_else(|| requested.filter(|id| defaults.provider == provider && defaults.external_model_id.as_deref() == Some(*id))
+                    .map(|id| crate::state::codex::CodexModel {
+                        id: id.to_string(), name: defaults.external_model_label.clone().unwrap_or_else(|| id.to_string()),
+                        efforts: Vec::new(), default_effort: None, is_default: false,
+                    }))
+        } else { None };
         let model = if provider == AgentKind::OpenCode {
             AgentModel::OpenCode
+        } else if codex_model.is_some() {
+            AgentModel::CodexDefault
         } else {
             request
                 .model
@@ -1761,7 +1787,7 @@ impl CenterArea {
             .as_deref()
             .map(|value| parse_wire_value::<AgentEffort>(value, "effort"))
             .transpose()?
-            .map(|effort| model.normalize_effort(effort))
+            .map(|effort| codex_model.as_ref().and_then(|model| model.normalize_effort(effort)).unwrap_or_else(|| model.normalize_effort(effort)))
             .unwrap_or_else(|| {
                 if defaults.provider == provider {
                     model.normalize_effort(defaults.effort)
@@ -1828,6 +1854,9 @@ impl CenterArea {
             if let Some(model) = external_model.clone() {
                 agents.update_external_model(agent_id, model.id, model.name, model.variants, cx);
             }
+            if let Some(model) = &codex_model {
+                agents.update_codex_model(agent_id, Some(model), effort, cx);
+            }
             if let Some(origin) = request.origin.clone().map(agent_origin) {
                 agents.set_origin(agent_id, origin, cx);
             }
@@ -1860,20 +1889,22 @@ impl CenterArea {
 
     pub(super) fn remote_configuration_catalog(&self, cx: &App) -> ConfigurationCatalogDto {
         let defaults = self.workspace.read(cx).new_agent_defaults();
-        let mut providers = [AgentKind::Codex, AgentKind::Claude, AgentKind::Gemini]
+        let providers = AgentKind::ALL
             .into_iter()
             .filter(|provider| provider.is_visible_in_picker())
             .map(|provider| ProviderConfigurationDto {
                 id: wire_value(provider),
                 label: provider.label().to_string(),
-                models: AgentModel::picker_models_for(provider)
-                    .iter()
-                    .copied()
-                    .map(|model| ModelConfigurationDto {
-                        id: wire_value(model),
-                        label: model.label().to_string(),
-                        short_label: model.short_label().to_string(),
-                        efforts: model
+                models: self.workspace.read(cx).model_choices(provider)
+                    .into_iter()
+                    .map(|choice| ModelConfigurationDto {
+                        id: {
+                            let selected = choice.selection();
+                            model_wire_value(selected.provider, selected.model, selected.external_model_id.as_deref())
+                        },
+                        label: choice.label().to_string(),
+                        short_label: choice.label().to_string(),
+                        efforts: choice
                             .efforts()
                             .into_iter()
                             .map(|effort| EffortConfigurationDto {
@@ -1894,46 +1925,11 @@ impl CenterArea {
                     .collect(),
             })
             .collect::<Vec<_>>();
-        if !self.open_code_catalog.models.is_empty() {
-            providers.push(ProviderConfigurationDto {
-                id: wire_value(AgentKind::OpenCode),
-                label: AgentKind::OpenCode.label().to_string(),
-                models: self
-                    .open_code_catalog
-                    .models
-                    .iter()
-                    .map(|model| ModelConfigurationDto {
-                        id: model.id.clone(),
-                        label: model.name.clone(),
-                        short_label: model.name.clone(),
-                        efforts: AgentEffort::supported_variants(&model.variants)
-                            .into_iter()
-                            .map(|effort| EffortConfigurationDto {
-                                id: wire_value(effort),
-                                label: effort.label().to_string(),
-                                description: effort.menu_label().to_string(),
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-                access_modes: AgentAccessMode::ALL
-                    .into_iter()
-                    .map(|access_mode| AccessModeConfigurationDto {
-                        id: wire_value(access_mode),
-                        label: access_mode.label_for(AgentKind::OpenCode).to_string(),
-                        description: access_mode.description_for(AgentKind::OpenCode).to_string(),
-                    })
-                    .collect(),
-            });
-        }
         ConfigurationCatalogDto {
             providers,
             defaults: AgentDefaultsDto {
                 provider: wire_value(defaults.provider),
-                model: defaults
-                    .external_model_id
-                    .filter(|_| defaults.provider == AgentKind::OpenCode)
-                    .unwrap_or_else(|| wire_value(defaults.model)),
+                model: model_wire_value(defaults.provider, defaults.model, defaults.external_model_id.as_deref()),
                 effort: wire_value(defaults.effort),
                 access_mode: wire_value(AgentAccessMode::FullAccess),
                 solo: false,
@@ -2203,6 +2199,16 @@ fn wire_value<T: serde::Serialize>(value: T) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+fn model_wire_value(provider: AgentKind, model: AgentModel, external_id: Option<&str>) -> String {
+    external_id
+        .filter(|_| {
+            provider == AgentKind::OpenCode
+                || (provider == AgentKind::Codex && model == AgentModel::CodexDefault)
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| wire_value(model))
 }
 
 fn authorize_remote_agent_mode(
@@ -2788,6 +2794,47 @@ fn pending_approval_dto(pending: &crate::state::agent_chat::PendingApproval) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_model_ids_match_remote_catalog_selections_and_saved_defaults() {
+        use super::*;
+        assert_eq!(
+            model_wire_value(
+                AgentKind::Codex,
+                AgentModel::CodexDefault,
+                Some("future-codex")
+            ),
+            "future-codex"
+        );
+        assert_eq!(
+            model_wire_value(AgentKind::Codex, AgentModel::CodexDefault, None),
+            wire_value(AgentModel::CodexDefault)
+        );
+        assert_eq!(
+            model_wire_value(
+                AgentKind::OpenCode,
+                AgentModel::OpenCode,
+                Some("provider/model")
+            ),
+            "provider/model"
+        );
+        assert_eq!(
+            model_wire_value(
+                AgentKind::Claude,
+                AgentModel::ClaudeFable52,
+                Some("stale-id")
+            ),
+            wire_value(AgentModel::ClaudeFable52)
+        );
+        assert_eq!(
+            model_wire_value(
+                AgentKind::Codex,
+                AgentModel::CodexGpt62Sol,
+                Some("stale-id")
+            ),
+            wire_value(AgentModel::CodexGpt62Sol)
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -452,11 +452,15 @@ impl CenterArea {
         };
         if let Some(snapshot) = &expert_snapshot {
             if let Some(previous) = &composer.expert_snapshot {
-                let model_override = composer.model != previous.profile.model;
+                let model_override = composer.model != previous.profile.model
+                    || composer.external_model_id.as_deref() != previous.profile.codex_model.as_ref().map(|model| model.id.as_str());
                 let effort_override = composer.effort != previous.profile.effort;
                 if !model_override {
                     composer.provider = snapshot.profile.provider;
                     composer.model = snapshot.profile.model;
+                    composer.external_model_id = snapshot.profile.codex_model.as_ref().map(|model| model.id.clone());
+                    composer.external_model_label = snapshot.profile.codex_model.as_ref().map(|model| model.name.clone());
+                    composer.external_model_variants = snapshot.profile.codex_model.as_ref().map(|model| model.variants()).unwrap_or_default();
                 }
                 if !effort_override {
                     composer.effort = snapshot.profile.effort;

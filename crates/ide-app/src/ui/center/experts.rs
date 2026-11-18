@@ -655,6 +655,9 @@ impl CenterArea {
                 if let Some(c) = &mut self.new_agent_composer {
                     c.provider = expert.profile.provider;
                     c.model = expert.profile.model;
+                    c.external_model_id = expert.profile.codex_model.as_ref().map(|model| model.id.clone());
+                    c.external_model_label = expert.profile.codex_model.as_ref().map(|model| model.name.clone());
+                    c.external_model_variants = expert.profile.codex_model.as_ref().map(|model| model.variants()).unwrap_or_default();
                     c.effort = expert.profile.effort;
                     c.runtime = AgentRuntimeKind::Chat;
                     c.expert_snapshot = Some(expert);

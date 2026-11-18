@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::AgentEffort;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodexModel {
     pub id: String,
     pub name: String,
@@ -15,6 +15,25 @@ pub struct CodexModel {
 }
 
 impl CodexModel {
+    pub fn from_agent(agent: &super::AgentRecord) -> Option<Self> {
+        if agent.provider != super::AgentKind::Codex
+            || agent.model != super::AgentModel::CodexDefault
+        {
+            return None;
+        }
+        let id = agent.external_model_id.clone()?;
+        Some(Self {
+            name: agent
+                .external_model_label
+                .clone()
+                .unwrap_or_else(|| id.clone()),
+            id,
+            efforts: super::AgentEffort::supported_variants(&agent.external_model_variants),
+            default_effort: Some(agent.effort),
+            is_default: false,
+        })
+    }
+
     pub fn normalize_effort(&self, requested: AgentEffort) -> Option<AgentEffort> {
         self.efforts
             .contains(&requested)

@@ -183,9 +183,10 @@ impl CenterArea {
                         this.schedule_pocketcomet_handoff(*agent_id, false, cx);
                     }
                     AgentChatEvent::CodexModelRejected { id, project_path } => {
-                        if this.codex_catalog.project_path.as_ref() != Some(project_path) { return; }
-                        this.codex_catalog.models.retain(|model| &model.id != id);
-                        this.codex_catalog.error = Some(format!("Codex rejected {id} for this connection. Choose another model, or update Codex and refresh."));
+                        this.workspace.update(cx, |workspace, cx| {
+                            workspace.model_catalog.reject_codex_model(project_path, id);
+                            cx.notify();
+                        });
                         cx.notify();
                     }
                     AgentChatEvent::CodexModelSelected { agent_id, model, effort } => {
@@ -997,8 +998,6 @@ impl CenterArea {
                 composer_model_picker_agent: None,
                 composer_model_provider: None,
                 composer_model_favorites_only: false,
-                open_code_catalog: OpenCodeCatalog::default(),
-                codex_catalog: crate::state::codex::CodexCatalog::default(),
                 agent_chat_rail_compact: false,
                 pocketcomet_project_filter: None,
                 pocketcomet_selected_chat: None,

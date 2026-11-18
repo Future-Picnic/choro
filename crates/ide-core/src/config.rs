@@ -675,6 +675,9 @@ pub struct AppConfig {
     /// Shared by every model picker; older configurations start without favorites.
     #[serde(default)]
     pub favorite_models: Vec<crate::model_favorites::ModelFavorite>,
+    /// Picker visibility is global; hiding a model never rewrites saved choices.
+    #[serde(default)]
+    pub hidden_models: Vec<crate::model_favorites::ModelFavorite>,
     /// Instruction sent when the Code review action is used in an agent chat.
     #[serde(default = "default_code_review_prompt")]
     pub code_review_prompt: String,
@@ -746,6 +749,7 @@ impl Default for AppConfig {
             quick_ask_agent: GenerationAgent::default(),
             new_agent_defaults: None,
             favorite_models: Vec::new(),
+            hidden_models: Vec::new(),
             code_review_prompt: default_code_review_prompt(),
             studio: crate::studio::StudioSettings::default(),
             code_review_output_instructions: default_code_review_output_instructions(),
@@ -941,6 +945,7 @@ mod tests {
             favorite_models: vec![crate::model_favorites::ModelFavorite::BuiltIn(
                 AgentModel::ClaudeHaiku45,
             )],
+            hidden_models: Vec::new(),
             code_review_prompt: default_code_review_prompt(),
             studio: crate::studio::StudioSettings::default(),
             code_review_output_instructions: default_code_review_output_instructions(),
@@ -1098,8 +1103,10 @@ mod tests {
     fn model_favorites_default_to_empty_for_older_configs() {
         let mut json = serde_json::to_value(sample_config()).unwrap();
         json.as_object_mut().unwrap().remove("favorite_models");
+        json.as_object_mut().unwrap().remove("hidden_models");
         let config: AppConfig = serde_json::from_value(json).unwrap();
         assert!(config.favorite_models.is_empty());
+        assert!(config.hidden_models.is_empty());
     }
 
     #[test]
@@ -1109,9 +1116,11 @@ mod tests {
         config
             .favorite_models
             .push(ModelFavorite::OpenCode("anthropic/claude-sonnet".into()));
+        config.hidden_models.push(ModelFavorite::Codex("future-codex".into()));
         let restored: AppConfig =
             serde_json::from_slice(&serde_json::to_vec(&config).unwrap()).unwrap();
         assert_eq!(restored.favorite_models, config.favorite_models);
+        assert_eq!(restored.hidden_models, config.hidden_models);
         assert_eq!(restored.new_agent_defaults, config.new_agent_defaults);
         assert_eq!(restored.quick_ask_agent, config.quick_ask_agent);
     }
