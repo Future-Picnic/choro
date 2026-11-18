@@ -6,6 +6,8 @@ use super::*;
 
 const DIRECTIVE_PREFIX: &str = "::codex-inline-vis{file=\"";
 const DIRECTIVE_SUFFIX: &str = "\"}";
+const VISUALIZE_PREFIX: &str = "\u{e200}visualize\u{e202}";
+const VISUALIZE_SUFFIX: &str = "\u{e201}";
 const ACTIVE_VISUALIZATION_HEIGHT: f32 = 380.0;
 const MAX_VISUALIZATION_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -88,13 +90,27 @@ impl ChatVisualizationContext {
 
 pub(super) fn parse_visualization_directive_line(line: &str) -> Option<String> {
     let line = line.trim();
-    let path = line
-        .strip_prefix(DIRECTIVE_PREFIX)?
-        .strip_suffix(DIRECTIVE_SUFFIX)?;
-    if path.is_empty() || path.contains(['\n', '\r', '\0']) || path.contains('"') {
+    let path = if let Some(path) = line
+        .strip_prefix(DIRECTIVE_PREFIX)
+        .and_then(|value| value.strip_suffix(DIRECTIVE_SUFFIX))
+    {
+        if path.contains('"') {
+            return None;
+        }
+        path.to_string()
+    } else {
+        // The bundled Visualize skill uses Codex's JSON content reference.
+        // Feed both formats through the same renderer and file validation.
+        let payload = line
+            .strip_prefix(VISUALIZE_PREFIX)?
+            .strip_suffix(VISUALIZE_SUFFIX)?;
+        let reference: serde_json::Value = serde_json::from_str(payload).ok()?;
+        reference.get("path")?.as_str()?.to_string()
+    };
+    if path.is_empty() || path.contains(['\n', '\r', '\0']) {
         return None;
     }
-    Some(path.to_string())
+    Some(path)
 }
 
 pub(super) fn visualization_directives(text: &str) -> Vec<String> {
@@ -555,10 +571,66 @@ mod tests {
     }
 
     #[test]
+    fn parses_visualize_skill_reference() {
+        assert_eq!(
+            parse_visualization_directive_line(
+                "\u{e200}visualize\u{e202}{\"path\":\"/project/previews/landscape-survey-navigation.html\"}\u{e201}"
+            ),
+            Some("/project/previews/landscape-survey-navigation.html".to_string())
+        );
+        assert_eq!(
+            parse_visualization_directive_line(
+                r#"  visualize{"path":"/project/a \"quoted\" chart.html","mode":"wide","title":"Chart"}  "#
+            ),
+            Some("/project/a \"quoted\" chart.html".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_visualize_skill_references() {
+        for payload in [
+            "not json",
+            r#"{}"#,
+            r#"{"path":null}"#,
+            r#"{"path":42}"#,
+            r#"{"path":""}"#,
+            r#"{"path":"chart\n.html"}"#,
+            r#"{"path":"chart\r.html"}"#,
+            r#"{"path":"chart\u0000.html"}"#,
+            r#"{"path":"chart.html"} trailing"#,
+        ] {
+            let line = format!("\u{e200}visualize\u{e202}{payload}\u{e201}");
+            assert!(
+                parse_visualization_directive_line(&line).is_none(),
+                "{payload}"
+            );
+        }
+        assert!(parse_visualization_directive_line(
+            "\u{e200}visualize\u{e202}{\"path\":\"chart.html\"}\u{e201} trailing"
+        )
+        .is_none());
+        assert!(parse_visualization_directive_line(
+            "\u{e200}visualize\u{e202}{\"path\":\"chart.html\"}"
+        )
+        .is_none());
+    }
+
+    #[test]
     fn ignores_directive_inside_code_fence() {
         let text = "```text\n::codex-inline-vis{file=\"fake.html\"}\n```\n\
                     ::codex-inline-vis{file=\"real.html\"}";
         assert_eq!(visualization_directives(text), vec!["real.html"]);
+    }
+
+    #[test]
+    fn discovers_both_formats_but_ignores_fenced_references() {
+        let text = "```text\n\u{e200}visualize\u{e202}{\"path\":\"fake.html\"}\u{e201}\n```\n\
+                    ::codex-inline-vis{file=\"legacy.html\"}\n\
+                    \u{e200}visualize\u{e202}{\"path\":\"real.html\"}\u{e201}";
+        assert_eq!(
+            visualization_directives(text),
+            vec!["legacy.html", "real.html"]
+        );
     }
 
     #[test]

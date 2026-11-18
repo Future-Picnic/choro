@@ -316,6 +316,7 @@ pub enum AgentModel {
     Gemini31ProHigh,
     Gemini38FlashHigh,
     ClaudeOpus55,
+    ClaudeFable52,
     ClaudeFable51,
     ClaudeFable5,
     ClaudeSonnet55,
@@ -324,6 +325,8 @@ pub enum AgentModel {
     /// Opus 4.8.
     ClaudeOpus,
     ClaudeHaiku45,
+    CodexGpt62Astra,
+    CodexGpt62Sol,
     CodexGpt6Astra,
     CodexGpt61Sol,
     CodexGpt6Sol,
@@ -349,6 +352,7 @@ impl AgentModel {
             Self::Gemini31ProHigh => "Gemini 3.1 Pro (High)",
             Self::Gemini38FlashHigh => "Gemini 3.8 Flash (High)",
             Self::ClaudeOpus55 => "Opus 5.5",
+            Self::ClaudeFable52 => "Fable 5.2",
             Self::ClaudeFable51 => "Fable 5.1",
             Self::ClaudeFable5 => "Fable 5",
             Self::ClaudeSonnet55 => "Sonnet 5.5",
@@ -356,6 +360,8 @@ impl AgentModel {
             Self::ClaudeOpus5 => "Opus 5",
             Self::ClaudeOpus => "Opus 4.8",
             Self::ClaudeHaiku45 => "Haiku 4.5",
+            Self::CodexGpt62Astra => "Astra 6.2",
+            Self::CodexGpt62Sol => "Sol 6.2",
             Self::CodexGpt6Astra => "Astra 6",
             Self::CodexGpt61Sol => "Sol 6.1",
             Self::CodexGpt6Sol => "Sol 6",
@@ -379,6 +385,8 @@ impl AgentModel {
 
     pub fn menu_label(&self) -> &'static str {
         match self {
+            Self::CodexGpt62Astra => "Astra 6.2 · Most capable",
+            Self::CodexGpt62Sol => "Sol 6.2 · Balanced",
             Self::CodexGpt6Astra => "Astra 6 · Most capable",
             Self::CodexGpt61Sol => "Sol 6.1 · Balanced",
             Self::CodexGpt6Sol => "Sol 6 · Balanced",
@@ -396,6 +404,7 @@ impl AgentModel {
             Self::Gemini31ProHigh => Some("gemini-3.1-pro-high"),
             Self::Gemini38FlashHigh => Some("gemini-3.8-flash-high"),
             Self::ClaudeOpus55 => Some("claude-opus-5-5"),
+            Self::ClaudeFable52 => Some("claude-fable-5-2"),
             Self::ClaudeFable51 => Some("claude-fable-5-1"),
             Self::ClaudeFable5 => Some("claude-fable-5"),
             Self::ClaudeSonnet55 => Some("claude-sonnet-5-5"),
@@ -403,6 +412,8 @@ impl AgentModel {
             Self::ClaudeOpus5 => Some("claude-opus-5"),
             Self::ClaudeOpus => Some("claude-opus-4-8"),
             Self::ClaudeHaiku45 => Some("claude-haiku-4-5"),
+            Self::CodexGpt62Astra => Some("gpt-6.2-astra"),
+            Self::CodexGpt62Sol => Some("gpt-6.2-sol"),
             Self::CodexGpt6Astra => Some("gpt-6-astra"),
             Self::CodexGpt61Sol => Some("gpt-6.1-sol"),
             Self::CodexGpt6Sol => Some("gpt-6-sol"),
@@ -430,7 +441,9 @@ impl AgentModel {
 
     pub fn default_effort(&self) -> AgentEffort {
         match self {
-            Self::CodexGpt6Astra
+            Self::CodexGpt62Astra
+            | Self::CodexGpt62Sol
+            | Self::CodexGpt6Astra
             | Self::CodexGpt61Sol
             | Self::CodexGpt6Sol
             | Self::CodexGpt6Luna => AgentEffort::High,
@@ -439,13 +452,14 @@ impl AgentModel {
         }
     }
 
-    /// Offered in every model picker. Carries the current generation plus the
-    /// two behind it, so work pinned to a known-good model stays reproducible;
-    /// models the provider no longer serves are excluded but keep their variant.
+    /// Built-in identities for model pickers, saved selections, and named model
+    /// requests. Older entries remain available until explicitly retired.
+    /// Codex pickers use live discovery to determine account availability.
     pub fn models_for(kind: AgentKind) -> &'static [Self] {
         match kind {
             AgentKind::Claude => &[
                 Self::ClaudeOpus55,
+                Self::ClaudeFable52,
                 Self::ClaudeFable51,
                 Self::ClaudeSonnet55,
                 Self::ClaudeSonnet,
@@ -457,6 +471,8 @@ impl AgentModel {
                 Self::ClaudeOpus,
             ],
             AgentKind::Codex => &[
+                Self::CodexGpt62Astra,
+                Self::CodexGpt62Sol,
                 Self::CodexGpt6Astra,
                 Self::CodexGpt61Sol,
                 Self::CodexGpt6Sol,
@@ -488,6 +504,7 @@ impl AgentModel {
             AgentKind::Claude => matches!(
                 self,
                 Self::ClaudeOpus55
+                    | Self::ClaudeFable52
                     | Self::ClaudeFable51
                     | Self::ClaudeFable5
                     | Self::ClaudeSonnet55
@@ -498,7 +515,9 @@ impl AgentModel {
             ),
             AgentKind::Codex => matches!(
                 self,
-                Self::CodexGpt6Astra
+                Self::CodexGpt62Astra
+                    | Self::CodexGpt62Sol
+                    | Self::CodexGpt6Astra
                     | Self::CodexGpt61Sol
                     | Self::CodexGpt6Sol
                     | Self::CodexGpt6Luna
@@ -1992,6 +2011,7 @@ mod tests {
             AgentModel::models_for(AgentKind::Claude),
             &[
                 AgentModel::ClaudeOpus55,
+                AgentModel::ClaudeFable52,
                 AgentModel::ClaudeFable51,
                 AgentModel::ClaudeSonnet55,
                 AgentModel::ClaudeSonnet,
@@ -2011,6 +2031,11 @@ mod tests {
             Some("claude-opus-5-5")
         );
         assert_eq!(AgentModel::ClaudeFable51.label(), "Fable 5.1");
+        assert_eq!(AgentModel::ClaudeFable52.label(), "Fable 5.2");
+        assert_eq!(
+            AgentModel::ClaudeFable52.cli_value(),
+            Some("claude-fable-5-2")
+        );
         assert_eq!(AgentModel::ClaudeSonnet55.label(), "Sonnet 5.5");
         assert_eq!(
             AgentModel::ClaudeSonnet55.cli_value(),
@@ -2027,6 +2052,8 @@ mod tests {
         assert_eq!(
             AgentModel::models_for(AgentKind::Codex),
             &[
+                AgentModel::CodexGpt62Astra,
+                AgentModel::CodexGpt62Sol,
                 AgentModel::CodexGpt6Astra,
                 AgentModel::CodexGpt61Sol,
                 AgentModel::CodexGpt6Sol,
@@ -2044,6 +2071,13 @@ mod tests {
         assert_eq!(AgentModel::CodexGpt6Sol.label(), "Sol 6");
         assert_eq!(AgentModel::CodexGpt6Sol.short_label(), "Sol 6");
         assert_eq!(AgentModel::CodexGpt61Sol.short_label(), "Sol 6.1");
+        assert_eq!(AgentModel::CodexGpt62Sol.short_label(), "Sol 6.2");
+        assert_eq!(AgentModel::CodexGpt62Sol.cli_value(), Some("gpt-6.2-sol"));
+        assert_eq!(AgentModel::CodexGpt62Sol.menu_label(), "Sol 6.2 · Balanced");
+        assert_eq!(
+            AgentModel::CodexGpt62Sol.default_effort(),
+            AgentEffort::High
+        );
         assert_eq!(AgentModel::CodexGpt6Sol.cli_value(), Some("gpt-6-sol"));
         assert_eq!(AgentModel::CodexGpt6Luna.cli_value(), Some("gpt-6-luna"));
         assert_eq!(
@@ -2067,6 +2101,16 @@ mod tests {
             "Astra 6 · Most capable"
         );
         assert_eq!(AgentModel::CodexGpt6Astra.cli_value(), Some("gpt-6-astra"));
+        assert_eq!(AgentModel::CodexGpt62Astra.short_label(), "Astra 6.2");
+        assert_eq!(AgentModel::CodexGpt62Astra.cli_value(), Some("gpt-6.2-astra"));
+        assert_eq!(
+            AgentModel::CodexGpt62Astra.menu_label(),
+            "Astra 6.2 · Most capable"
+        );
+        assert_eq!(
+            AgentModel::CodexGpt62Astra.default_effort(),
+            AgentEffort::High
+        );
         assert_eq!(
             AgentModel::CodexGpt6Astra.default_effort(),
             AgentEffort::High

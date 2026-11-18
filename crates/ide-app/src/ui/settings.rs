@@ -661,14 +661,21 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn select_default_agent_model(&mut self, model: AgentModel, cx: &mut Context<Self>) {
+    fn select_default_agent_model(
+        &mut self,
+        choice: crate::state::model_catalog::ModelChoice,
+        cx: &mut Context<Self>,
+    ) {
         self.workspace.update(cx, |workspace, cx| {
             let mut defaults = workspace.new_agent_defaults();
-            if model.belongs_to(defaults.provider) {
-                defaults.model = model;
+            let selected = choice.selection();
+            if selected.provider == defaults.provider {
+                defaults.model = selected.model;
+                defaults.external_model_id = selected.external_model_id;
+                defaults.external_model_label = selected.external_model_label;
                 // A new model resets effort to its own sweet spot; the row
                 // below is there to override it.
-                defaults.effort = model.default_effort();
+                defaults.effort = choice.default_effort();
                 workspace.set_new_agent_defaults(defaults, cx);
                 workspace.save_now();
             }
@@ -694,14 +701,14 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn select_generation_model(&mut self, model: AgentModel, cx: &mut Context<Self>) {
+    fn select_generation_model(
+        &mut self,
+        choice: crate::state::model_catalog::ModelChoice,
+        cx: &mut Context<Self>,
+    ) {
         self.workspace.update(cx, |workspace, cx| {
-            let mut generation_agent = workspace.generation_agent.clone();
-            if model.belongs_to(generation_agent.provider) {
-                generation_agent.model = model;
-                workspace.set_generation_agent(generation_agent, cx);
-                workspace.save_now();
-            }
+            workspace.set_generation_agent(choice.selection(), cx);
+            workspace.save_now();
         });
         cx.notify();
     }
@@ -714,14 +721,14 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn select_quick_ask_model(&mut self, model: AgentModel, cx: &mut Context<Self>) {
+    fn select_quick_ask_model(
+        &mut self,
+        choice: crate::state::model_catalog::ModelChoice,
+        cx: &mut Context<Self>,
+    ) {
         self.workspace.update(cx, |workspace, cx| {
-            let mut quick_ask_agent = workspace.quick_ask_agent.clone();
-            if model.belongs_to(quick_ask_agent.provider) {
-                quick_ask_agent.model = model;
-                workspace.set_quick_ask_agent(quick_ask_agent, cx);
-                workspace.save_now();
-            }
+            workspace.set_quick_ask_agent(choice.selection(), cx);
+            workspace.save_now();
         });
         cx.notify();
     }

@@ -12,9 +12,8 @@ use gpui_component::{
     tooltip::Tooltip,
     v_flex, Disableable, Icon, IconName, Sizable,
 };
-use ide_core::config::GenerationAgent;
 use ide_core::local_store::StoredQuickAskExchange;
-use ide_core::{AgentKind, AgentModel};
+use ide_core::AgentKind;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -72,6 +71,15 @@ pub struct QuickAskPanel {
 impl EventEmitter<QuickAskPanelEvent> for QuickAskPanel {}
 
 impl QuickAskPanel {
+    fn model_catalog_path(&self, cx: &App) -> PathBuf {
+        let workspace = self.workspace.read(cx);
+        match self.quick_ask.read(cx).scope() {
+            QuickAskScope::Project(id) => workspace.projects.iter().find(|project| project.id == id)
+                .map(|project| project.path.clone()).unwrap_or_else(std::env::temp_dir),
+            QuickAskScope::General => std::env::temp_dir(),
+        }
+    }
+
     pub fn view(
         workspace: Entity<Workspace>,
         quick_ask: Entity<QuickAskState>,
@@ -86,6 +94,7 @@ impl QuickAskPanel {
         });
         let observed_center = center.clone();
         cx.new(|cx| {
+            cx.observe(&workspace, |_, _, cx| cx.notify()).detach();
             let panel = Self {
                 workspace,
                 quick_ask: quick_ask.clone(),
@@ -509,23 +518,14 @@ impl QuickAskPanel {
         .tooltip(format!("{} · {}", provider.label(), label))
         .dropdown_menu(move |mut menu, window, cx| {
             let workspace = view.read(cx).workspace.clone();
+            menu = crate::ui::model_favorites::configure_model_menu(menu);
+            let path = view.read(cx).model_catalog_path(cx);
             let mut choices = Vec::new();
             for provider in AgentKind::ALL {
                 if !provider.is_visible_in_picker() {
                     continue;
                 }
-                for model in AgentModel::picker_models_for(provider) {
-                    choices.push(if provider == AgentKind::OpenCode {
-                        GenerationAgent::for_provider(provider)
-                    } else {
-                        GenerationAgent {
-                            provider,
-                            model: *model,
-                            external_model_id: None,
-                            external_model_label: None,
-                        }
-                    });
-                }
+                choices.extend(workspace.read(cx).model_choices_for(provider, &path).iter().map(|choice| choice.selection()));
             }
             let choices = crate::ui::model_favorites::grouped_choices(
                 choices,
@@ -568,6 +568,17 @@ impl QuickAskPanel {
                     )),
                 );
             }
+            for provider in AgentKind::ALL {
+                if let Some(status) = workspace.read(cx).model_catalog.status(provider, &path) {
+                    menu = menu.item(PopupMenuItem::label(status));
+                }
+            }
+            menu = menu.item(PopupMenuItem::separator()).item(
+                PopupMenuItem::new("Refresh models").on_click(window.listener_for(&view, move |this: &mut Self, _, _, cx| {
+                    let path = this.model_catalog_path(cx);
+                    this.workspace.update(cx, |workspace, cx| workspace.refresh_model_catalog_for(path, true, cx));
+                }))
+            );
             menu
         })
     }
@@ -1097,6 +1108,8 @@ impl QuickAskPanel {
 
 impl Render for QuickAskPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let path = self.model_catalog_path(cx);
+        self.workspace.update(cx, |workspace, cx| workspace.refresh_model_catalog_for(path, false, cx));
         v_flex()
             .key_context(CONTEXT)
             .on_action(cx.listener(|this, _: &QuickAskSubmit, window, cx| this.submit(window, cx)))

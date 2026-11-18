@@ -82,6 +82,8 @@ pub struct Workspace {
     /// back to the generation agent via [`Self::new_agent_defaults`].
     stored_new_agent_defaults: Option<NewAgentDefaults>,
     pub favorite_models: Vec<ide_core::model_favorites::ModelFavorite>,
+    pub hidden_models: Vec<ide_core::model_favorites::ModelFavorite>,
+    pub(crate) model_catalog: super::model_catalog::ModelCatalog,
     pub code_review_prompt: String,
     pub studio: ide_core::studio::StudioSettings,
     pub code_review_output_instructions: String,
@@ -195,6 +197,8 @@ impl Workspace {
             quick_ask_agent: config.quick_ask_agent.normalized(),
             stored_new_agent_defaults: config.new_agent_defaults.map(NewAgentDefaults::normalized),
             favorite_models: config.favorite_models,
+            hidden_models: config.hidden_models,
+            model_catalog: Default::default(),
             code_review_prompt: user_code_review_prompt(config.code_review_prompt),
             studio: config.studio,
             code_review_output_instructions: config.code_review_output_instructions,
@@ -455,6 +459,25 @@ impl Workspace {
             self.favorite_models.retain(|favorite| favorite != &model);
         } else {
             self.favorite_models.push(model);
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_model_visibility(
+        &mut self,
+        model: ide_core::model_favorites::ModelFavorite,
+        cx: &mut Context<Self>,
+    ) {
+        if model
+            == ide_core::model_favorites::ModelFavorite::BuiltIn(ide_core::AgentModel::CodexDefault)
+        {
+            return;
+        }
+        if self.hidden_models.contains(&model) {
+            self.hidden_models.retain(|hidden| hidden != &model);
+        } else {
+            self.hidden_models.push(model);
         }
         self.schedule_save(cx);
         cx.notify();
@@ -1259,6 +1282,7 @@ impl Workspace {
             quick_ask_agent: self.quick_ask_agent.clone(),
             new_agent_defaults: self.stored_new_agent_defaults.clone(),
             favorite_models: self.favorite_models.clone(),
+            hidden_models: self.hidden_models.clone(),
             code_review_prompt: self.code_review_prompt.clone(),
             studio: self.studio.clone(),
             code_review_output_instructions: self.code_review_output_instructions.clone(),

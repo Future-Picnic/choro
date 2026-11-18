@@ -353,7 +353,7 @@ impl CenterArea {
         let model_label = child
             .and_then(|id| self.agents.read(cx).agent(id))
             .map(|a| a.model_label().to_string())
-            .unwrap_or_else(|| task.expert.profile.model.label().to_string());
+            .unwrap_or_else(|| task.expert.profile.model_label().to_string());
         let latest_step = child
             .and_then(|id| self.agent_chats.read(cx).session(id))
             .and_then(|s| s.work_log.last())

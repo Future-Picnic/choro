@@ -76,6 +76,7 @@ impl CenterArea {
         key: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        self.refresh_codex_models(false, cx);
         let record = self
             .doc_assistants
             .read(cx)
@@ -96,6 +97,7 @@ impl CenterArea {
         };
         let provider = record.provider;
         let model = record.model;
+        let selected_id = record.external_model_id.clone();
         let effort = record.effort;
         let supported_efforts = model.efforts();
         let runtime_locked = can_resume || session.as_ref().is_some_and(|(_, _, exited)| !*exited);
@@ -201,16 +203,11 @@ impl CenterArea {
                             let relative = relative_doc_path.clone();
                             move |mut menu, window, cx| {
                                 let workspace = center.read(cx).workspace.clone();
+                                menu = crate::ui::model_favorites::configure_model_menu(menu);
                                 let choices = crate::ui::model_favorites::grouped_choices(
-                                    AgentModel::picker_models_for(provider)
-                                        .iter()
-                                        .copied()
-                                        .filter(|_| provider.is_visible_in_picker())
-                                        .collect(),
+                                    workspace.read(cx).model_choices(provider),
                                     &workspace.read(cx).favorite_models,
-                                    |model| {
-                                        ide_core::model_favorites::ModelFavorite::new(*model, None)
-                                    },
+                                    |choice| choice.favorite_key(),
                                 );
                                 for (heading, candidate, key) in choices {
                                     if let Some(heading) = heading {
@@ -219,9 +216,9 @@ impl CenterArea {
                                     let relative = relative.clone();
                                     menu = menu.item(
                                         crate::ui::model_favorites::model_menu_item(
-                                            candidate.label(),
+                                            candidate.label().to_string(),
                                             key,
-                                            candidate == model,
+                                            candidate.matches(provider, model, selected_id.as_deref()),
                                             workspace.clone(),
                                             cx,
                                         )
@@ -232,10 +229,12 @@ impl CenterArea {
                                                     this.doc_assistants.update(
                                                         cx,
                                                         |assistants, cx| {
-                                                            assistants.update_runtime(
-                                                                project, &relative, provider,
-                                                                candidate, effort, cx,
-                                                            )
+                                                            match &candidate {
+                                                                crate::state::model_catalog::ModelChoice::Codex(model) => assistants.update_codex_model(project, &relative, Some(model), effort, cx),
+                                                                crate::state::model_catalog::ModelChoice::OpenCode(model) => assistants.update_external_model(project, &relative, model.id.clone(), model.name.clone(), model.variants.clone(), effort, cx),
+                                                                crate::state::model_catalog::ModelChoice::BuiltIn(provider, model) if *provider == AgentKind::Codex => assistants.update_codex_model(project, &relative, None, effort, cx),
+                                                                crate::state::model_catalog::ModelChoice::BuiltIn(provider, model) => assistants.update_runtime(project, &relative, *provider, *model, model.normalize_effort(effort), cx),
+                                                            }
                                                         },
                                                     );
                                                 },

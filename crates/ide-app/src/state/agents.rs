@@ -1076,6 +1076,7 @@ mod tests {
                 description: "Design screens".into(),
                 provider,
                 model,
+                codex_model: None,
                 effort: model.default_effort(),
                 instructions: "Keep the layout compact".into(),
                 expected_outcome: "Keyboard accessible screens".into(),

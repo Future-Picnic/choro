@@ -19,9 +19,13 @@ pub(super) fn child_record(store: &LocalStore, run: &DelegationRun, task: &Deleg
     let attempt = task.attempt().context("Bandmate conversation has not been created")?;
     let expert = &task.expert.profile;
     let mut child = store.load_agents()?.into_iter().find(|a| a.id == attempt.child_agent_id)
-        .unwrap_or_else(|| AgentRecord::new(parent.project_id, parent.project_path.clone(),
+        .unwrap_or_else(|| {
+            let mut child = AgentRecord::new(parent.project_id, parent.project_path.clone(),
             format!("{} · {}", expert.name, task.plan.goal), task.plan.brief.clone(),
-            expert.provider, expert.model, expert.effort, parent.access_mode));
+            expert.provider, expert.model, expert.effort, parent.access_mode);
+            expert.apply_codex_model(&mut child);
+            child
+        });
     child.id = attempt.child_agent_id;
     child.runtime = AgentRuntimeKind::Chat;
     // The attempt survives a missing chat record. Recover its provider session

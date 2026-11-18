@@ -79,6 +79,9 @@ pub struct ExpertProfile {
     pub description: String,
     pub provider: AgentKind,
     pub model: AgentModel,
+    /// Exact identity and capabilities selected from Codex's live catalog.
+    #[serde(default)]
+    pub codex_model: Option<crate::agents::codex::CodexModel>,
     pub effort: AgentEffort,
     pub instructions: String,
     pub skills: Vec<ExpertSkill>,
@@ -90,6 +93,26 @@ pub struct ExpertProfile {
 }
 
 impl ExpertProfile {
+    pub fn model_label(&self) -> &str {
+        self.codex_model
+            .as_ref()
+            .map(|model| model.name.as_str())
+            .unwrap_or_else(|| self.model.label())
+    }
+
+    pub fn model_efforts(&self) -> Vec<AgentEffort> {
+        self.codex_model
+            .as_ref()
+            .map(|model| model.efforts.clone())
+            .unwrap_or_else(|| self.model.efforts())
+    }
+
+    pub fn apply_codex_model(&self, agent: &mut crate::AgentRecord) {
+        if let Some(model) = &self.codex_model {
+            agent.set_codex_model(model, self.effort);
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             !normalized_expert_name(&self.name).is_empty(),
@@ -108,7 +131,12 @@ impl ExpertProfile {
             "Choose a model from the Bandmate's provider."
         );
         ensure!(
-            self.model.efforts().contains(&self.effort),
+            self.codex_model.as_ref().is_none_or(|model| self.provider == AgentKind::Codex
+                && self.model == AgentModel::CodexDefault && !model.id.trim().is_empty()),
+            "Choose a model from the Bandmate's provider."
+        );
+        ensure!(
+            self.model_efforts().contains(&self.effort) || self.codex_model.as_ref().is_some_and(|model| model.efforts.is_empty()),
             "The selected model does not support this reasoning effort."
         );
         ensure!(
@@ -407,6 +435,7 @@ mod tests {
             description: String::new(),
             provider: AgentKind::Codex,
             model,
+            codex_model: None,
             effort: model.default_effort(),
             instructions: "Implement the assigned scope".into(),
             skills: Vec::new(),
@@ -452,5 +481,53 @@ mod tests {
             source: PathBuf::from("/choro-nonexistent-skill/SKILL.md"),
         });
         assert!(expert.snapshot().is_err());
+    }
+
+    #[test]
+    fn live_codex_selection_survives_saved_profiles_snapshots_and_agent_creation() {
+        let mut expert = profile("Designer");
+        expert.codex_model = Some(crate::agents::codex::CodexModel {
+            id: "future-codex".into(),
+            name: "Future Codex".into(),
+            efforts: vec![AgentEffort::Low],
+            default_effort: Some(AgentEffort::Low),
+            is_default: false,
+        });
+        expert.effort = AgentEffort::Low;
+        let snapshot = expert.snapshot().unwrap();
+        let restored: ExpertSnapshot =
+            serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(restored.profile.model_label(), "Future Codex");
+        assert_eq!(restored.profile.model_efforts(), [AgentEffort::Low]);
+        let mut agent = crate::AgentRecord::new(
+            crate::ProjectId(Uuid::new_v4()),
+            PathBuf::from("/project"),
+            "Design",
+            "Build",
+            expert.provider,
+            expert.model,
+            expert.effort,
+            crate::AgentAccessMode::default(),
+        );
+        restored.profile.apply_codex_model(&mut agent);
+        assert_eq!(agent.model_cli_value(), Some("future-codex"));
+        assert_eq!(
+            crate::agents::codex::CodexModel::from_agent(&agent)
+                .unwrap()
+                .id,
+            "future-codex"
+        );
+        expert.effort = AgentEffort::High;
+        assert!(expert.validate().is_err());
+        expert.effort = AgentEffort::Low;
+        expert.provider = AgentKind::Claude;
+        expert.model = AgentModel::ClaudeSonnet;
+        assert!(expert.validate().is_err());
+        let mut legacy = serde_json::to_value(profile("Legacy")).unwrap();
+        legacy.as_object_mut().unwrap().remove("codex_model");
+        assert!(serde_json::from_value::<ExpertProfile>(legacy)
+            .unwrap()
+            .codex_model
+            .is_none());
     }
 }

@@ -103,7 +103,7 @@ fn expert_meta(profile: &ExpertProfile) -> String {
     format!(
         "{} · {} · {}",
         profile.provider.label(),
-        profile.model.label(),
+        profile.model_label(),
         profile.effort.label()
     )
 }
@@ -343,6 +343,6 @@ fn expert_matches(profile: &ExpertProfile, query: &str) -> bool {
     query.is_empty()
         || profile.name.to_lowercase().contains(query)
         || profile.description.to_lowercase().contains(query)
-        || profile.model.label().to_lowercase().contains(query)
+        || profile.model_label().to_lowercase().contains(query)
         || profile.provider.label().to_lowercase().contains(query)
 }

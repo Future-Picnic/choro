@@ -223,6 +223,7 @@ impl Fixture {
                             description: name.into(),
                             provider,
                             model,
+                            codex_model: None,
                             effort: model.default_effort(),
                             instructions: "Implement your assigned file and verify it.".into(),
                             skills: vec![],
